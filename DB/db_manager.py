@@ -4,15 +4,15 @@ HYCLEUS — Veritabanı Yöneticisi
 Şu an düz sqlite3 kullanıyor.
 sqlcipher3 geçişi: connect() içindeki iki satırı değiştir (yoruma bakın).
 """
+from __future__ import annotations
+
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 _DEFAULT_DB_PATH = Path(__file__).parent.parent / "data" / "hycleus.db"
 
 _SCHEMA = """
-PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
-
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     username      TEXT    NOT NULL UNIQUE,
@@ -24,16 +24,17 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS files (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    filename    TEXT    NOT NULL,
-    filepath    TEXT    NOT NULL UNIQUE,
-    label       TEXT    NOT NULL DEFAULT 'Genel'
-                        CHECK(label IN ('Genel', 'Kritik', 'Karantina', 'Imha')),
-    size_bytes  INTEGER,
-    hash_sha256 TEXT,
-    added_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    added_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    notes       TEXT
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename        TEXT    NOT NULL,
+    filepath        TEXT    NOT NULL UNIQUE,
+    label           TEXT    NOT NULL DEFAULT 'Genel'
+                            CHECK(label IN ('Genel', 'Kritik', 'Karantina', 'Imha')),
+    size_bytes      INTEGER,
+    hash_sha256     TEXT,
+    original_sha256 TEXT,
+    added_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    added_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    notes           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS quarantine (
@@ -57,6 +58,15 @@ CREATE TABLE IF NOT EXISTS audit_log (
     timestamp   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS usb_tokens (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    hwid         TEXT    NOT NULL UNIQUE,
+    share_2      TEXT    NOT NULL,
+    token_id     TEXT    NOT NULL DEFAULT '',
+    blacklisted  INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_files_label       ON files(label);
 CREATE INDEX IF NOT EXISTS idx_quarantine_status ON quarantine(status);
 CREATE INDEX IF NOT EXISTS idx_audit_log_user    ON audit_log(user_id);
@@ -71,15 +81,20 @@ class HWIDMissingError(RuntimeError):
 class DBManager:
     """Uygulama genelinde tek örnek (singleton) veritabanı yöneticisi."""
 
-    _instance: "DBManager | None" = None
+    # Sınıf düzeyinde tip bildirimleri — type checker'ların __new__ atamasını görmesi için
+    _instance: DBManager | None = None
+    _db_path: Path
+    _conn: sqlite3.Connection | None
+    _hwid: str | None
+    _key: bytes | None
 
-    def __new__(cls, db_path: "str | Path | None" = None):
+    def __new__(cls, db_path: str | Path | None = None) -> DBManager:
         if cls._instance is None:
             obj = super().__new__(cls)
             obj._db_path = Path(db_path) if db_path else _DEFAULT_DB_PATH
-            obj._conn: "sqlite3.Connection | None" = None
-            obj._hwid: "str | None" = None
-            obj._key: "bytes | None" = None
+            obj._conn = None
+            obj._hwid = None
+            obj._key = None
             cls._instance = obj
         return cls._instance
 
@@ -89,8 +104,8 @@ class DBManager:
 
     def connect(
         self,
-        hwid: "str | None",
-        key: "bytes | None" = None,
+        hwid: str | None,
+        key: bytes | None = None,
     ) -> None:
         """
         Veritabanı bağlantısını açar.
@@ -133,7 +148,7 @@ class DBManager:
         self._apply_schema()
 
     def close(self) -> None:
-        if self._conn:
+        if self._conn is not None:
             self._conn.close()
             self._conn = None
             self._hwid = None
@@ -142,9 +157,9 @@ class DBManager:
 
     def open(
         self,
-        hwid: "str | None",
-        key: "bytes | None" = None,
-    ) -> "DBManager":
+        hwid: str | None,
+        key: bytes | None = None,
+    ) -> DBManager:
         """connect() çağırır ve self döndürür — with bloğu için kullanım kolaylığı.
 
         Örnek::
@@ -156,11 +171,35 @@ class DBManager:
         return self
 
     def _apply_schema(self) -> None:
-        assert self._conn
+        if self._conn is None:
+            raise RuntimeError("_apply_schema çağrıldı ama bağlantı yok.")
+        # PRAGMA'lar executescript() dışında çağrılmalı: script önceki transaction'ı
+        # commit edip autocommit moduna geçer; bağlantı ayarları ayrı execute ile kalıcı olur
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.executescript(_SCHEMA)
         # Migration: expires_at sonradan eklendi
         try:
             self._conn.execute("ALTER TABLE files ADD COLUMN expires_at TEXT")
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        # Migration: original_sha256 sonradan eklendi
+        try:
+            self._conn.execute("ALTER TABLE files ADD COLUMN original_sha256 TEXT")
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        # Migration: token_id sonradan eklendi
+        try:
+            self._conn.execute(
+                "ALTER TABLE usb_tokens ADD COLUMN token_id TEXT NOT NULL DEFAULT ''"
+            )
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        # Migration: blacklisted sonradan eklendi
+        try:
+            self._conn.execute(
+                "ALTER TABLE usb_tokens ADD COLUMN blacklisted INTEGER NOT NULL DEFAULT 0"
+            )
         except sqlite3.OperationalError:
             pass  # kolon zaten var
         self._conn.commit()
@@ -177,15 +216,15 @@ class DBManager:
     # Yardımcı metotlar
     # ------------------------------------------------------------------
 
-    def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
         cur = self.conn.execute(sql, params)
         self.conn.commit()
         return cur
 
-    def fetchall(self, sql: str, params: tuple = ()) -> "list[sqlite3.Row]":
+    def fetchall(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
         return self.conn.execute(sql, params).fetchall()
 
-    def fetchone(self, sql: str, params: tuple = ()) -> "sqlite3.Row | None":
+    def fetchone(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
         return self.conn.execute(sql, params).fetchone()
 
     # ------------------------------------------------------------------
@@ -196,10 +235,10 @@ class DBManager:
         self,
         action: str,
         *,
-        user_id: "int | None" = None,
-        target_type: "str | None" = None,
-        target_id: "int | None" = None,
-        detail: "str | None" = None,
+        user_id: int | None = None,
+        target_type: str | None = None,
+        target_id: int | None = None,
+        detail: str | None = None,
     ) -> None:
         self.execute(
             """
@@ -213,8 +252,8 @@ class DBManager:
     # Bağlam yöneticisi
     # ------------------------------------------------------------------
 
-    def __enter__(self) -> "DBManager":
+    def __enter__(self) -> DBManager:
         return self
 
-    def __exit__(self, *_) -> None:
+    def __exit__(self, *_: object) -> None:
         self.close()

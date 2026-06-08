@@ -9,15 +9,21 @@ Dosya formatı (ikili):
   [xB ] aad       = JSON(metadata)  — şifrelenmez, bütünlük koruması altında
   [nB ] ciphertext (64 KB bloklarla akış)
   [16B] GCM authentication tag
-"""
 
+AAD alanları (tek karakter değişse decrypt_file() AuthenticationError fırlatır):
+  filename, created_at, uploaded_at, last_modified, user_id, hwid
+"""
+from __future__ import annotations
+
+import ctypes
+import hashlib
 import json
 import os
 import struct
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cryptography.exceptions import InvalidTag  # noqa: F401  — çağıran yakalasın
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 _MAGIC = b"HYCL"
@@ -29,26 +35,68 @@ _CHUNK = 64 * 1024  # 64 KB
 _QUARANTINE_DIR = Path(__file__).parent.parent / "data" / "quarantine"
 
 
+class AuthenticationError(Exception):
+    """Dosya, ciphertext veya AAD metadata bütünlüğü doğrulanamadığında fırlar."""
+
+
+def _zero(buf: bytearray) -> None:
+    """bytearray içeriğini ctypes.memset ile sıfırlar — ara tampon temizliği."""
+    ctypes.memset(
+        (ctypes.c_char * len(buf)).from_buffer(buf),
+        0,
+        len(buf),
+    )
+
+
+def _fmt_ts(posix: float) -> str:
+    return datetime.fromtimestamp(posix, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sha256_file(path: Path) -> str:
+    """Dosyanın SHA-256 özetini şifrelemeden önce hesaplar."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(_CHUNK):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def generate_key() -> bytes:
     """32 byte (256-bit) kriptografik rastgele anahtar üretir."""
     return os.urandom(32)
 
 
 def encrypt_file(
-    src: "Path | str",
+    src: Path | str,
     key: bytes,
     user_id: int,
-) -> Path:
+    *,
+    hwid: str | None = None,
+    created_at: str | None = None,
+    uploaded_at: str | None = None,
+    last_modified: str | None = None,
+) -> tuple[Path, str]:
     """
     src dosyasını AES-256-GCM ile şifreler, data/quarantine/<ad>.hcl'e yazar.
 
-    AAD olarak geçilen metadata (şifrelenmez, bütünlük koruması altında):
-        filename     — orijinal dosya adı
-        encrypted_at — şifreleme zamanı (ISO 8601, UTC)
-        user_id      — işlemi yapan kullanıcı
+    Şifrelemeden önce orijinal dosyanın SHA-256 özeti hesaplanır; hem AAD'a
+    bağlanır hem de döndürülür (DB'ye kaydedilmesi için).
+
+    AAD (şifrelenmez, bütünlük koruması altında — tek karakter değişse
+    decrypt_file() AuthenticationError fırlatır):
+        filename        — orijinal dosya adı
+        original_sha256 — şifreleme öncesi SHA-256 (hex)
+        created_at      — dosya oluşturma zamanı (ISO 8601, UTC)
+        uploaded_at     — sisteme eklenme zamanı (ISO 8601, UTC)
+        last_modified   — dosyanın son değişiklik zamanı (ISO 8601, UTC)
+        user_id         — işlemi yapan kullanıcı
+        hwid            — işlemi yapan cihazın HWID'i
+
+    created_at / last_modified verilmezse src dosyasının OS zaman damgaları kullanılır.
+    uploaded_at verilmezse şifreleme anı kullanılır.
 
     Returns:
-        Oluşturulan .hcl dosyasının Path'i
+        (hcl_path, original_sha256_hex)
 
     Raises:
         ValueError — anahtar 32 byte değilse
@@ -58,10 +106,18 @@ def encrypt_file(
     if len(key) != 32:
         raise ValueError(f"Anahtar 32 byte olmalı, {len(key)} byte verildi.")
 
+    # SHA-256 şifrelemeden önce hesaplanır — orijinal içeriği doğrular
+    sha256_hex = _sha256_file(src)
+
+    stat = src.stat()
     metadata = {
         "filename": src.name,
-        "encrypted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "original_sha256": sha256_hex,
+        "created_at": created_at or _fmt_ts(stat.st_ctime),
+        "uploaded_at": uploaded_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "last_modified": last_modified or _fmt_ts(stat.st_mtime),
         "user_id": user_id,
+        "hwid": hwid,
     }
 
     dst = _QUARANTINE_DIR / f"{src.name}.hcl"
@@ -85,24 +141,33 @@ def encrypt_file(
         fout.write(encryptor.finalize())
         fout.write(encryptor.tag)
 
-    return dst
+    return dst, sha256_hex
 
 
 def decrypt_file(
-    src: "Path | str",
+    src: Path | str,
     key: bytes,
-) -> "tuple[bytes, dict]":
+) -> tuple[bytes, dict]:
     """
     data/quarantine/ içindeki .hcl dosyasını çözer.
 
     Returns:
         (plaintext_bytes, metadata_dict)
-        metadata — orijinal dosya adı, şifreleme tarihi, user_id içerir
+        plaintext_bytes: bytes — işin bitince referansı kaldır: del content
+
+    Bellek güvenliği:
+        Ara çözümleme tamponu (bytearray) ctypes.memset ile sıfırlanır.
+        Döndürülen bytes kopyasının referansını çağıran kaldırmalı:
+            content, meta = decrypt_file(path, key)
+            try:
+                ...  # içeriği işle
+            finally:
+                del content
 
     Raises:
-        ValueError                         — bozuk başlık veya desteklenmeyen versiyon
-        cryptography.exceptions.InvalidTag — dosya veya metadata değiştirilmiş
-        OSError                            — dosya okuma hatası
+        ValueError          — bozuk başlık veya desteklenmeyen versiyon
+        AuthenticationError — ciphertext, anahtar veya AAD metadata değiştirilmiş
+        OSError             — dosya okuma hatası
     """
     src = Path(src)
     if len(key) != 32:
@@ -133,12 +198,23 @@ def decrypt_file(
         ).decryptor()
         decryptor.authenticate_additional_data(aad)
 
-        chunks = []
-        remaining = ciphertext_len
-        while remaining > 0:
-            chunk = fin.read(min(_CHUNK, remaining))
-            chunks.append(decryptor.update(chunk))
-            remaining -= len(chunk)
-        chunks.append(decryptor.finalize())  # InvalidTag burada fırlar
-
-    return b"".join(chunks), json.loads(aad.decode())
+        # bytearray: mutable — finally bloğunda ctypes.memset ile sıfırlanabilir
+        buf = bytearray()
+        try:
+            remaining = ciphertext_len
+            while remaining > 0:
+                chunk = fin.read(min(_CHUNK, remaining))
+                buf.extend(decryptor.update(chunk))
+                remaining -= len(chunk)
+            try:
+                buf.extend(decryptor.finalize())
+            except InvalidTag as exc:
+                raise AuthenticationError(
+                    "Dosya veya metadata bütünlüğü doğrulanamadı — "
+                    "şifreli içerik, anahtar veya AAD değiştirilmiş olabilir."
+                ) from exc
+            return bytes(buf), json.loads(aad.decode())
+        finally:
+            # Hata ya da başarı fark etmeksizin ara tamponu sıfırla
+            if buf:
+                _zero(buf)

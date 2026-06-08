@@ -9,7 +9,9 @@ from PySide6.QtWidgets import (
     QGraphicsBlurEffect,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -19,9 +21,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from CORE.crypto import encrypt_file
+from CORE.crypto import AuthenticationError, encrypt_file
 from CORE.scanner import ScanResult, scan_file
 from CORE.usb_manager import get_usb_hwid
+from CORE.vault_manager import (
+    USBAuthError,
+    VaultTamperedError,
+    authenticate_usb,
+    blacklist_usb,
+    read_vault_role,
+)
 from DB.db_manager import DBManager
 
 _LABEL_COLORS = {
@@ -107,7 +116,9 @@ class HycleusWindow(QMainWindow):
         self._role = role
         self._active_btn: QPushButton | None = None
         self._nav_btns: dict[str, QPushButton] = {}
+        self._current_label: str = "Genel"
         self._locked = False
+        self._authenticating = False
         self._scan_threads: list[QThread] = []
         self.setWindowTitle("HYCLEUS — Beta 1.2")
         self.setMinimumSize(900, 600)
@@ -163,19 +174,42 @@ class HycleusWindow(QMainWindow):
 
         layout.addStretch()
 
+        # ── Yönetici araçları — her zaman oluşturulur, _apply_role_restrictions ile gösterilir/gizlenir
+        self._admin_sep = QFrame()
+        self._admin_sep.setFrameShape(QFrame.HLine)
+        self._admin_sep.setStyleSheet("color:#313244; margin:4px 0;")
+        layout.addWidget(self._admin_sep)
+
+        self._admin_label = QLabel("Yönetici")
+        self._admin_label.setStyleSheet(
+            "color:#6c7086; font-size:10px; font-weight:600;"
+            "padding:0 4px; letter-spacing:1px;"
+        )
+        layout.addWidget(self._admin_label)
+
+        self._blacklist_btn = QPushButton("Kara Listeye Al")
+        self._blacklist_btn.setStyleSheet(
+            "QPushButton{color:#f38ba8;background:transparent;border:none;"
+            "border-radius:6px;padding:8px 10px;text-align:left;font-size:13px;}"
+            "QPushButton:hover{background:#313244;}"
+        )
+        self._blacklist_btn.setCursor(Qt.PointingHandCursor)
+        self._blacklist_btn.clicked.connect(self._on_blacklist_usb)
+        layout.addWidget(self._blacklist_btn)
+
         _ROLE_COLORS = {
             "Yönetici":    "#89b4fa",
             "Standart":    "#a6e3a1",
             "Salt Okunur": "#f9e2af",
         }
-        role_badge = QLabel(self._role)
-        role_badge.setAlignment(Qt.AlignCenter)
-        role_badge.setStyleSheet(
+        self._role_badge = QLabel(self._role)
+        self._role_badge.setAlignment(Qt.AlignCenter)
+        self._role_badge.setStyleSheet(
             f"color:{_ROLE_COLORS.get(self._role,'#6c7086')};"
             "font-size:11px; font-weight:600; padding:4px 6px;"
             "border:1px solid #313244; border-radius:4px; margin-bottom:4px;"
         )
-        layout.addWidget(role_badge)
+        layout.addWidget(self._role_badge)
 
         self._usb_badge = QLabel()
         self._usb_badge.setStyleSheet("font-size:12px; padding:6px;")
@@ -191,6 +225,16 @@ class HycleusWindow(QMainWindow):
         header = QLabel("Dosyalar")
         header.setFont(QFont("Arial", 14, QFont.Bold))
         layout.addWidget(header)
+
+        self._search_bar = QLineEdit()
+        self._search_bar.setPlaceholderText("Dosya adı veya SHA-256 ile ara...")
+        self._search_bar.setStyleSheet(
+            "QLineEdit{background:#1e1e2e;color:#cdd6f4;border:1px solid #313244;"
+            "border-radius:4px;padding:5px 10px;font-size:12px;}"
+            "QLineEdit:focus{border-color:#89b4fa;}"
+        )
+        self._search_bar.textChanged.connect(self._search_files)
+        layout.addWidget(self._search_bar)
 
         self._table = QTableWidget(0, 5)
         self._table.setHorizontalHeaderLabels(["Dosya Adı", "Etiket", "Boyut", "Tarih", "Tarama"])
@@ -218,10 +262,73 @@ class HycleusWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _apply_role_restrictions(self) -> None:
-        if self._role == "Salt Okunur":
-            self.setAcceptDrops(False)
-            self._nav_btns["Kritik"].hide()
-            self._drop_hint.hide()
+        is_admin    = self._role == "Yönetici"
+        is_readonly = self._role == "Salt Okunur"
+
+        # Admin araçları — yalnızca Yönetici rolünde görünür
+        self._admin_sep.setVisible(is_admin)
+        self._admin_label.setVisible(is_admin)
+        self._blacklist_btn.setVisible(is_admin)
+
+        # Salt Okunur kısıtlamaları — diğer rollerde geri etkinleştirilir
+        self.setAcceptDrops(not is_readonly)
+        self._nav_btns["Kritik"].setVisible(not is_readonly)
+        self._drop_hint.setVisible(not is_readonly)
+
+        # Rol rozeti güncelle
+        _ROLE_COLORS = {
+            "Yönetici":    "#89b4fa",
+            "Standart":    "#a6e3a1",
+            "Salt Okunur": "#f9e2af",
+        }
+        self._role_badge.setText(self._role)
+        self._role_badge.setStyleSheet(
+            f"color:{_ROLE_COLORS.get(self._role, '#6c7086')};"
+            "font-size:11px; font-weight:600; padding:4px 6px;"
+            "border:1px solid #313244; border-radius:4px; margin-bottom:4px;"
+        )
+
+    # ------------------------------------------------------------------
+    # Yönetici işlemleri
+    # ------------------------------------------------------------------
+
+    def _on_blacklist_usb(self) -> None:
+        current_hwid = get_usb_hwid() or ""
+        hwid, ok = QInputDialog.getText(
+            self,
+            "Kara Listeye Al",
+            "Kara listeye alınacak USB HWID:",
+            text=current_hwid,
+        )
+        if not ok:
+            return
+        hwid = hwid.strip()
+        if not hwid:
+            QMessageBox.warning(self, "Kara Liste", "HWID boş olamaz.")
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Kara Liste — Onay",
+            f"Bu USB cihazı kara listeye alınacak:\n\n{hwid}\n\n"
+            "Cihaz bir daha giriş yapamayacak. Devam edilsin mi?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        try:
+            blacklist_usb(hwid)
+            QMessageBox.information(
+                self,
+                "Kara Liste",
+                f"USB cihazı başarıyla kara listeye alındı:\n{hwid}",
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Kara Liste", str(exc))
+        except Exception as exc:
+            QMessageBox.critical(self, "Hata", str(exc))
 
     # ------------------------------------------------------------------
     # Sidebar filtresi
@@ -232,6 +339,11 @@ class HycleusWindow(QMainWindow):
             self._active_btn.setStyleSheet(_BTN_STYLE_NORMAL)
         btn.setStyleSheet(_BTN_STYLE_ACTIVE)
         self._active_btn = btn
+        self._current_label = db_label
+        # Sidebar tıklamasında arama çubuğunu temizle (textChanged sinyali tetiklemeden)
+        self._search_bar.blockSignals(True)
+        self._search_bar.clear()
+        self._search_bar.blockSignals(False)
         self._load_label(db_label)
 
     def _load_label(self, db_label: str) -> None:
@@ -251,6 +363,34 @@ class HycleusWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Veritabanı", str(exc))
             return
+        self._populate_table(rows)
+
+    def _search_files(self, term: str) -> None:
+        term = term.strip()
+        if not term:
+            self._load_label(self._current_label)
+            return
+        self._table.setRowCount(0)
+        try:
+            like = f"%{term}%"
+            rows = DBManager().fetchall(
+                """
+                SELECT f.filename, f.label, f.size_bytes, f.added_at,
+                       (SELECT q.reason FROM quarantine q
+                        WHERE q.file_id = f.id
+                        ORDER BY q.quarantined_at DESC LIMIT 1) AS scan_reason
+                FROM files f
+                WHERE f.filename LIKE ? OR f.original_sha256 LIKE ?
+                ORDER BY f.added_at DESC
+                """,
+                (like, like),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Arama", str(exc))
+            return
+        self._populate_table(rows)
+
+    def _populate_table(self, rows: list) -> None:
         for row in rows:
             verdict, mock = "", False
             if row["scan_reason"]:
@@ -305,9 +445,12 @@ class HycleusWindow(QMainWindow):
             self._refresh_usb_badge()
             return
 
-        # Şifrele
+        # Şifrele (SHA-256 şifrelemeden önce hesaplanır, AAD'a bağlanır)
         try:
-            hcl_path = encrypt_file(src, self._key, user_id=1)  # TODO: oturum user_id
+            hcl_path, sha256_hex = encrypt_file(src, self._key, user_id=1, hwid=live_hwid)  # TODO: oturum user_id
+        except AuthenticationError as exc:
+            QMessageBox.critical(self, "Bütünlük Hatası", str(exc))
+            return
         except Exception as exc:
             QMessageBox.critical(self, "Şifreleme Hatası", str(exc))
             return
@@ -323,10 +466,10 @@ class HycleusWindow(QMainWindow):
             db = DBManager()
             cur = db.execute(
                 """
-                INSERT INTO files (filename, filepath, label, size_bytes, expires_at)
-                VALUES (?, ?, 'Karantina', ?, ?)
+                INSERT INTO files (filename, filepath, label, size_bytes, expires_at, original_sha256)
+                VALUES (?, ?, 'Karantina', ?, ?, ?)
                 """,
-                (src.name, str(hcl_path), size_bytes, expires_at),
+                (src.name, str(hcl_path), size_bytes, expires_at, sha256_hex),
             )
             db.log(
                 "file_quarantined",
@@ -352,12 +495,87 @@ class HycleusWindow(QMainWindow):
         self._overlay.resize(self.size())
 
     def _poll_usb(self) -> None:
+        if self._authenticating:
+            return
         hwid = get_usb_hwid()
         self._refresh_usb_badge()
-        if hwid is None and not self._locked:
-            self._lock()
-        elif hwid is not None and self._locked:
-            self._unlock()
+        if hwid is None:
+            if not self._locked:
+                self._lock()
+        elif hwid == self._hwid:
+            # Aynı yetkili USB — normal kilit aç
+            if self._locked:
+                self._unlock()
+        else:
+            # Farklı HWID — yeniden kimlik doğrulama gerekli
+            self._trigger_usb_reauth(hwid)
+
+    def _trigger_usb_reauth(self, new_hwid: str) -> None:
+        """Farklı HWID tespit edilince 3-katman doğrulama + vault rol okuma."""
+        self._authenticating = True
+        self._lock()
+
+        # Katman 1-2-3: HWID kayıtlı mı, vault HMAC geçerli mi, token eşleşiyor mu
+        try:
+            authenticate_usb(new_hwid)
+        except USBAuthError as exc:
+            QMessageBox.warning(
+                self, "USB Reddedildi",
+                f"Yeni USB kimlik doğrulaması başarısız:\n\n{exc}",
+            )
+            self._authenticating = False
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Kimlik Doğrulama Hatası", str(exc))
+            self._authenticating = False
+            return
+
+        # PIN ile vault'tan rolü oku
+        pin, ok = QInputDialog.getText(
+            self,
+            "USB Değişti — Yeniden Giriş",
+            f"USB doğrulandı.\nVault PIN'ini girin:",
+            QLineEdit.Password,
+        )
+        if not ok or not pin.strip():
+            QMessageBox.information(
+                self, "Oturum Kilitli",
+                "PIN girilmedi — oturum kilitli kaldı.",
+            )
+            self._authenticating = False
+            return
+
+        try:
+            new_role = read_vault_role(new_hwid, pin.strip())
+        except ValueError as exc:
+            QMessageBox.warning(self, "PIN Hatalı", str(exc))
+            self._authenticating = False
+            return
+        except VaultTamperedError as exc:
+            QMessageBox.critical(self, "Vault Hatası", str(exc))
+            self._authenticating = False
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Hata", str(exc))
+            self._authenticating = False
+            return
+
+        # Durum güncelle
+        prev_hwid = self._hwid
+        self._hwid = new_hwid
+        self._role = new_role
+        self._apply_role_restrictions()
+        self._unlock()
+        self._authenticating = False
+
+        QMessageBox.information(
+            self,
+            "USB Oturumu Açıldı",
+            f"Yeni USB oturumu başarıyla açıldı.\n\n"
+            f"Önceki HWID : {prev_hwid[:16]}...\n"
+            f"Yeni HWID   : {new_hwid[:16]}...\n"
+            f"Rol         : {new_role}",
+        )
 
     def _lock(self) -> None:
         self._locked = True
