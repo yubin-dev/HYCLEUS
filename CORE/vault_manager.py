@@ -373,6 +373,7 @@ def authenticate_usb(hwid: str) -> None:
         _reject(str(exc))
 
     # ── Katman 3: Token ID eşleşiyor mu? ─────────────────────────────────────
+    vault_token_hex = ""  # NoReturn _reject garantisi; başlangıç değeri tip sinyali için
     try:
         vault_token_hex = _read_vault_token_id().hex()
     except VaultTamperedError as exc:
@@ -466,6 +467,76 @@ def read_vault_role(hwid: str, pin: str) -> str:
         raise ValueError("Vault içinde rol bilgisi bulunamadı.")
 
     return role_bytes.decode()
+
+
+def change_vault_role(hwid: str, pin: str, new_role: str) -> None:
+    """
+    Vault'ta kayıtlı rolü değiştirir.
+
+    Master key ve Shamir payları korunur; yalnızca rol bilgisi güncellenir.
+    Yeni bir GCM nonce ile yeniden şifrelenir (aynı KEK, aynı salt).
+    Vault HMAC imzası güncellenir, share_2 ve token_id değişmez.
+
+    Args:
+        hwid     — USB donanım kimliği (GCM AAD + HMAC imza anahtarı)
+        pin      — Vault PIN kodu (KEK türetme girdisi)
+        new_role — Yazılacak yeni rol string'i
+
+    Raises:
+        FileNotFoundError  — vault dosyası yoksa
+        VaultTamperedError — HMAC doğrulaması başarısızsa
+        ValueError         — PIN yanlış, vault formatı geçersiz veya rol boşsa
+    """
+    if not new_role:
+        raise ValueError("Yeni rol boş olamaz.")
+
+    verify_vault(hwid)
+
+    raw = _VAULT_PATH.read_bytes()
+
+    if raw[:4] != _MAGIC:
+        raise VaultTamperedError("Geçersiz vault magic byte'ları.")
+    if raw[4] != _VERSION:
+        raise ValueError(f"Desteklenmeyen vault versiyonu: {raw[4]}")
+
+    salt       = raw[5 : 5 + _SALT_SIZE]
+    nonce      = raw[21 : 21 + _NONCE_SIZE]
+    token_id_b = raw[_TOKEN_ID_OFFSET : _TOKEN_ID_OFFSET + _TOKEN_ID_SIZE]
+
+    protected  = raw[:-_HMAC_SIZE]
+    tag        = protected[-_TAG_SIZE:]
+    ciphertext = protected[_HEADER_SIZE:-_TAG_SIZE]
+
+    kek = _derive_kek(pin, salt)
+
+    decryptor = Cipher(algorithms.AES(kek), modes.GCM(nonce, tag)).decryptor()
+    decryptor.authenticate_additional_data(hwid.encode())
+    try:
+        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+    except Exception as exc:
+        raise ValueError(
+            "PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız."
+        ) from exc
+
+    if len(plaintext) < 2:
+        raise ValueError("Vault içeriği çok kısa; bozulmuş.")
+
+    s1_len = struct.unpack(">H", plaintext[:2])[0]
+    share_1_bytes = plaintext[2 : 2 + s1_len]
+
+    new_plaintext = struct.pack(">H", s1_len) + share_1_bytes + new_role.encode()
+
+    new_nonce = os.urandom(_NONCE_SIZE)
+    encryptor = Cipher(algorithms.AES(kek), modes.GCM(new_nonce)).encryptor()
+    encryptor.authenticate_additional_data(hwid.encode())
+    new_ct = encryptor.update(new_plaintext) + encryptor.finalize()
+    new_tag = encryptor.tag
+
+    new_protected = (
+        _MAGIC + bytes([_VERSION]) + salt + new_nonce
+        + token_id_b + new_ct + new_tag
+    )
+    _rewrite_vault(hwid, new_protected)
 
 
 def reconstruct_key(share_1: str, share_2: str) -> bytes:

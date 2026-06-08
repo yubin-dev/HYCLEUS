@@ -3,7 +3,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtGui import (
+    QColor,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QFont,
+    QPaintEvent,
+    QPainter,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsBlurEffect,
@@ -32,12 +41,20 @@ from CORE.vault_manager import (
     read_vault_role,
 )
 from DB.db_manager import DBManager
+from UI.AdminPanel import AdminPanel
+from UI.AuditLogDialog import AuditLogDialog
 
-_LABEL_COLORS = {
+_LABEL_COLORS: dict[str, str] = {
     "Genel":    "#cdd6f4",
     "Kritik":   "#f38ba8",
     "Karantina":"#f9e2af",
     "Imha":     "#a6e3a1",
+}
+
+_ROLE_COLORS: dict[str, str] = {
+    "Yönetici":    "#89b4fa",
+    "Standart":    "#a6e3a1",
+    "Salt Okunur": "#f9e2af",
 }
 
 # (sidebar_display, db_label)
@@ -67,7 +84,7 @@ _VERDICT_BADGE: dict[str, tuple[str, str]] = {
 
 
 class _ScanWorker(QObject):
-    finished: Signal = Signal(int, object)  # (row, ScanResult)
+    finished = Signal(int, object)  # (row, ScanResult)
 
     def __init__(self, path: Path, file_id: int, row: int) -> None:
         super().__init__()
@@ -103,7 +120,7 @@ class _LockOverlay(QWidget):
         )
         layout.addWidget(msg)
 
-    def paintEvent(self, event) -> None:
+    def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 185))
 
@@ -197,11 +214,26 @@ class HycleusWindow(QMainWindow):
         self._blacklist_btn.clicked.connect(self._on_blacklist_usb)
         layout.addWidget(self._blacklist_btn)
 
-        _ROLE_COLORS = {
-            "Yönetici":    "#89b4fa",
-            "Standart":    "#a6e3a1",
-            "Salt Okunur": "#f9e2af",
-        }
+        self._audit_log_btn = QPushButton("Denetim Günlüğü")
+        self._audit_log_btn.setStyleSheet(
+            "QPushButton{color:#89b4fa;background:transparent;border:none;"
+            "border-radius:6px;padding:8px 10px;text-align:left;font-size:13px;}"
+            "QPushButton:hover{background:#313244;}"
+        )
+        self._audit_log_btn.setCursor(Qt.PointingHandCursor)
+        self._audit_log_btn.clicked.connect(self._on_open_audit_log)
+        layout.addWidget(self._audit_log_btn)
+
+        self._admin_panel_btn = QPushButton("USB Yönetimi")
+        self._admin_panel_btn.setStyleSheet(
+            "QPushButton{color:#cba6f7;background:transparent;border:none;"
+            "border-radius:6px;padding:8px 10px;text-align:left;font-size:13px;}"
+            "QPushButton:hover{background:#313244;}"
+        )
+        self._admin_panel_btn.setCursor(Qt.PointingHandCursor)
+        self._admin_panel_btn.clicked.connect(self._on_open_admin_panel)
+        layout.addWidget(self._admin_panel_btn)
+
         self._role_badge = QLabel(self._role)
         self._role_badge.setAlignment(Qt.AlignCenter)
         self._role_badge.setStyleSheet(
@@ -269,6 +301,8 @@ class HycleusWindow(QMainWindow):
         self._admin_sep.setVisible(is_admin)
         self._admin_label.setVisible(is_admin)
         self._blacklist_btn.setVisible(is_admin)
+        self._audit_log_btn.setVisible(is_admin)
+        self._admin_panel_btn.setVisible(is_admin)
 
         # Salt Okunur kısıtlamaları — diğer rollerde geri etkinleştirilir
         self.setAcceptDrops(not is_readonly)
@@ -276,11 +310,6 @@ class HycleusWindow(QMainWindow):
         self._drop_hint.setVisible(not is_readonly)
 
         # Rol rozeti güncelle
-        _ROLE_COLORS = {
-            "Yönetici":    "#89b4fa",
-            "Standart":    "#a6e3a1",
-            "Salt Okunur": "#f9e2af",
-        }
         self._role_badge.setText(self._role)
         self._role_badge.setStyleSheet(
             f"color:{_ROLE_COLORS.get(self._role, '#6c7086')};"
@@ -329,6 +358,14 @@ class HycleusWindow(QMainWindow):
             QMessageBox.warning(self, "Kara Liste", str(exc))
         except Exception as exc:
             QMessageBox.critical(self, "Hata", str(exc))
+
+    def _on_open_audit_log(self) -> None:
+        dlg = AuditLogDialog(self)
+        dlg.exec()
+
+    def _on_open_admin_panel(self) -> None:
+        dlg = AdminPanel(current_hwid=self._hwid, parent=self)
+        dlg.exec()
 
     # ------------------------------------------------------------------
     # Sidebar filtresi
@@ -413,21 +450,25 @@ class HycleusWindow(QMainWindow):
     # Drag & drop
     # ------------------------------------------------------------------
 
-    def dragEnterEvent(self, event) -> None:
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             event.ignore()
 
-    def dragMoveEvent(self, event) -> None:
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
 
-    def dropEvent(self, event) -> None:
+    def dropEvent(self, event: QDropEvent) -> None:
         for url in event.mimeData().urls():
             local = url.toLocalFile()
             if local:
                 self._handle_dropped_file(Path(local))
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._overlay.resize(self.size())
 
     def _handle_dropped_file(self, src: Path) -> None:
         if not src.is_file():
@@ -484,15 +525,13 @@ class HycleusWindow(QMainWindow):
         self._insert_row(src.name, "Karantina", self._fmt_size(size_bytes), today)
         scan_row = self._table.rowCount() - 1
         self._table.scrollToBottom()
-        self._start_scan(src, cur.lastrowid, scan_row)
+        file_id = cur.lastrowid
+        assert file_id is not None  # INSERT INTO ... AUTOINCREMENT her zaman ID üretir
+        self._start_scan(src, file_id, scan_row)
 
     # ------------------------------------------------------------------
     # USB kilit
     # ------------------------------------------------------------------
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self._overlay.resize(self.size())
 
     def _poll_usb(self) -> None:
         if self._authenticating:
@@ -653,8 +692,9 @@ class HycleusWindow(QMainWindow):
 
     @staticmethod
     def _fmt_size(size_bytes: int) -> str:
+        size: float = float(size_bytes)
         for unit in ("B", "KB", "MB", "GB"):
-            if size_bytes < 1024:
-                return f"{size_bytes:.1f} {unit}"
-            size_bytes /= 1024
-        return f"{size_bytes:.1f} TB"
+            if size < 1024:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} TB"
