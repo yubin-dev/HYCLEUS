@@ -1,0 +1,220 @@
+"""
+HYCLEUS — Veritabanı Yöneticisi
+
+Şu an düz sqlite3 kullanıyor.
+sqlcipher3 geçişi: connect() içindeki iki satırı değiştir (yoruma bakın).
+"""
+import sqlite3
+from pathlib import Path
+
+_DEFAULT_DB_PATH = Path(__file__).parent.parent / "data" / "hycleus.db"
+
+_SCHEMA = """
+PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL UNIQUE,
+    password_hash TEXT    NOT NULL,
+    role          TEXT    NOT NULL DEFAULT 'user'
+                          CHECK(role IN ('admin', 'user')),
+    created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    last_login    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS files (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename    TEXT    NOT NULL,
+    filepath    TEXT    NOT NULL UNIQUE,
+    label       TEXT    NOT NULL DEFAULT 'Genel'
+                        CHECK(label IN ('Genel', 'Kritik', 'Karantina', 'Imha')),
+    size_bytes  INTEGER,
+    hash_sha256 TEXT,
+    added_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    added_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    notes       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS quarantine (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id         INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    reason          TEXT    NOT NULL,
+    quarantined_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    quarantined_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    released_at     TEXT,
+    status          TEXT    NOT NULL DEFAULT 'active'
+                            CHECK(status IN ('active', 'released', 'destroyed'))
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    action      TEXT    NOT NULL,
+    target_type TEXT,
+    target_id   INTEGER,
+    detail      TEXT,
+    timestamp   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_files_label       ON files(label);
+CREATE INDEX IF NOT EXISTS idx_quarantine_status ON quarantine(status);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user    ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_time    ON audit_log(timestamp);
+"""
+
+
+class HWIDMissingError(RuntimeError):
+    """USB HWID sağlanmadan veritabanı açılmaya çalışıldığında fırlar."""
+
+
+class DBManager:
+    """Uygulama genelinde tek örnek (singleton) veritabanı yöneticisi."""
+
+    _instance: "DBManager | None" = None
+
+    def __new__(cls, db_path: "str | Path | None" = None):
+        if cls._instance is None:
+            obj = super().__new__(cls)
+            obj._db_path = Path(db_path) if db_path else _DEFAULT_DB_PATH
+            obj._conn: "sqlite3.Connection | None" = None
+            obj._hwid: "str | None" = None
+            obj._key: "bytes | None" = None
+            cls._instance = obj
+        return cls._instance
+
+    # ------------------------------------------------------------------
+    # Bağlantı
+    # ------------------------------------------------------------------
+
+    def connect(
+        self,
+        hwid: "str | None",
+        key: "bytes | None" = None,
+    ) -> None:
+        """
+        Veritabanı bağlantısını açar.
+
+        Args:
+            hwid: USB seri numarası. None gelirse HWIDMissingError fırlar.
+            key:  AES-256 anahtarı (32 byte). sqlcipher3 geçişine hazır;
+                  şu an bağlantıda kullanılmıyor, saklanıyor.
+
+        Raises:
+            HWIDMissingError: hwid None ise.
+            ValueError:       key sağlandı ama 32 byte değilse.
+        """
+        if self._conn is not None:
+            return
+
+        if hwid is None:
+            raise HWIDMissingError(
+                "USB HWID eksik — veritabanı açılamaz. "
+                "Lütfen yetkili USB cihazını takın."
+            )
+
+        if key is not None and len(key) != 32:
+            raise ValueError(
+                f"AES-256 anahtarı 32 byte olmalı, {len(key)} byte verildi."
+            )
+
+        self._hwid = hwid
+        self._key = key  # sqlcipher3 geçişinde PRAGMA key olarak kullanılacak
+
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # sqlcipher3 geçişi için bu iki satırı değiştir:
+        #   import sqlcipher3
+        #   self._conn = sqlcipher3.connect(str(self._db_path))
+        #   self._conn.execute(f"PRAGMA key=\"x'{self._key.hex()}'\"")
+        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+
+        self._apply_schema()
+
+    def close(self) -> None:
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+            self._hwid = None
+            self._key = None
+            DBManager._instance = None
+
+    def open(
+        self,
+        hwid: "str | None",
+        key: "bytes | None" = None,
+    ) -> "DBManager":
+        """connect() çağırır ve self döndürür — with bloğu için kullanım kolaylığı.
+
+        Örnek::
+
+            with DBManager().open(hwid=hwid, key=key) as db:
+                db.log("startup")
+        """
+        self.connect(hwid=hwid, key=key)
+        return self
+
+    def _apply_schema(self) -> None:
+        assert self._conn
+        self._conn.executescript(_SCHEMA)
+        # Migration: expires_at sonradan eklendi
+        try:
+            self._conn.execute("ALTER TABLE files ADD COLUMN expires_at TEXT")
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        self._conn.commit()
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise RuntimeError(
+                "Veritabanı bağlantısı yok. Önce connect() çağırın."
+            )
+        return self._conn
+
+    # ------------------------------------------------------------------
+    # Yardımcı metotlar
+    # ------------------------------------------------------------------
+
+    def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        cur = self.conn.execute(sql, params)
+        self.conn.commit()
+        return cur
+
+    def fetchall(self, sql: str, params: tuple = ()) -> "list[sqlite3.Row]":
+        return self.conn.execute(sql, params).fetchall()
+
+    def fetchone(self, sql: str, params: tuple = ()) -> "sqlite3.Row | None":
+        return self.conn.execute(sql, params).fetchone()
+
+    # ------------------------------------------------------------------
+    # Audit log kolaylığı
+    # ------------------------------------------------------------------
+
+    def log(
+        self,
+        action: str,
+        *,
+        user_id: "int | None" = None,
+        target_type: "str | None" = None,
+        target_id: "int | None" = None,
+        detail: "str | None" = None,
+    ) -> None:
+        self.execute(
+            """
+            INSERT INTO audit_log (user_id, action, target_type, target_id, detail)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, action, target_type, target_id, detail),
+        )
+
+    # ------------------------------------------------------------------
+    # Bağlam yöneticisi
+    # ------------------------------------------------------------------
+
+    def __enter__(self) -> "DBManager":
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.close()

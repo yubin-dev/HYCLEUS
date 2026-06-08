@@ -1,0 +1,8 @@
+PySide6
+cryptography
+wmi
+pyotp
+qrcode[pil]
+argon2-cffi
+requests
+apscheduler<4
