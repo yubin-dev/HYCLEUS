@@ -3,6 +3,7 @@ HYCLEUS — USB vault kurulum araci (komut satiri)
 
 Kullanim:
     python CORE/setup_usb.py --role yonetici
+    python CORE/setup_usb.py --role standart --reset
     DEV_MODE=true python CORE/setup_usb.py --role kullanici
 
 Yapilan islemler:
@@ -12,6 +13,11 @@ Yapilan islemler:
     4. create_vault(hwid, pin, role) cagirir
     5. DB'ye audit kaydi duser
     6. Basari mesaji gosterir
+
+--reset kullanilirsa:
+    - Mevcut vault dosyasi silinir (per-HWID ve eski tek-dosya yolu)
+    - DB'deki usb_tokens kaydi silinir
+    - Ardindan normal kurulum yapilir
 """
 from __future__ import annotations
 
@@ -25,15 +31,16 @@ from typing import NoReturn
 # 'from DB.db_manager import ...' gibi importlarin calismasi icin gerekli
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from CORE.usb_manager import get_usb_hwid          # noqa: E402
-from CORE.vault_manager import create_vault         # noqa: E402
-from DB.db_manager import DBManager                 # noqa: E402
+from CORE.usb_manager import get_usb_hwid                    # noqa: E402
+from CORE.vault_manager import create_vault, read_vault_role  # noqa: E402
+from DB.db_manager import DBManager                           # noqa: E402
 
 _PIN_MIN = 4
 _PIN_MAX = 32
 
-# vault_manager._VAULT_PATH ile ayni hesaplama — import etmeden yol kontrolu
-_VAULT_FILE = Path(__file__).parent.parent / "data" / ".hcl_vault"
+_DATA_DIR          = Path(__file__).parent.parent / "data"
+_VAULT_FILE        = _DATA_DIR / ".hcl_vault"           # eski tek-dosya yolu
+_VAULT_DIR         = _DATA_DIR / "vaults"               # per-HWID klasörü
 
 
 # ── Yardimci fonksiyonlar ─────────────────────────────────────────────────────
@@ -52,16 +59,64 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="setup_usb.py",
         description="HYCLEUS USB vault ilk kurulumunu gerceklestirir.",
-        epilog="Ornek: python CORE/setup_usb.py --role yonetici",
+        epilog=(
+            "Ornekler:\n"
+            "  python CORE/setup_usb.py --role yonetici\n"
+            "  python CORE/setup_usb.py --role standart --reset"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
         "--role",
         required=True,
         metavar="ROL",
-        help="Vault'a kaydedilecek rol (ornek: yonetici, kullanici)",
+        help="Vault'a kaydedilecek rol (ornek: yonetici, standart, salt okunur)",
+    )
+    p.add_argument(
+        "--reset",
+        action="store_true",
+        default=False,
+        help=(
+            "Mevcut vault ve DB kaydini silerek yeniden kurulum yapar. "
+            "Bu HWID icin tum vault + usb_tokens satiri kalici olarak silinir."
+        ),
     )
     return p
+
+
+def _clear_readonly(path: Path) -> None:
+    """Windows readonly özniteliğini kaldırır (FILE_ATTRIBUTE_NORMAL = 0x80)."""
+    import ctypes
+    ctypes.windll.kernel32.SetFileAttributesW(str(path), 0x80)
+
+
+def _do_reset(hwid: str, db: DBManager) -> None:
+    """Vault dosyasini ve DB usb_tokens kaydini siler."""
+    deleted: list[str] = []
+
+    # Per-HWID vault
+    per_hwid = _VAULT_DIR / f"{hwid}.hclv"
+    if per_hwid.exists():
+        _clear_readonly(per_hwid)
+        per_hwid.unlink()
+        deleted.append(str(per_hwid))
+
+    # Eski tek-dosya vault
+    if _VAULT_FILE.exists():
+        _clear_readonly(_VAULT_FILE)
+        _VAULT_FILE.unlink()
+        deleted.append(str(_VAULT_FILE))
+
+    # DB kaydı
+    db.execute("DELETE FROM usb_tokens WHERE hwid = ?", (hwid,))
+    db.log("usb_reset", detail=f"hwid={hwid} deleted_files={len(deleted)}")
+
+    if deleted:
+        for p in deleted:
+            print(f"  Silindi (vault) : {p}")
+    else:
+        print("  Vault dosyasi zaten mevcut degildi.")
+    print(f"  usb_tokens kaydi silindi  hwid={hwid}")
 
 
 def _prompt_pin() -> str:
@@ -100,7 +155,8 @@ def _prompt_pin() -> str:
 
 def main() -> None:
     args = _build_parser().parse_args()
-    role: str = args.role.strip()
+    role: str  = args.role.strip()
+    do_reset   = args.reset
 
     if not role:
         _abort("--role bos olamaz.")
@@ -117,13 +173,31 @@ def main() -> None:
 
     print(f"  USB bulundu  : {hwid}")
     print(f"  Rol          : {role}")
+    if do_reset:
+        print("  Mod          : RESET")
 
-    # ── 2. Vault cakisma kontrolu ─────────────────────────────────────────────
-    if _VAULT_FILE.exists():
-        print()
-        print("Uyari: Mevcut bir vault dosyasi bulundu.")
+    # ── 2. DB baglantisi ──────────────────────────────────────────────────────
+    db = DBManager()
+    db.connect(hwid=hwid)
+
+    # ── 3. Reset akisi ────────────────────────────────────────────────────────
+    if do_reset:
+        # Sahiplik kaniti: mevcut PIN dogrulanmadan reset reddedilir
+        print("\nMevcut PIN dogrulamasi (sahiplik kaniti):")
         try:
-            answer = input("  Uzerine yazilsin mi? [e/H] ").strip().lower()
+            current_pin = getpass.getpass("  Mevcut PIN : ")
+        except (EOFError, KeyboardInterrupt):
+            print("\nIptal edildi.")
+            sys.exit(0)
+        try:
+            read_vault_role(hwid, current_pin)
+        except Exception:
+            _abort("PIN hatali — reset reddedildi.")
+
+        print()
+        print("Uyari: Bu HWID icin mevcut vault ve DB kaydi kalici olarak silinecek.")
+        try:
+            answer = input("  Devam edilsin mi? [e/H] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("\nIptal edildi.")
             sys.exit(0)
@@ -131,20 +205,36 @@ def main() -> None:
             print("Iptal edildi.")
             sys.exit(0)
 
-    # ── 3. PIN girisi ─────────────────────────────────────────────────────────
-    print("\nPIN belirleyin (girdi gizlidir, ekranda gorunmez):")
-    pin = _prompt_pin()
+        print("\nSifirlanıyor...")
+        _do_reset(hwid, db)
+        print("  Sifirlama tamamlandi.\n")
+    else:
+        # ── Normal kurulumda cakisma kontrolu ─────────────────────────────
+        per_hwid = _VAULT_DIR / f"{hwid}.hclv"
+        vault_exists = per_hwid.exists() or _VAULT_FILE.exists()
+        if vault_exists:
+            print()
+            print("Uyari: Mevcut bir vault dosyasi bulundu.")
+            try:
+                answer = input("  Uzerine yazilsin mi? [e/H] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\nIptal edildi.")
+                sys.exit(0)
+            if answer != "e":
+                print("Iptal edildi.")
+                sys.exit(0)
 
-    # ── 4. DB baglantisi ──────────────────────────────────────────────────────
-    db = DBManager()
-    db.connect(hwid=hwid)
+    # ── 4. PIN girisi ─────────────────────────────────────────────────────────
+    print("PIN belirleyin (girdi gizlidir, ekranda gorunmez):")
+    pin = _prompt_pin()
 
     # ── 5. Vault olustur ──────────────────────────────────────────────────────
     print("\nVault olusturuluyor (Argon2id anahtar turetme -- birkas saniye)...")
     vault_path = create_vault(hwid, pin, role)
 
     # ── 6. Audit log ──────────────────────────────────────────────────────────
-    db.log("usb_setup_complete", detail=f"hwid={hwid} role={role}")
+    action = "usb_reset_complete" if do_reset else "usb_setup_complete"
+    db.log(action, detail=f"hwid={hwid} role={role}")
 
     # ── 7. Basari mesaji ──────────────────────────────────────────────────────
     sep = "-" * 52

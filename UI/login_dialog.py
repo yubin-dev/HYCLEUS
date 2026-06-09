@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from io import BytesIO
 from pathlib import Path
+
+_log = logging.getLogger("hycleus.login")
 
 import pyotp
 import qrcode
@@ -31,7 +34,13 @@ from PySide6.QtWidgets import (
 )
 
 from CORE.usb_manager import get_usb_hwid
-from CORE.vault_manager import VaultTamperedError, create_vault, read_vault_role
+from CORE.vault_manager import (
+    VaultTamperedError,
+    _read_vault_path,
+    create_vault,
+    open_vault,
+    read_vault_role,
+)
 from DB.db_manager import DBManager
 
 # ── Paths / constants ─────────────────────────────────────────────────────────
@@ -283,10 +292,11 @@ class LoginDialog(QDialog):
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
 
-        self._hwid        = hwid
-        self._fail_count  = 0
-        self._locked_out  = False
-        self._role: str   = "Yönetici"
+        self._hwid          = hwid
+        self._fail_count    = 0
+        self._locked_out    = False
+        self._role: str     = "Yönetici"
+        self.session_key: bytes = b""
         self._drag_pos: QPoint | None = None
         self._use_vault   = (
             hwid is not None
@@ -295,7 +305,10 @@ class LoginDialog(QDialog):
 
         secret = _load_secret()
         if self._use_vault:
-            first_run = secret is None or not _VAULT_PATH.exists()
+            # Per-HWID yolunu kontrol et (data/vaults/{hwid}.hclv),
+            # yoksa legacy data/.hcl_vault'a düşer — ikisi de mevcut değilse first_run
+            vault_exists = _read_vault_path(hwid).exists() if hwid else False
+            first_run = secret is None or not vault_exists
         else:
             first_run = secret is None or _load_pin_hash() is None
 
@@ -736,6 +749,12 @@ class LoginDialog(QDialog):
             except Exception as exc:
                 self._show_error(f"Vault oluşturulamadı: {exc}")
                 return
+            # Kurulum sonrası vault'u hemen açarak session_key'i al
+            try:
+                _, self.session_key = open_vault(self._hwid, pin)
+            except Exception as exc:
+                self._show_error(f"Vault açılamadı: {exc}")
+                return
         else:
             _save_pin_hash(pin, role)
         _save_secret(self._secret)
@@ -763,7 +782,7 @@ class LoginDialog(QDialog):
 
         if self._use_vault and self._hwid is not None:
             try:
-                role   = read_vault_role(self._hwid, pin)
+                role, self.session_key = open_vault(self._hwid, pin)
                 pin_ok = True
             except VaultTamperedError:
                 self._show_error("Vault bütünlüğü bozulmuş — yöneticiye başvurun")
@@ -795,6 +814,10 @@ class LoginDialog(QDialog):
                 return
 
         self._role = role
+        _log.info(
+            "login_result  hwid=%s  role=%s  session_key_len=%d",
+            self._hwid, self._role, len(self.session_key) if self.session_key else 0,
+        )
         self.accept()
 
     def _on_register(self) -> None:

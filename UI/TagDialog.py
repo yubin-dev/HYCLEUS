@@ -80,9 +80,11 @@ def _sep() -> QFrame:
 class TagDialog(QDialog):
     """Dosyaya etiket atama diyaloğu."""
 
-    def __init__(self, file_id: int, parent=None) -> None:
+    def __init__(self, file_id: int, role: str = "", parent=None) -> None:
         super().__init__(parent)
         self._file_id        = file_id
+        self._role_norm      = role.strip().lower()
+        self._is_admin       = self._role_norm == "yönetici"
         self._selected_color = _TAG_COLORS[0]
         self._color_btns: list[QPushButton]           = []
         self._checkboxes: list[tuple[QCheckBox, int]] = []
@@ -138,6 +140,8 @@ class TagDialog(QDialog):
         layout.addWidget(self._name_input)
 
         self._private_cb = QCheckBox("🔒  Mahrem (gizli) — sadece Yönetici görebilir")
+        self._private_cb.setVisible(self._is_admin)
+        self._private_cb.setEnabled(self._is_admin)
         layout.addWidget(self._private_cb)
 
         # Renk seçici
@@ -239,6 +243,10 @@ class TagDialog(QDialog):
             return
 
         for tag in all_tags:
+            # Mahrem etiketler sadece Yönetici tarafından görülebilir
+            if tag["is_private"] and not self._is_admin:
+                continue
+
             row_w = QWidget()
             row_w.setObjectName("tag_bg")
             row_h = QHBoxLayout(row_w)

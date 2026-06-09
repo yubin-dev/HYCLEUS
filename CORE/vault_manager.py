@@ -614,6 +614,56 @@ def change_vault_pin(hwid: str, old_pin: str, new_pin: str) -> None:
     _rewrite_vault(hwid, new_protected)
 
 
+def open_vault(hwid: str, pin: str) -> tuple[str, bytes]:
+    """
+    Vault'u PIN ile açar; rol ve dosya şifreleme için master_key döndürür.
+
+    Returns:
+        (role, master_key) — rol string ve 32 byte AES-256 dosya şifreleme anahtarı
+
+    Raises:
+        FileNotFoundError  — vault dosyası yoksa
+        VaultTamperedError — HMAC doğrulaması başarısızsa
+        ValueError         — PIN yanlış veya vault formatı geçersizse
+    """
+    verify_vault(hwid)
+
+    raw = _read_vault_path(hwid).read_bytes()
+
+    if raw[:4] != _MAGIC:
+        raise VaultTamperedError("Geçersiz vault magic byte'ları.")
+    if raw[4] != _VERSION:
+        raise ValueError(f"Desteklenmeyen vault versiyonu: {raw[4]}")
+
+    salt       = raw[5 : 5 + _SALT_SIZE]
+    nonce      = raw[21 : 21 + _NONCE_SIZE]
+    protected  = raw[:-_HMAC_SIZE]
+    tag        = protected[-_TAG_SIZE:]
+    ciphertext = protected[_HEADER_SIZE:-_TAG_SIZE]
+
+    kek = _derive_kek(pin, salt)
+    decryptor = Cipher(algorithms.AES(kek), modes.GCM(nonce, tag)).decryptor()
+    decryptor.authenticate_additional_data(hwid.encode())
+    try:
+        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+    except Exception as exc:
+        raise ValueError("PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız.") from exc
+
+    if len(plaintext) < 3:
+        raise ValueError("Vault içeriği çok kısa; bozulmuş.")
+
+    s1_len  = struct.unpack(">H", plaintext[:2])[0]
+    share_1 = plaintext[2 : 2 + s1_len].decode()
+    role    = plaintext[2 + s1_len :].decode()
+
+    row = DBManager().fetchone("SELECT share_2 FROM usb_tokens WHERE hwid = ?", (hwid,))
+    if row is None:
+        raise ValueError("USB token DB'de bulunamadı — master_key kurtarılamaz.")
+
+    master_key = _sss_recover(share_1, row["share_2"])
+    return role, master_key
+
+
 def reconstruct_key(share_1: str, share_2: str) -> bytes:
     """
     İki Shamir payını birleştirerek orijinal master_key'i kurtarır.

@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from CORE.usb_manager import get_usb_hwid
+from CORE.usb_manager import _sanitize_hwid, get_usb_hwid
 from CORE.vault_manager import create_vault
 from DB.db_manager import DBManager
 
@@ -289,6 +289,17 @@ class RegisterDialog(QDialog):
 
         if hwid is None:
             self._usb_status.setText("USB bulunamadı.")
+            self._usb_status.setStyleSheet("color:#f38ba8; font-size:12px;")
+            self._set_form_enabled(False)
+            return
+
+        # Geçersiz karakter içeriyorsa temizlenmiş hali al, boş kaldıysa reddet
+        hwid = _sanitize_hwid(hwid) or ""
+        if not hwid:
+            self._usb_status.setText(
+                "USB seri numarası geçersiz karakter içeriyor.\n"
+                "Farklı bir USB deneyiniz."
+            )
             self._usb_status.setStyleSheet("color:#f38ba8; font-size:12px;")
             self._set_form_enabled(False)
             return

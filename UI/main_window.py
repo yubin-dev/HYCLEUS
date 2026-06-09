@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -232,13 +233,18 @@ class HycleusWindow(QMainWindow):
         self._folder_btns: dict[int, QPushButton]   = {}
 
         _log.info("window_init  hwid=%s  role=%s", hwid, role)
+        print(
+            f"[HYCLEUS DEBUG] __init__  role={role!r}"
+            f"  repr={repr(role)}"
+            f"  lower={role.strip().lower()!r}"
+            f"  is_readonly={role.strip().lower() == 'salt okunur'}"
+        )
 
         self.setWindowTitle("HYCLEUS")
         self.setMinimumSize(1100, 700)
         self.setAcceptDrops(True)
 
         self._build_ui()
-        self._apply_role_restrictions()
         self._apply_theme()
 
         self._blur    = QGraphicsBlurEffect(self)
@@ -375,19 +381,17 @@ class HycleusWindow(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        # Logo
+        # ── Sabit üst: logo + nav butonları ──────────────────────────────────
         logo = QLabel("HYCLEUS")
         logo.setObjectName("sidebar_logo")
         lay.addWidget(logo)
 
-        # Separator
         sep = QFrame()
         sep.setObjectName("sidebar_sep")
         sep.setFrameShape(QFrame.HLine)
         sep.setFixedHeight(1)
         lay.addWidget(sep)
 
-        # Dosyalar section
         nav_lbl = QLabel("DOSYALAR")
         nav_lbl.setObjectName("nav_section_label")
         lay.addWidget(nav_lbl)
@@ -403,39 +407,53 @@ class HycleusWindow(QMainWindow):
             self._nav_btns[db_label] = btn
             lay.addWidget(btn)
 
-            # Genel'in hemen altına klasör container
-            if db_label == "Genel":
-                self._folder_container = QWidget()
-                self._folder_container.setStyleSheet("background: transparent;")
-                self._folder_container_layout = QVBoxLayout(self._folder_container)
-                self._folder_container_layout.setContentsMargins(0, 0, 0, 0)
-                self._folder_container_layout.setSpacing(1)
-                lay.addWidget(self._folder_container)
+        # ── Scroll alanı: klasörler + etiketler ──────────────────────────────
+        scroll = QScrollArea()
+        scroll.setObjectName("sidebar_scroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-                self._btn_new_folder = QPushButton("   ＋  Klasör Ekle")
-                self._btn_new_folder.setFixedHeight(32)
-                self._btn_new_folder.setCursor(Qt.PointingHandCursor)
-                self._btn_new_folder.setObjectName("admin_btn")
-                self._btn_new_folder.clicked.connect(self._on_create_folder)
-                lay.addWidget(self._btn_new_folder)
+        _scroll_content = QWidget()
+        _scroll_content.setObjectName("sidebar_scroll_content")
+        _scl = QVBoxLayout(_scroll_content)
+        _scl.setContentsMargins(0, 0, 0, 0)
+        _scl.setSpacing(0)
 
-        lay.addSpacing(8)
+        self._folder_container = QWidget()
+        self._folder_container.setStyleSheet("background: transparent;")
+        self._folder_container_layout = QVBoxLayout(self._folder_container)
+        self._folder_container_layout.setContentsMargins(0, 0, 0, 0)
+        self._folder_container_layout.setSpacing(1)
+        _scl.addWidget(self._folder_container)
 
-        # Etiketler section
+        self._btn_new_folder = QPushButton("   ＋  Klasör Ekle")
+        self._btn_new_folder.setFixedHeight(32)
+        self._btn_new_folder.setCursor(Qt.PointingHandCursor)
+        self._btn_new_folder.setObjectName("admin_btn")
+        self._btn_new_folder.clicked.connect(self._on_create_folder)
+        _scl.addWidget(self._btn_new_folder)
+
+        _scl.addSpacing(8)
+
         tag_lbl = QLabel("ETİKETLER")
         tag_lbl.setObjectName("nav_section_label")
-        lay.addWidget(tag_lbl)
+        _scl.addWidget(tag_lbl)
 
         self._tag_container = QWidget()
         self._tag_container.setStyleSheet("background: transparent;")
         self._tag_container_layout = QVBoxLayout(self._tag_container)
         self._tag_container_layout.setContentsMargins(0, 0, 0, 0)
         self._tag_container_layout.setSpacing(1)
-        lay.addWidget(self._tag_container)
+        _scl.addWidget(self._tag_container)
 
-        lay.addStretch()
+        _scl.addStretch()
 
-        # Yönetici bölümü
+        scroll.setWidget(_scroll_content)
+        lay.addWidget(scroll, 1)   # stretch=1 → ortayı doldurur
+
+        # ── Sabit alt: yönetici + badge'ler ──────────────────────────────────
         self._admin_sep = QFrame()
         self._admin_sep.setObjectName("sidebar_sep")
         self._admin_sep.setFrameShape(QFrame.HLine)
@@ -474,13 +492,11 @@ class HycleusWindow(QMainWindow):
         self._support_btn.clicked.connect(self._on_open_contact)
         lay.addWidget(self._support_btn)
 
-        # Rol badge
         self._role_badge = QLabel(self._role)
         self._role_badge.setObjectName("role_badge")
         self._role_badge.setAlignment(Qt.AlignCenter)
         lay.addWidget(self._role_badge)
 
-        # USB badge
         self._usb_badge = QLabel()
         self._usb_badge.setObjectName("usb_badge")
         self._usb_badge.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -736,6 +752,27 @@ class HycleusWindow(QMainWindow):
                 margin: 4px 20px 16px;
                 padding: 0;
             }}
+            QScrollArea#sidebar_scroll {{
+                background: transparent;
+                border: none;
+            }}
+            QWidget#sidebar_scroll_content {{
+                background: transparent;
+            }}
+            QScrollArea#sidebar_scroll QScrollBar:vertical {{
+                background: transparent;
+                width: 4px;
+                margin: 0;
+            }}
+            QScrollArea#sidebar_scroll QScrollBar::handle:vertical {{
+                background: {T['border']};
+                border-radius: 2px;
+                min-height: 20px;
+            }}
+            QScrollArea#sidebar_scroll QScrollBar::add-line:vertical,
+            QScrollArea#sidebar_scroll QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
 
             QWidget#content {{ background: {T['bg']}; }}
             QWidget#search_container {{ background: {T['search_bg']}; }}
@@ -807,21 +844,31 @@ class HycleusWindow(QMainWindow):
     # ── Rol kısıtlamaları ─────────────────────────────────────────────────────
 
     def _apply_role_restrictions(self) -> None:
-        is_admin    = self._role == "Yönetici"
-        is_readonly = self._role == "Salt Okunur"
+        _log.debug("apply_role_restrictions  role=%r", self._role)
+        _role_norm  = self._role.strip().lower().replace("_", " ")
+        is_admin    = _role_norm == "yönetici"
+        is_readonly = _role_norm == "salt okunur"
+        # Standart = not admin and not readonly
+        can_write   = not is_readonly   # Yönetici + Standart yazabilir
 
-        self._admin_sep.setVisible(is_admin)
-        self._admin_label.setVisible(is_admin)
-        self._blacklist_btn.setVisible(is_admin)
-        self._audit_log_btn.setVisible(is_admin)
-        self._admin_panel_btn.setVisible(is_admin)
-        self._support_btn.setVisible(is_admin)
+        # ── Yönetici bölümü: sadece Yönetici görür ───────────────────────
+        for _w in (self._admin_sep, self._admin_label, self._blacklist_btn,
+                   self._audit_log_btn, self._admin_panel_btn, self._support_btn):
+            _w.setVisible(is_admin)
+            _w.setEnabled(is_admin)
 
-        self.setAcceptDrops(not is_readonly)
-        self._nav_btns["Kritik"].setVisible(not is_readonly)
-        self._drop_hint.setVisible(not is_readonly)
-        self._btn_add_file.setVisible(not is_readonly)
-        self._btn_add_folder.setVisible(not is_readonly)
+        # ── Yazma/düzenleme işlemleri: Salt Okunur'da tamamen kapalı ─────
+        self.setAcceptDrops(can_write)
+        for _w in (self._drop_hint, self._btn_add_file, self._btn_add_folder,
+                   self._btn_scan_all, self._btn_new_tag, self._btn_new_folder):
+            _w.setVisible(can_write)
+            _w.setEnabled(can_write)
+
+        # ── Kritik sekmesi: Salt Okunur'da gizli ─────────────────────────
+        _kritik = self._nav_btns.get("Kritik")
+        if _kritik:
+            _kritik.setVisible(can_write)
+            _kritik.setEnabled(can_write)
 
         self._role_badge.setText(self._role)
 
@@ -830,15 +877,13 @@ class HycleusWindow(QMainWindow):
     def _on_add_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Dosya Seç")
         if path:
-            dest = self._current_label if self._current_label in ("Genel", "Kritik", "Karantina") else "Karantina"
-            self._handle_dropped_file(Path(path), label=dest)
+            self._handle_dropped_file(Path(path), label="Karantina")
 
     def _on_add_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Klasör Seç")
         if not folder:
             return
-        dest = self._current_label if self._current_label in ("Genel", "Kritik", "Karantina") else "Karantina"
-        self._handle_dropped_folder(Path(folder), label=dest)
+        self._handle_dropped_folder(Path(folder), label="Karantina")
 
     def _on_scan_all(self) -> None:
         for row in range(self._table.rowCount()):
@@ -898,7 +943,10 @@ class HycleusWindow(QMainWindow):
         AuditLogDialog(self).exec()
 
     def _on_open_admin_panel(self) -> None:
-        AdminPanel(current_hwid=self._hwid, parent=self).exec()
+        if self._role != "Yönetici":
+            QMessageBox.warning(self, "Erişim Reddedildi", "Bu alana erişim yetkiniz yok.")
+            return
+        AdminPanel(current_hwid=self._hwid, role=self._role, parent=self).exec()
 
     def _on_open_contact(self) -> None:
         from UI.ContactDialog import ContactDialog
@@ -980,9 +1028,10 @@ class HycleusWindow(QMainWindow):
         self._expiry_banner.setVisible(in_imha)
         if in_imha:
             self._expiry_banner.setText("⏱  Hesaplanıyor...")
-        try:
-            rows = DBManager().fetchall(
-                """
+
+        is_admin = self._role == "Yönetici"
+        if is_admin:
+            sql = """
                 SELECT f.id, f.filename, f.label, f.size_bytes, f.added_at,
                        f.filepath, f.original_sha256, f.expires_at,
                        (SELECT q.reason FROM quarantine q
@@ -990,15 +1039,29 @@ class HycleusWindow(QMainWindow):
                         ORDER BY q.quarantined_at DESC LIMIT 1) AS scan_reason
                 FROM files f
                 WHERE f.label = ?
-                  AND (? = 'Yönetici' OR f.id NOT IN (
+                ORDER BY f.added_at DESC
+            """
+            params: tuple = (db_label,)
+        else:
+            sql = """
+                SELECT f.id, f.filename, f.label, f.size_bytes, f.added_at,
+                       f.filepath, f.original_sha256, f.expires_at,
+                       (SELECT q.reason FROM quarantine q
+                        WHERE q.file_id = f.id
+                        ORDER BY q.quarantined_at DESC LIMIT 1) AS scan_reason
+                FROM files f
+                WHERE f.label = ?
+                  AND f.id NOT IN (
                           SELECT ft.file_id FROM file_tags ft
                           INNER JOIN tags t ON t.id = ft.tag_id
                           WHERE t.is_private = 1
-                      ))
+                      )
                 ORDER BY f.added_at DESC
-                """,
-                (db_label, self._role),
-            )
+            """
+            params = (db_label,)
+
+        try:
+            rows = DBManager().fetchall(sql, params)
         except Exception as exc:
             QMessageBox.warning(self, "Veritabanı", str(exc))
             return
@@ -1153,7 +1216,10 @@ class HycleusWindow(QMainWindow):
         self._current_tag_id = None
 
         if self._active_folder_btn is not None and self._active_folder_btn is not btn:
-            self._active_folder_btn.setStyleSheet(self._folder_btn_style(active=False))
+            try:
+                self._active_folder_btn.setStyleSheet(self._folder_btn_style(active=False))
+            except RuntimeError:
+                pass  # Qt nesnesi sidebar yenilemesinde silinmiş olabilir
 
         self._active_folder_btn = btn
         btn.setStyleSheet(self._folder_btn_style(active=True))
@@ -1197,6 +1263,9 @@ class HycleusWindow(QMainWindow):
 
     def _on_folder_context_menu(self, pos: QPoint, folder_id: int, folder_name: str,
                                 btn: QPushButton) -> None:
+        if self._role.strip().lower() == "salt okunur":
+            _log.debug("context_menu_blocked  fn=_on_folder_context_menu  role=%r", self._role)
+            return
         T = self._T
         menu = QMenu(self)
         menu.setStyleSheet(
@@ -1205,12 +1274,15 @@ class HycleusWindow(QMainWindow):
             f"QMenu::item {{ padding:9px 22px; font-size:13px; }}"
             f"QMenu::item:selected {{ background:#EFF6FF; color:{T['text']}; border-radius:4px; }}"
         )
-        act_dl  = menu.addAction("⬇  Klasörü İndir (ZIP)")
-        act_del = menu.addAction("🗑  Klasörü Sil")
+        act_dl   = menu.addAction("⬇  Klasörü İndir (ZIP)")
+        act_imha = menu.addAction("🔥  İmha Odasına At")
+        act_del  = menu.addAction("🗑  Klasörü Sil")
 
         action = menu.exec(btn.mapToGlobal(pos))
         if action == act_dl:
             self._on_folder_download(folder_id, folder_name)
+        elif action == act_imha:
+            self._on_folder_move_to_imha(folder_id, folder_name)
         elif action == act_del:
             self._on_folder_delete(folder_id, folder_name)
 
@@ -1221,11 +1293,14 @@ class HycleusWindow(QMainWindow):
             return
         try:
             db = DBManager()
-            if _DEV_MODE:
+            row = db.fetchone("SELECT id FROM users WHERE id = ?", (self._user_id,))
+            if row is None:
+                effective_hwid = "DEV-HWID-1234" if _DEV_MODE else (self._hwid or "")
                 db.execute(
-                    "INSERT OR IGNORE INTO users (id, username, password_hash, role)"
-                    " VALUES (?, ?, ?, ?)",
-                    (self._user_id, "yonetici", "", "admin"),
+                    "INSERT INTO users"
+                    " (id, username, password_hash, role, status, hwid)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (self._user_id, "yonetici", "", "admin", "approved", effective_hwid),
                 )
             db.execute(
                 "INSERT INTO folders (name, owner_id) VALUES (?, ?)",
@@ -1236,6 +1311,43 @@ class HycleusWindow(QMainWindow):
             QMessageBox.warning(self, "Hata", str(exc))
             return
         self._refresh_folder_sidebar()
+
+    def _on_folder_move_to_imha(self, folder_id: int, folder_name: str) -> None:
+        confirm = QMessageBox.question(
+            self, "Klasörü İmha Et",
+            f"'{folder_name}' klasöründeki tüm dosyalar İmha Odası'na taşınacak "
+            f"ve 24 saat içinde silinecek.\nDevam edilsin mi?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            db    = DBManager()
+            rows  = db.fetchall("SELECT id FROM files WHERE folder_id = ?", (folder_id,))
+            for r in rows:
+                db.execute(
+                    "UPDATE files SET label = 'Imha', expires_at = ? WHERE id = ?",
+                    (expires_at, r["id"]),
+                )
+                db.log("file_moved_to_imha", target_type="file", target_id=r["id"],
+                       detail=f"hwid={self._hwid} via=folder folder_id={folder_id} expires_at={expires_at}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
+            return
+        # Aktif görünüm klasör içindeyse Genel'e dön, değilse tabloyu yenile
+        if self._current_folder_id == folder_id:
+            self._current_folder_id = None
+            self._active_folder_btn = None
+            self._on_sidebar_click("Genel", self._nav_btns["Genel"])
+        else:
+            self._refresh_folder_sidebar()
+            if self._current_label:
+                self._load_label(self._current_label)
+        QMessageBox.information(
+            self, "İmha Odasına Taşındı",
+            f"'{folder_name}' klasöründeki {len(rows)} dosya 24 saat içinde imha edilecek.",
+        )
 
     def _on_folder_delete(self, folder_id: int, folder_name: str) -> None:
         confirm = QMessageBox.question(
@@ -1288,7 +1400,7 @@ class HycleusWindow(QMainWindow):
 
         try:
             files = DBManager().fetchall(
-                "SELECT id, filename, filepath FROM files WHERE folder_id = ?",
+                "SELECT id, filename, filepath, aad_metadata FROM files WHERE folder_id = ?",
                 (folder_id,),
             )
         except Exception as exc:
@@ -1306,13 +1418,16 @@ class HycleusWindow(QMainWindow):
             return
 
         from CORE.crypto import AuthenticationError as _AE, decrypt_file as _df
-        effective_hwid = "DEV-HWID-1234" if _DEV_MODE else self._hwid
         errors = []
         try:
             with zipfile.ZipFile(save_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 for f in files:
                     try:
-                        content, meta = _df(f["filepath"], self._key, hwid=effective_hwid)
+                        aad_hwid: str | None = None
+                        if f["aad_metadata"]:
+                            aad_hwid = json.loads(f["aad_metadata"]).get("hwid")
+                        file_hwid = aad_hwid or ("DEV-HWID-1234" if _DEV_MODE else self._hwid)
+                        content, meta = _df(f["filepath"], self._key, hwid=file_hwid)
                         zf.writestr(meta.get("filename", f["filename"]), content)
                         del content
                     except _AE:
@@ -1401,6 +1516,9 @@ class HycleusWindow(QMainWindow):
         self._load_tag_files(tag_id)
 
     def _on_tag_context_menu(self, pos: QPoint, tag_id: int, tag_name: str, btn: QPushButton) -> None:
+        if self._role.strip().lower() == "salt okunur":
+            _log.debug("context_menu_blocked  fn=_on_tag_context_menu  role=%r", self._role)
+            return
         T = self._T
         menu = QMenu(self)
         menu.setStyleSheet(
@@ -1446,10 +1564,10 @@ class HycleusWindow(QMainWindow):
                 self._load_label(self._current_label)
             return
         self._table.setRowCount(0)
-        try:
-            like = f"%{term}%"
-            rows = DBManager().fetchall(
-                """
+        like = f"%{term}%"
+        is_admin = self._role == "Yönetici"
+        if is_admin:
+            sql = """
                 SELECT f.id, f.filename, f.label, f.size_bytes, f.added_at,
                        f.filepath, f.original_sha256, f.expires_at,
                        (SELECT q.reason FROM quarantine q
@@ -1462,15 +1580,33 @@ class HycleusWindow(QMainWindow):
                        INNER JOIN tags t ON t.id = ft.tag_id
                        WHERE t.name LIKE ?
                    ))
-                  AND (? = 'Yönetici' OR f.id NOT IN (
+                ORDER BY f.added_at DESC
+            """
+            params: tuple = (like, like, like)
+        else:
+            sql = """
+                SELECT f.id, f.filename, f.label, f.size_bytes, f.added_at,
+                       f.filepath, f.original_sha256, f.expires_at,
+                       (SELECT q.reason FROM quarantine q
+                        WHERE q.file_id = f.id
+                        ORDER BY q.quarantined_at DESC LIMIT 1) AS scan_reason
+                FROM files f
+                WHERE (f.filename LIKE ? OR f.original_sha256 LIKE ?
+                   OR f.id IN (
+                       SELECT ft.file_id FROM file_tags ft
+                       INNER JOIN tags t ON t.id = ft.tag_id
+                       WHERE t.name LIKE ?
+                   ))
+                  AND f.id NOT IN (
                           SELECT ft2.file_id FROM file_tags ft2
                           INNER JOIN tags t2 ON t2.id = ft2.tag_id
                           WHERE t2.is_private = 1
-                      ))
+                      )
                 ORDER BY f.added_at DESC
-                """,
-                (like, like, like, self._role),
-            )
+            """
+            params = (like, like, like)
+        try:
+            rows = DBManager().fetchall(sql, params)
         except Exception as exc:
             QMessageBox.warning(self, "Arama", str(exc))
             return
@@ -1502,6 +1638,9 @@ class HycleusWindow(QMainWindow):
     # ── Drag & drop ───────────────────────────────────────────────────────────
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self._role.strip().lower() == "salt okunur":
+            event.ignore()
+            return
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
             self._drop_hint.setStyleSheet(
@@ -1521,21 +1660,19 @@ class HycleusWindow(QMainWindow):
 
     def dropEvent(self, event: QDropEvent) -> None:
         self._reset_drop_hint_style()
-        if self._current_label == "Kritik":
-            dest = "Kritik"
-        elif self._current_label in ("Genel", "Karantina"):
-            dest = self._current_label
-        else:
-            dest = "Karantina"
+        if self._role.strip().lower() == "salt okunur":
+            _log.debug("drop_blocked  role=%r", self._role)
+            event.ignore()
+            return
         for url in event.mimeData().urls():
             local = url.toLocalFile()
             if not local:
                 continue
             p = Path(local)
             if p.is_dir():
-                self._handle_dropped_folder(p, label=dest)
+                self._handle_dropped_folder(p, label="Karantina")
             elif p.is_file():
-                self._handle_dropped_file(p, label=dest)
+                self._handle_dropped_file(p, label="Karantina")
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -1550,8 +1687,9 @@ class HycleusWindow(QMainWindow):
             f" background: {bg}; margin: 12px; }}"
         )
 
-    def _handle_dropped_file(self, src: Path, label: str = "Karantina") -> None:
-        _log.info("drop_received  file=%s  label=%s", src.name, label)
+    def _handle_dropped_file(self, src: Path, label: str = "Karantina",
+                             folder_id: int | None = None) -> None:
+        _log.info("drop_received  file=%s  label=%s  folder_id=%s", src.name, label, folder_id)
         if not src.is_file():
             return
 
@@ -1563,7 +1701,7 @@ class HycleusWindow(QMainWindow):
             return
 
         try:
-            hcl_path, sha256_hex = encrypt_file(src, self._key, user_id=1, hwid=live_hwid)
+            hcl_path, sha256_hex, aad_json = encrypt_file(src, self._key, user_id=1, hwid=live_hwid)
         except AuthenticationError as exc:
             QMessageBox.critical(self, "Bütünlük Hatası", str(exc))
             return
@@ -1578,17 +1716,20 @@ class HycleusWindow(QMainWindow):
         try:
             db = DBManager()
             db.execute(
-                f"""
-                INSERT INTO files (filename, filepath, label, size_bytes, expires_at, original_sha256)
-                VALUES (?, ?, ?, ?, ?, ?)
+                """
+                INSERT INTO files
+                    (filename, filepath, label, size_bytes, expires_at, original_sha256, aad_metadata, folder_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(filepath) DO UPDATE SET
                     filename        = excluded.filename,
                     label           = excluded.label,
                     size_bytes      = excluded.size_bytes,
                     expires_at      = excluded.expires_at,
-                    original_sha256 = excluded.original_sha256
+                    original_sha256 = excluded.original_sha256,
+                    aad_metadata    = excluded.aad_metadata,
+                    folder_id       = excluded.folder_id
                 """,
-                (src.name, str(hcl_path), label, size_bytes, expires_at, sha256_hex),
+                (src.name, str(hcl_path), label, size_bytes, expires_at, sha256_hex, aad_json, folder_id),
             )
             row_id = db.fetchone("SELECT id FROM files WHERE filepath = ?", (str(hcl_path),))
             if row_id is None:
@@ -1616,8 +1757,39 @@ class HycleusWindow(QMainWindow):
                 f"'{folder.name}' klasöründe dosya bulunamadı."
             )
             return
+
+        # DB'de klasör kaydı oluştur
+        folder_id: int | None = None
+        try:
+            db = DBManager()
+            _urow = db.fetchone("SELECT id FROM users WHERE id = ?", (self._user_id,))
+            if _urow is None:
+                _ehwid = "DEV-HWID-1234" if _DEV_MODE else (self._hwid or "")
+                db.execute(
+                    "INSERT INTO users (id, username, password_hash, role, status, hwid)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (self._user_id, "yonetici", "", "admin", "approved", _ehwid),
+                )
+            db.execute(
+                "INSERT INTO folders (name, owner_id) VALUES (?, ?)",
+                (folder.name, self._user_id),
+            )
+            _frow = db.fetchone(
+                "SELECT id FROM folders WHERE name = ? AND owner_id = ? ORDER BY id DESC LIMIT 1",
+                (folder.name, self._user_id),
+            )
+            if _frow:
+                folder_id = _frow["id"]
+            db.log("folder_created",
+                   detail=f"name={folder.name} hwid={self._hwid} via=drag_drop files={len(files)}")
+        except Exception as exc:
+            _log.warning("folder_create_failed  exc=%s", exc)
+
         for f in files:
-            self._handle_dropped_file(f, label=label)
+            self._handle_dropped_file(f, label=label, folder_id=folder_id)
+
+        if folder_id is not None:
+            self._refresh_folder_sidebar()
 
     # ── USB kilit ─────────────────────────────────────────────────────────────
 
@@ -1787,6 +1959,10 @@ class HycleusWindow(QMainWindow):
     # ── Context menu ──────────────────────────────────────────────────────────
 
     def _on_context_menu(self, pos: QPoint) -> None:
+        if self._role.strip().lower() == "salt okunur":
+            _log.debug("context_menu_blocked  fn=_on_context_menu  role=%r", self._role)
+            return
+
         row = self._table.rowAt(pos.y())
         if row < 0:
             return
@@ -1812,24 +1988,28 @@ class HycleusWindow(QMainWindow):
         menu.setStyleSheet(menu_style)
         act_tags = menu.addAction("🏷  Etiket Ata")
 
-        act_scan = act_download = act_approve = act_reject = act_move_folder = act_kritik = None
+        act_scan = act_download = act_approve = act_reject = act_move_folder = act_kritik = act_imha = None
         if label == "Genel":
             menu.addSeparator()
             act_download    = menu.addAction("⬇  İndir")
             act_kritik      = menu.addAction("🛡  Kritik'e Taşı")
             act_move_folder = menu.addAction("📂  Klasöre Taşı")
+            act_imha        = menu.addAction("🔥  İmha Odasına At")
         elif label == "Kritik":
             menu.addSeparator()
             act_download    = menu.addAction("⬇  İndir")
             act_move_folder = menu.addAction("📂  Klasöre Taşı")
+            act_imha        = menu.addAction("🔥  İmha Odasına At")
         elif label == "Karantina":
             menu.addSeparator()
-            act_scan     = menu.addAction("🔍  Tara")
-            act_download = menu.addAction("⬇  İndir")
+            act_scan        = menu.addAction("🔍  Tara")
+            act_download    = menu.addAction("⬇  İndir")
+            act_move_folder = menu.addAction("📂  Klasöre Taşı")
             menu.addSeparator()
-            act_kritik   = menu.addAction("🛡  Kritik'e Taşı")
-            act_approve  = menu.addAction("Onayla  →  Genel'e taşı")
-            act_reject   = menu.addAction("Reddet  →  İmha Odası'na taşı")
+            act_kritik  = menu.addAction("🛡  Kritik'e Taşı")
+            act_approve = menu.addAction("Onayla  →  Genel'e taşı")
+            act_reject  = menu.addAction("Reddet  →  İmha Odası'na taşı")
+            act_imha    = menu.addAction("🔥  İmha Odasına At")
 
         action = menu.exec(self._table.viewport().mapToGlobal(pos))
 
@@ -1847,6 +2027,8 @@ class HycleusWindow(QMainWindow):
             self._on_ctx_move_label(row, file_id, "Genel")
         elif action == act_reject:
             self._on_ctx_move_label(row, file_id, "Imha")
+        elif action == act_imha:
+            self._on_ctx_move_to_imha(row, file_id)
 
     def _on_ctx_download(self, file_id: int | None, filepath: str | None) -> None:
         if not filepath:
@@ -1877,14 +2059,36 @@ class HycleusWindow(QMainWindow):
                                 "Authenticator kodu geçersiz.\nDosya indirilmedi.")
             return
 
-        effective_hwid = "DEV-HWID-1234" if _DEV_MODE else self._hwid
+        aad_hwid: str | None = None
+        raw_aad: str | None = None
+        if file_id is not None:
+            try:
+                aad_row = db.fetchone(
+                    "SELECT aad_metadata FROM files WHERE id = ?", (file_id,)
+                )
+                raw_aad = aad_row["aad_metadata"] if aad_row else None
+                if raw_aad:
+                    aad_hwid = json.loads(raw_aad).get("hwid")
+            except Exception:
+                pass
+        # aad_hwid biliniyorsa GCM + Python HWID kontrolü yap.
+        # bilinmiyorsa (eski kayıt veya NULL), hwid=None geç — GCM AAD kimlik
+        # doğrulaması zaten hwid'i koruma altına alır.
+        _log.debug(
+            "download  file_id=%s  self_hwid=%s  aad_hwid=%s  key_len=%s  aad_metadata=%s",
+            file_id, self._hwid, aad_hwid,
+            len(self._key) if self._key else 0,
+            raw_aad[:80] + "..." if raw_aad and len(raw_aad) > 80 else raw_aad,
+        )
         try:
-            content, meta = decrypt_file(filepath, self._key, hwid=effective_hwid)
-        except AuthenticationError:
+            content, meta = decrypt_file(filepath, self._key, hwid=aad_hwid)
+        except AuthenticationError as exc:
+            _log.error("download_auth_error  file_id=%s  exc=%s", file_id, exc)
             QMessageBox.critical(self, "Bütünlük Hatası",
-                                 "Dosya bütünlüğü doğrulanamadı.")
+                                 f"Dosya bütünlüğü doğrulanamadı:\n{exc}")
             return
         except Exception as exc:
+            _log.error("download_decrypt_error  file_id=%s  exc=%s", file_id, exc)
             QMessageBox.critical(self, "Şifre Çözme Hatası", str(exc))
             return
 
@@ -1910,7 +2114,7 @@ class HycleusWindow(QMainWindow):
             QMessageBox.warning(self, "Etiket", "Dosya kimliği bulunamadı.")
             return
         from UI.TagDialog import TagDialog
-        dlg = TagDialog(file_id=file_id, parent=self)
+        dlg = TagDialog(file_id=file_id, role=self._role, parent=self)
         if dlg.exec() == TagDialog.Accepted:
             self._refresh_tag_sidebar()
             if self._current_tag_id is not None:
@@ -2008,6 +2212,34 @@ class HycleusWindow(QMainWindow):
             return
         self._table.removeRow(row)
         QMessageBox.information(self, "Taşındı", "Dosya Kritik etiketine taşındı.")
+
+    def _on_ctx_move_to_imha(self, row: int, file_id: int | None) -> None:
+        if file_id is None:
+            return
+        fname_item = self._table.item(row, 0)
+        fname = fname_item.text() if fname_item else "?"
+        confirm = QMessageBox.question(
+            self, "İmha Odasına At",
+            f"'{fname}'\n\nDosya İmha Odası'na taşınacak ve 24 saat içinde silinecek.\nDevam edilsin mi?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            db = DBManager()
+            db.execute(
+                "UPDATE files SET label = 'Imha', expires_at = ? WHERE id = ?",
+                (expires_at, file_id),
+            )
+            db.log("file_moved_to_imha", target_type="file", target_id=file_id,
+                   detail=f"hwid={self._hwid} expires_at={expires_at}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
+            return
+        self._table.removeRow(row)
+        QMessageBox.information(self, "İmha Odasına Taşındı",
+                                "Dosya İmha Odası'na taşındı. 24 saat içinde silinecek.")
 
     def _set_scan_badge(self, row: int, text: str, color: str) -> None:
         if row >= self._table.rowCount():

@@ -112,8 +112,12 @@ def _scan_via_defender(path: Path, sha256: str) -> ScanResult | None:
 # DB kaydı --------------------------------------------------------------------
 
 def _save_to_db(file_id: int, result: ScanResult) -> None:
+    import sqlite3 as _sqlite3
     from DB.db_manager import DBManager
-    db = DBManager()
+
+    # Thread-safe: singleton'ın connection'ını paylaşmak yerine
+    # her scan thread'i kendi bağlantısını açar.
+    db_path = str(DBManager()._db_path)
     reason = json.dumps({
         "source":        "windows_defender",
         "sha256":        result.sha256,
@@ -124,25 +128,31 @@ def _save_to_db(file_id: int, result: ScanResult) -> None:
         "mock":          result.mock,
     }, ensure_ascii=False)
 
-    existing = db.fetchone(
-        "SELECT id FROM quarantine WHERE file_id = ?", (file_id,)
-    )
-    if existing:
-        db.execute(
-            "UPDATE quarantine SET reason = ? WHERE file_id = ?",
-            (reason, file_id),
+    conn = _sqlite3.connect(db_path)
+    conn.row_factory = _sqlite3.Row
+    try:
+        existing = conn.execute(
+            "SELECT id FROM quarantine WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE quarantine SET reason = ? WHERE file_id = ?",
+                (reason, file_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO quarantine (file_id, reason) VALUES (?, ?)",
+                (file_id, reason),
+            )
+        conn.execute(
+            "INSERT INTO audit_log (action, target_type, target_id, detail)"
+            " VALUES (?, ?, ?, ?)",
+            ("defender_scan", "file", file_id,
+             f"verdict={result.verdict} mock={result.mock}"),
         )
-    else:
-        db.execute(
-            "INSERT INTO quarantine (file_id, reason) VALUES (?, ?)",
-            (file_id, reason),
-        )
-    db.log(
-        "defender_scan",
-        target_type="file",
-        target_id=file_id,
-        detail=f"verdict={result.verdict} mock={result.mock}",
-    )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # Genel arayüz ----------------------------------------------------------------

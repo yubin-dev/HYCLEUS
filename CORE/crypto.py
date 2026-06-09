@@ -75,7 +75,7 @@ def encrypt_file(
     created_at: str | None = None,
     uploaded_at: str | None = None,
     last_modified: str | None = None,
-) -> tuple[Path, str]:
+) -> tuple[Path, str, str]:
     """
     src dosyasını AES-256-GCM ile şifreler, data/quarantine/<ad>.hcl'e yazar.
 
@@ -141,7 +141,7 @@ def encrypt_file(
         fout.write(encryptor.finalize())
         fout.write(encryptor.tag)
 
-    return dst, sha256_hex
+    return dst, sha256_hex, aad.decode()
 
 
 def decrypt_file(

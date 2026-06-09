@@ -261,6 +261,11 @@ class DBManager:
             )
         except sqlite3.OperationalError:
             pass  # kolon zaten var
+        # Migration: files.aad_metadata — şifreleme sırasında kullanılan AAD JSON
+        try:
+            self._conn.execute("ALTER TABLE files ADD COLUMN aad_metadata TEXT")
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
         # Migration: auth_codes — geçici 8 haneli yönetici paylaşım kodları
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS auth_codes (

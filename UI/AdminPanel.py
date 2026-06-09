@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QDialog,
@@ -74,12 +74,30 @@ _ROLE_BLACKLISTED = Qt.UserRole + 1      # bool — kara liste durumu
 
 
 class AdminPanel(QDialog):
-    def __init__(self, current_hwid: str, parent=None) -> None:
+    def __init__(self, current_hwid: str, role: str = "Yönetici", parent=None) -> None:
         super().__init__(parent)
         self._current_hwid = current_hwid
+        self._caller_role  = role
         self.setWindowTitle("HYCLEUS — USB Yönetim Paneli")
-        self.setMinimumSize(960, 540)
         self.setStyleSheet(_STYLE)
+
+        if role != "Yönetici":
+            self.setFixedSize(360, 120)
+            lay = QVBoxLayout(self)
+            lay.setContentsMargins(24, 20, 24, 20)
+            lay.setSpacing(16)
+            lbl = QLabel("Bu alana erişim yetkiniz yok.")
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet("color:#f38ba8; font-size:13px;")
+            lay.addWidget(lbl)
+            btn = QPushButton("Kapat")
+            btn.setStyleSheet(_BTN)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(self.reject)
+            lay.addWidget(btn)
+            return
+
+        self.setMinimumSize(960, 540)
         self._build_ui()
         self._load()
         self._load_pending()
@@ -401,6 +419,16 @@ class AdminPanel(QDialog):
             return
 
         old_role = self._selected_role()
+
+        if old_role == "Yönetici":
+            QMessageBox.warning(
+                self,
+                "İzin Verilmedi",
+                "Yönetici rolü değiştirilemez.\n\n"
+                "Yönetici hesabının rolünü düşürmek sistemin kilitleneceği anlamına gelir.",
+            )
+            return
+
         default_idx = _ROLES.index(old_role) if old_role in _ROLES else 0
 
         new_role, ok = QInputDialog.getItem(
