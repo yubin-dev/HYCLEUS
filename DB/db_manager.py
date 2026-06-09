@@ -67,10 +67,25 @@ CREATE TABLE IF NOT EXISTS usb_tokens (
     created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS tags (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL UNIQUE,
+    color      TEXT    NOT NULL DEFAULT '#89b4fa',
+    created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS file_tags (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    tag_id  INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
+    PRIMARY KEY (file_id, tag_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_files_label       ON files(label);
 CREATE INDEX IF NOT EXISTS idx_quarantine_status ON quarantine(status);
 CREATE INDEX IF NOT EXISTS idx_audit_log_user    ON audit_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_time    ON audit_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_file_tags_file    ON file_tags(file_id);
+CREATE INDEX IF NOT EXISTS idx_file_tags_tag     ON file_tags(tag_id);
 """
 
 
@@ -200,6 +215,18 @@ class DBManager:
             self._conn.execute(
                 "ALTER TABLE usb_tokens ADD COLUMN blacklisted INTEGER NOT NULL DEFAULT 0"
             )
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        # Migration: users.status — pending/approved kayıt onay sistemi
+        try:
+            self._conn.execute(
+                "ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'"
+            )
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        # Migration: users.hwid — USB token bağlantısı
+        try:
+            self._conn.execute("ALTER TABLE users ADD COLUMN hwid TEXT")
         except sqlite3.OperationalError:
             pass  # kolon zaten var
         self._conn.commit()

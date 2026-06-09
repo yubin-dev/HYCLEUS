@@ -1,14 +1,26 @@
+"""HYCLEUS — Windows Defender tarama modülü"""
+from __future__ import annotations
+
 import hashlib
 import json
-import os
+import logging
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-import requests
+_log = logging.getLogger("hycleus.scanner")
 
-_VT_BASE = "https://www.virustotal.com/api/v3"
-_ENV_FILE = Path(__file__).parent.parent / ".env"
-_CHUNK    = 65536
+_MPCMDRUN = Path(r"C:\Program Files\Windows Defender\MpCmdRun.exe")
+_SCAN_TIMEOUT = 120   # saniye
+_CHUNK        = 65536
+
+# MpCmdRun.exe varlık testi — modül yüklenirken logla
+if _MPCMDRUN.exists():
+    _DEFENDER_AVAILABLE = True
+    _log.info("defender_found  path=%s", _MPCMDRUN)
+else:
+    _DEFENDER_AVAILABLE = False
+    _log.warning("defender_not_found  path=%s  — mock döndürülecek", _MPCMDRUN)
 
 
 @dataclass
@@ -23,29 +35,7 @@ class ScanResult:
     mock:          bool
 
 
-# ------------------------------------------------------------------
-# .env okuyucu
-# ------------------------------------------------------------------
-
-def _load_api_key() -> str | None:
-    key = os.getenv("VT_API_KEY")
-    if key:
-        return key
-    if not _ENV_FILE.exists():
-        return None
-    for raw in _ENV_FILE.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        if k.strip() == "VT_API_KEY":
-            return v.strip().strip('"').strip("'")
-    return None
-
-
-# ------------------------------------------------------------------
-# Hash
-# ------------------------------------------------------------------
+# Hash ------------------------------------------------------------------------
 
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -55,9 +45,7 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-# ------------------------------------------------------------------
-# VirusTotal sorgusu
-# ------------------------------------------------------------------
+# Yardımcılar -----------------------------------------------------------------
 
 def _mock(sha256: str) -> ScanResult:
     return ScanResult(
@@ -67,61 +55,67 @@ def _mock(sha256: str) -> ScanResult:
     )
 
 
-def _query_vt(sha256: str, api_key: str) -> ScanResult:
-    try:
-        resp = requests.get(
-            f"{_VT_BASE}/files/{sha256}",
-            headers={"x-apikey": api_key},
-            timeout=10,
-        )
-    except Exception:
-        return _mock(sha256)
-
-    if resp.status_code == 404:
-        # VT'de kayıt yok — temiz ya da hiç analiz edilmemiş
-        return ScanResult(
-            sha256=sha256, malicious=0, suspicious=0,
-            harmless=0, undetected=0, engines_total=0,
-            verdict="unknown", mock=False,
-        )
-    if resp.status_code == 429:
-        # Rate limit aşıldı
-        return _mock(sha256)
-    try:
-        resp.raise_for_status()
-        stats = resp.json()["data"]["attributes"]["last_analysis_stats"]
-    except Exception:
-        return _mock(sha256)
-
-    mal  = stats.get("malicious",  0)
-    sus  = stats.get("suspicious", 0)
-    har  = stats.get("harmless",   0)
-    undet = stats.get("undetected", 0)
-    total = mal + sus + har + undet + stats.get("timeout", 0) + stats.get("failure", 0)
-
-    if mal > 0:
-        verdict = "malicious"
-    elif sus > 0:
-        verdict = "suspicious"
-    else:
-        verdict = "clean"
-
+def _clean(sha256: str) -> ScanResult:
     return ScanResult(
-        sha256=sha256, malicious=mal, suspicious=sus,
-        harmless=har, undetected=undet, engines_total=total,
-        verdict=verdict, mock=False,
+        sha256=sha256, malicious=0, suspicious=0,
+        harmless=1, undetected=0, engines_total=1,
+        verdict="clean", mock=False,
     )
 
 
-# ------------------------------------------------------------------
-# DB kaydı
-# ------------------------------------------------------------------
+def _malicious(sha256: str) -> ScanResult:
+    return ScanResult(
+        sha256=sha256, malicious=1, suspicious=0,
+        harmless=0, undetected=0, engines_total=1,
+        verdict="malicious", mock=False,
+    )
+
+
+# Windows Defender ------------------------------------------------------------
+
+def _scan_via_defender(path: Path, sha256: str) -> ScanResult | None:
+    """MpCmdRun.exe -Scan -ScanType 3 -File <path> ile tarar.
+    rc=0 → clean, rc=2 → malicious, diğerleri → None (mock'a düşer).
+    MpCmdRun.exe yoksa None döner.
+    """
+    if not _DEFENDER_AVAILABLE:
+        return None
+    try:
+        proc = subprocess.run(
+            [str(_MPCMDRUN), "-Scan", "-ScanType", "3", "-File", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=_SCAN_TIMEOUT,
+        )
+        _log.info(
+            "defender_scan  rc=%d  file=%s  out=%s",
+            proc.returncode, path.name,
+            proc.stdout.strip()[:200],
+        )
+        if proc.returncode == 0:
+            return _clean(sha256)
+        if proc.returncode == 2:
+            _log.warning("defender_threat  file=%s  out=%s",
+                         path.name, proc.stdout.strip()[:200])
+            return _malicious(sha256)
+        _log.warning("defender_rc_unknown  rc=%d  file=%s  stderr=%s",
+                     proc.returncode, path.name, proc.stderr.strip()[:200])
+        return None
+    except subprocess.TimeoutExpired:
+        _log.warning("defender_timeout  file=%s", path.name)
+        return None
+    except Exception as exc:
+        _log.warning("defender_error  %s", exc)
+        return None
+
+
+# DB kaydı --------------------------------------------------------------------
 
 def _save_to_db(file_id: int, result: ScanResult) -> None:
     from DB.db_manager import DBManager
     db = DBManager()
     reason = json.dumps({
-        "source":        "virustotal",
+        "source":        "windows_defender",
         "sha256":        result.sha256,
         "verdict":       result.verdict,
         "malicious":     result.malicious,
@@ -144,33 +138,51 @@ def _save_to_db(file_id: int, result: ScanResult) -> None:
             (file_id, reason),
         )
     db.log(
-        "vt_scan",
+        "defender_scan",
         target_type="file",
         target_id=file_id,
         detail=f"verdict={result.verdict} mock={result.mock}",
     )
 
 
-# ------------------------------------------------------------------
-# Genel arayüz
-# ------------------------------------------------------------------
+# Genel arayüz ----------------------------------------------------------------
 
 def scan_file(path: "Path | str", file_id: int | None = None) -> ScanResult:
-    """SHA-256 hesaplar, VirusTotal Public API'yi sorgular.
+    """Windows Defender ile dosya tarar.
 
-    API anahtarı yoksa, 429 veya bağlantı hatası olursa mock sonuç döner.
+    MpCmdRun.exe bulunamazsa veya tarama başarısız olursa mock ScanResult döner.
     file_id verilirse sonuç quarantine tablosuna kaydedilir.
     """
     path = Path(path)
     sha  = _sha256(path)
+    _log.info("scan_start  file=%s  size=%d  sha256=%.16s",
+              path.name, path.stat().st_size, sha)
 
-    api_key = _load_api_key()
-    result  = _query_vt(sha, api_key) if api_key else _mock(sha)
+    result = _scan_via_defender(path, sha) or _mock(sha)
+
+    _log.info("scan_result  file=%s  verdict=%s  mal=%d  mock=%s",
+              path.name, result.verdict, result.malicious, result.mock)
 
     if file_id is not None:
         try:
             _save_to_db(file_id, result)
         except Exception:
-            pass  # DB kaydı başarısız olsa da result dönsün
+            _log.exception("scan_db_error  file_id=%d", file_id)
 
+    return result
+
+
+def scan_by_hash(sha256: str, file_id: int | None = None) -> ScanResult:
+    """Hash ile tarama — Defender dosya içeriğine ihtiyaç duyar, mock döner.
+
+    Karantina gibi orijinal dosyanın erişilebilir olmadığı durumlar için
+    arayüz bütünlüğü amacıyla tutulmuştur.
+    """
+    _log.info("scan_by_hash  sha256=%.16s — dosya yok, mock döndürülüyor", sha256)
+    result = _mock(sha256)
+    if file_id is not None:
+        try:
+            _save_to_db(file_id, result)
+        except Exception:
+            pass
     return result

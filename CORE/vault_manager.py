@@ -82,7 +82,22 @@ _HEADER_SIZE = _TOKEN_ID_OFFSET + _TOKEN_ID_SIZE  # 49 B
 # share_1 = "1:" + 66 hex = 68 B; s1_len prefix = 2B; role min 1 char
 _MIN_VAULT_SIZE = _HEADER_SIZE + 2 + 68 + 1 + _TAG_SIZE + _HMAC_SIZE  # 172 B
 
-_VAULT_PATH = Path(__file__).parent.parent / "data" / ".hcl_vault"
+_VAULT_PATH_LEGACY = Path(__file__).parent.parent / "data" / ".hcl_vault"
+_VAULT_DIR         = Path(__file__).parent.parent / "data" / "vaults"
+
+
+def _read_vault_path(hwid: str) -> Path:
+    """Per-HWID vault dosya yolunu döndürür; yoksa eski tek-dosya yoluna düşer."""
+    per = _VAULT_DIR / f"{hwid}.hclv"
+    if per.exists():
+        return per
+    return _VAULT_PATH_LEGACY
+
+
+def _new_vault_path(hwid: str) -> Path:
+    """Yeni kayıt için her zaman per-HWID yolunu döndürür."""
+    _VAULT_DIR.mkdir(parents=True, exist_ok=True)
+    return _VAULT_DIR / f"{hwid}.hclv"
 
 # ── Windows dosya özniteliği sabitleri ────────────────────────────────────────
 _FILE_ATTRIBUTE_READONLY = 0x01
@@ -210,7 +225,9 @@ def _writable(path: Path) -> Iterator[None]:
             _set_readonly(path)
 
 
-def _rewrite_vault(hwid: str, protected: bytes) -> None:
+def _rewrite_vault(
+    hwid: str, protected: bytes, target: Path | None = None
+) -> None:
     """
     Vault dosyasını güvenli biçimde yeniden yazar:
       1. Readonly korumasını geçici olarak kaldırır
@@ -218,17 +235,18 @@ def _rewrite_vault(hwid: str, protected: bytes) -> None:
       3. protected + signature'ı diske yazar
       4. Readonly bitini geri uygular
 
-    Yeni içerik oluşturulurken veya var olan vault güncellenirken
-    her zaman bu fonksiyon kullanılmalıdır.
+    target verilmezse _read_vault_path(hwid) kullanılır.
+    Yeni vault oluştururken target=_new_vault_path(hwid) geçilmeli.
     """
+    path = target if target is not None else _read_vault_path(hwid)
     signature = _sign(_derive_signing_key(hwid), protected)
-    with _writable(path=_VAULT_PATH):
-        _VAULT_PATH.write_bytes(protected + signature)
+    with _writable(path=path):
+        path.write_bytes(protected + signature)
 
 
-def _read_vault_token_id() -> bytes:
+def _read_vault_token_id(hwid: str) -> bytes:
     """Vault dosyasından 16-byte token_id'yi şifre çözmeden okur."""
-    raw = _VAULT_PATH.read_bytes()
+    raw = _read_vault_path(hwid).read_bytes()
     if len(raw) < _TOKEN_ID_OFFSET + _TOKEN_ID_SIZE:
         raise VaultTamperedError("Vault token_id alanını içermeyecek kadar kısa; bozulmuş.")
     return raw[_TOKEN_ID_OFFSET : _TOKEN_ID_OFFSET + _TOKEN_ID_SIZE]
@@ -288,13 +306,13 @@ def create_vault(hwid: str, pin: str, role: str) -> Path:
         _MAGIC + bytes([_VERSION]) + salt + nonce
         + token_id_bytes + ciphertext + tag
     )
-    _VAULT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _rewrite_vault(hwid, protected)
+    vault_file = _new_vault_path(hwid)
+    _rewrite_vault(hwid, protected, target=vault_file)
 
     # ── share_2 + token_id → DB ───────────────────────────────────────────────
     _save_usb_token(hwid, share_2, token_id_hex)
 
-    return _VAULT_PATH
+    return vault_file
 
 
 def verify_vault(hwid: str) -> None:
@@ -312,7 +330,7 @@ def verify_vault(hwid: str) -> None:
         FileNotFoundError  — vault dosyası bulunamazsa
         VaultTamperedError — dosya çok kısaysa veya HMAC geçersizse
     """
-    raw = _VAULT_PATH.read_bytes()
+    raw = _read_vault_path(hwid).read_bytes()
 
     if len(raw) < _MIN_VAULT_SIZE:
         raise VaultTamperedError("Vault dosyası beklenen boyuttan kısa; bozulmuş.")
@@ -375,7 +393,7 @@ def authenticate_usb(hwid: str) -> None:
     # ── Katman 3: Token ID eşleşiyor mu? ─────────────────────────────────────
     vault_token_hex = ""  # NoReturn _reject garantisi; başlangıç değeri tip sinyali için
     try:
-        vault_token_hex = _read_vault_token_id().hex()
+        vault_token_hex = _read_vault_token_id(hwid).hex()
     except VaultTamperedError as exc:
         _reject(str(exc))
 
@@ -430,7 +448,7 @@ def read_vault_role(hwid: str, pin: str) -> str:
     """
     verify_vault(hwid)  # HMAC önce doğrulanır
 
-    raw = _VAULT_PATH.read_bytes()
+    raw = _read_vault_path(hwid).read_bytes()
 
     if raw[:4] != _MAGIC:
         raise VaultTamperedError("Geçersiz vault magic byte'ları.")
@@ -492,7 +510,7 @@ def change_vault_role(hwid: str, pin: str, new_role: str) -> None:
 
     verify_vault(hwid)
 
-    raw = _VAULT_PATH.read_bytes()
+    raw = _read_vault_path(hwid).read_bytes()
 
     if raw[:4] != _MAGIC:
         raise VaultTamperedError("Geçersiz vault magic byte'ları.")

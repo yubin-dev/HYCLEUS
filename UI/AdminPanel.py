@@ -14,9 +14,11 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from CORE.vault_manager import VaultTamperedError, blacklist_usb, change_vault_role
@@ -76,27 +78,53 @@ class AdminPanel(QDialog):
         super().__init__(parent)
         self._current_hwid = current_hwid
         self.setWindowTitle("HYCLEUS — USB Yönetim Paneli")
-        self.setMinimumSize(900, 480)
+        self.setMinimumSize(960, 540)
         self.setStyleSheet(_STYLE)
         self._build_ui()
         self._load()
+        self._load_pending()
 
     # ------------------------------------------------------------------
     # UI kurulumu
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-        layout.setContentsMargins(16, 16, 16, 12)
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+        root.setContentsMargins(16, 16, 16, 12)
 
         title = QLabel("USB Yönetim Paneli")
         title.setFont(QFont("Arial", 13, QFont.Bold))
         title.setStyleSheet("color:#cdd6f4; margin-bottom:2px;")
-        layout.addWidget(title)
+        root.addWidget(title)
 
-        layout.addWidget(self._make_table())
-        layout.addLayout(self._make_btn_bar())
+        tabs = QTabWidget()
+        tabs.setStyleSheet(
+            "QTabWidget::pane{border:1px solid #313244;border-radius:4px;}"
+            "QTabBar::tab{background:#1e1e2e;color:#a6adc8;padding:6px 18px;"
+            "border:1px solid #313244;border-bottom:none;border-radius:4px 4px 0 0;}"
+            "QTabBar::tab:selected{background:#313244;color:#cdd6f4;}"
+        )
+
+        # Sekme 1 — USB Tokenlar
+        usb_page = QWidget()
+        usb_layout = QVBoxLayout(usb_page)
+        usb_layout.setContentsMargins(0, 8, 0, 0)
+        usb_layout.setSpacing(8)
+        usb_layout.addWidget(self._make_table())
+        usb_layout.addLayout(self._make_btn_bar())
+        tabs.addTab(usb_page, "USB Tokenlar")
+
+        # Sekme 2 — Bekleyen Kayıtlar
+        pending_page = QWidget()
+        pending_layout = QVBoxLayout(pending_page)
+        pending_layout.setContentsMargins(0, 8, 0, 0)
+        pending_layout.setSpacing(8)
+        pending_layout.addWidget(self._make_pending_table())
+        pending_layout.addLayout(self._make_pending_btn_bar())
+        tabs.addTab(pending_page, "Bekleyen Kayıtlar")
+
+        root.addWidget(tabs)
 
     def _make_table(self) -> QTableWidget:
         self._table = QTableWidget(0, 5)
@@ -463,3 +491,191 @@ class AdminPanel(QDialog):
             return
 
         self._load()
+
+    # ------------------------------------------------------------------
+    # Bekleyen kayıtlar sekmesi
+    # ------------------------------------------------------------------
+
+    def _make_pending_table(self) -> QTableWidget:
+        self._pending_table = QTableWidget(0, 4)
+        self._pending_table.setHorizontalHeaderLabels(
+            ["Kullanıcı Adı", "HWID", "Rol", "Kayıt Tarihi"]
+        )
+        hdr = self._pending_table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self._pending_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._pending_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._pending_table.setSelectionMode(QTableWidget.SingleSelection)
+        self._pending_table.verticalHeader().setVisible(False)
+        self._pending_table.itemSelectionChanged.connect(
+            self._on_pending_selection_changed
+        )
+        return self._pending_table
+
+    def _make_pending_btn_bar(self) -> QHBoxLayout:
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+
+        self._btn_approve = QPushButton("✓  Onayla")
+        self._btn_approve.setStyleSheet(_BTN_SUCCESS)
+        self._btn_approve.setCursor(Qt.PointingHandCursor)
+        self._btn_approve.setEnabled(False)
+        self._btn_approve.clicked.connect(self._on_approve)
+        bar.addWidget(self._btn_approve)
+
+        self._btn_reject = QPushButton("✕  Reddet")
+        self._btn_reject.setStyleSheet(_BTN_DANGER)
+        self._btn_reject.setCursor(Qt.PointingHandCursor)
+        self._btn_reject.setEnabled(False)
+        self._btn_reject.clicked.connect(self._on_reject)
+        bar.addWidget(self._btn_reject)
+
+        btn_new = QPushButton("＋  Yeni Kullanıcı Kaydet")
+        btn_new.setStyleSheet(_BTN)
+        btn_new.setCursor(Qt.PointingHandCursor)
+        btn_new.clicked.connect(self._on_new_user)
+        bar.addWidget(btn_new)
+
+        bar.addStretch()
+
+        btn_refresh = QPushButton("Yenile")
+        btn_refresh.setStyleSheet(_BTN)
+        btn_refresh.setCursor(Qt.PointingHandCursor)
+        btn_refresh.clicked.connect(self._load_pending)
+        bar.addWidget(btn_refresh)
+
+        return bar
+
+    def _load_pending(self) -> None:
+        self._pending_table.setRowCount(0)
+        try:
+            rows = DBManager().fetchall(
+                """
+                SELECT username, hwid, role, created_at
+                FROM users
+                WHERE status = 'pending'
+                ORDER BY created_at DESC
+                """
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Veritabanı Hatası", str(exc))
+            return
+
+        for row in rows:
+            r = self._pending_table.rowCount()
+            self._pending_table.insertRow(r)
+
+            username_item = QTableWidgetItem(row["username"] or "—")
+            username_item.setData(Qt.UserRole, row["hwid"])        # hwid in UserRole
+            username_item.setData(Qt.UserRole + 1, row["username"])
+            self._pending_table.setItem(r, 0, username_item)
+
+            hwid = row["hwid"] or ""
+            self._pending_table.setItem(
+                r, 1,
+                QTableWidgetItem(hwid[:28] + "…" if len(hwid) > 28 else hwid or "—"),
+            )
+            self._pending_table.setItem(r, 2, QTableWidgetItem(row["role"] or "—"))
+            ts = (row["created_at"] or "").replace("T", " ").rstrip("Z")
+            self._pending_table.setItem(r, 3, QTableWidgetItem(ts or "—"))
+
+        self._on_pending_selection_changed()
+
+    def _on_pending_selection_changed(self) -> None:
+        has_sel = bool(self._pending_table.selectionModel().selectedRows())
+        self._btn_approve.setEnabled(has_sel)
+        self._btn_reject.setEnabled(has_sel)
+
+    def _selected_pending_hwid(self) -> str | None:
+        rows = self._pending_table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        item = self._pending_table.item(rows[0].row(), 0)
+        return item.data(Qt.UserRole) if item else None
+
+    def _selected_pending_username(self) -> str | None:
+        rows = self._pending_table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        item = self._pending_table.item(rows[0].row(), 0)
+        return item.data(Qt.UserRole + 1) if item else None
+
+    def _on_approve(self) -> None:
+        hwid = self._selected_pending_hwid()
+        username = self._selected_pending_username()
+        if not hwid:
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Kaydı Onayla",
+            f"'{username}' kullanıcısının kaydını onaylamak istiyor musunuz?\n\n"
+            f"HWID: {hwid}\n\nOnaylandıktan sonra kullanıcı giriş yapabilecek.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        try:
+            db = DBManager()
+            db.execute(
+                "UPDATE users SET status = 'approved' WHERE hwid = ?", (hwid,)
+            )
+            db.log(
+                "user_approved",
+                detail=f"hwid={hwid} username={username} approved_by={self._current_hwid}",
+            )
+            QMessageBox.information(
+                self, "Onaylandı",
+                f"'{username}' kullanıcısı onaylandı. Artık giriş yapabilir.",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Hata", str(exc))
+            return
+
+        self._load_pending()
+
+    def _on_new_user(self) -> None:
+        from UI.RegisterDialog import RegisterDialog
+        dlg = RegisterDialog(admin_hwid=self._current_hwid, parent=self)
+        if dlg.exec() == RegisterDialog.Accepted:
+            self._load_pending()
+
+    def _on_reject(self) -> None:
+        hwid = self._selected_pending_hwid()
+        username = self._selected_pending_username()
+        if not hwid:
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Kaydı Reddet",
+            f"'{username}' kullanıcısının kaydını reddetmek istiyor musunuz?\n\n"
+            "Kullanıcı kaydı ve USB tokeni silinecek. Bu işlem geri alınamaz.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        try:
+            db = DBManager()
+            db.execute("DELETE FROM users WHERE hwid = ?", (hwid,))
+            db.execute("DELETE FROM usb_tokens WHERE hwid = ?", (hwid,))
+            db.log(
+                "user_rejected",
+                detail=f"hwid={hwid} username={username} rejected_by={self._current_hwid}",
+            )
+            QMessageBox.information(
+                self, "Reddedildi",
+                f"'{username}' kullanıcısının kaydı reddedildi ve silindi.",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Hata", str(exc))
+            return
+
+        self._load_pending()

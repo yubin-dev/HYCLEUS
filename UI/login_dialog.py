@@ -1,4 +1,5 @@
 import json
+import os
 from io import BytesIO
 from pathlib import Path
 
@@ -19,8 +20,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-_TOTP_FILE = Path(__file__).parent.parent / "data" / "totp_secret.json"
-_PIN_FILE  = Path(__file__).parent.parent / "data" / "pin_hash.json"
+from CORE.vault_manager import VaultTamperedError, create_vault, read_vault_role
+from DB.db_manager import DBManager
+
+_TOTP_FILE  = Path(__file__).parent.parent / "data" / "totp_secret.json"
+_PIN_FILE   = Path(__file__).parent.parent / "data" / "pin_hash.json"
+_VAULT_PATH = Path(__file__).parent.parent / "data" / ".hcl_vault"
 _APP_NAME     = "HYCLEUS"
 _PIN_MIN_LEN  = 4
 _TOTP_LEN     = 6
@@ -155,23 +160,33 @@ def _make_qr_pixmap(uri: str, size: int = 180) -> QPixmap:
 # ------------------------------------------------------------------
 
 class LoginDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, hwid: str | None = None, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setStyleSheet(_STYLE)
 
-        self._fail_count  = 0
-        self._locked_out  = False
-        self._role: str   = "Yönetici"
+        self._fail_count = 0
+        self._locked_out = False
+        self._role: str  = "Yönetici"
+        self._hwid       = hwid
 
-        secret   = _load_secret()
-        pin_hash = _load_pin_hash()
-        first_run = secret is None or pin_hash is None
+        # Vault modu: gerçek USB takılıysa VE DEV_MODE kapalıysa
+        self._use_vault: bool = (
+            hwid is not None
+            and os.getenv("DEV_MODE", "").lower() != "true"
+        )
+
+        secret = _load_secret()
+        if self._use_vault:
+            first_run = secret is None or not _VAULT_PATH.exists()
+        else:
+            first_run = secret is None or _load_pin_hash() is None
 
         if first_run:
             self._secret = pyotp.random_base32()
             self._build_setup_ui()
         else:
+            assert secret is not None  # first_run=False garantisi
             self._secret = secret
             self._build_login_ui()
 
@@ -371,7 +386,14 @@ class LoginDialog(QDialog):
             return
 
         role = checked.property("role_value")
-        _save_pin_hash(pin, role)
+        if self._use_vault and self._hwid is not None:
+            try:
+                create_vault(self._hwid, pin, role)
+            except Exception as exc:
+                self._show_error(f"Vault oluşturulamadı: {exc}")
+                return
+        else:
+            _save_pin_hash(pin, role)
         _save_secret(self._secret)
         self._role = role
         self.accept()
@@ -392,7 +414,22 @@ class LoginDialog(QDialog):
             self._totp_input.setFocus()
             return
 
-        pin_ok  = _verify_pin(pin)
+        pin_ok = False
+        role   = ""
+
+        if self._use_vault and self._hwid is not None:
+            try:
+                role   = read_vault_role(self._hwid, pin)
+                pin_ok = True
+            except VaultTamperedError:
+                self._show_error("Vault bütünlüğü bozulmuş — yöneticiye başvurun")
+                return
+            except Exception:
+                pass  # yanlış PIN → pin_ok False kalır
+        else:
+            pin_ok = _verify_pin(pin)
+            role   = _load_role() if pin_ok else ""
+
         totp_ok = pyotp.TOTP(self._secret).verify(code, valid_window=1)
 
         if not pin_ok or not totp_ok:
@@ -405,7 +442,18 @@ class LoginDialog(QDialog):
             self._show_error(f"PIN veya Authenticator kodu hatalı{suffix}")
             return
 
-        self._role = _load_role()
+        # Onay bekleyen kullanıcı kontrolü
+        if self._hwid:
+            pending_row = DBManager().fetchone(
+                "SELECT status FROM users WHERE hwid = ?", (self._hwid,)
+            )
+            if pending_row is not None and pending_row["status"] == "pending":
+                self._show_error(
+                    "Hesabınız yönetici onayı bekliyor — giriş yapılamaz"
+                )
+                return
+
+        self._role = role
         self.accept()
 
     def _do_lockout(self) -> None:

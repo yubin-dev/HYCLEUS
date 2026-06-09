@@ -1,4 +1,12 @@
+import logging
+import os
 import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(name)-24s  %(levelname)-7s  %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -13,12 +21,8 @@ from UI.main_window import HycleusWindow
 def main() -> None:
     app = QApplication(sys.argv)
 
-    # Kimlik doğrulama
-    dialog = LoginDialog()
-    if dialog.exec() != LoginDialog.Accepted:
-        sys.exit(0)
-
-    # USB kontrolü
+    # USB kontrolü — vault modu için login'den önce yapılır;
+    # DEV_MODE'da get_usb_hwid() sahte HWID döndürür, bu dal hiç çalışmaz.
     hwid = get_usb_hwid()
     if hwid is None:
         QMessageBox.critical(
@@ -28,9 +32,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-
-
-    # Oturum anahtarı + DB bağlantısı
+    # DB bağlantısı önce açılır: kurulum aşamasında create_vault() DB'ye yazar.
     session_key = generate_key()
     try:
         DBManager().connect(hwid=hwid, key=session_key)
@@ -38,10 +40,20 @@ def main() -> None:
         QMessageBox.critical(None, "Hata", str(exc))
         sys.exit(1)
 
+    # DEV_MODE: login atla, doğrudan yönetici oturumu aç.
+    dev_mode = os.getenv("DEV_MODE", "").lower() in ("1", "true", "yes")
+    if dev_mode:
+        role = "Yönetici"
+    else:
+        dialog = LoginDialog(hwid=hwid)
+        if dialog.exec() != LoginDialog.Accepted:
+            sys.exit(0)
+        role = dialog.role
+
     start_scheduler()
     app.aboutToQuit.connect(stop_scheduler)
 
-    win = HycleusWindow(hwid=hwid, key=session_key, role=dialog.role)
+    win = HycleusWindow(hwid=hwid, key=session_key, role=role)
     win.show()
     sys.exit(app.exec())
 
