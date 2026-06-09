@@ -137,6 +137,9 @@ class TagDialog(QDialog):
         self._name_input.setPlaceholderText("Etiket adı (örn: İş 001, Okul 003)")
         layout.addWidget(self._name_input)
 
+        self._private_cb = QCheckBox("🔒  Mahrem (gizli) — sadece Yönetici görebilir")
+        layout.addWidget(self._private_cb)
+
         # Renk seçici
         color_row = QHBoxLayout()
         color_lbl = QLabel("Renk:")
@@ -215,7 +218,7 @@ class TagDialog(QDialog):
 
         try:
             db       = DBManager()
-            all_tags = db.fetchall("SELECT id, name, color FROM tags ORDER BY name")
+            all_tags = db.fetchall("SELECT id, name, color, is_private FROM tags ORDER BY name")
             assigned = {
                 r["tag_id"]
                 for r in db.fetchall(
@@ -248,7 +251,8 @@ class TagDialog(QDialog):
             )
             dot.setFixedWidth(18)
 
-            cb = QCheckBox(tag["name"])
+            label_text = f"🔒 {tag['name']}" if tag["is_private"] else tag["name"]
+            cb = QCheckBox(label_text)
             cb.setChecked(tag["id"] in assigned)
 
             row_h.addWidget(dot)
@@ -270,10 +274,11 @@ class TagDialog(QDialog):
             QMessageBox.warning(self, "Etiket", "Etiket adı boş olamaz.")
             return
 
+        is_private = 1 if self._private_cb.isChecked() else 0
         try:
             DBManager().execute(
-                "INSERT INTO tags (name, color) VALUES (?, ?)",
-                (name, self._selected_color),
+                "INSERT INTO tags (name, color, is_private) VALUES (?, ?, ?)",
+                (name, self._selected_color, is_private),
             )
         except Exception as exc:
             if "UNIQUE" in str(exc):

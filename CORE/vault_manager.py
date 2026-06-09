@@ -557,6 +557,63 @@ def change_vault_role(hwid: str, pin: str, new_role: str) -> None:
     _rewrite_vault(hwid, new_protected)
 
 
+def change_vault_pin(hwid: str, old_pin: str, new_pin: str) -> None:
+    """
+    Vault PIN'ini değiştirir.
+
+    Eski PIN ile çözülür, yeni salt + yeni KEK ile yeniden şifrelenir.
+    Master key ve Shamir payları korunur; yalnızca şifreleme anahtarı yenilenir.
+
+    Raises:
+        FileNotFoundError  — vault dosyası yoksa
+        VaultTamperedError — HMAC doğrulaması başarısızsa
+        ValueError         — eski PIN yanlış, vault formatı geçersiz veya yeni PIN boşsa
+    """
+    if not new_pin:
+        raise ValueError("Yeni PIN boş olamaz.")
+
+    verify_vault(hwid)
+
+    raw = _read_vault_path(hwid).read_bytes()
+    if raw[:4] != _MAGIC:
+        raise VaultTamperedError("Geçersiz vault magic byte'ları.")
+    if raw[4] != _VERSION:
+        raise ValueError(f"Desteklenmeyen vault versiyonu: {raw[4]}")
+
+    salt       = raw[5 : 5 + _SALT_SIZE]
+    nonce      = raw[21 : 21 + _NONCE_SIZE]
+    token_id_b = raw[_TOKEN_ID_OFFSET : _TOKEN_ID_OFFSET + _TOKEN_ID_SIZE]
+
+    protected  = raw[:-_HMAC_SIZE]
+    tag        = protected[-_TAG_SIZE:]
+    ciphertext = protected[_HEADER_SIZE:-_TAG_SIZE]
+
+    old_kek = _derive_kek(old_pin, salt)
+    decryptor = Cipher(algorithms.AES(old_kek), modes.GCM(nonce, tag)).decryptor()
+    decryptor.authenticate_additional_data(hwid.encode())
+    try:
+        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+    except Exception as exc:
+        raise ValueError(
+            "Eski PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız."
+        ) from exc
+
+    new_salt  = os.urandom(_SALT_SIZE)
+    new_nonce = os.urandom(_NONCE_SIZE)
+    new_kek   = _derive_kek(new_pin, new_salt)
+
+    encryptor = Cipher(algorithms.AES(new_kek), modes.GCM(new_nonce)).encryptor()
+    encryptor.authenticate_additional_data(hwid.encode())
+    new_ct  = encryptor.update(plaintext) + encryptor.finalize()
+    new_tag = encryptor.tag
+
+    new_protected = (
+        _MAGIC + bytes([_VERSION]) + new_salt + new_nonce
+        + token_id_b + new_ct + new_tag
+    )
+    _rewrite_vault(hwid, new_protected)
+
+
 def reconstruct_key(share_1: str, share_2: str) -> bytes:
     """
     İki Shamir payını birleştirerek orijinal master_key'i kurtarır.

@@ -229,6 +229,49 @@ class DBManager:
             self._conn.execute("ALTER TABLE users ADD COLUMN hwid TEXT")
         except sqlite3.OperationalError:
             pass  # kolon zaten var
+        # Migration: tags.is_private — mahrem etiket sistemi
+        try:
+            self._conn.execute(
+                "ALTER TABLE tags ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        # Migration: users.last_pin_changed — PIN güncelleme tarihi
+        try:
+            self._conn.execute("ALTER TABLE users ADD COLUMN last_pin_changed TEXT")
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        # Migration: folders — hiyerarşik klasör sistemi
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS folders (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT    NOT NULL,
+                parent_id  INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+                owner_id   INTEGER REFERENCES users(id)   ON DELETE SET NULL,
+                created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id)"
+        )
+        # Migration: files.folder_id — klasöre atama
+        try:
+            self._conn.execute(
+                "ALTER TABLE files ADD COLUMN folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        # Migration: auth_codes — geçici 8 haneli yönetici paylaşım kodları
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS auth_codes (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                code       TEXT    NOT NULL,
+                expires_at TEXT    NOT NULL,
+                used       INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            )
+        """)
         self._conn.commit()
 
     @property

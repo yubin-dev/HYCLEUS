@@ -147,6 +147,8 @@ def encrypt_file(
 def decrypt_file(
     src: Path | str,
     key: bytes,
+    *,
+    hwid: str | None = None,
 ) -> tuple[bytes, dict]:
     """
     data/quarantine/ içindeki .hcl dosyasını çözer.
@@ -213,7 +215,16 @@ def decrypt_file(
                     "Dosya veya metadata bütünlüğü doğrulanamadı — "
                     "şifreli içerik, anahtar veya AAD değiştirilmiş olabilir."
                 ) from exc
-            return bytes(buf), json.loads(aad.decode())
+            meta = json.loads(aad.decode())
+            if (
+                hwid is not None
+                and meta.get("hwid") is not None
+                and meta["hwid"] != hwid
+            ):
+                raise AuthenticationError(
+                    "HWID uyuşmazlığı — dosya farklı bir cihazda şifrelendi."
+                )
+            return bytes(buf), meta
         finally:
             # Hata ya da başarı fark etmeksizin ara tamponu sıfırla
             if buf:
