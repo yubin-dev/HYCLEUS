@@ -55,7 +55,8 @@ from DB.db_manager import DBManager
 from UI.AdminPanel import AdminPanel
 from UI.AuditLogDialog import AuditLogDialog
 
-_TOTP_FILE = Path(__file__).parent.parent / "data" / "totp_secret.json"
+from CORE.paths import data_dir as _data_dir
+_TOTP_FILE = _data_dir() / "totp_secret.json"
 
 # ── Renk paletleri ────────────────────────────────────────────────────────────
 _DARK: dict[str, str] = {

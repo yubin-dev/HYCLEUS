@@ -82,8 +82,9 @@ _HEADER_SIZE = _TOKEN_ID_OFFSET + _TOKEN_ID_SIZE  # 49 B
 # share_1 = "1:" + 66 hex = 68 B; s1_len prefix = 2B; role min 1 char
 _MIN_VAULT_SIZE = _HEADER_SIZE + 2 + 68 + 1 + _TAG_SIZE + _HMAC_SIZE  # 172 B
 
-_VAULT_PATH_LEGACY = Path(__file__).parent.parent / "data" / ".hcl_vault"
-_VAULT_DIR         = Path(__file__).parent.parent / "data" / "vaults"
+from CORE.paths import data_dir as _data_dir
+_VAULT_PATH_LEGACY = _data_dir() / ".hcl_vault"
+_VAULT_DIR         = _data_dir() / "vaults"
 
 
 def _read_vault_path(hwid: str) -> Path:

@@ -5,3 +5,5 @@ __pycache__/
 *.hcl
 /quarantine/
 /data/
+dist/
+build/

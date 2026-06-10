@@ -35,6 +35,7 @@ def main() -> None:
     app = QApplication(sys.argv)
 
     hwid = get_usb_hwid()
+
     if hwid is None:
         QMessageBox.critical(
             None,
@@ -43,7 +44,27 @@ def main() -> None:
         )
         sys.exit(1)
 
-    dev_mode = os.getenv("DEV_MODE", "").lower() in ("1", "true", "yes")
+    # sys.frozen → PyInstaller EXE; ortam değişkeni miras alınsa bile DEV_MODE kapalı
+    if hasattr(sys, "frozen"):
+        dev_mode = False
+    else:
+        dev_mode = os.getenv("DEV_MODE", "").lower() in ("1", "true", "yes")
+
+    # ── use_vault + first_run: tek noktada hesapla, LoginDialog'a geç ─────────
+    from CORE.vault_manager import _read_vault_path as _rvp
+    from UI.login_dialog import _load_secret as _ls
+    _use_vault = not dev_mode   # hwid None kontrolü yukarıda yapıldı
+    if _use_vault:
+        _vault_path   = _rvp(hwid)
+        _vault_exists = _vault_path.exists()
+        _secret       = _ls()
+        _first_run    = (_secret is None) or (not _vault_exists)
+    else:
+        _vault_path   = None
+        _vault_exists = False
+        _secret       = None
+        _first_run    = False   # DEV_MODE — LoginDialog gösterilmeyecek
+    # ─────────────────────────────────────────────────────────────────────────
 
     # DB bağlantısını geçici boş anahtar ile aç (şifreleme anahtarı login'den sonra gelir)
     try:
@@ -57,7 +78,7 @@ def main() -> None:
         session_key = _dev_key(hwid)
         _log.info("DEV_MODE aktif — HWID'den deterministik anahtar türetildi  hwid=%s", hwid)
     else:
-        dialog = LoginDialog(hwid=hwid)
+        dialog = LoginDialog(hwid=hwid, first_run=_first_run, use_vault=_use_vault)
         if dialog.exec() != LoginDialog.Accepted:
             sys.exit(0)
         _log.info(

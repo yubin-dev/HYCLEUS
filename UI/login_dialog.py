@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from io import BytesIO
 from pathlib import Path
 
@@ -45,9 +46,10 @@ from DB.db_manager import DBManager
 
 # ── Paths / constants ─────────────────────────────────────────────────────────
 
-_TOTP_FILE   = Path(__file__).parent.parent / "data" / "totp_secret.json"
-_PIN_FILE    = Path(__file__).parent.parent / "data" / "pin_hash.json"
-_VAULT_PATH  = Path(__file__).parent.parent / "data" / ".hcl_vault"
+from CORE.paths import data_dir as _data_dir
+_TOTP_FILE   = _data_dir() / "totp_secret.json"
+_PIN_FILE    = _data_dir() / "pin_hash.json"
+_VAULT_PATH  = _data_dir() / ".hcl_vault"
 _APP_NAME    = "HYCLEUS"
 _PIN_MIN_LEN = 4
 _TOTP_LEN    = 6
@@ -287,7 +289,13 @@ def _hsep() -> QFrame:
 # ── Dialog ─────────────────────────────────────────────────────────────────────
 
 class LoginDialog(QDialog):
-    def __init__(self, hwid: str | None = None, parent=None) -> None:
+    def __init__(
+        self,
+        hwid: str | None = None,
+        first_run: bool | None = None,
+        use_vault: bool | None = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -298,21 +306,30 @@ class LoginDialog(QDialog):
         self._role: str     = "Yönetici"
         self.session_key: bytes = b""
         self._drag_pos: QPoint | None = None
-        self._use_vault   = (
-            hwid is not None
-            and os.getenv("DEV_MODE", "").lower() not in ("1", "true", "yes")
-        )
+
+        # use_vault: main.py'den gelir (sys.frozen korumalı); yoksa fallback
+        if use_vault is not None:
+            self._use_vault = use_vault
+        else:
+            self._use_vault = (
+                hwid is not None
+                and not hasattr(sys, "frozen")
+                and os.getenv("DEV_MODE", "").lower() not in ("1", "true", "yes")
+            )
 
         secret = _load_secret()
-        if self._use_vault:
-            # Per-HWID yolunu kontrol et (data/vaults/{hwid}.hclv),
-            # yoksa legacy data/.hcl_vault'a düşer — ikisi de mevcut değilse first_run
-            vault_exists = _read_vault_path(hwid).exists() if hwid else False
-            first_run = secret is None or not vault_exists
-        else:
-            first_run = secret is None or _load_pin_hash() is None
 
-        if first_run:
+        # first_run: main.py'den gelir; yoksa hesapla
+        if first_run is not None:
+            _first_run = first_run
+        elif self._use_vault:
+            _vault_path   = _read_vault_path(hwid) if hwid else None
+            _vault_exists = _vault_path.exists() if _vault_path else False
+            _first_run    = secret is None or not _vault_exists
+        else:
+            _first_run = secret is None or _load_pin_hash() is None
+
+        if _first_run:
             self._secret = pyotp.random_base32()
             self._init_card(640, 760)
             self._build_setup_ui()

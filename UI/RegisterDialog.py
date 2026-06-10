@@ -30,7 +30,8 @@ from CORE.usb_manager import _sanitize_hwid, get_usb_hwid
 from CORE.vault_manager import create_vault
 from DB.db_manager import DBManager
 
-_TOTP_FILE   = Path(__file__).parent.parent / "data" / "totp_secret.json"
+from CORE.paths import data_dir as _data_dir
+_TOTP_FILE   = _data_dir() / "totp_secret.json"
 _PIN_MIN_LEN = 4
 _PH          = PasswordHasher()
 

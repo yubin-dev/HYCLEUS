@@ -10,7 +10,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-_DEFAULT_DB_PATH = Path(__file__).parent.parent / "data" / "hycleus.db"
+from CORE.paths import data_dir as _data_dir
+_DEFAULT_DB_PATH = _data_dir() / "hycleus.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
