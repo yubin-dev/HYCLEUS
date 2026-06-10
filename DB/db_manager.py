@@ -278,6 +278,16 @@ class DBManager:
                 created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             )
         """)
+        # Migration: settings — uygulama ayarları
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        self._conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('imha_ttl_hours', '24')"
+        )
         self._conn.commit()
 
     @property
@@ -306,6 +316,17 @@ class DBManager:
     # ------------------------------------------------------------------
     # Audit log kolaylığı
     # ------------------------------------------------------------------
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        row = self.fetchone("SELECT value FROM settings WHERE key = ?", (key,))
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
 
     def log(
         self,

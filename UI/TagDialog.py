@@ -80,16 +80,22 @@ def _sep() -> QFrame:
 class TagDialog(QDialog):
     """Dosyaya etiket atama diyaloğu."""
 
-    def __init__(self, file_id: int, role: str = "", parent=None) -> None:
+    def __init__(self, file_id: int, role: str = "", parent=None, *,
+                 file_ids: list[int] | None = None) -> None:
         super().__init__(parent)
-        self._file_id        = file_id
+        self._file_ids: list[int] | None = file_ids
+        self._file_id        = file_ids[0] if file_ids else file_id
+        self._initial_assigned: set[int] = set()
         self._role_norm      = role.strip().lower()
         self._is_admin       = self._role_norm == "yönetici"
         self._selected_color = _TAG_COLORS[0]
         self._color_btns: list[QPushButton]           = []
         self._checkboxes: list[tuple[QCheckBox, int]] = []
 
-        self.setWindowTitle("HYCLEUS — Etiket Ata")
+        self.setWindowTitle(
+            f"HYCLEUS — {len(file_ids)} Dosyaya Etiket Ata"
+            if file_ids else "HYCLEUS — Etiket Ata"
+        )
         self.setFixedWidth(360)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setStyleSheet(_STYLE)
@@ -105,7 +111,8 @@ class TagDialog(QDialog):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(8)
 
-        title = QLabel("🏷  Etiket Ata")
+        n = len(self._file_ids) if self._file_ids else 0
+        title = QLabel(f"🏷  Toplu Etiket Ata  ({n} dosya)" if n > 1 else "🏷  Etiket Ata")
         title.setObjectName("title")
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
@@ -223,16 +230,28 @@ class TagDialog(QDialog):
         try:
             db       = DBManager()
             all_tags = db.fetchall("SELECT id, name, color, is_private FROM tags ORDER BY name")
-            assigned = {
-                r["tag_id"]
-                for r in db.fetchall(
-                    "SELECT tag_id FROM file_tags WHERE file_id = ?",
-                    (self._file_id,),
-                )
-            }
+            if self._file_ids:
+                ph = ",".join("?" * len(self._file_ids))
+                assigned = {
+                    r["tag_id"]
+                    for r in db.fetchall(
+                        f"SELECT tag_id FROM file_tags WHERE file_id IN ({ph})"
+                        f" GROUP BY tag_id HAVING COUNT(DISTINCT file_id) = {len(self._file_ids)}",
+                        self._file_ids,
+                    )
+                }
+            else:
+                assigned = {
+                    r["tag_id"]
+                    for r in db.fetchall(
+                        "SELECT tag_id FROM file_tags WHERE file_id = ?",
+                        (self._file_id,),
+                    )
+                }
         except Exception as exc:
             QMessageBox.warning(self, "Veritabanı", str(exc))
             return
+        self._initial_assigned = assigned
 
         if not all_tags:
             empty = QLabel("Henüz etiket yok. Aşağıdan yeni etiket oluşturun.")
@@ -301,34 +320,49 @@ class TagDialog(QDialog):
     def _on_save(self) -> None:
         db        = DBManager()
         to_assign = {tag_id for cb, tag_id in self._checkboxes if cb.isChecked()}
+        to_remove = self._initial_assigned - to_assign
 
         try:
-            prev = {
-                r["tag_id"]
-                for r in db.fetchall(
-                    "SELECT tag_id FROM file_tags WHERE file_id = ?",
-                    (self._file_id,),
+            if self._file_ids:
+                for fid in self._file_ids:
+                    for tag_id in to_assign:
+                        db.execute(
+                            "INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)",
+                            (fid, tag_id),
+                        )
+                    for tag_id in to_remove:
+                        db.execute(
+                            "DELETE FROM file_tags WHERE file_id = ? AND tag_id = ?",
+                            (fid, tag_id),
+                        )
+                db.log(
+                    "file_tags_bulk_updated",
+                    detail=f"file_ids={self._file_ids} tags={sorted(to_assign)}",
                 )
-            }
-
-            for tag_id in to_assign - prev:
-                db.execute(
-                    "INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)",
-                    (self._file_id, tag_id),
+            else:
+                prev = {
+                    r["tag_id"]
+                    for r in db.fetchall(
+                        "SELECT tag_id FROM file_tags WHERE file_id = ?",
+                        (self._file_id,),
+                    )
+                }
+                for tag_id in to_assign - prev:
+                    db.execute(
+                        "INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)",
+                        (self._file_id, tag_id),
+                    )
+                for tag_id in prev - to_assign:
+                    db.execute(
+                        "DELETE FROM file_tags WHERE file_id = ? AND tag_id = ?",
+                        (self._file_id, tag_id),
+                    )
+                db.log(
+                    "file_tags_updated",
+                    target_type="file",
+                    target_id=self._file_id,
+                    detail=f"tags={sorted(to_assign)}",
                 )
-
-            for tag_id in prev - to_assign:
-                db.execute(
-                    "DELETE FROM file_tags WHERE file_id = ? AND tag_id = ?",
-                    (self._file_id, tag_id),
-                )
-
-            db.log(
-                "file_tags_updated",
-                target_type="file",
-                target_id=self._file_id,
-                detail=f"tags={sorted(to_assign)}",
-            )
         except Exception as exc:
             QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
             return

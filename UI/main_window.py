@@ -6,7 +6,7 @@ from pathlib import Path
 
 _log = logging.getLogger("hycleus.ui")
 
-from PySide6.QtCore import QObject, QPoint, QSize, QThread, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QPoint, QRunnable, QSize, QThread, QThreadPool, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -20,6 +20,7 @@ from PySide6.QtGui import (
     QResizeEvent,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QFrame,
     QGraphicsBlurEffect,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QTableWidget,
@@ -140,6 +142,110 @@ def _make_dot_pixmap(color: str, size: int = 8) -> QPixmap:
     return pm
 
 
+# ── Batch file-processing worker ─────────────────────────────────────────────
+
+class _ProcessSignals(QObject):
+    """Main-thread signal bridge for QRunnable workers."""
+    file_done = Signal(object)   # dict result
+
+
+class _FileRunnable(QRunnable):
+    """Encrypt → DB insert → scan a single file in the thread pool."""
+
+    def __init__(
+        self,
+        src: Path,
+        key: bytes,
+        hwid: str,
+        label: str,
+        folder_id: int | None,
+        signals: _ProcessSignals,
+        ttl_hours: int = 24,
+        user_id: int = 1,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._src       = src
+        self._key       = key
+        self._hwid      = hwid
+        self._label     = label
+        self._folder_id = folder_id
+        self._signals   = signals
+        self._ttl_hours = ttl_hours
+        self._user_id   = user_id
+
+    def run(self) -> None:
+        from datetime import datetime, timedelta, timezone as _tz
+        result: dict = {
+            "ok": False, "filename": self._src.name,
+            "label": self._label, "folder_id": self._folder_id,
+        }
+
+        try:
+            hcl_path, sha256_hex, aad_json = encrypt_file(
+                self._src, self._key, user_id=self._user_id, hwid=self._hwid,
+            )
+        except Exception as exc:
+            result["error"] = f"Şifreleme: {exc}"
+            self._signals.file_done.emit(result)
+            return
+
+        expires_at = (
+            datetime.now(_tz.utc) + timedelta(hours=self._ttl_hours)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        today      = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+        size_bytes = self._src.stat().st_size
+
+        try:
+            db = DBManager()
+            db.execute(
+                """
+                INSERT INTO files
+                    (filename, filepath, label, size_bytes, expires_at,
+                     original_sha256, aad_metadata, folder_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(filepath) DO UPDATE SET
+                    filename        = excluded.filename,
+                    label           = excluded.label,
+                    size_bytes      = excluded.size_bytes,
+                    expires_at      = excluded.expires_at,
+                    original_sha256 = excluded.original_sha256,
+                    aad_metadata    = excluded.aad_metadata,
+                    folder_id       = excluded.folder_id
+                """,
+                (self._src.name, str(hcl_path), self._label, size_bytes,
+                 expires_at, sha256_hex, aad_json, self._folder_id),
+            )
+            row = db.fetchone("SELECT id FROM files WHERE filepath = ?", (str(hcl_path),))
+            if row is None:
+                raise RuntimeError(f"files kaydı bulunamadı: {hcl_path}")
+            file_id = row["id"]
+            db.log("file_added", target_type="file", target_id=file_id,
+                   detail=f"label={self._label} hwid={self._hwid} hcl={hcl_path.name}")
+        except Exception as exc:
+            result["error"] = f"Veritabanı: {exc}"
+            self._signals.file_done.emit(result)
+            return
+
+        verdict = ""
+        mock    = False
+        try:
+            sr      = scan_file(hcl_path, file_id=file_id)
+            verdict = sr.verdict
+            mock    = sr.mock
+        except Exception:
+            pass
+
+        result.update({
+            "ok": True, "file_id": file_id,
+            "filename": self._src.name, "label": self._label,
+            "size_bytes": size_bytes, "date": today,
+            "sha256": sha256_hex, "filepath": str(hcl_path),
+            "expires_at": expires_at, "verdict": verdict, "mock": mock,
+        })
+        self._signals.file_done.emit(result)
+
+
 # ── Scan worker ───────────────────────────────────────────────────────────────
 
 class _ScanWorker(QObject):
@@ -225,6 +331,15 @@ class HycleusWindow(QMainWindow):
         self._threads: list[QThread]  = []
         self._workers: list[QObject]  = []
         self._dark: bool         = True
+
+        self._pool = QThreadPool.globalInstance()
+        self._pool.setMaxThreadCount(6)
+        self._batch_total:      int  = 0
+        self._batch_done:       int  = 0
+        self._batch_errors:     int  = 0
+        self._batch_has_folder: bool = False
+        self._batch_signals = _ProcessSignals()
+        self._batch_signals.file_done.connect(self._on_file_done)
         self._T: dict[str, str]  = _DARK.copy()
         self._current_tag_id: int | None            = None
         self._active_tag_btn: QPushButton | None    = None
@@ -528,6 +643,14 @@ class HycleusWindow(QMainWindow):
 
         lay.addWidget(search_container)
 
+        # İlerleme banner (batch upload)
+        self._progress_banner = QLabel()
+        self._progress_banner.setObjectName("progress_banner")
+        self._progress_banner.setAlignment(Qt.AlignCenter)
+        self._progress_banner.setFixedHeight(32)
+        self._progress_banner.setVisible(False)
+        lay.addWidget(self._progress_banner)
+
         # İmha banner
         self._expiry_banner = QLabel()
         self._expiry_banner.setObjectName("expiry_banner")
@@ -553,6 +676,7 @@ class HycleusWindow(QMainWindow):
         self._table.verticalHeader().setDefaultSectionSize(48)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._table.setSelectionMode(QTableWidget.ExtendedSelection)
         self._table.verticalHeader().setVisible(False)
         self._table.setShowGrid(False)
         self._table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -808,7 +932,7 @@ class HycleusWindow(QMainWindow):
             QTableWidget::item:hover {{ background: {T['row_hover']}; }}
             QTableWidget::item:selected {{
                 background: #EFF6FF;
-                color: {T['text']};
+                color: #111827;
             }}
             QLabel#drop_hint {{
                 color: #9CA3AF;
@@ -822,6 +946,15 @@ class HycleusWindow(QMainWindow):
                 color: {T['subtext']};
                 font-size: 13px;
                 background: {T['sidebar']};
+                border-radius: 8px;
+                padding: 4px 12px;
+                margin: 4px 12px 0;
+            }}
+            QLabel#progress_banner {{
+                color: #FFFFFF;
+                font-size: 13px;
+                font-weight: 600;
+                background: #2563EB;
                 border-radius: 8px;
                 padding: 4px 12px;
                 margin: 4px 12px 0;
@@ -1316,7 +1449,7 @@ class HycleusWindow(QMainWindow):
         )
         if confirm != QMessageBox.Yes:
             return
-        expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=self._get_imha_ttl_hours())).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
             db    = DBManager()
             rows  = db.fetchall("SELECT id FROM files WHERE folder_id = ?", (folder_id,))
@@ -1684,76 +1817,22 @@ class HycleusWindow(QMainWindow):
 
     def _handle_dropped_file(self, src: Path, label: str = "Karantina",
                              folder_id: int | None = None) -> None:
-        _log.info("drop_received  file=%s  label=%s  folder_id=%s", src.name, label, folder_id)
         if not src.is_file():
             return
-
-        live_hwid = get_usb_hwid()
-        if live_hwid is None:
+        if get_usb_hwid() is None:
             QMessageBox.warning(self, "USB Bulunamadı",
                                 "Yetkili USB cihazı takılı değil.\nDosya eklenemez.")
             self._refresh_usb_badge()
             return
-
-        try:
-            hcl_path, sha256_hex, aad_json = encrypt_file(src, self._key, user_id=1, hwid=live_hwid)
-        except AuthenticationError as exc:
-            QMessageBox.critical(self, "Bütünlük Hatası", str(exc))
-            return
-        except Exception as exc:
-            QMessageBox.critical(self, "Şifreleme Hatası", str(exc))
-            return
-
-        expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        today      = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        size_bytes = src.stat().st_size
-
-        try:
-            db = DBManager()
-            db.execute(
-                """
-                INSERT INTO files
-                    (filename, filepath, label, size_bytes, expires_at, original_sha256, aad_metadata, folder_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(filepath) DO UPDATE SET
-                    filename        = excluded.filename,
-                    label           = excluded.label,
-                    size_bytes      = excluded.size_bytes,
-                    expires_at      = excluded.expires_at,
-                    original_sha256 = excluded.original_sha256,
-                    aad_metadata    = excluded.aad_metadata,
-                    folder_id       = excluded.folder_id
-                """,
-                (src.name, str(hcl_path), label, size_bytes, expires_at, sha256_hex, aad_json, folder_id),
-            )
-            row_id = db.fetchone("SELECT id FROM files WHERE filepath = ?", (str(hcl_path),))
-            if row_id is None:
-                raise RuntimeError(f"files kaydı bulunamadı: {hcl_path}")
-            file_id = row_id["id"]
-            db.log("file_added", target_type="file", target_id=file_id,
-                   detail=f"label={label} hwid={live_hwid} hcl={hcl_path.name}")
-        except Exception as exc:
-            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
-            return
-
-        self._insert_row(
-            src.name, label, self._fmt_size(size_bytes), today,
-            file_id=file_id, sha256=sha256_hex, filepath=str(hcl_path),
-        )
-        scan_row = self._table.rowCount() - 1
-        self._table.scrollToBottom()
-        self._start_scan(src, file_id, scan_row)
+        self._start_batch([(src, label, folder_id)])
 
     def _handle_dropped_folder(self, folder: Path, label: str = "Karantina") -> None:
         files = sorted(p for p in folder.rglob("*") if p.is_file())
         if not files:
-            QMessageBox.information(
-                self, "Klasör Ekle",
-                f"'{folder.name}' klasöründe dosya bulunamadı."
-            )
+            QMessageBox.information(self, "Klasör Ekle",
+                                    f"'{folder.name}' klasöründe dosya bulunamadı.")
             return
 
-        # DB'de klasör kaydı oluştur
         folder_id: int | None = None
         try:
             db = DBManager()
@@ -1765,10 +1844,8 @@ class HycleusWindow(QMainWindow):
                     " VALUES (?, ?, ?, ?, ?, ?)",
                     (self._user_id, "yonetici", "", "admin", "approved", _ehwid),
                 )
-            db.execute(
-                "INSERT INTO folders (name, owner_id) VALUES (?, ?)",
-                (folder.name, self._user_id),
-            )
+            db.execute("INSERT INTO folders (name, owner_id) VALUES (?, ?)",
+                       (folder.name, self._user_id))
             _frow = db.fetchone(
                 "SELECT id FROM folders WHERE name = ? AND owner_id = ? ORDER BY id DESC LIMIT 1",
                 (folder.name, self._user_id),
@@ -1780,11 +1857,75 @@ class HycleusWindow(QMainWindow):
         except Exception as exc:
             _log.warning("folder_create_failed  exc=%s", exc)
 
-        for f in files:
-            self._handle_dropped_file(f, label=label, folder_id=folder_id)
+        self._start_batch([(f, label, folder_id) for f in files])
 
-        if folder_id is not None:
+    # ── Batch pipeline ────────────────────────────────────────────────────────
+
+    def _start_batch(self, files: list[tuple[Path, str, int | None]]) -> None:
+        if self._batch_done >= self._batch_total:
+            self._batch_total  = 0
+            self._batch_done   = 0
+            self._batch_errors = 0
+            self._batch_has_folder = False
+
+        self._batch_total += len(files)
+        self._batch_has_folder = self._batch_has_folder or any(
+            fid is not None for _, _, fid in files
+        )
+        self._update_progress_banner()
+
+        ttl = self._get_imha_ttl_hours()
+        for src, label, folder_id in files:
+            runnable = _FileRunnable(
+                src=src, key=self._key, hwid=self._hwid,
+                label=label, folder_id=folder_id,
+                signals=self._batch_signals, ttl_hours=ttl,
+            )
+            self._pool.start(runnable)
+
+    def _on_file_done(self, result: dict) -> None:
+        self._batch_done += 1
+        if result.get("ok"):
+            self._insert_row(
+                result["filename"], result["label"],
+                self._fmt_size(result["size_bytes"]),
+                result["date"],
+                scan_verdict=result["verdict"],
+                scan_mock=result["mock"],
+                file_id=result["file_id"],
+                sha256=result["sha256"],
+                filepath=result["filepath"],
+                expires_at=result["expires_at"],
+            )
+            self._table.scrollToBottom()
+        else:
+            self._batch_errors += 1
+            _log.warning("batch_file_error  file=%s  err=%s",
+                         result.get("filename"), result.get("error"))
+        self._update_progress_banner()
+        if self._batch_done >= self._batch_total:
+            self._on_batch_complete()
+
+    def _on_batch_complete(self) -> None:
+        success = self._batch_done - self._batch_errors
+        errors  = self._batch_errors
+        self._progress_banner.setVisible(False)
+        if self._batch_has_folder:
             self._refresh_folder_sidebar()
+        msg = f"Tamamlandı — {success}/{self._batch_done} dosya işlendi"
+        if errors:
+            msg += f", {errors} hata"
+        QMessageBox.information(self, "Yükleme Tamamlandı", msg)
+
+    def _update_progress_banner(self) -> None:
+        if self._batch_total == 0:
+            self._progress_banner.setVisible(False)
+            return
+        self._progress_banner.setText(
+            f"⏳  {self._batch_done}/{self._batch_total} işlendi"
+            + (f"  ({self._batch_errors} hata)" if self._batch_errors else "")
+        )
+        self._progress_banner.setVisible(True)
 
     # ── USB kilit ─────────────────────────────────────────────────────────────
 
@@ -1960,6 +2101,12 @@ class HycleusWindow(QMainWindow):
             _log.debug("context_menu_blocked  fn=_on_context_menu  role=%r", self._role)
             return
 
+        selected_rows = sorted({idx.row() for idx in self._table.selectedIndexes()})
+        clicked_row   = self._table.rowAt(pos.y())
+        if len(selected_rows) > 1 and clicked_row in selected_rows:
+            self._on_bulk_context_menu(pos, selected_rows)
+            return
+
         row = self._table.rowAt(pos.y())
         if row < 0:
             return
@@ -2117,6 +2264,239 @@ class HycleusWindow(QMainWindow):
             if self._current_tag_id is not None:
                 self._load_tag_files(self._current_tag_id)
 
+    def _on_bulk_context_menu(self, pos: QPoint, rows: list[int]) -> None:
+        file_ids:  list[int] = []
+        labels:    list[str] = []
+        filepaths: list[str] = []
+        for r in rows:
+            item = self._table.item(r, 0)
+            if item is not None:
+                fid      = item.data(Qt.UserRole)
+                label    = item.data(Qt.UserRole + 2) or ""
+                filepath = item.data(Qt.UserRole + 3) or ""
+                if fid is not None:
+                    file_ids.append(fid)
+                    labels.append(label)
+                    filepaths.append(filepath)
+        if not file_ids:
+            return
+
+        n              = len(file_ids)
+        all_karantina  = all(lbl == "Karantina" for lbl in labels)
+        any_not_kritik = any(lbl != "Kritik"    for lbl in labels)
+        any_not_imha   = any(lbl != "Imha"      for lbl in labels)
+
+        T = self._T
+        mstyle = (
+            f"QMenu {{ background:{T['topbar']}; color:{T['text']};"
+            f" border:1px solid {T['border']}; border-radius:8px; padding:4px 0; }}"
+            f"QMenu::item {{ padding:9px 22px; font-size:13px; }}"
+            f"QMenu::item:selected {{ background:#EFF6FF; color:#111827; border-radius:4px; }}"
+            f"QMenu::separator {{ height:1px; background:{T['border']}; margin:4px 10px; }}"
+        )
+        menu = QMenu(self)
+        menu.setStyleSheet(mstyle)
+
+        act_tags     = menu.addAction(f"🏷  Toplu Etiket Ata  ({n} dosya)")
+        menu.addSeparator()
+        act_download = menu.addAction(f"⬇  Seçilenleri İndir  ({n} dosya)")
+        menu.addSeparator()
+        act_approve  = None
+        act_kritik   = None
+        act_imha     = None
+        if all_karantina:
+            act_approve = menu.addAction(f"✅  Karantinadan Çıkar  ({n} dosya)  →  Genel")
+        if any_not_kritik:
+            act_kritik = menu.addAction(f"🛡  Seçilenleri Kritik'e Taşı  ({n} dosya)")
+        if any_not_imha:
+            act_imha   = menu.addAction(f"🔥  Seçilenleri İmha Odasına At  ({n} dosya)")
+
+        action = menu.exec(self._table.viewport().mapToGlobal(pos))
+        if action == act_tags:
+            self._on_ctx_bulk_assign_tags(file_ids)
+        elif action == act_download:
+            self._on_ctx_bulk_download(file_ids, filepaths)
+        elif action == act_approve:
+            self._on_ctx_bulk_approve(rows, file_ids)
+        elif action == act_kritik:
+            self._on_ctx_bulk_move_to_kritik(rows, file_ids, labels)
+        elif action == act_imha:
+            self._on_ctx_bulk_move_to_imha(rows, file_ids)
+
+    def _on_ctx_bulk_assign_tags(self, file_ids: list[int]) -> None:
+        from UI.TagDialog import TagDialog
+        dlg = TagDialog(file_id=file_ids[0], role=self._role, parent=self, file_ids=file_ids)
+        if dlg.exec() == TagDialog.Accepted:
+            self._refresh_tag_sidebar()
+            if self._current_tag_id is not None:
+                self._load_tag_files(self._current_tag_id)
+
+    def _on_ctx_bulk_approve(self, rows: list[int], file_ids: list[int]) -> None:
+        confirm = QMessageBox.question(
+            self, "Karantinadan Çıkar",
+            f"{len(file_ids)} dosya Karantina → Genel olarak taşınacak.\nDevam edilsin mi?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            db = DBManager()
+            for fid in file_ids:
+                db.execute("UPDATE files SET label = 'Genel' WHERE id = ?", (fid,))
+                db.log("file_label_changed", target_type="file", target_id=fid,
+                       detail=f"hwid={self._hwid} from=Karantina to=Genel auto=False bulk=True")
+        except Exception as exc:
+            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
+            return
+        for row in sorted(rows, reverse=True):
+            self._table.removeRow(row)
+        QMessageBox.information(self, "Taşındı",
+                                f"{len(file_ids)} dosya Genel etiketine taşındı.")
+
+    def _on_ctx_bulk_move_to_kritik(
+        self, rows: list[int], file_ids: list[int], labels: list[str],
+    ) -> None:
+        to_move = [(r, fid) for r, fid, lbl in zip(rows, file_ids, labels)
+                   if lbl != "Kritik"]
+        if not to_move:
+            QMessageBox.information(self, "Kritik'e Taşı",
+                                    "Seçili dosyaların tümü zaten Kritik etiketinde.")
+            return
+        confirm = QMessageBox.question(
+            self, "Kritik'e Taşı",
+            f"{len(to_move)} dosya Kritik etiketine taşınacak.\nDevam edilsin mi?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        moved = 0
+        try:
+            db = DBManager()
+            for _, fid in to_move:
+                db.execute("UPDATE files SET label = 'Kritik' WHERE id = ?", (fid,))
+                db.log("file_label_changed", target_type="file", target_id=fid,
+                       detail=f"hwid={self._hwid} to=Kritik bulk=True")
+                moved += 1
+        except Exception as exc:
+            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
+            return
+        for row in sorted((r for r, _ in to_move), reverse=True):
+            self._table.removeRow(row)
+        QMessageBox.information(self, "Taşındı", f"{moved} dosya Kritik etiketine taşındı.")
+
+    def _on_ctx_bulk_move_to_imha(self, rows: list[int], file_ids: list[int]) -> None:
+        confirm = QMessageBox.question(
+            self, "İmha Odasına At",
+            f"{len(file_ids)} dosya İmha Odası'na taşınacak ve süre sonunda silinecek.\n"
+            "Devam edilsin mi?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(hours=self._get_imha_ttl_hours())
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        moved = 0
+        try:
+            db = DBManager()
+            for fid in file_ids:
+                db.execute(
+                    "UPDATE files SET label = 'Imha', expires_at = ? WHERE id = ?",
+                    (expires_at, fid),
+                )
+                db.log("file_moved_to_imha", target_type="file", target_id=fid,
+                       detail=f"hwid={self._hwid} expires_at={expires_at} bulk=True")
+                moved += 1
+        except Exception as exc:
+            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
+            return
+        for row in sorted(rows, reverse=True):
+            self._table.removeRow(row)
+        QMessageBox.information(self, "İmha Odasına Taşındı",
+                                f"{moved} dosya İmha Odası'na taşındı.")
+
+    def _on_ctx_bulk_download(
+        self, file_ids: list[int], filepaths: list[str],
+    ) -> None:
+        try:
+            secret = json.loads(_TOTP_FILE.read_text(encoding="utf-8"))["secret"]
+        except Exception:
+            QMessageBox.critical(self, "İndir", "TOTP anahtarı okunamadı.")
+            return
+
+        code, ok = QInputDialog.getText(
+            self, "Kimlik Doğrulama", "Authenticator kodunu girin (6 hane):"
+        )
+        if not ok:
+            return
+        code = code.strip()
+        if not (code.isdigit() and len(code) == 6
+                and pyotp.TOTP(secret).verify(code, valid_window=1)):
+            DBManager().log("bulk_download_totp_failed",
+                            detail=f"hwid={self._hwid} count={len(file_ids)}")
+            QMessageBox.warning(self, "Erişim Reddedildi", "Authenticator kodu geçersiz.")
+            return
+
+        save_dir = QFileDialog.getExistingDirectory(self, "Dosyaların Kaydedileceği Klasörü Seç")
+        if not save_dir:
+            return
+        dest_dir = Path(save_dir)
+
+        prog = QProgressDialog("Dosyalar indiriliyor…", "İptal", 0, len(file_ids), self)
+        prog.setWindowTitle("Toplu İndirme")
+        prog.setMinimumDuration(0)
+        prog.setValue(0)
+
+        saved: int       = 0
+        errors: list[str] = []
+
+        for i, (fid, filepath) in enumerate(zip(file_ids, filepaths)):
+            if prog.wasCanceled():
+                break
+            short = Path(filepath).name if filepath else "?"
+            prog.setLabelText(f"İndiriliyor ({i + 1}/{len(file_ids)}): {short}")
+            prog.setValue(i)
+            QApplication.processEvents()
+
+            if not filepath:
+                errors.append(f"#{fid} (dosya yolu yok)")
+                continue
+            try:
+                aad_row  = DBManager().fetchone(
+                    "SELECT aad_metadata FROM files WHERE id = ?", (fid,)
+                )
+                aad_hwid = None
+                if aad_row and aad_row["aad_metadata"]:
+                    aad_hwid = json.loads(aad_row["aad_metadata"]).get("hwid")
+                content, meta = decrypt_file(filepath, self._key, hwid=aad_hwid)
+                original_name = meta.get("filename", Path(filepath).stem)
+                dest = dest_dir / original_name
+                if dest.exists():
+                    stem, suffix, n = dest.stem, dest.suffix, 1
+                    while dest.exists():
+                        dest = dest_dir / f"{stem}_{n}{suffix}"
+                        n   += 1
+                dest.write_bytes(content)
+                del content
+                DBManager().log("file_downloaded", target_type="file", target_id=fid,
+                                detail=f"hwid={self._hwid} dest={dest} bulk=True")
+                saved += 1
+            except AuthenticationError:
+                errors.append(short + " (bütünlük hatası)")
+            except Exception as exc:
+                errors.append(f"{short} ({exc})")
+
+        prog.setValue(len(file_ids))
+        prog.close()
+
+        msg = f"{saved} dosya kaydedildi:\n{save_dir}"
+        if errors:
+            preview = "\n".join(errors[:10])
+            if len(errors) > 10:
+                preview += f"\n… ve {len(errors) - 10} daha"
+            msg += f"\n\nAtlanan ({len(errors)}):\n{preview}"
+        QMessageBox.information(self, "İndirme Tamamlandı", msg)
+
     def _on_ctx_scan(self, row: int, file_id: int | None, filepath: str | None) -> None:
         if not filepath:
             QMessageBox.warning(self, "Tarama", "Dosya yolu bulunamadı.")
@@ -2222,7 +2602,7 @@ class HycleusWindow(QMainWindow):
         )
         if confirm != QMessageBox.Yes:
             return
-        expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=self._get_imha_ttl_hours())).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
             db = DBManager()
             db.execute(
@@ -2349,6 +2729,12 @@ class HycleusWindow(QMainWindow):
                        detail=f"label=Imha filepath={filepath}")
             except Exception:
                 pass
+
+    def _get_imha_ttl_hours(self) -> int:
+        try:
+            return int(DBManager().get_setting("imha_ttl_hours", "24"))
+        except Exception:
+            return 24
 
     def _refresh_usb_badge(self) -> None:
         hwid = get_usb_hwid()

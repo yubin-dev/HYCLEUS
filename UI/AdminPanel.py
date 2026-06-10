@@ -6,6 +6,7 @@ import re
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QHeaderView,
@@ -101,6 +102,7 @@ class AdminPanel(QDialog):
         self._build_ui()
         self._load()
         self._load_pending()
+        self._load_settings()
 
     # ------------------------------------------------------------------
     # UI kurulumu
@@ -141,6 +143,9 @@ class AdminPanel(QDialog):
         pending_layout.addWidget(self._make_pending_table())
         pending_layout.addLayout(self._make_pending_btn_bar())
         tabs.addTab(pending_page, "Bekleyen Kayıtlar")
+
+        # Sekme 3 — Ayarlar
+        tabs.addTab(self._make_settings_page(), "Ayarlar")
 
         root.addWidget(tabs)
 
@@ -707,3 +712,84 @@ class AdminPanel(QDialog):
             return
 
         self._load_pending()
+
+    # ------------------------------------------------------------------
+    # Ayarlar sekmesi
+    # ------------------------------------------------------------------
+
+    _TTL_OPTIONS = (1, 6, 12, 24, 48)
+
+    def _make_settings_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(14)
+
+        header = QLabel("Sistem Ayarları")
+        header.setStyleSheet("color:#cdd6f4; font-size:13px; font-weight:bold;")
+        lay.addWidget(header)
+
+        sep = QLabel()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background:#313244;")
+        lay.addWidget(sep)
+
+        ttl_lbl = QLabel("İmha Odası varsayılan TTL süresi")
+        ttl_lbl.setStyleSheet("color:#89b4fa; font-size:12px; font-weight:600;")
+        lay.addWidget(ttl_lbl)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        self._ttl_combo = QComboBox()
+        for h in self._TTL_OPTIONS:
+            self._ttl_combo.addItem(f"{h} saat", h)
+        self._ttl_combo.setFixedWidth(110)
+        self._ttl_combo.setStyleSheet(
+            "QComboBox{background:#313244;color:#cdd6f4;border:1px solid #45475a;"
+            "border-radius:6px;padding:5px 10px;font-size:12px;}"
+            "QComboBox::drop-down{border:none;width:20px;}"
+            "QComboBox QAbstractItemView{background:#313244;color:#cdd6f4;"
+            "border:1px solid #45475a;selection-background-color:#45475a;}"
+        )
+        row.addWidget(self._ttl_combo)
+
+        hint = QLabel("sonra İmha Odası'ndaki dosyalar otomatik silinir")
+        hint.setStyleSheet("color:#a6adc8; font-size:12px;")
+        row.addWidget(hint)
+        row.addStretch()
+        lay.addLayout(row)
+
+        btn_save = QPushButton("Kaydet")
+        btn_save.setStyleSheet(_BTN_SUCCESS)
+        btn_save.setCursor(Qt.PointingHandCursor)
+        btn_save.setFixedWidth(100)
+        btn_save.clicked.connect(self._on_save_settings)
+        lay.addWidget(btn_save)
+
+        lay.addStretch()
+        return page
+
+    def _load_settings(self) -> None:
+        try:
+            current = int(DBManager().get_setting("imha_ttl_hours", "24"))
+        except Exception:
+            current = 24
+        for i in range(self._ttl_combo.count()):
+            if self._ttl_combo.itemData(i) == current:
+                self._ttl_combo.setCurrentIndex(i)
+                break
+
+    def _on_save_settings(self) -> None:
+        hours = self._ttl_combo.currentData()
+        try:
+            db = DBManager()
+            db.set_setting("imha_ttl_hours", str(hours))
+            db.log("setting_changed",
+                   detail=f"key=imha_ttl_hours value={hours} hwid={self._current_hwid}")
+            QMessageBox.information(
+                self, "Kaydedildi",
+                f"İmha Odası TTL süresi {hours} saat olarak güncellendi.",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Hata", str(exc))
