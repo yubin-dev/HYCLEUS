@@ -341,7 +341,7 @@ class ContactDialog(QDialog):
         self._btn_copy_report.clicked.connect(self._on_copy_report)
         lay.addWidget(self._btn_copy_report)
 
-        hint = QLabel("destek@hycleus.local adresine yapıştırın")
+        hint = QLabel("yunusemre.is@outlook.com adresine yapıştırın")
         hint.setStyleSheet("color: #9CA3AF; font-size: 12px; background: transparent;")
         lay.addWidget(hint)
 
@@ -388,7 +388,7 @@ class ContactDialog(QDialog):
         desc  = self._report_desc.toPlainText().strip() or "(açıklama yok)"
         text = (
             f"Konu: HYCLEUS Sorun Bildirimi — {title}\n"
-            f"Alıcı: destek@hycleus.local\n\n"
+            f"Alıcı: yunusemre.is@outlook.com\n\n"
             f"Açıklama:\n{desc}\n\n"
             f"--- Sistem Bilgileri ---\n"
             f"Versiyon      : {_APP_VERSION}\n"

@@ -234,12 +234,6 @@ class HycleusWindow(QMainWindow):
         self._folder_btns: dict[int, QPushButton]   = {}
 
         _log.info("window_init  hwid=%s  role=%s", hwid, role)
-        print(
-            f"[HYCLEUS DEBUG] __init__  role={role!r}"
-            f"  repr={repr(role)}"
-            f"  lower={role.strip().lower()!r}"
-            f"  is_readonly={role.strip().lower() == 'salt okunur'}"
-        )
 
         self.setWindowTitle("HYCLEUS")
         self.setMinimumSize(1100, 700)
@@ -1864,6 +1858,7 @@ class HycleusWindow(QMainWindow):
 
     def _lock(self) -> None:
         self._locked = True
+        self.centralWidget().setEnabled(False)
         self.centralWidget().setGraphicsEffect(self._blur)
         self._overlay.resize(self.size())
         self._overlay.show()
@@ -1871,6 +1866,7 @@ class HycleusWindow(QMainWindow):
 
     def _unlock(self) -> None:
         self._locked = False
+        self.centralWidget().setEnabled(True)
         self.centralWidget().setGraphicsEffect(None)
         self._overlay.hide()
 
