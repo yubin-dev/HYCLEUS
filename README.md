@@ -1,27 +1,112 @@
-# HYCLEUS — Beta 1.2
+<div align="center">
 
-Şifrelenmiş dosya yönetimi ve USB donanım kimlik doğrulaması için Windows masaüstü güvenlik uygulaması.
+# 🔒 HYCLEUS
+
+**Encrypted Secure File Vault for Windows**
+
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![PySide6](https://img.shields.io/badge/PySide6-6.x-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://doc.qt.io/qtforpython/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://microsoft.com/windows)
+[![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
+[![Version](https://img.shields.io/badge/Version-2.0-red?style=for-the-badge)](#)
+[![Security](https://img.shields.io/badge/Encryption-AES--256--GCM-success?style=for-the-badge&logo=shield&logoColor=white)](#security-architecture)
+
+*Hardware-bound, zero-trust encrypted file vault with USB token authentication, TOTP 2FA, and Shamir Secret Sharing.*
+
+</div>
 
 ---
 
-## Gereksinimler
+## 🇬🇧 English
 
-- Python 3.11 veya üzeri
-- Windows 10 / 11
-- (Opsiyonel) VirusTotal Public API anahtarı
+### What is HYCLEUS?
+
+HYCLEUS is a Windows desktop application that encrypts and manages sensitive files inside a hardware-bound vault. Every file is encrypted with **AES-256-GCM** before hitting disk. The master key is split via **Shamir 2-of-2 Secret Sharing** between the USB token and the database — neither half is useful alone. Without the registered USB device, the vault cannot open.
 
 ---
 
-## Kurulum
+### ✨ Features
 
-### 1. Depoyu klonlayın
+| Category | Feature |
+|----------|---------|
+| **Encryption** | AES-256-GCM per-file, unique nonce, AAD-bound to file metadata |
+| **Key Splitting** | Shamir 2-of-2 SSS — share 1 in DB, share 2 on USB token |
+| **Authentication** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
+| **Hardware Lock** | USB HWID binding — vault locks instantly on USB removal |
+| **Access Control** | RBAC: Administrator / Standard / Read-only roles |
+| **Malware Scan** | Windows Defender (MpCmdRun.exe) on every uploaded file |
+| **File Labels** | General · Critical · Quarantine · Destruction Room |
+| **Destruction TTL** | Configurable auto-delete timer (1 / 6 / 12 / 24 / 48 h) |
+| **Bulk Operations** | Multi-select, bulk tag, bulk move, bulk download with progress |
+| **Parallel Upload** | QThreadPool (max 6 workers) — process 150 files without UI freeze |
+| **Folder Hierarchy** | Drag-and-drop folder support, recursive vault creation |
+| **Tags** | Color-coded tags, private (admin-only) tags, bulk assignment |
+| **Audit Log** | Every action recorded with user, timestamp, and detail |
+| **Dark / Light UI** | Full theme support, readable in both modes |
+
+---
+
+### 🛡 Security Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      LOGIN FLOW                         │
+│  USB HWID ──┐                                           │
+│             ├─► Shamir Reconstruct ─► AES-256 Key       │
+│  DB Share ──┘                          │                │
+│                                        ▼                │
+│  Argon2id PIN ──► Hash verify          │                │
+│  TOTP (RFC 6238) ──► 6-digit verify    │                │
+│                                        │                │
+│                              Vault Unlocked             │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│                    FILE ENCRYPTION                      │
+│  Plain file ──► AES-256-GCM ──► .hcl (vault format)    │
+│                     │                                   │
+│              AAD: filename + hwid + timestamp           │
+│              Unique 12-byte nonce per file              │
+│              SHA-256 integrity check (original + vault) │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│                   USB LOCK MECHANISM                    │
+│  USB removed ──► centralWidget.setEnabled(False)        │
+│               ──► Blur overlay raised                   │
+│               ──► All interactions blocked              │
+│  USB inserted ──► HWID re-verified ──► Unlock           │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Cryptographic stack:**
+- `cryptography` — AES-256-GCM, HKDF
+- `argon2-cffi` — Argon2id PIN hashing
+- `pyotp` — TOTP (RFC 6238)
+- `secrets` / `os.urandom` — nonce and key material generation
+- `sqlite3` — WAL-mode database, foreign keys enforced
+
+---
+
+### 📋 Requirements
+
+- **Python** 3.11 or higher
+- **Windows** 10 / 11 (64-bit)
+- **USB drive** (registered during first-run setup)
+- **Authenticator app** — Google Authenticator, Aegis, or any TOTP-compatible app
+
+---
+
+### 🚀 Installation
+
+#### 1. Clone the repository
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/yubin-dev/HYCLEUS.git
 cd HYCLEUS
 ```
 
-### 2. Sanal ortam oluşturun ve bağımlılıkları yükleyin
+#### 2. Create virtual environment and install dependencies
 
 ```bash
 python -m venv .venv
@@ -29,128 +114,351 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 3. Ortam değişkenlerini ayarlayın (opsiyonel)
+#### 3. (Optional) Enable development mode — no physical USB required
 
-Proje kök dizininde `.env` dosyası oluşturun:
-
-```
-VT_API_KEY=buraya_virustotal_api_anahtarinizi_yazin
-```
-
-API anahtarı yoksa uygulama çalışmaya devam eder; tarama sonuçları `mock` (bilinmiyor) olarak gösterilir.
-
-### 4. Geliştirme modunu etkinleştirin (gerçek USB yoksa)
-
-Aynı `.env` dosyasına ekleyin:
-
-```
-DEV_MODE=true
+```bash
+set DEV_MODE=true
+python main.py
 ```
 
-Bu seçenek gerçek bir USB token yerine sanal HWID kullanır.
+> **Production use:** Never run with `DEV_MODE=true`. A real registered USB token is required.
+
+#### 4. Build standalone EXE
+
+```bash
+pyinstaller HYCLEUS.spec
+# Output: dist\HYCLEUS.exe  (single file, no console)
+```
 
 ---
 
-## İlk Çalıştırma — Kurulum Ekranı
+### 🖥 First Run — Setup Wizard
 
-Uygulama ilk açıldığında kurulum sihirbazı görünür. Sırasıyla:
+When launched for the first time, the setup wizard guides you through:
 
-1. **Rol seçin**
-   | Rol | Yetkiler |
-   |-----|----------|
-   | Yönetici | Tam erişim — tüm özellikler aktif |
-   | Standart | Dosya yönetimi aktif, Kritik sekme görünür |
-   | Salt Okunur | Sadece görüntüleme; drag-drop ve Kritik sekme devre dışı |
+1. **Select role**
 
-2. **PIN belirleyin** — En az 4 karakter, iki kez girilmesi gerekir
+   | Role | Permissions |
+   |------|-------------|
+   | Administrator | Full access — all features enabled |
+   | Standard | File management, Critical tab visible |
+   | Read-only | View only — drag-drop and Critical tab disabled |
 
-3. **Authenticator ayarlayın** — Google Authenticator (veya uyumlu uygulama) ile QR kodu tarayın, ardından üretilen 6 haneli kodu doğrulama alanına girin
+2. **Set PIN** — Minimum 4 characters, confirmed twice; stored as Argon2id hash
 
-4. **"Doğrula ve Kaydet"** butonuna tıklayın — Ayarlar `data/` klasörüne güvenli biçimde kaydedilir
+3. **Configure TOTP** — Scan the QR code with your authenticator app, then enter the 6-digit code to verify
 
----
-
-## Normal Giriş
-
-Sonraki başlatmalarda giriş ekranı gelir:
-
-1. PIN girin
-2. Authenticator uygulamasındaki 6 haneli kodu girin
-3. **"Giriş Yap"** butonuna tıklayın
-
-> 5 başarısız denemeden sonra uygulama kilitlenir ve yeniden başlatılması gerekir.
+4. **"Verify & Save"** — Settings written securely to `data/`
 
 ---
 
-## Demo Akışı
+### 📖 Usage
 
-### Dosya Karantinaya Alma
+#### Uploading Files
 
-1. Uygulamayı başlatın ve giriş yapın
-2. Dosya Gezgini'nden herhangi bir dosyayı uygulama penceresine sürükleyip bırakın
-3. Dosya otomatik olarak **AES-256-GCM** ile şifrelenir, `data/quarantine/` altına `.hcl` uzantısıyla kaydedilir
-4. Tablo satırında **"⟳ Taranıyor..."** rozeti görünür; arka planda VirusTotal sorgusu başlar
-5. Tarama tamamlanınca rozet güncellenir:
+Drag and drop any file or folder onto the main window. Each file is:
+1. Encrypted with AES-256-GCM → saved as `.hcl` in the vault
+2. Registered in the SQLite database with SHA-256 integrity hashes
+3. Scanned by Windows Defender in a background thread
 
-   | Rozet | Renk | Anlam |
-   |-------|------|-------|
-   | `✓ Temiz` | Yeşil | Hiçbir motorda algılanmadı |
-   | `⚠ Şüpheli` | Sarı | En az bir motor şüpheli işaretledi |
-   | `✗ Zararlı` | Kırmızı | En az bir motor zararlı işaretledi |
-   | `? Bilinmiyor` | Gri | VT'de kayıt yok veya API anahtarı eksik |
-   | `(m)` eki | Gri | Sonuç gerçek değil, mock veridir |
+A progress banner shows **"X / N processed"** during batch uploads. A notification appears when all files complete.
 
-### Sidebar Navigasyonu
+#### File Labels
 
-| Sekme | İçerik |
-|-------|--------|
-| Genel | Standart dosyalar |
-| Kritik | Yüksek öncelikli dosyalar *(Salt Okunur rolünde gizlenir)* |
-| Karantina | Şüpheli ve taranmış dosyalar |
-| İmha Odası | Kalıcı silme için işaretlenmiş dosyalar |
+| Label | Description |
+|-------|-------------|
+| **General** | Standard encrypted files |
+| **Critical** | High-priority; hidden from Read-only users |
+| **Quarantine** | Flagged for review; Defender scan status visible |
+| **Destruction Room** | Scheduled for permanent deletion (configurable TTL) |
 
-### USB Token Kilidi
+#### Multi-Selection & Bulk Actions
 
-- USB token çekildiğinde ekran **bulanıklaşır** ve kilit katmanı görünür
-- Token yeniden takıldığında uygulama otomatik olarak kilidi açar
-- Kilit açıkken dosya yüklenemez
+Hold `Ctrl` or `Shift` to select multiple rows, then right-click for:
 
-### Otomatik Süresi Dolmuş Dosya Temizliği
+- **Assign Tags** — bulk tag assignment (intersection pre-check)
+- **Move to Critical** — skips already-Critical files
+- **Send to Destruction Room** — applies configured TTL
+- **Download** — single TOTP verification, QProgressDialog with cancellation
+- **Release from Quarantine** — bulk approve
 
-Karantina etiketli ve `expires_at` süresi geçmiş dosyalar, uygulama açık olduğu sürece **10 dakikada bir** arka plan zamanlayıcısı tarafından diskten ve veritabanından otomatik silinir.
+#### USB Lock
 
----
+Removing the USB token instantly blurs the window and blocks all input. Re-inserting the registered USB resumes the session automatically.
 
-## Güvenlik Notları
+#### Admin Panel
 
-- PIN `data/pin_hash.json` dosyasında **Argon2id** ile hashlenerek saklanır — düz metin hiçbir zaman yazılmaz
-- TOTP secret `data/totp_secret.json` dosyasında saklanır
-- `data/` klasörü `.gitignore` kapsamındadır; `pin_hash.json` ve `totp_secret.json` depoya gitmez
-- `.env` dosyası `.gitignore` kapsamındadır; `VT_API_KEY` depoya gitmez
-- Şifrelenmiş dosyalar (`*.hcl`) ve `data/` içeriği depoya dahil edilmez
+Administrators have access to:
+- **Pending Registrations** — approve or reject new user registrations
+- **USB Management** — register, view, and blacklist USB tokens
+- **Settings** — configure Destruction Room TTL (1 / 6 / 12 / 24 / 48 hours)
+- **Audit Log** — full action history with timestamps
 
 ---
 
-## Proje Yapısı
+### 📁 Project Structure
 
 ```
 HYCLEUS/
-├── main.py                  # Giriş noktası
+├── main.py                   # Entry point
 ├── requirements.txt
-├── .env                     # Git'e gitmez — VT_API_KEY, DEV_MODE
+├── HYCLEUS.spec              # PyInstaller spec
 ├── CORE/
-│   ├── crypto.py            # AES-256-GCM şifreleme (.hcl formatı)
-│   ├── scanner.py           # VirusTotal Public API entegrasyonu
-│   ├── scheduler.py         # APScheduler — süresi dolmuş dosya temizliği
-│   └── usb_manager.py       # USB HWID doğrulama (WMI)
+│   ├── crypto.py             # AES-256-GCM encryption (.hcl format)
+│   ├── paths.py              # data_dir() — EXE-aware path resolution
+│   ├── scanner.py            # Windows Defender integration
+│   ├── scheduler.py          # APScheduler — expired file cleanup
+│   ├── setup_usb.py          # CLI USB registration tool
+│   ├── usb_manager.py        # USB HWID detection (WMI)
+│   └── vault_manager.py      # Shamir SSS + key reconstruction
 ├── DB/
-│   └── db_manager.py        # SQLite3 singleton yöneticisi
+│   └── db_manager.py         # SQLite3 singleton, schema migrations
 ├── UI/
-│   ├── login_dialog.py      # Giriş / ilk kurulum diyaloğu (Argon2id + TOTP)
-│   └── main_window.py       # Ana pencere, sidebar, tablo, USB kilit overlay
-└── data/                    # Git'e gitmez — çalışma zamanı verileri
-    ├── hycleus.db           # SQLite veritabanı
-    ├── pin_hash.json        # Argon2id PIN hash + rol
-    ├── totp_secret.json     # TOTP base32 secret
-    └── quarantine/          # AES-256-GCM şifreli .hcl dosyaları
+│   ├── main_window.py        # Main window, QThreadPool, USB lock overlay
+│   ├── login_dialog.py       # Login / first-run setup (Argon2id + TOTP)
+│   ├── AdminPanel.py         # Admin: registrations, USB mgmt, settings
+│   ├── RegisterDialog.py     # New user registration dialog
+│   ├── TagDialog.py          # Tag assignment (single + bulk mode)
+│   └── ContactDialog.py      # Support / contact dialog
+└── data/                     # Not committed — runtime data only
+    ├── hycleus.db            # SQLite database (WAL mode)
+    ├── totp_secret.json      # TOTP base32 secret
+    ├── usb_ids.json          # Registered USB HWID map
+    └── vaults/               # AES-256-GCM encrypted .hcl files
 ```
+
+---
+
+### 📜 License
+
+MIT License — see [LICENSE](LICENSE) for details.
+
+---
+---
+
+## 🇹🇷 Türkçe
+
+### HYCLEUS Nedir?
+
+HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için geliştirilmiş bir Windows masaüstü uygulamasıdır. Her dosya diske yazılmadan önce **AES-256-GCM** ile şifrelenir. Ana anahtar, **Shamir 2-of-2 Gizli Paylaşımı** ile USB token ve veritabanı arasında ikiye bölünür — iki parçadan biri tek başına işe yaramaz. Kayıtlı USB cihazı olmadan kasa açılamaz.
+
+---
+
+### ✨ Özellikler
+
+| Kategori | Özellik |
+|----------|---------|
+| **Şifreleme** | AES-256-GCM, dosya başına benzersiz nonce, metadata'ya bağlı AAD |
+| **Anahtar Bölme** | Shamir 2-of-2 SSS — 1. parça DB'de, 2. parça USB'de |
+| **Kimlik Doğrulama** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
+| **Donanım Kilidi** | USB HWID bağlama — USB çekilince kasa anında kilitlenir |
+| **Erişim Kontrolü** | RBAC: Yönetici / Standart / Salt Okunur rolleri |
+| **Zararlı Tarama** | Her yüklenen dosyaya Windows Defender (MpCmdRun.exe) taraması |
+| **Dosya Etiketleri** | Genel · Kritik · Karantina · İmha Odası |
+| **İmha TTL** | Yapılandırılabilir otomatik silme süresi (1 / 6 / 12 / 24 / 48 saat) |
+| **Toplu İşlemler** | Çoklu seçim, toplu etiket, toplu taşıma, progress'li toplu indirme |
+| **Paralel Yükleme** | QThreadPool (max 6 worker) — 150 dosyayı UI donmadan işler |
+| **Klasör Hiyerarşisi** | Drag-and-drop klasör desteği, özyinelemeli kasa oluşturma |
+| **Etiket Sistemi** | Renkli etiketler, gizli (sadece Yönetici) etiketler, toplu atama |
+| **Denetim Kaydı** | Her işlem kullanıcı, zaman ve detayla kayıt altına alınır |
+| **Karanlık / Açık Tema** | Tam tema desteği, her iki modda da okunabilir |
+
+---
+
+### 🛡 Güvenlik Mimarisi
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     GİRİŞ AKIŞI                         │
+│  USB HWID ──┐                                           │
+│             ├─► Shamir Birleştirme ─► AES-256 Anahtarı  │
+│  DB Payı ───┘                          │                │
+│                                        ▼                │
+│  Argon2id PIN ──► Hash doğrula         │                │
+│  TOTP (RFC 6238) ──► 6 haneli doğrula  │                │
+│                                        │                │
+│                              Kasa Açıldı                │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│                   DOSYA ŞİFRELEME                       │
+│  Düz dosya ──► AES-256-GCM ──► .hcl (kasa formatı)     │
+│                     │                                   │
+│              AAD: dosya adı + hwid + zaman damgası      │
+│              Dosya başına benzersiz 12 byte nonce        │
+│              SHA-256 bütünlük kontrolü (orijinal + kasa) │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│                   USB KİLİT MEKANİZMASI                 │
+│  USB çekildi ──► centralWidget.setEnabled(False)        │
+│               ──► Bulanıklaştırma overlay'i açıldı      │
+│               ──► Tüm etkileşimler engellendi           │
+│  USB takıldı ──► HWID yeniden doğrulandı ──► Kilit açık │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Kriptografi yığını:**
+- `cryptography` — AES-256-GCM, HKDF
+- `argon2-cffi` — Argon2id PIN hashleme
+- `pyotp` — TOTP (RFC 6238)
+- `secrets` / `os.urandom` — nonce ve anahtar materyali üretimi
+- `sqlite3` — WAL modu, foreign key zorlaması
+
+---
+
+### 📋 Gereksinimler
+
+- **Python** 3.11 veya üzeri
+- **Windows** 10 / 11 (64-bit)
+- **USB sürücü** (ilk çalıştırmada kayıt edilir)
+- **Authenticator uygulaması** — Google Authenticator, Aegis veya TOTP uyumlu herhangi bir uygulama
+
+---
+
+### 🚀 Kurulum
+
+#### 1. Depoyu klonlayın
+
+```bash
+git clone https://github.com/yubin-dev/HYCLEUS.git
+cd HYCLEUS
+```
+
+#### 2. Sanal ortam oluşturun ve bağımlılıkları yükleyin
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+#### 3. (Opsiyonel) Geliştirici modu — fiziksel USB gerekmez
+
+```bash
+set DEV_MODE=true
+python main.py
+```
+
+> **Üretim kullanımı:** `DEV_MODE=true` ile asla çalıştırmayın. Gerçek kayıtlı USB token zorunludur.
+
+#### 4. Bağımsız EXE derleme
+
+```bash
+pyinstaller HYCLEUS.spec
+# Çıktı: dist\HYCLEUS.exe  (tek dosya, konsol yok)
+```
+
+---
+
+### 🖥 İlk Çalıştırma — Kurulum Sihirbazı
+
+İlk açılışta kurulum sihirbazı sizi adım adım yönlendirir:
+
+1. **Rol seçin**
+
+   | Rol | Yetkiler |
+   |-----|----------|
+   | Yönetici | Tam erişim — tüm özellikler aktif |
+   | Standart | Dosya yönetimi, Kritik sekme görünür |
+   | Salt Okunur | Yalnızca görüntüleme — drag-drop ve Kritik sekme devre dışı |
+
+2. **PIN belirleyin** — En az 4 karakter, iki kez girilir; Argon2id hash olarak saklanır
+
+3. **TOTP ayarlayın** — Authenticator uygulamasıyla QR kodu tarayın, ardından üretilen 6 haneli kodu doğrulama alanına girin
+
+4. **"Doğrula ve Kaydet"** — Ayarlar `data/` klasörüne güvenli biçimde yazılır
+
+---
+
+### 📖 Kullanım
+
+#### Dosya Yükleme
+
+Herhangi bir dosyayı veya klasörü ana pencereye sürükleyip bırakın. Her dosya:
+1. AES-256-GCM ile şifrelenir → `.hcl` formatında kasaya kaydedilir
+2. SHA-256 bütünlük hash'leriyle SQLite veritabanına işlenir
+3. Arka plan thread'inde Windows Defender ile taranır
+
+Toplu yükleme sırasında **"X / N işlendi"** banner'ı görünür. Tüm dosyalar tamamlandığında bildirim çıkar.
+
+#### Dosya Etiketleri
+
+| Etiket | Açıklama |
+|--------|----------|
+| **Genel** | Standart şifreli dosyalar |
+| **Kritik** | Yüksek öncelikli; Salt Okunur kullanıcılardan gizlenir |
+| **Karantina** | İnceleme için işaretlenmiş; Defender tarama durumu görünür |
+| **İmha Odası** | Kalıcı silme için zamanlanmış (yapılandırılabilir TTL) |
+
+#### Çoklu Seçim ve Toplu İşlemler
+
+Birden fazla satır seçmek için `Ctrl` veya `Shift` tuşuna basılı tutun, ardından sağ tıklayın:
+
+- **Etiket Ata** — toplu etiket atama (ortak etiket kesişim kontrolüyle)
+- **Kritik'e Taşı** — zaten Kritik olan dosyaları atlar
+- **İmha Odasına At** — yapılandırılmış TTL uygular
+- **İndir** — tek TOTP doğrulaması, iptal destekli QProgressDialog
+- **Karantinadan Çıkar** — toplu onaylama
+
+#### USB Kilidi
+
+USB token çekildiğinde pencere anında bulanıklaşır ve tüm girişler bloke edilir. Kayıtlı USB yeniden takıldığında oturum otomatik olarak devam eder.
+
+#### Yönetici Paneli
+
+Yöneticiler şu özelliklere erişebilir:
+
+- **Bekleyen Kayıtlar** — yeni kullanıcı kayıt taleplerini onayla veya reddet
+- **USB Yönetimi** — USB token kaydet, görüntüle ve kara listeye al
+- **Ayarlar** — İmha Odası TTL'ini yapılandır (1 / 6 / 12 / 24 / 48 saat)
+- **Denetim Kaydı** — zaman damgalı tam işlem geçmişi
+
+---
+
+### 📁 Proje Yapısı
+
+```
+HYCLEUS/
+├── main.py                   # Giriş noktası
+├── requirements.txt
+├── HYCLEUS.spec              # PyInstaller spec
+├── CORE/
+│   ├── crypto.py             # AES-256-GCM şifreleme (.hcl formatı)
+│   ├── paths.py              # data_dir() — EXE-duyarlı yol çözümü
+│   ├── scanner.py            # Windows Defender entegrasyonu
+│   ├── scheduler.py          # APScheduler — süresi dolmuş dosya temizliği
+│   ├── setup_usb.py          # CLI USB kayıt aracı
+│   ├── usb_manager.py        # USB HWID tespiti (WMI)
+│   └── vault_manager.py      # Shamir SSS + anahtar birleştirme
+├── DB/
+│   └── db_manager.py         # SQLite3 singleton, şema migrasyonları
+├── UI/
+│   ├── main_window.py        # Ana pencere, QThreadPool, USB kilit overlay
+│   ├── login_dialog.py       # Giriş / ilk kurulum (Argon2id + TOTP)
+│   ├── AdminPanel.py         # Yönetici: kayıtlar, USB yönetimi, ayarlar
+│   ├── RegisterDialog.py     # Yeni kullanıcı kayıt diyaloğu
+│   ├── TagDialog.py          # Etiket atama (tekli + toplu mod)
+│   └── ContactDialog.py      # Destek / iletişim diyaloğu
+└── data/                     # Git'e gitmez — çalışma zamanı verileri
+    ├── hycleus.db            # SQLite veritabanı (WAL modu)
+    ├── totp_secret.json      # TOTP base32 secret
+    ├── usb_ids.json          # Kayıtlı USB HWID haritası
+    └── vaults/               # AES-256-GCM şifreli .hcl dosyaları
+```
+
+---
+
+### 🔐 Güvenlik Notları
+
+- PIN `data/` içinde **Argon2id** ile hashlenerek saklanır — düz metin asla yazılmaz
+- TOTP secret `data/totp_secret.json` dosyasındadır; `data/` `.gitignore` kapsamındadır
+- Şifreli dosyalar (`.hcl`) ve `data/` içeriği depoya dahil edilmez
+- USB token çekilince tüm widget etkileşimleri `setEnabled(False)` ile bloke edilir
+- Denetim kaydı her işlemi kullanıcı kimliği, zaman damgası ve detayla saklar
+
+---
+
+### 📜 Lisans
+
+MIT Lisansı — ayrıntılar için [LICENSE](LICENSE) dosyasına bakın.
