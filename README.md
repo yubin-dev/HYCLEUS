@@ -11,7 +11,7 @@
 [![Version](https://img.shields.io/badge/Version-2.0-red?style=for-the-badge)](#)
 [![Security](https://img.shields.io/badge/Encryption-AES--256--GCM-success?style=for-the-badge&logo=shield&logoColor=white)](#security-architecture)
 
-*Hardware-bound, zero-trust encrypted file vault with USB token authentication, TOTP 2FA, and Shamir Secret Sharing.*
+*Hardware-presence + PIN dual-factor encrypted file vault with USB HWID authentication, TOTP 2FA, and Shamir Secret Sharing.*
 
 </div>
 
@@ -21,7 +21,7 @@
 
 ### What is HYCLEUS?
 
-HYCLEUS is a Windows desktop application that encrypts and manages sensitive files inside a hardware-bound vault. Every file is encrypted with **AES-256-GCM** before hitting disk. The master key is split via **Shamir 2-of-2 Secret Sharing** between the USB token and the database — neither half is useful alone. Without the registered USB device, the vault cannot open.
+HYCLEUS is a Windows desktop application that encrypts and manages sensitive files inside a hardware-bound vault. Every file is encrypted with **AES-256-GCM** before hitting disk. The master key is split via **Shamir 2-of-2 Secret Sharing**: share_1 lives in a local vault file (`.hclv`) encrypted with an Argon2id PIN-derived KEK; share_2 lives in the local SQLite database, guarded by HWID verification. Reconstructing the master key requires both the correct PIN and the registered USB device to be physically present.
 
 ---
 
@@ -30,7 +30,7 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | Category | Feature |
 |----------|---------|
 | **Encryption** | AES-256-GCM per-file, unique nonce, AAD-bound to file metadata |
-| **Key Splitting** | Shamir 2-of-2 SSS — share 1 in DB, share 2 on USB token |
+| **Key Splitting** | Shamir 2-of-2 SSS — share_1 in Argon2id-encrypted vault file, share_2 in SQLite DB |
 | **Authentication** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
 | **Hardware Lock** | USB HWID binding — vault locks instantly on USB removal |
 | **Access Control** | RBAC: Administrator / Standard / Read-only roles |
@@ -51,14 +51,24 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                      LOGIN FLOW                         │
-│  USB HWID ──┐                                           │
-│             ├─► Shamir Reconstruct ─► AES-256 Key       │
-│  DB Share ──┘                          │                │
-│                                        ▼                │
-│  Argon2id PIN ──► Hash verify          │                │
-│  TOTP (RFC 6238) ──► 6-digit verify    │                │
+│                                                         │
+│  PIN ──► Argon2id KEK ──► Decrypt vault file            │
+│                                └─► share_1              │
 │                                        │                │
+│  USB HWID verified ──► DB lookup ──► share_2            │
+│                                        │                │
+│                   Shamir Reconstruct(share_1, share_2)  │
+│                                        │                │
+│                                  AES-256 master_key     │
+│                                        │                │
+│  TOTP (RFC 6238) ──► 6-digit verify    │                │
+│                                        ▼                │
 │                              Vault Unlocked             │
+│                                                         │
+│  ⚠ Both shares reside on the same disk.                │
+│    share_1 is protected by Argon2id KEK (requires PIN). │
+│    share_2 is guarded by HWID check (requires USB).     │
+│    Physical USB presence is a mandatory second factor.  │
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
@@ -240,7 +250,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ### HYCLEUS Nedir?
 
-HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için geliştirilmiş bir Windows masaüstü uygulamasıdır. Her dosya diske yazılmadan önce **AES-256-GCM** ile şifrelenir. Ana anahtar, **Shamir 2-of-2 Gizli Paylaşımı** ile USB token ve veritabanı arasında ikiye bölünür — iki parçadan biri tek başına işe yaramaz. Kayıtlı USB cihazı olmadan kasa açılamaz.
+HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için geliştirilmiş bir Windows masaüstü uygulamasıdır. Her dosya diske yazılmadan önce **AES-256-GCM** ile şifrelenir. Ana anahtar **Shamir 2-of-2 Gizli Paylaşımı** ile ikiye bölünür: share_1, Argon2id PIN-türevli KEK ile şifreli yerel kasa dosyasında (`.hclv`) saklanır; share_2, HWID doğrulamasıyla korunan yerel SQLite veritabanında bulunur. Ana anahtarı yeniden oluşturmak için hem doğru PIN hem de kayıtlı USB cihazının fiziksel olarak mevcut olması zorunludur.
 
 ---
 
@@ -249,7 +259,7 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | Kategori | Özellik |
 |----------|---------|
 | **Şifreleme** | AES-256-GCM, dosya başına benzersiz nonce, metadata'ya bağlı AAD |
-| **Anahtar Bölme** | Shamir 2-of-2 SSS — 1. parça DB'de, 2. parça USB'de |
+| **Anahtar Bölme** | Shamir 2-of-2 SSS — share_1 Argon2id şifreli kasa dosyasında, share_2 SQLite DB'de |
 | **Kimlik Doğrulama** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
 | **Donanım Kilidi** | USB HWID bağlama — USB çekilince kasa anında kilitlenir |
 | **Erişim Kontrolü** | RBAC: Yönetici / Standart / Salt Okunur rolleri |
@@ -270,14 +280,24 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                     GİRİŞ AKIŞI                         │
-│  USB HWID ──┐                                           │
-│             ├─► Shamir Birleştirme ─► AES-256 Anahtarı  │
-│  DB Payı ───┘                          │                │
-│                                        ▼                │
-│  Argon2id PIN ──► Hash doğrula         │                │
-│  TOTP (RFC 6238) ──► 6 haneli doğrula  │                │
+│                                                         │
+│  PIN ──► Argon2id KEK ──► Kasa dosyasını çöz           │
+│                                └─► share_1              │
 │                                        │                │
+│  USB HWID doğrulandı ──► DB sorgusu ──► share_2         │
+│                                        │                │
+│                 Shamir Birleştirme(share_1, share_2)    │
+│                                        │                │
+│                               AES-256 master_key        │
+│                                        │                │
+│  TOTP (RFC 6238) ──► 6 haneli doğrula  │                │
+│                                        ▼                │
 │                              Kasa Açıldı                │
+│                                                         │
+│  ⚠ Her iki pay da aynı diskte bulunur.                 │
+│    share_1, Argon2id KEK ile korunur (PIN gerekli).     │
+│    share_2, HWID kontrolüyle korunur (USB gerekli).     │
+│    Fiziksel USB varlığı zorunlu ikinci faktördür.       │
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
