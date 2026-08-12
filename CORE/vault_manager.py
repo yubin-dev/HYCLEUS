@@ -228,7 +228,7 @@ def _parse_share(share: str) -> tuple[int, int]:
     return index, y
 
 
-def _sss_split(secret: bytes) -> tuple[str, str, str]:
+def _sss_split(secret: bytes, *, anchor: str | None = None) -> tuple[str, str, str]:
     """
     32-byte secret'i 2-of-3 Shamir paylarına böler.
 
@@ -238,11 +238,24 @@ def _sss_split(secret: bytes) -> tuple[str, str, str]:
     Eşik 2'dir: üç paydan HERHANGİ İKİSİ anahtarı kurtarır, tek pay hiçbir
     bilgi vermez (derece-1 polinomda tek nokta sonsuz çözüme uyar).
 
+    Args:
+        secret — 32 byte master_key
+        anchor — verilirse AYNI POLİNOM yeniden kurulur: a1, f(anchor.index)
+                 tam olarak anchor'un değerine eşit olacak biçimde çözülür.
+                 Kurtarma sonrası yeniden kurulumda kullanılır; kullanıcının
+                 elindeki basılı kurtarma parçası böylece geçerli kalır.
+                 Verilmezse a1 rastgele seçilir (normal ilk kurulum).
+
     Returns:
         (share_1, share_2, share_3) — sırasıyla vault, anahtar kasası, kurtarma
     """
     s = int.from_bytes(secret, "big")
-    a1 = secrets.randbelow(_SSS_PRIME - 1) + 1  # [1, PRIME-1]
+    if anchor is None:
+        a1 = secrets.randbelow(_SSS_PRIME - 1) + 1  # [1, PRIME-1]
+    else:
+        # f(x_a) = s + a1*x_a = y_a  →  a1 = (y_a - s) / x_a
+        x_a, y_a = _parse_share(anchor)
+        a1 = ((y_a - s) * pow(x_a, -1, _SSS_PRIME)) % _SSS_PRIME
     return tuple(  # type: ignore[return-value]
         _fmt_share(i, (s + i * a1) % _SSS_PRIME) for i in _SSS_INDEXES
     )
@@ -430,12 +443,30 @@ def _read_vault_token_id(hwid: str) -> bytes:
 
 # ── Genel API ─────────────────────────────────────────────────────────────────
 
-def create_vault(hwid: str, pin: str, role: str) -> Path:
+def create_vault(
+    hwid: str,
+    pin: str,
+    role: str,
+    *,
+    master_key: bytes | None = None,
+    anchor_share: str | None = None,
+) -> Path:
     """
     Yeni bir vault dosyası oluşturur ve data/.hcl_vault'a yazar.
 
+    ⚠️ master_key VERİLMEZSE YENİ BİR ANAHTAR ÜRETİLİR. Mevcut .hcl
+    dosyaları eski anahtarla şifrelenmiş olduğundan bir daha AÇILAMAZ.
+    Kurtarma sonrası yeniden kurulumda mutlaka master_key geçin
+    (bkz. reprovision_vault).
+
+    Args:
+        master_key   — verilirse bu anahtar kullanılır (kurtarma akışı);
+                       verilmezse yeni rastgele anahtar üretilir
+        anchor_share — verilirse AYNI POLİNOM korunur, yani kullanıcının
+                       elindeki basılı kurtarma parçası geçerli kalır
+
     İşlem adımları:
-      1. 32 byte kriptografik rastgele master key üretir
+      1. 32 byte kriptografik rastgele master key üretir (master_key verilmediyse)
       2. UUID token_id üretir (cihaz bağlama kimliği)
       3. Shamir 2-of-3 ile master_key'i böler; share_1 ve share_2 saklanır,
          share_3 (kurtarma parçası) saklanmaz — gerektiğinde türetilir
@@ -457,7 +488,10 @@ def create_vault(hwid: str, pin: str, role: str) -> Path:
         OSError      — dosya yazma hatası
         RuntimeError — DB bağlantısı yoksa (DBManager.connect() çağrılmamış)
     """
-    master_key = os.urandom(_KEY_SIZE)
+    if master_key is None:
+        master_key = os.urandom(_KEY_SIZE)
+    elif len(master_key) != _KEY_SIZE:
+        raise ValueError(f"master_key {_KEY_SIZE} byte olmalı, {len(master_key)} verildi.")
     token_id_bytes = uuid.uuid4().bytes   # 16 byte UUID
     token_id_hex = token_id_bytes.hex()   # DB'de hex string olarak saklanır
 
@@ -466,7 +500,7 @@ def create_vault(hwid: str, pin: str, role: str) -> Path:
     # polinomdan geldiği için share_1 + share_2'den her an yeniden türetilebilir
     # (bkz. export_recovery_share). Böylece kurtarma parçası sistemde hiçbir
     # yerde durmaz ve yeni/eski vault ayrımı olmadan tek koddan üretilir.
-    share_1, share_2, _share_3_derivable = _sss_split(master_key)
+    share_1, share_2, _share_3_derivable = _sss_split(master_key, anchor=anchor_share)
 
     # ── AES-256-GCM şifreleme ────────────────────────────────────────────────
     salt = os.urandom(_SALT_SIZE)
@@ -981,6 +1015,64 @@ def recover_master_key(
         detail=f"hwid={hwid} kaynak={'share_1+share_3' if pin else 'share_2+share_3'}",
     )
     return master_key
+
+
+def reprovision_vault(
+    hwid: str,
+    pin: str,
+    role: str,
+    *,
+    master_key: bytes,
+    recovery_share: str,
+) -> Path:
+    """
+    Kurtarma sonrası vault'u YENİDEN KURAR — anahtarı ve polinomu koruyarak.
+
+    Neden ayrı bir fonksiyon: create_vault() varsayılan olarak YENİ bir
+    master_key üretir. Kurtarma akışında bunu kullanmak, mevcut .hcl
+    dosyalarını kalıcı olarak açılamaz hâle getirirdi.
+
+    Korunanlar:
+      · master_key — mevcut .hcl dosyaları açılmaya devam eder
+      · polinom    — f(1), f(2), f(3) değerleri aynı kalır, yani kullanıcının
+                     elindeki BASILI KURTARMA PARÇASI GEÇERLİLİĞİNİ SÜRDÜRÜR
+
+    Değişenler:
+      · vault dosyası yolu (yeni HWID)
+      · Argon2id salt + GCM nonce (yeni PIN ile yeniden mühürlenir)
+      · token_id (yeni UUID)
+      · share_2'nin kasadaki adı ("share_2:<yeni hwid>")
+
+    ⚠️ Güvenlik takası: pay DEĞERLERİ döndürülmediği için, eski kuruluma ait
+    bir share_2 kopyası sızmışsa geçerli kalmaya devam eder. Payları
+    döndürmek isterseniz recovery_share vermeyin — ama o zaman elinizdeki
+    basılı parça geçersizleşir ve yenisini dışa aktarmanız gerekir.
+
+    Args:
+        hwid           — YENİ USB'nin donanım kimliği
+        pin            — yeni PIN
+        role           — kullanıcı rolü
+        master_key     — recover_master_key() ile kurtarılmış 32 byte anahtar
+        recovery_share — kullanıcının elindeki "3:<hex>" parça (polinom çıpası)
+
+    Returns:
+        Yeni vault dosyasının yolu
+    """
+    _parse_share(recovery_share)
+    path = create_vault(
+        hwid, pin, role, master_key=master_key, anchor_share=recovery_share
+    )
+    # Kurtarma parçası değişmedi — daha önce alınmış sayılır
+    DBManager().execute(
+        "UPDATE usb_tokens SET recovery_issued_at = "
+        "strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE hwid = ?",
+        (hwid,),
+    )
+    DBManager().log(
+        "vault_reprovisioned",
+        detail=f"hwid={hwid} master_key=korundu polinom=korundu",
+    )
+    return path
 
 
 def reconstruct_key(share_a: str, share_b: str) -> bytes:

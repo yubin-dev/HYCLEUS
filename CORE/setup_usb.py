@@ -201,13 +201,32 @@ def main() -> None:
             _abort("PIN hatali — reset reddedildi.")
 
         print()
-        print("Uyari: Bu HWID icin mevcut vault ve DB kaydi kalici olarak silinecek.")
+        print("=" * 68)
+        print("DIKKAT — RESET YENI BIR MASTER KEY URETIR")
+        print("=" * 68)
+        print(
+            "Bu islem yalnizca vault dosyasini degil, SIFRELEME ANAHTARINI da\n"
+            "yeniler. Sonuclari:\n"
+            "\n"
+            "  · Mevcut .hcl dosyalariniz ESKI anahtarla sifrelenmistir ve bir\n"
+            "    daha ACILAMAZ. Bu geri alinamaz bir veri kaybidir.\n"
+            "  · Elinizdeki BASILI KURTARMA PARCASI gecersizlesir; reset sonrasi\n"
+            "    yenisini almalisiniz:\n"
+            "        python CORE/recover_vault.py --export\n"
+            "\n"
+            "Amaciniz KURTARMA ise (USB kaybi, kasa silinmesi) BU KOMUTU\n"
+            "KULLANMAYIN. Bunun yerine:\n"
+            "        python CORE/recover_vault.py --recover\n"
+            "Bu komut master_key'i ve polinomu koruyarak vault'u yeniden kurar;\n"
+            "dosyalariniz ve basili parcaniz gecerli kalir."
+        )
+        print("=" * 68)
         try:
-            answer = input("  Devam edilsin mi? [e/H] ").strip().lower()
+            answer = input('  Veri kaybini kabul ediyorsaniz "SIFIRLA" yazin: ').strip()
         except (EOFError, KeyboardInterrupt):
             print("\nIptal edildi.")
             sys.exit(0)
-        if answer != "e":
+        if answer != "SIFIRLA":
             print("Iptal edildi.")
             sys.exit(0)
 

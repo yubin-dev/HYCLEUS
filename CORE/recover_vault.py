@@ -36,11 +36,13 @@ from CORE.recovery_share import (  # noqa: E402
     build_export,
     decode_share,
 )
+from CORE.pin_policy import validate_new_pin  # noqa: E402
 from CORE.usb_manager import get_usb_hwid  # noqa: E402
 from CORE.vault_manager import (  # noqa: E402
     export_recovery_share,
     has_recovery_share,
     recover_master_key,
+    reprovision_vault,
 )
 from DB.db_manager import DBManager  # noqa: E402
 
@@ -147,16 +149,54 @@ def _cmd_recover(args: argparse.Namespace) -> None:
         )
 
     try:
+        import hashlib
+
         print(f"\n{_SEP}")
         print("MASTER KEY KURTARILDI")
-        print(f"  uzunluk    : {len(master_key)} byte")
-        print(f"  SHA-256 ozeti: {__import__('hashlib').sha256(master_key).hexdigest()}")
+        print(f"  uzunluk      : {len(master_key)} byte")
+        print(f"  SHA-256 ozeti: {hashlib.sha256(master_key).hexdigest()}")
+        print(_SEP)
+
+        print(
+            "\nSIMDI VAULT'U YENIDEN KURABILIRIZ.\n"
+            "\n  · master_key KORUNUR   -> mevcut .hcl dosyalariniz acilmaya devam eder\n"
+            "  · polinom KORUNUR      -> elinizdeki BASILI KURTARMA PARCASI gecerli kalir\n"
+            "  · yeni PIN belirlenir ve share_2 bu cihazin kasasina yazilir\n"
+        )
+        if input("  Vault yeniden kurulsun mu? [e/H] ").strip().lower() not in ("e", "evet"):
+            print(
+                "\nAtlandi. UYARI: setup_usb.py --reset KULLANMAYIN -\n"
+                "o komut YENI bir master_key uretir ve mevcut .hcl dosyalariniz\n"
+                "kalici olarak acilamaz hale gelir."
+            )
+            return
+
+        role = input("  Rol (orn. Yonetici): ").strip() or "Yonetici"
+        yeni_pin = _prompt_pin("  Yeni PIN: ")
+        pin_hatasi = validate_new_pin(yeni_pin)
+        if pin_hatasi:
+            _abort(pin_hatasi)
+        if _prompt_pin("  Yeni PIN (tekrar): ") != yeni_pin:
+            _abort("PIN'ler eslesmiyor.")
+
+        try:
+            path = reprovision_vault(
+                hwid, yeni_pin, role,
+                master_key=master_key,
+                recovery_share=share_3,
+            )
+        except Exception as exc:
+            _abort(f"Yeniden kurulum basarisiz: {exc}")
+
+        print(f"\n{_SEP}")
+        print("VAULT YENIDEN KURULDU")
+        print(f"  konum : {path}")
+        print(f"  HWID  : {hwid}")
         print(_SEP)
         print(
-            "\nAnahtar yalnizca dogrulama icin gosterildi; hicbir yere yazilmadi.\n"
-            "Vault'u yeniden kurmak icin:\n"
-            "  python CORE/setup_usb.py --role <rol> --reset\n"
-            "komutunu calistirin, ardindan dosyalariniza erisebilirsiniz."
+            "\n  · Mevcut .hcl dosyalariniz ayni anahtarla acilir.\n"
+            "  · Elinizdeki basili kurtarma parcasi HALA GECERLI - saklamaya devam edin.\n"
+            "  · Yeni PIN'inizle normal sekilde giris yapabilirsiniz."
         )
     finally:
         del master_key

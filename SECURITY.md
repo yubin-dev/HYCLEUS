@@ -186,6 +186,26 @@ polynomial, so anyone holding the other two shares can reproduce it at any
 time. Re-exporting does not rotate it. Rotating it means re-splitting, which
 means re-keying the vault.
 
+**Recovery preserves the key and the polynomial — deliberately.**
+`recover_vault.py --recover` re-provisions through `reprovision_vault()`,
+which reuses the recovered `master_key` *and* anchors the polynomial on the
+recovery share. So after recovery:
+
+- existing `.hcl` files still decrypt (the master key did not change), and
+- the printed recovery share stays valid (`f(1)`, `f(2)`, `f(3)` are unchanged).
+
+The trade-off is that **nothing is rotated**. If an old `share_2` leaked
+before the loss, it remains a valid share. Rotating would mean re-splitting,
+which invalidates the paper the user is holding — and a paper that silently
+stops working is worse than a share that might have leaked, because the user
+only finds out at the next loss, when it is too late. If you *do* want
+rotation, re-key deliberately and export a fresh recovery share immediately.
+
+> ⚠️ `setup_usb.py --reset` is **not** a recovery path. It generates a new
+> master key, which makes every existing `.hcl` file permanently
+> undecryptable and invalidates the recovery share. It now requires typing
+> `SIFIRLA` to confirm and points at `--recover` instead.
+
 ### 4.5 Application-level controls are labelled as such
 
 The USB HWID check and the login rate limit constrain what can be done
@@ -428,6 +448,27 @@ Kurtarma parçası **rastgele değil, türetilebilirdir**: aynı polinomun
 `f(3)`'ü olduğu için diğer iki paya sahip olan onu her an yeniden
 üretebilir. Yeniden dışa aktarmak parçayı DEĞİŞTİRMEZ. Değiştirmek yeniden
 bölmeyi, o da vault'un yeniden anahtarlanmasını gerektirir.
+
+**Kurtarma anahtarı ve polinomu bilerek korur.**
+`recover_vault.py --recover`, `reprovision_vault()` üzerinden yeniden
+kurulum yapar: kurtarılan `master_key`'i tekrar kullanır *ve* polinomu
+kurtarma parçasına çıpalar. Böylece kurtarma sonrasında:
+
+- mevcut `.hcl` dosyaları açılmaya devam eder (master key değişmedi), ve
+- basılı kurtarma parçası geçerli kalır (`f(1)`, `f(2)`, `f(3)` aynı).
+
+Takas şu: **hiçbir şey döndürülmez (rotate edilmez).** Kayıptan önce bir
+`share_2` kopyası sızmışsa geçerli kalmaya devam eder. Döndürmek yeniden
+bölme demek, o da kullanıcının elindeki kâğıdı geçersizleştirir — sessizce
+çalışmayı bırakan bir kâğıt, sızmış olabilecek bir paydan daha kötüdür,
+çünkü kullanıcı bunu ancak bir sonraki kayıpta, iş işten geçtikten sonra
+öğrenir. Döndürme istiyorsanız bilinçli olarak yeniden anahtarlayın ve
+hemen ardından yeni kurtarma parçasını dışa aktarın.
+
+> ⚠️ `setup_usb.py --reset` bir kurtarma yolu **değildir**. Yeni bir master
+> key üretir; bu da mevcut tüm `.hcl` dosyalarını kalıcı olarak açılamaz
+> hâle getirir ve kurtarma parçasını geçersizleştirir. Artık onay için
+> `SIFIRLA` yazılmasını istiyor ve kullanıcıyı `--recover`'a yönlendiriyor.
 
 ### 4.5 Uygulama seviyesi kontroller böyle etiketlenmiştir
 
