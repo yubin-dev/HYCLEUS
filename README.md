@@ -33,7 +33,8 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | **Key Splitting** | Shamir 2-of-2 SSS — share_1 in Argon2id-encrypted vault file, share_2 in OS credential store |
 | **Secret Storage** | `keyring` — Windows DPAPI / macOS Keychain / Linux Secret Service; no plaintext secrets on disk |
 | **Authentication** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
-| **Hardware Lock** | USB HWID binding — vault locks instantly on USB removal |
+| **Hardware Lock** | USB HWID binding — vault locks instantly on USB removal (in-app control; see Security Notes) |
+| **Brute-force Defence** | Login rate limit — 5 failures → 30s, escalating to 300s; counter persisted in DB |
 | **Access Control** | RBAC: Administrator / Standard / Read-only roles |
 | **Malware Scan** | Windows Defender (MpCmdRun.exe) on every uploaded file |
 | **File Labels** | General · Critical · Quarantine · Destruction Room |
@@ -66,10 +67,10 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 │                                        ▼                │
 │                              Vault Unlocked             │
 │                                                         │
-│  ⚠ Both shares reside on the same disk.                │
-│    share_1 is protected by Argon2id KEK (requires PIN). │
-│    share_2 sits in the OS credential store (DPAPI).     │
-│    Physical USB presence is a mandatory second factor.  │
+│  ⚠ share_1 is protected by Argon2id KEK (requires PIN).│
+│    share_2: OS credential store, keyed to HWID.         │
+│    The HWID check is an in-app control only — it does   │
+│    not stop an attacker who reads the disk directly.    │
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
@@ -239,6 +240,29 @@ HYCLEUS/
 
 ---
 
+### 🔐 Security Notes
+
+- PIN is stored as an **Argon2id** hash under `data/` — never written in plaintext
+- The TOTP secret and `share_2` live in the **OS credential store** (service `HYCLEUS`): Windows Credential Manager / DPAPI, macOS Keychain, Linux Secret Service. `share_2` is keyed per device as `share_2:<hwid>`, so each registered USB has its own share
+- Legacy installs are migrated automatically on first launch: `data/totp_secret.json` and the `share_2` column in the DB are overwritten with random bytes and then removed (`CORE/secret_migration.py`)
+- If the credential store is unreachable (headless Linux, no Secret Service), the app refuses to start — it never falls back to plaintext
+- Encrypted files (`.hcl`) and the contents of `data/` are excluded from the repository
+- Login attempts are rate limited: 5 failures lock the login for 30s, then 60s / 120s / 300s (capped). The counter lives in the database, not in memory, so restarting the app does not clear it (`CORE/rate_limit.py`)
+- The audit log records every action with user identity, timestamp and detail
+
+**What these controls do _not_ cover.** The USB HWID check and the login rate limit are **application-level controls**. They constrain what can be done *through the HYCLEUS interface*; they do not constrain an attacker who can read or write the files directly:
+
+- The HWID check does not protect `share_2` — the OS credential store does. Removing the USB, or editing the `usb_tokens` row, does not make the stored share readable
+- An attacker with filesystem access can delete the `login_attempts` table or rewind `locked_until`, defeating the rate limit
+- An attacker who copies the vault file (`.hclv`) can brute-force it offline without ever running this code. The only defence there is the Argon2id cost (time=3, memory=64 MB, parallelism=4)
+- Secure-erase during migration overwrites in place; on SSDs (wear levelling), copy-on-write filesystems and snapshots that assumption does not hold
+
+Full-disk encryption is the control that covers the offline-attacker case. HYCLEUS does not replace it.
+
+> A dedicated `SECURITY.md` has not been written yet — until it exists, this section is the reference.
+
+---
+
 ### 📜 License
 
 MIT License — see [LICENSE](LICENSE) for details.
@@ -262,7 +286,8 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | **Anahtar Bölme** | Shamir 2-of-2 SSS — share_1 Argon2id şifreli kasa dosyasında, share_2 OS anahtar kasasında |
 | **Sır Saklama** | `keyring` — Windows DPAPI / macOS Keychain / Linux Secret Service; diskte düz metin sır yok |
 | **Kimlik Doğrulama** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
-| **Donanım Kilidi** | USB HWID bağlama — USB çekilince kasa anında kilitlenir |
+| **Donanım Kilidi** | USB HWID bağlama — USB çekilince kasa anında kilitlenir (arayüz seviyesi kontrol; bkz. Güvenlik Notları) |
+| **Kaba Kuvvet Savunması** | Giriş sınırlaması — 5 hatada 30 sn, 300 sn'ye kadar artan; sayaç DB'de kalıcı |
 | **Erişim Kontrolü** | RBAC: Yönetici / Standart / Salt Okunur rolleri |
 | **Zararlı Tarama** | Her yüklenen dosyaya Windows Defender (MpCmdRun.exe) taraması |
 | **Dosya Etiketleri** | Genel · Kritik · Karantina · İmha Odası |
@@ -295,10 +320,10 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 │                                        ▼                │
 │                              Kasa Açıldı                │
 │                                                         │
-│  ⚠ Her iki pay da aynı diskte bulunur.                 │
-│    share_1, Argon2id KEK ile korunur (PIN gerekli).     │
-│    share_2, OS anahtar kasasında tutulur (DPAPI).       │
-│    Fiziksel USB varlığı zorunlu ikinci faktördür.       │
+│  ⚠ share_1, Argon2id KEK ile korunur (PIN gerekli).    │
+│    share_2, OS anahtar kasasında HWID'e bağlı tutulur.  │
+│    HWID kontrolü yalnızca uygulama arayüzü seviyesinde  │
+│    çalışır; diski doğrudan okuyan saldırganı durdurmaz. │
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
@@ -472,12 +497,24 @@ HYCLEUS/
 ### 🔐 Güvenlik Notları
 
 - PIN `data/` içinde **Argon2id** ile hashlenerek saklanır — düz metin asla yazılmaz
-- TOTP sırrı ve `share_2` işletim sistemi anahtar kasasındadır (`HYCLEUS` servisi) — diskte düz metin olarak tutulmaz
-- Eski kurulumlardan gelen `data/totp_secret.json` ve DB'deki `share_2`, ilk açılışta otomatik olarak kasaya taşınır; eski kopyaların üzerine rastgele veri yazılıp silinir (`CORE/secret_migration.py`)
+- TOTP sırrı ve `share_2` **işletim sistemi anahtar kasasındadır** (`HYCLEUS` servisi): Windows Credential Manager / DPAPI, macOS Keychain, Linux Secret Service. `share_2` cihaz başına `share_2:<hwid>` adıyla saklanır — her kayıtlı USB'nin kendi payı vardır
+- Eski kurulumlardan gelen `data/totp_secret.json` ve DB'deki `share_2` sütunu, ilk açılışta otomatik olarak kasaya taşınır; eski kopyaların üzerine rastgele veri yazılıp silinir (`CORE/secret_migration.py`)
 - Anahtar kasasına erişilemezse (başsız Linux, servis yok) uygulama açılmaz — sessizce düz metne geri dönmez
 - Şifreli dosyalar (`.hcl`) ve `data/` içeriği depoya dahil edilmez
 - USB token çekilince tüm widget etkileşimleri `setEnabled(False)` ile bloke edilir
+- Giriş denemeleri sınırlıdır: 5 hatada 30 sn kilit, sonra 60 / 120 / 300 sn (tavan). Sayaç bellekte değil veritabanındadır — uygulamayı yeniden başlatmak kilidi kaldırmaz (`CORE/rate_limit.py`)
 - Denetim kaydı her işlemi kullanıcı kimliği, zaman damgası ve detayla saklar
+
+**Bu kontrollerin kapsamadıkları.** USB HWID kontrolü ve giriş sınırlaması **uygulama arayüzü seviyesinde** kontrollerdir. *HYCLEUS arayüzü üzerinden* yapılabilecekleri sınırlarlar; dosyaları doğrudan okuyup yazabilen bir saldırganı sınırlamazlar:
+
+- HWID kontrolü `share_2`'yi korumaz — onu koruyan işletim sistemi anahtar kasasıdır. USB'yi çıkarmak veya `usb_tokens` satırını düzenlemek kasadaki payı okunabilir hâle getirmez
+- Dosya sistemine erişimi olan bir saldırgan `login_attempts` tablosunu silebilir veya `locked_until` alanını geriye çekerek giriş sınırlamasını aşabilir
+- Vault dosyasını (`.hclv`) kopyalayan bir saldırgan bu koddan hiç geçmeden çevrimdışı kaba kuvvet uygulayabilir. Oradaki tek savunma Argon2id maliyetidir (time=3, bellek=64 MB, paralellik=4)
+- Migration sırasındaki güvenli silme yerinde üzerine yazar; SSD (wear levelling), kopyala-yaz dosya sistemleri ve snapshot'larda bu varsayım geçerli değildir
+
+Çevrimdışı saldırgan senaryosunu kapatan kontrol tam disk şifrelemesidir. HYCLEUS onun yerine geçmez.
+
+> Ayrı bir `SECURITY.md` henüz yazılmadı — o dosya oluşana kadar referans bu bölümdür.
 
 ---
 
