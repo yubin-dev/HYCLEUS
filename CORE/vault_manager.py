@@ -25,6 +25,14 @@ USB kimlik doğrulama katmanları (authenticate_usb):
   · Katman 2 — HMAC    : vault dosyası bütünlüğü geçerli mi?
   · Katman 3 — Token ID: vault token_id == DB token_id?
 
+Kara liste (_reject_if_blacklisted):
+  Hem authenticate_usb() hem open_vault() aynı kontrolden geçer — yani
+  kara listedeki bir cihaz ne USB yeniden takma akışında ne de PIN
+  girişinde vault'u açabilir. Bu bir İPTAL değildir: share_1 vault'ta,
+  share_2 anahtar kasasında geçerliliğini korur; yalnızca erişim engellenir.
+  Gerçek iptal için delete_usb_token() + vault'un yeniden anahtarlanması
+  gerekir (bkz. SECURITY.md §4.1).
+
 Şifreleme güvenlik katmanları:
   · KEK   — Argon2id(password=pin, salt=salt) → 32 byte şifreleme anahtarı
   · GCM   — Şifreleme + bütünlük; HWID cihaz bağlayıcı AAD olarak iletilir
@@ -444,8 +452,8 @@ def authenticate_usb(hwid: str) -> None:
         _reject("HWID usb_tokens tablosunda kayıtlı değil.")
 
     # ── Kara liste kontrolü (Katman 1 içinde, ilk kontrol) ───────────────────
-    if row["blacklisted"]:
-        _reject("USB cihazı kara listede; erişim reddedildi.")
+    # open_vault() ile ortak yardımcı — iki giriş yolunun ayrışmaması için
+    _reject_if_blacklisted(hwid)
 
     db_token_id: str = row["token_id"]
 
@@ -468,6 +476,30 @@ def authenticate_usb(hwid: str) -> None:
         _reject("Vault token_id ile DB token_id eşleşmiyor.")
 
     db.log("usb_auth_success", detail=f"hwid={hwid}")
+
+
+def _reject_if_blacklisted(hwid: str) -> None:
+    """
+    HWID kara listedeyse USBAuthError fırlatır ve audit log'a yazar.
+
+    HEM authenticate_usb() HEM open_vault() bu yardımcıyı çağırır. Kontrol
+    tek bir yerde durmalı: daha önce kara liste yalnızca authenticate_usb
+    içinde bakılıyordu, oysa giriş ekranı open_vault'u doğrudan çağırıyor —
+    yani kara listedeki bir USB geçerli PIN'le vault'u açabiliyordu.
+
+    Kayıt yoksa burada karar verilmez; "kayıtlı değil" durumunu çağıranlar
+    kendi bağlamlarına uygun mesajla ele alır.
+
+    Raises:
+        USBAuthError — cihaz kara listedeyse
+    """
+    db = DBManager()
+    row = db.fetchone("SELECT blacklisted FROM usb_tokens WHERE hwid = ?", (hwid,))
+    if row is None or not row["blacklisted"]:
+        return
+    reason = "USB cihazı kara listede; erişim reddedildi."
+    db.log("usb_auth_rejected", detail=f"hwid={hwid} — {reason}")
+    raise USBAuthError(reason)
 
 
 def blacklist_usb(hwid: str) -> None:
@@ -689,10 +721,15 @@ def open_vault(hwid: str, pin: str) -> tuple[str, bytes]:
         (role, master_key) — rol string ve 32 byte AES-256 dosya şifreleme anahtarı
 
     Raises:
+        USBAuthError       — cihaz kara listedeyse
         FileNotFoundError  — vault dosyası yoksa
         VaultTamperedError — HMAC doğrulaması başarısızsa
         ValueError         — PIN yanlış veya vault formatı geçersizse
     """
+    # Kara liste EN BAŞTA — PIN doğru olsa bile açılmamalı, ve Argon2id
+    # maliyetine girmeden reddedilmeli. authenticate_usb ile aynı kontrol.
+    _reject_if_blacklisted(hwid)
+
     verify_vault(hwid)
 
     raw = _read_vault_path(hwid).read_bytes()

@@ -118,24 +118,28 @@ SHA-256 also permits confirming a suspected file without decrypting it.
 
 ### 4.1 Blacklisting a USB does not revoke anything
 
-`blacklist_usb()` sets `blacklisted = 1` in `usb_tokens`, and
-`authenticate_usb()` refuses blacklisted devices. But:
+`blacklist_usb()` sets `blacklisted = 1` in `usb_tokens`. Both entry paths —
+`authenticate_usb()` (USB re-insertion) and `open_vault()` (PIN login) —
+now enforce it through the same helper, `_reject_if_blacklisted()`, so a
+blacklisted device is refused on either route. Access is blocked. But:
 
-- **The login path never checks it.** `open_vault()` — the function the
-  login screen calls — verifies the HMAC and decrypts; it does not consult
-  the blacklist. `authenticate_usb()` runs on USB *re-insertion* after a
-  lock event, a different code path. A blacklisted USB with a valid PIN can
-  still open the vault.
 - **It revokes no key material.** `share_1` stays in the vault file and
   `share_2` stays in the credential store under `share_2:<hwid>`. The
-  master key remains reconstructible.
+  master key remains reconstructible by anything that does not go through
+  these two functions.
 - **It is one DB write.** `UPDATE usb_tokens SET blacklisted = 0` undoes
-  it. The application offers this legitimately; an attacker with file
-  access does it directly.
+  it, and the flag lives in the unencrypted database. The application
+  offers this legitimately; an attacker with file access does it directly.
 
 Treat the blacklist as an **administrative marker, not a revocation
-mechanism**. Real revocation requires deleting the credential-store entry
-(`delete_usb_token()`) and re-keying the vault.
+mechanism** — and `open_vault()` now enforces that marker too, so it is at
+least enforced consistently. Real revocation requires deleting the
+credential-store entry (`delete_usb_token()`) and re-keying the vault.
+
+> Until v2.1.0 the login path did **not** check the flag: a blacklisted USB
+> with a valid PIN could still open the vault, because the login screen
+> calls `open_vault()` directly and only `authenticate_usb()` consulted the
+> blacklist. Fixed after this document first reported it.
 
 ### 4.2 The vault HMAC key is derived from a non-secret
 
@@ -330,24 +334,30 @@ dosyanın şifresi çözülmeden doğrulanmasına imkân verir.
 
 ### 4.1 USB'yi kara listeye almak hiçbir şeyi iptal etmez
 
-`blacklist_usb()` `usb_tokens` tablosunda `blacklisted = 1` yapar ve
-`authenticate_usb()` kara listedeki cihazları reddeder. Ama:
+`blacklist_usb()` `usb_tokens` tablosunda `blacklisted = 1` yapar. Her iki
+giriş yolu da — `authenticate_usb()` (USB yeniden takma) ve `open_vault()`
+(PIN girişi) — artık aynı yardımcı üzerinden (`_reject_if_blacklisted()`)
+bu bayrağı uygular; kara listedeki cihaz iki yolda da reddedilir. Erişim
+engellenir. Ama:
 
-- **Giriş yolu bunu hiç kontrol etmez.** Giriş ekranının çağırdığı fonksiyon
-  olan `open_vault()` HMAC'ı doğrular ve şifreyi çözer; kara listeye
-  bakmaz. `authenticate_usb()` kilit olayından sonra USB *yeniden
-  takıldığında* çalışır — farklı bir kod yolu. Kara listedeki bir USB,
-  geçerli PIN'le vault'u yine de açabilir.
 - **Hiçbir anahtar materyalini iptal etmez.** `share_1` vault dosyasında,
   `share_2` anahtar kasasında `share_2:<hwid>` adıyla durmaya devam eder.
-  Master key hâlâ yeniden oluşturulabilir.
-- **Tek bir DB yazması.** `UPDATE usb_tokens SET blacklisted = 0` geri alır.
-  Uygulama bunu meşru olarak sunuyor; dosya erişimi olan saldırgan doğrudan
-  yapar.
+  Bu iki fonksiyondan geçmeyen her şey için master key hâlâ yeniden
+  oluşturulabilir.
+- **Tek bir DB yazması.** `UPDATE usb_tokens SET blacklisted = 0` geri alır
+  ve bayrak şifresiz veritabanında durur. Uygulama bunu meşru olarak
+  sunuyor; dosya erişimi olan saldırgan doğrudan yapar.
 
 Kara listeyi **idari bir işaret olarak görün, iptal mekanizması olarak
-değil.** Gerçek iptal, kasadaki kaydın silinmesini (`delete_usb_token()`) ve
-vault'un yeniden anahtarlanmasını gerektirir.
+değil** — ve `open_vault()` artık bu işareti o da uyguluyor, yani en azından
+tutarlı biçimde uygulanıyor. Gerçek iptal, kasadaki kaydın silinmesini
+(`delete_usb_token()`) ve vault'un yeniden anahtarlanmasını gerektirir.
+
+> v2.1.0'a kadar giriş yolu bayrağı **kontrol etmiyordu**: kara listedeki bir
+> USB, geçerli PIN'le vault'u yine de açabiliyordu, çünkü giriş ekranı
+> `open_vault()`'u doğrudan çağırıyor ve kara listeye yalnızca
+> `authenticate_usb()` bakıyordu. Bu belge sorunu ilk raporladıktan sonra
+> düzeltildi.
 
 ### 4.2 Vault HMAC anahtarı sır olmayan bir şeyden türetiliyor
 

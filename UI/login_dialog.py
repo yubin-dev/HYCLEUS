@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from CORE.usb_manager import get_usb_hwid
 from CORE.vault_manager import (
+    USBAuthError,
     VaultTamperedError,
     _read_vault_path,
     create_vault,
@@ -818,6 +819,12 @@ class LoginDialog(QDialog):
                 pin_ok = True
             except VaultTamperedError:
                 self._show_error("Vault bütünlüğü bozulmuş — yöneticiye başvurun")
+                return
+            except USBAuthError as exc:
+                # Kara liste: PIN doğru olsa bile açılmaz. Genel "PIN hatalı"
+                # mesajına düşürmek yanıltıcı olurdu — kullanıcı doğru PIN'i
+                # tekrar tekrar dener ve kendini rate limit'e kilitler.
+                self._show_error(str(exc))
                 return
             except Exception:
                 pass
