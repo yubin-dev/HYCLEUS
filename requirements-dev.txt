@@ -1,0 +1,7 @@
+# Geliştirme / test / CI bağımlılıkları — runtime için requirements.txt'e bak.
+#   pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+
+pytest>=9.1
+ruff>=0.16
+mypy>=2.3

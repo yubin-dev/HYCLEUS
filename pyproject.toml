@@ -1,0 +1,50 @@
+# HYCLEUS — lint / tip denetimi yapılandırması
+#
+# Bu dosya paketleme için değil, yalnızca araç ayarları içindir.
+# Runtime bağımlılıkları requirements.txt, CI bağımlılıkları requirements-dev.txt.
+# pytest ayarları pytest.ini içindedir.
+
+# ── ruff ──────────────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["build", "dist", ".venv"]
+
+[tool.ruff.lint]
+# Başlangıç seti = ruff'un varsayılanı: pycodestyle hataları + pyflakes.
+# Amaç CI'ı yeşile almak, mevcut kodu yeniden yazmak değil.
+# Sıkılaştırma ayrı bir iş — bkz. BACKLOG.md / B-002.
+select = ["E4", "E7", "E9", "F"]
+
+# Aşağıdakiler bugün mevcut kodda ihlal ediliyor; her biri ayrı ayrı
+# temizlenene kadar susturuldu (sayılar 2026-08-13 taramasından).
+ignore = [
+    "E402",  # 33× modül-seviyesi import en üstte değil — sys.path bootstrap'ı
+             #     bilinçli olarak importlardan önce çalışıyor (setup_usb.py,
+             #     usb_manager.py, vault_manager.py). Kalıcı istisna olabilir.
+    "F401",  #  8× kullanılmayan import (çoğu UI/ altında)
+    "F541",  #  3× yer tutucusuz f-string
+    "F841",  #  1× kullanılmayan yerel değişken
+    "E741",  #  1× belirsiz değişken adı (l/I/O)
+]
+
+# ── mypy ──────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+files = ["CORE", "DB"]
+
+# CORE/ ve DB/ altında __init__.py yok (PEP 420 namespace paketleri).
+# Bunlar olmadan mypy CORE/x.py'yi hem "x" hem "CORE.x" olarak görüp hata verir.
+mypy_path = "."
+namespace_packages = true
+explicit_package_bases = true
+
+# Gevşek başlangıç: tip belirtilmemiş eski kod CI'ı kırmasın.
+# wmi, PySide6, argon2, qrcode gibi stub'ı olmayan paketler için de gerekli.
+# Sıkılaştırma (disallow_untyped_defs, strict) ayrı bir iş — BACKLOG.md / B-002.
+ignore_missing_imports = true
+check_untyped_defs = false
+warn_unused_ignores = false
+
+# UI/ hariç: PySide6 ağırlıklı, resmi stub'ı yok — ayrı bir işte ele alınacak.
+exclude = ["^UI/"]

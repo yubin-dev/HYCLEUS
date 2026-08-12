@@ -1,6 +1,8 @@
 PySide6
 cryptography
-wmi
+# wmi pywin32'ye bağlıdır ve yalnızca Windows'ta kurulabilir.
+# İşaretleyici olmadan CI'ın Ubuntu ayağı bağımlılık kurulumunda kırılır.
+wmi; sys_platform == "win32"
 pyotp
 qrcode[pil]
 argon2-cffi

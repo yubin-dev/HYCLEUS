@@ -31,16 +31,16 @@ USB kimlik doğrulama katmanları (authenticate_usb):
 from __future__ import annotations
 
 import ctypes
-import ctypes.wintypes
 import hmac as _stdlib_hmac
 import os
 import secrets
 import struct
+import sys
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.hazmat.primitives import hashes
@@ -104,11 +104,24 @@ def _new_vault_path(hwid: str) -> Path:
 _FILE_ATTRIBUTE_READONLY = 0x01
 _FILE_ATTRIBUTE_NORMAL   = 0x80   # readonly dahil tüm bitleri sıfırlar
 
-_k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-_k32.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.wintypes.DWORD]
-_k32.SetFileAttributesW.restype  = ctypes.wintypes.BOOL
-_k32.GetFileAttributesW.argtypes = [ctypes.c_wchar_p]
-_k32.GetFileAttributesW.restype  = ctypes.wintypes.DWORD
+# kernel32 yalnızca Windows'ta bağlanır — `import ctypes.wintypes` ve
+# `ctypes.windll` diğer platformlarda import anında patlar.
+#
+# HYCLEUS bir Windows uygulamasıdır ve readonly biti NTFS'e özgüdür; bu modülün
+# kripto katmanı (Shamir, Argon2id, HMAC, AES-GCM) ise platformdan bağımsızdır.
+# Bağlamayı koşullu yaparak CI'ın Linux ayağı modülü import edip kripto
+# testlerini çalıştırabiliyor. Windows dışında _k32 None kalır ve aşağıdaki üç
+# readonly yardımcısı no-op'a döner.
+_k32: Any = None
+
+if sys.platform == "win32":
+    import ctypes.wintypes
+
+    _k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    _k32.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.wintypes.DWORD]
+    _k32.SetFileAttributesW.restype  = ctypes.wintypes.BOOL
+    _k32.GetFileAttributesW.argtypes = [ctypes.c_wchar_p]
+    _k32.GetFileAttributesW.restype  = ctypes.wintypes.DWORD
 
 
 # ── Özel istisnalar ───────────────────────────────────────────────────────────
@@ -194,13 +207,17 @@ def _save_usb_token(hwid: str, share_2: str, token_id_hex: str) -> None:
 
 
 def _set_readonly(path: Path) -> None:
-    """Dosyaya FILE_ATTRIBUTE_READONLY uygular."""
+    """Dosyaya FILE_ATTRIBUTE_READONLY uygular (Windows dışında no-op)."""
+    if _k32 is None:
+        return
     if not _k32.SetFileAttributesW(str(path), _FILE_ATTRIBUTE_READONLY):
         raise OSError(f"Readonly bit ayarlanamadı: {path}  (hata: {ctypes.GetLastError()})")
 
 
 def _clear_readonly(path: Path) -> None:
-    """Dosyadan FILE_ATTRIBUTE_READONLY özelliğini kaldırır."""
+    """Dosyadan FILE_ATTRIBUTE_READONLY özelliğini kaldırır (Windows dışında no-op)."""
+    if _k32 is None:
+        return
     if not _k32.SetFileAttributesW(str(path), _FILE_ATTRIBUTE_NORMAL):
         raise OSError(f"Readonly bit temizlenemedi: {path}  (hata: {ctypes.GetLastError()})")
 
@@ -212,9 +229,12 @@ def _writable(path: Path) -> Iterator[None]:
 
     Giriş : dosya mevcutsa readonly bitini kaldırır.
     Çıkış : dosya mevcutsa (istisna olsa bile) readonly bitini geri uygular.
+
+    Windows dışında readonly biti yoktur; bağlam yöneticisi saf geçiş olur.
     """
     was_readonly = (
-        path.exists()
+        _k32 is not None
+        and path.exists()
         and bool(_k32.GetFileAttributesW(str(path)) & _FILE_ATTRIBUTE_READONLY)
     )
     if was_readonly:
