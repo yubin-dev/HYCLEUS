@@ -11,14 +11,23 @@ Vault dosya formatı (.hcl_vault, ikili):
   [16B] gcm_tag    (AES-GCM kimlik doğrulama etiketi)
   [32B] hmac       (HMAC-SHA256 imzası; yukarıdaki tüm alanlar üzerinden)
 
-Shamir Secret Sharing (2-of-2):
-  · master_key 2 parçaya bölünür (threshold=2, shares=2)
+Shamir Secret Sharing (2-of-3):
+  · master_key 3 parçaya bölünür (threshold=2, shares=3)
   · share_1 — vault ciphertext içinde şifreli olarak saklanır
   · share_2 — işletim sistemi anahtar kasasına yazılır (bkz. CORE/secret_store.py)
               kasa kaydı: servis "HYCLEUS", kullanıcı adı "share_2:<hwid>"
               DB'deki usb_tokens.share_2 sütunu şema uyumluluğu için duruyor
               ama boş — sır orada TUTULMAZ (migration: CORE/secret_migration.py)
-  · Master anahtarı yalnızca her iki parça mevcut olduğunda reconstruct_key() ile kurtarılır
+  · share_3 — KURTARMA PARÇASI. Sistemde hiçbir yerde saklanmaz; bir kez
+              gösterilip kullanıcı tarafından fiziksel olarak saklanır.
+              Aynı polinomdan geldiği için share_1 + share_2'den her an
+              yeniden türetilebilir (export_recovery_share).
+  · Üç paydan HERHANGİ İKİSİ master_key'i kurtarır (reconstruct_key)
+
+Geriye dönük uyumluluk:
+  2-of-2 döneminde oluşturulmuş vault'larda share_1 ve share_2 zaten f(1) ve
+  f(2)'dir; f(3) = 2*f(2) - f(1) aynı polinomdan gelir. Mevcut vault'lar
+  YENİDEN ANAHTARLANMADAN 2-of-3'e yükseltilir — share_1/share_2 hiç değişmez.
 
 USB kimlik doğrulama katmanları (authenticate_usb):
   · Katman 1 — HWID    : usb_tokens tablosunda kayıtlı mı?
@@ -81,8 +90,21 @@ _A2_PARA = 4
 _HKDF_LABEL = b"hycleus-vault-sign-v1"
 
 # Shamir alanı: 257-bit asal, 32-byte (256-bit) sırları barındırır
-# GF(p) içinde 2-of-2 polinom: f(x) = s + a1*x mod p
+# GF(p) içinde derece-1 polinom: f(x) = s + a1*x mod p
+#
+# p = 2^256 + 297 asaldır (Miller-Rabin, 64 tur ile doğrulandı). Bu önemli:
+# 2-of-2 şemasında kurtarma yalnızca inv(1)=1 kullanıyordu, yani asallık hiç
+# sınanmıyordu. 2-of-3'te genel Lagrange inv(2) gerektiriyor ve şemanın
+# bilgi-teorik güvenliği alanın gerçekten bir CİSİM olmasına dayanıyor.
 _SSS_PRIME = 2**256 + 297
+
+# 2-of-3: üç pay üretilir, herhangi ikisi anahtarı kurtarır
+_SSS_THRESHOLD = 2
+_SSS_INDEXES = (1, 2, 3)
+
+# 3. pay = kurtarma parçası. Sistemde HİÇBİR YERDE saklanmaz; bir kez
+# gösterilip kullanıcı tarafından fiziksel olarak saklanır.
+_SSS_RECOVERY_INDEX = 3
 
 # share formatı: "1:<66 hex char>" — 33 byte değer, byte-hizalı
 _SSS_SHARE_HEX_LEN = 66  # ceil(257/8) = 33 byte → 66 hex char
@@ -178,36 +200,115 @@ def _sign(signing_key: bytes, data: bytes) -> bytes:
     return h.finalize()
 
 
-def _sss_split(secret: bytes) -> tuple[str, str]:
+def _fmt_share(index: int, y: int) -> str:
+    """Payı "index:<hex>" biçimine getirir."""
+    return f"{index}:{y:0{_SSS_SHARE_HEX_LEN}x}"
+
+
+def _parse_share(share: str) -> tuple[int, int]:
     """
-    32-byte secret'i 2-of-2 Shamir paylarına böler.
+    "index:<hex>" payını (index, y) olarak ayrıştırır.
+
+    Raises:
+        ValueError — biçim bozuksa veya indis geçerli aralıkta değilse
+    """
+    if ":" not in share:
+        raise ValueError(f"Pay biçimi 'indis:hex' olmalı, alınan: {share[:16]!r}")
+    idx_raw, hex_raw = share.split(":", 1)
+    try:
+        index = int(idx_raw)
+    except ValueError as exc:
+        raise ValueError(f"Pay indisi sayı olmalı, alınan: {idx_raw!r}") from exc
+    if index not in _SSS_INDEXES:
+        raise ValueError(f"Geçersiz pay indisi {index}; beklenen: {_SSS_INDEXES}")
+    try:
+        y = int(hex_raw, 16)
+    except ValueError as exc:
+        raise ValueError("Pay değeri geçerli onaltılık sayı değil.") from exc
+    return index, y
+
+
+def _sss_split(secret: bytes) -> tuple[str, str, str]:
+    """
+    32-byte secret'i 2-of-3 Shamir paylarına böler.
 
     Polinom: f(x) = s + a1*x  (mod _SSS_PRIME, derece-1)
-    share_1 = f(1),  share_2 = f(2)
-    Her pay "index:<hex>" formatında döner.
+    share_1 = f(1),  share_2 = f(2),  share_3 = f(3)
+
+    Eşik 2'dir: üç paydan HERHANGİ İKİSİ anahtarı kurtarır, tek pay hiçbir
+    bilgi vermez (derece-1 polinomda tek nokta sonsuz çözüme uyar).
+
+    Returns:
+        (share_1, share_2, share_3) — sırasıyla vault, anahtar kasası, kurtarma
     """
     s = int.from_bytes(secret, "big")
     a1 = secrets.randbelow(_SSS_PRIME - 1) + 1  # [1, PRIME-1]
-    y1 = (s + a1) % _SSS_PRIME
-    y2 = (s + 2 * a1) % _SSS_PRIME
-    fmt = f"{{:0{_SSS_SHARE_HEX_LEN}x}}"
-    return f"1:{fmt.format(y1)}", f"2:{fmt.format(y2)}"
+    return tuple(  # type: ignore[return-value]
+        _fmt_share(i, (s + i * a1) % _SSS_PRIME) for i in _SSS_INDEXES
+    )
 
 
-def _sss_recover(share_1: str, share_2: str) -> bytes:
+def _lagrange_at(points: list[tuple[int, int]], x: int) -> int:
     """
-    İki Shamir payından orijinal secret'i kurtarır.
+    Verilen noktalardan geçen polinomu x noktasında değerlendirir (mod p).
 
-    Lagrange x=0: f(0) = 2*y1 - y2  (mod _SSS_PRIME)
+    Derece-1 için iki nokta yeterlidir. Genel Lagrange kullanılır; özel
+    (1,2) formülüyle aynı sonucu verir, dolayısıyla mevcut vault'ları bozmaz.
     """
-    idx1, h1 = share_1.split(":", 1)
-    idx2, h2 = share_2.split(":", 1)
-    if idx1 != "1" or idx2 != "2":
-        raise ValueError(f"Beklenen pay indisleri 1 ve 2, alınan: {idx1!r}, {idx2!r}")
-    y1 = int(h1, 16)
-    y2 = int(h2, 16)
-    secret_int = (2 * y1 - y2) % _SSS_PRIME
+    total = 0
+    for i, (xi, yi) in enumerate(points):
+        num, den = 1, 1
+        for j, (xj, _) in enumerate(points):
+            if i == j:
+                continue
+            num = (num * (x - xj)) % _SSS_PRIME
+            den = (den * (xi - xj)) % _SSS_PRIME
+        total = (total + yi * num * pow(den, -1, _SSS_PRIME)) % _SSS_PRIME
+    return total
+
+
+def _sss_recover(share_a: str, share_b: str) -> bytes:
+    """
+    HERHANGİ İKİ Shamir payından orijinal secret'i kurtarır.
+
+    Geçerli kombinasyonlar: (1,2) (1,3) (2,3) — ve simetrik olarak tersleri.
+    Aynı indisin iki kez verilmesi reddedilir: tek pay eşiği karşılamaz ve
+    sessizce yanlış bir anahtar dönmek, kullanıcının kurtardığını sanmasına
+    yol açardı.
+
+    Raises:
+        ValueError — pay biçimi bozuksa veya iki pay aynı indise sahipse
+    """
+    idx_a, y_a = _parse_share(share_a)
+    idx_b, y_b = _parse_share(share_b)
+    if idx_a == idx_b:
+        raise ValueError(
+            f"İki pay da {idx_a} indisli — eşik {_SSS_THRESHOLD}, "
+            "farklı indisli iki pay gerekli."
+        )
+    secret_int = _lagrange_at([(idx_a, y_a), (idx_b, y_b)], 0)
     return secret_int.to_bytes(_KEY_SIZE, "big")
+
+
+def _sss_derive_share(share_a: str, share_b: str, index: int) -> str:
+    """
+    Bilinen iki paydan üçüncü payı türetir — polinom aynı kalır.
+
+    Geriye dönük uyumluluğun temeli budur: 2-of-2 döneminde oluşturulmuş bir
+    vault'ta share_1 ve share_2 zaten f(1) ve f(2)'dir; f(3) = 2*f(2) - f(1)
+    aynı polinomdan gelir. Yani mevcut vault'lar YENİDEN ANAHTARLANMADAN
+    ve share_1/share_2'ye HİÇ DOKUNULMADAN 2-of-3'e yükseltilebilir.
+
+    Raises:
+        ValueError — indis geçersizse veya iki pay aynı indisliyse
+    """
+    if index not in _SSS_INDEXES:
+        raise ValueError(f"Geçersiz pay indisi {index}; beklenen: {_SSS_INDEXES}")
+    idx_a, y_a = _parse_share(share_a)
+    idx_b, y_b = _parse_share(share_b)
+    if idx_a == idx_b:
+        raise ValueError(f"İki pay da {idx_a} indisli — türetme için iki farklı pay gerekli.")
+    return _fmt_share(index, _lagrange_at([(idx_a, y_a), (idx_b, y_b)], index))
 
 
 def _save_usb_token(hwid: str, share_2: str, token_id_hex: str) -> None:
@@ -359,8 +460,12 @@ def create_vault(hwid: str, pin: str, role: str) -> Path:
     token_id_bytes = uuid.uuid4().bytes   # 16 byte UUID
     token_id_hex = token_id_bytes.hex()   # DB'de hex string olarak saklanır
 
-    # ── Shamir 2-of-2 bölme ──────────────────────────────────────────────────
-    share_1, share_2 = _sss_split(master_key)
+    # ── Shamir 2-of-3 bölme ──────────────────────────────────────────────────
+    # share_3 (kurtarma parçası) BİLEREK saklanmaz ve döndürülmez: aynı
+    # polinomdan geldiği için share_1 + share_2'den her an yeniden türetilebilir
+    # (bkz. export_recovery_share). Böylece kurtarma parçası sistemde hiçbir
+    # yerde durmaz ve yeni/eski vault ayrımı olmadan tek koddan üretilir.
+    share_1, share_2, _share_3_derivable = _sss_split(master_key)
 
     # ── AES-256-GCM şifreleme ────────────────────────────────────────────────
     salt = os.urandom(_SALT_SIZE)
@@ -768,20 +873,26 @@ def open_vault(hwid: str, pin: str) -> tuple[str, bytes]:
     return role, master_key
 
 
-def reconstruct_key(share_1: str, share_2: str) -> bytes:
+def reconstruct_key(share_a: str, share_b: str) -> bytes:
     """
-    İki Shamir payını birleştirerek orijinal master_key'i kurtarır.
+    Herhangi iki Shamir payını birleştirerek orijinal master_key'i kurtarır.
 
-    Her iki pay da gereklidir; biri eksikse veya bozuksa kurtarma başarısız olur.
+    2-of-3 şema: (1,2) (1,3) (2,3) kombinasyonlarının üçü de çalışır.
+    Tek pay yeterli değildir; aynı indisli iki pay reddedilir.
 
     Args:
-        share_1 — Vault dosyasından alınan 1. pay ("1:<hex>")
-        share_2 — DB usb_tokens tablosundan alınan 2. pay ("2:<hex>")
+        share_a — Herhangi bir pay ("1:<hex>", "2:<hex>" veya "3:<hex>")
+        share_b — Farklı indisli ikinci pay
+
+    Pay konumları:
+        1 — vault dosyası içinde (Argon2id/PIN ile şifreli)
+        2 — işletim sistemi anahtar kasası ("share_2:<hwid>")
+        3 — kurtarma parçası; sistemde saklanmaz, kullanıcıda fiziksel olarak
 
     Returns:
         32 byte master_key
 
     Raises:
-        ValueError — paylar geçersiz formattaysa veya birbirleriyle uyumsuzsa
+        ValueError — paylar geçersiz formattaysa veya aynı indisliyse
     """
-    return _sss_recover(share_1, share_2)
+    return _sss_recover(share_a, share_b)
