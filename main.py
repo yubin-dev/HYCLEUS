@@ -18,6 +18,7 @@ from CORE.scheduler import start_scheduler, stop_scheduler
 from CORE.secret_migration import MigrationError, run_migrations
 from CORE.secret_store import KeyringUnavailableError, backend_name, ensure_available
 from CORE.usb_manager import get_usb_hwid
+from CORE.vault_manager import has_recovery_share
 from DB.db_manager import DBManager, HWIDMissingError
 from UI.login_dialog import LoginDialog
 from UI.main_window import HycleusWindow
@@ -122,6 +123,28 @@ def main() -> None:
         if not session_key:
             QMessageBox.critical(None, "Hata", "Vault anahtarı alınamadı.")
             sys.exit(1)
+
+    # ── Kurtarma parçası uyarısı ─────────────────────────────────────────────
+    # 2-of-2 döneminde kurulmuş vault'lar sessizce eski şemada bırakılmaz.
+    # Otomatik migration YAPILAMAZ: kurtarma parçası kullanıcıya gösterilip
+    # fiziksel olarak saklanmak zorunda; arka planda üretip kimseye
+    # göstermemek işe yaramaz. Bu yüzden kullanıcı bilgilendirilir ve
+    # yönlendirilir — ama açılış engellenmez.
+    try:
+        if not has_recovery_share(hwid):
+            _log.warning("Kurtarma parçası alınmamış  hwid=%s", hwid)
+            QMessageBox.warning(
+                None,
+                "Kurtarma Parçası Alınmamış",
+                "Bu vault şu an 2-of-2 gibi davranıyor.\n\n"
+                "Vault dosyanız veya anahtar kasası kaydınız kaybolursa "
+                "dosyalarınıza bir daha erişemezsiniz.\n\n"
+                "Kurtarma parçasını almak için:\n"
+                "    python CORE/recover_vault.py --export\n\n"
+                "Bu işlem vault'unuzu değiştirmez; mevcut paylarınız aynı kalır.",
+            )
+    except Exception as exc:  # DB/şema sorunları açılışı engellemesin
+        _log.warning("Kurtarma parçası durumu okunamadı: %s", exc)
 
     start_scheduler()
     app.aboutToQuit.connect(stop_scheduler)

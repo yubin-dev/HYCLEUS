@@ -46,7 +46,7 @@ Kara liste (_reject_if_blacklisted):
   · KEK   — Argon2id(password=pin, salt=salt) → 32 byte şifreleme anahtarı
   · GCM   — Şifreleme + bütünlük; HWID cihaz bağlayıcı AAD olarak iletilir
   · HMAC  — HWID'den HKDF ile türetilen 32 byte imza anahtarıyla dosya bütünlüğü
-  · SSS   — Vault + DB olmadan master_key kurtarılamaz (2-of-2 zorunlu)
+  · SSS   — master_key üç paydan herhangi ikisi olmadan kurtarılamaz (2-of-3)
 """
 from __future__ import annotations
 
@@ -437,7 +437,8 @@ def create_vault(hwid: str, pin: str, role: str) -> Path:
     İşlem adımları:
       1. 32 byte kriptografik rastgele master key üretir
       2. UUID token_id üretir (cihaz bağlama kimliği)
-      3. Shamir 2-of-2 ile master_key'i share_1 ve share_2'ye böler
+      3. Shamir 2-of-3 ile master_key'i böler; share_1 ve share_2 saklanır,
+         share_3 (kurtarma parçası) saklanmaz — gerektiğinde türetilir
       4. Argon2id ile PIN'den KEK türetir
       5. AES-256-GCM ile (s1_len || share_1 || role) şifreler; HWID AAD
       6. token_id'yi plaintext olarak vault'a ekler (HMAC korumalı)

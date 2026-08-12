@@ -21,7 +21,7 @@
 
 ### What is HYCLEUS?
 
-HYCLEUS is a Windows desktop application that encrypts and manages sensitive files inside a hardware-bound vault. Every file is encrypted with **AES-256-GCM** before hitting disk. The master key is split via **Shamir 2-of-2 Secret Sharing**: share_1 lives in a local vault file (`.hclv`) encrypted with an Argon2id PIN-derived KEK; share_2 lives in the **OS credential store** (Windows Credential Manager / macOS Keychain / Linux Secret Service) under `HYCLEUS` / `share_2:<hwid>`. The TOTP secret is stored the same way. If the credential store is unreachable, HYCLEUS refuses to start rather than falling back to plaintext. Reconstructing the master key requires both the correct PIN and the registered USB device to be physically present.
+HYCLEUS is a Windows desktop application that encrypts and manages sensitive files inside a hardware-bound vault. Every file is encrypted with **AES-256-GCM** before hitting disk. The master key is split via **Shamir 2-of-3 Secret Sharing** — any two of the three shares reconstruct it. share_1 lives in a local vault file (`.hclv`) encrypted with an Argon2id PIN-derived KEK; share_2 lives in the **OS credential store** (Windows Credential Manager / macOS Keychain / Linux Secret Service) under `HYCLEUS` / `share_2:<hwid>`. The TOTP secret is stored the same way. If the credential store is unreachable, HYCLEUS refuses to start rather than falling back to plaintext. Reconstructing the master key requires both the correct PIN and the registered USB device to be physically present.
 
 ---
 
@@ -30,7 +30,7 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | Category | Feature |
 |----------|---------|
 | **Encryption** | AES-256-GCM per-file, unique nonce, AAD-bound to file metadata |
-| **Key Splitting** | Shamir 2-of-2 SSS — share_1 in Argon2id-encrypted vault file, share_2 in OS credential store |
+| **Key Splitting** | Shamir 2-of-3 SSS — share_1 in Argon2id-encrypted vault file, share_2 in OS credential store, share_3 printed as an offline recovery share |
 | **Secret Storage** | `keyring` — Windows DPAPI / macOS Keychain / Linux Secret Service; no plaintext secrets on disk |
 | **Authentication** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
 | **Hardware Lock** | USB HWID binding — vault locks instantly on USB removal (in-app control; see Security Notes) |
@@ -248,6 +248,7 @@ HYCLEUS/
 - If the credential store is unreachable (headless Linux, no Secret Service), the app refuses to start — it never falls back to plaintext
 - Encrypted files (`.hcl`) and the contents of `data/` are excluded from the repository
 - Login attempts are rate limited: 5 failures lock the login for 30s, then 60s / 120s / 300s (capped). The counter lives in the database, not in memory, so restarting the app does not clear it (`CORE/rate_limit.py`)
+- The key is split **2-of-3**: any two of `share_1` (vault), `share_2` (credential store) and `share_3` (recovery share) reconstruct it. Export the recovery share with `python CORE/recover_vault.py --export` and store it **on paper, physically** — never digitally. It is never written to disk by HYCLEUS. See SECURITY.md §4.4 for why it must be treated as equivalent to the master key
 - The audit log records every action with user identity, timestamp and detail
 
 **What these controls do _not_ cover.** The USB HWID check and the login rate limit are **application-level controls**. They constrain what can be done *through the HYCLEUS interface*; they do not constrain an attacker who can read or write the files directly:
@@ -274,7 +275,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ### HYCLEUS Nedir?
 
-HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için geliştirilmiş bir Windows masaüstü uygulamasıdır. Her dosya diske yazılmadan önce **AES-256-GCM** ile şifrelenir. Ana anahtar **Shamir 2-of-2 Gizli Paylaşımı** ile ikiye bölünür: share_1, Argon2id PIN-türevli KEK ile şifreli yerel kasa dosyasında (`.hclv`) saklanır; share_2 ise **işletim sistemi anahtar kasasında** (Windows Credential Manager / macOS Keychain / Linux Secret Service) `HYCLEUS` / `share_2:<hwid>` adıyla tutulur. TOTP sırrı da aynı şekilde saklanır. Anahtar kasasına erişilemezse HYCLEUS düz metne geri dönmek yerine açılmayı reddeder. Ana anahtarı yeniden oluşturmak için hem doğru PIN hem de kayıtlı USB cihazının fiziksel olarak mevcut olması zorunludur.
+HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için geliştirilmiş bir Windows masaüstü uygulamasıdır. Her dosya diske yazılmadan önce **AES-256-GCM** ile şifrelenir. Ana anahtar **Shamir 2-of-3 Gizli Paylaşımı** ile üçe bölünür — üç paydan herhangi ikisi anahtarı geri getirir. share_1, Argon2id PIN-türevli KEK ile şifreli yerel kasa dosyasında (`.hclv`) saklanır; share_2 ise **işletim sistemi anahtar kasasında** (Windows Credential Manager / macOS Keychain / Linux Secret Service) `HYCLEUS` / `share_2:<hwid>` adıyla tutulur. TOTP sırrı da aynı şekilde saklanır. Anahtar kasasına erişilemezse HYCLEUS düz metne geri dönmek yerine açılmayı reddeder. Ana anahtarı yeniden oluşturmak için hem doğru PIN hem de kayıtlı USB cihazının fiziksel olarak mevcut olması zorunludur.
 
 ---
 
@@ -283,7 +284,7 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | Kategori | Özellik |
 |----------|---------|
 | **Şifreleme** | AES-256-GCM, dosya başına benzersiz nonce, metadata'ya bağlı AAD |
-| **Anahtar Bölme** | Shamir 2-of-2 SSS — share_1 Argon2id şifreli kasa dosyasında, share_2 OS anahtar kasasında |
+| **Anahtar Bölme** | Shamir 2-of-3 SSS — share_1 Argon2id şifreli kasa dosyasında, share_2 OS anahtar kasasında, share_3 çevrimdışı kurtarma parçası olarak basılır |
 | **Sır Saklama** | `keyring` — Windows DPAPI / macOS Keychain / Linux Secret Service; diskte düz metin sır yok |
 | **Kimlik Doğrulama** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
 | **Donanım Kilidi** | USB HWID bağlama — USB çekilince kasa anında kilitlenir (arayüz seviyesi kontrol; bkz. Güvenlik Notları) |
@@ -503,6 +504,7 @@ HYCLEUS/
 - Şifreli dosyalar (`.hcl`) ve `data/` içeriği depoya dahil edilmez
 - USB token çekilince tüm widget etkileşimleri `setEnabled(False)` ile bloke edilir
 - Giriş denemeleri sınırlıdır: 5 hatada 30 sn kilit, sonra 60 / 120 / 300 sn (tavan). Sayaç bellekte değil veritabanındadır — uygulamayı yeniden başlatmak kilidi kaldırmaz (`CORE/rate_limit.py`)
+- Anahtar **2-of-3** bölünür: `share_1` (vault), `share_2` (anahtar kasası) ve `share_3` (kurtarma parçası) — herhangi ikisi anahtarı geri getirir. Kurtarma parçasını `python CORE/recover_vault.py --export` ile alın ve **kâğıda basıp fiziksel olarak** saklayın, asla dijital olarak değil. HYCLEUS bu parçayı hiçbir zaman diske yazmaz. Neden master key'e denk muamele görmesi gerektiği: SECURITY.md §4.4
 - Denetim kaydı her işlemi kullanıcı kimliği, zaman damgası ve detayla saklar
 
 **Bu kontrollerin kapsamadıkları.** USB HWID kontrolü ve giriş sınırlaması **uygulama arayüzü seviyesinde** kontrollerdir. *HYCLEUS arayüzü üzerinden* yapılabilecekleri sınırlarlar; dosyaları doğrudan okuyup yazabilen bir saldırganı sınırlamazlar:

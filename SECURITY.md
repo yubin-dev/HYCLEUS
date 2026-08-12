@@ -55,7 +55,7 @@ is the PIN alone.
 | Same key reused across files | ✅ | Fresh 12-byte `os.urandom` nonce per encryption |
 | Vault file (`.hclv`) copied, PIN unknown | ✅ | Argon2id KEK (time=3, mem=64 MB, para=4) + GCM |
 | `share_2` read out of the database | ✅ | It is no longer there — it lives in the OS credential store |
-| Only one Shamir share obtained | ✅ | 2-of-2 is information-theoretically secure; one share reveals nothing |
+| Only one Shamir share obtained | ✅ | 2-of-3 is information-theoretically secure; one share reveals nothing |
 | Brute-forcing the PIN through the app UI | ⚠️ Slowed | Rate limit: 5 failures → 30s, escalating to 300s, counter persisted in DB |
 | Someone tampering with the DB to hide their tracks | ⚠️ Partial | Audit log records every action — but see §3 |
 
@@ -162,7 +162,31 @@ the file-encryption key is `PBKDF2-HMAC-SHA256(hwid, fixed salt, 100 000)` —
 is a development convenience and is force-disabled in built executables
 (`sys.frozen`), but never enable it on a machine holding real data.
 
-### 4.4 Application-level controls are labelled as such
+### 4.4 The recovery share is a third path to the key
+
+Since v2.2 the master key is split 2-of-3. The third share — the **recovery
+share** — is never stored by HYCLEUS: it is displayed once and kept
+physically by the user. That is a deliberate trade, and it cuts both ways:
+
+- **It removes a failure mode.** Losing the USB or the credential store no
+  longer means losing every file.
+- **It adds an attack path.** Anyone holding the printed recovery share
+  *and* one live share reconstructs the master key. Combined with disk
+  access (which yields `share_2` from the credential store as the logged-in
+  user), the recovery share alone is enough — **the PIN is not required on
+  that path.**
+
+So the recovery share must be treated as equivalent to the master key, and
+stored somewhere the machine's attacker cannot reach: a safe, a deposit box,
+a different building. A recovery share photographed onto a phone, stored in
+a password manager or left in a cloud note reduces the scheme to 1-of-2.
+
+The recovery share is **derivable, not random**: it is `f(3)` of the same
+polynomial, so anyone holding the other two shares can reproduce it at any
+time. Re-exporting does not rotate it. Rotating it means re-splitting, which
+means re-keying the vault.
+
+### 4.5 Application-level controls are labelled as such
 
 The USB HWID check and the login rate limit constrain what can be done
 *through the HYCLEUS interface*. Neither constrains someone operating on the
@@ -182,7 +206,7 @@ corrected.
 | Vault KEK | Argon2id(PIN, 16-byte salt), time=3, memory=64 MB, parallelism=4, 32-byte output |
 | Vault sealing | AES-256-GCM, AAD = HWID (device binding) |
 | Vault signature | HMAC-SHA256, key = HKDF-SHA256(HWID) — see §4.2 |
-| Key splitting | Shamir 2-of-2 over GF(p), p = 2²⁵⁶ + 297; `f(x) = s + a₁x`, `a₁ ← [1, p−1]` |
+| Key splitting | Shamir 2-of-3 over GF(p), p = 2²⁵⁶ + 297 (verified prime); `f(x) = s + a₁x`, `a₁ ← [1, p−1]`; shares at x = 1, 2, 3 |
 | PIN storage | Argon2id hash (never plaintext); minimum 6 characters for new PINs |
 | Secret storage | OS credential store, service `HYCLEUS`, usernames `share_2:<hwid>` and `totp_secret` |
 | Second factor | TOTP (RFC 6238), 6 digits, ±1 window |
@@ -276,7 +300,7 @@ Saldırgan oturum açmış OS kullanıcısı hâline geldiğinde anahtar kasası
 | Aynı anahtar dosyalar arasında yeniden kullanıldı | ✅ | Her şifrelemede taze 12 byte `os.urandom` nonce |
 | Vault dosyası (`.hclv`) kopyalandı, PIN bilinmiyor | ✅ | Argon2id KEK (time=3, bellek=64 MB, para=4) + GCM |
 | `share_2` veritabanından okundu | ✅ | Artık orada değil — OS anahtar kasasında |
-| Yalnızca bir Shamir payı ele geçirildi | ✅ | 2-of-2 bilgi-teorik olarak güvenli; tek pay hiçbir şey sızdırmaz |
+| Yalnızca bir Shamir payı ele geçirildi | ✅ | 2-of-3 bilgi-teorik olarak güvenli; tek pay hiçbir şey sızdırmaz |
 | Arayüz üzerinden PIN kaba kuvveti | ⚠️ Yavaşlatılır | 5 hatada 30 sn, 300 sn'ye tırmanır, sayaç DB'de kalıcı |
 | Saldırganın izlerini silmek için DB'yi kurcalaması | ⚠️ Kısmen | Denetim kaydı her işlemi tutar — ama bkz. §3 |
 
@@ -380,7 +404,32 @@ olur — **PIN hiç işin içinde değildir.** HWID'i bilen herkes tüm dosyalar
 çalıştırılabilirlerde zorla kapatılır (`sys.frozen`), ama gerçek veri tutan
 bir makinede asla açmayın.
 
-### 4.4 Uygulama seviyesi kontroller böyle etiketlenmiştir
+### 4.4 Kurtarma parçası anahtara giden üçüncü yoldur
+
+v2.2'den itibaren master key 2-of-3 bölünüyor. Üçüncü pay — **kurtarma
+parçası** — HYCLEUS tarafından hiçbir zaman saklanmıyor: bir kez gösterilip
+kullanıcı tarafından fiziksel olarak saklanıyor. Bu bilinçli bir takas ve
+iki yönü var:
+
+- **Bir arıza modunu ortadan kaldırıyor.** USB'yi ya da anahtar kasasını
+  kaybetmek artık tüm dosyaları kaybetmek anlamına gelmiyor.
+- **Bir saldırı yolu ekliyor.** Basılı kurtarma parçasını *ve* canlı
+  paylardan birini elinde tutan master key'i yeniden oluşturur. Disk
+  erişimiyle birlikte (oturum açmış kullanıcı olarak anahtar kasasından
+  `share_2` alınabilir), kurtarma parçası tek başına yeterlidir — **o yolda
+  PIN gerekmez.**
+
+Dolayısıyla kurtarma parçası master key'e denk muamele görmeli ve makinenin
+saldırganının ulaşamayacağı bir yerde saklanmalıdır: kasa, kiralık kasa,
+başka bir bina. Telefona fotoğraflanmış, parola yöneticisine konmuş ya da
+bulut notunda bırakılmış bir kurtarma parçası şemayı 1-of-2'ye düşürür.
+
+Kurtarma parçası **rastgele değil, türetilebilirdir**: aynı polinomun
+`f(3)`'ü olduğu için diğer iki paya sahip olan onu her an yeniden
+üretebilir. Yeniden dışa aktarmak parçayı DEĞİŞTİRMEZ. Değiştirmek yeniden
+bölmeyi, o da vault'un yeniden anahtarlanmasını gerektirir.
+
+### 4.5 Uygulama seviyesi kontroller böyle etiketlenmiştir
 
 USB HWID kontrolü ve giriş sınırlaması *HYCLEUS arayüzü üzerinden*
 yapılabilecekleri sınırlar. İkisi de dosyalar üzerinde doğrudan çalışan
@@ -398,7 +447,7 @@ düzeltildi.
 | Vault KEK | Argon2id(PIN, 16 byte tuz), time=3, bellek=64 MB, paralellik=4, 32 byte |
 | Vault mühürleme | AES-256-GCM, AAD = HWID (cihaz bağlama) |
 | Vault imzası | HMAC-SHA256, anahtar = HKDF-SHA256(HWID) — bkz. §4.2 |
-| Anahtar bölme | GF(p) üzerinde Shamir 2-of-2, p = 2²⁵⁶ + 297; `f(x) = s + a₁x`, `a₁ ← [1, p−1]` |
+| Anahtar bölme | GF(p) üzerinde Shamir 2-of-3, p = 2²⁵⁶ + 297 (asallığı doğrulandı); `f(x) = s + a₁x`, `a₁ ← [1, p−1]`; paylar x = 1, 2, 3 |
 | PIN saklama | Argon2id hash (asla düz metin); yeni PIN'ler için en az 6 karakter |
 | Sır saklama | OS anahtar kasası, servis `HYCLEUS`, adlar `share_2:<hwid>` ve `totp_secret` |
 | İkinci faktör | TOTP (RFC 6238), 6 hane, ±1 pencere |
