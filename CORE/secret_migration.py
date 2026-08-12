@@ -47,7 +47,8 @@ _log = logging.getLogger("hycleus.migration")
 
 # Şema versiyonları
 SCHEMA_SHARE_2 = 1
-CURRENT_SCHEMA_VERSION = SCHEMA_SHARE_2
+SCHEMA_TOTP = 2
+CURRENT_SCHEMA_VERSION = SCHEMA_TOTP
 
 _TOTP_FILE = _data_dir() / "totp_secret.json"
 
@@ -65,6 +66,7 @@ class MigrationReport:
     to_version: int = 0
     share_2_migrated: int = 0
     share_2_already_in_keyring: int = 0
+    totp_migrated: bool = False
     notes: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -73,7 +75,8 @@ class MigrationReport:
         return (
             f"şema v{self.from_version} → v{self.to_version}; "
             f"share_2 taşınan={self.share_2_migrated} "
-            f"zaten kasada={self.share_2_already_in_keyring}"
+            f"zaten kasada={self.share_2_already_in_keyring}; "
+            f"totp taşındı={self.totp_migrated}"
         )
 
 
@@ -222,6 +225,11 @@ def run_migrations(db: object) -> MigrationReport:
         migrate_share_2(db, report)
         set_schema_version(db, SCHEMA_SHARE_2)
         report.to_version = SCHEMA_SHARE_2
+
+    if report.from_version < SCHEMA_TOTP:
+        report.totp_migrated = migrate_totp_secret() is not None
+        set_schema_version(db, SCHEMA_TOTP)
+        report.to_version = SCHEMA_TOTP
 
     _log.info("Migration tamamlandı: %s", report.summary())
     return report

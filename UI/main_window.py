@@ -57,8 +57,7 @@ from DB.db_manager import DBManager
 from UI.AdminPanel import AdminPanel
 from UI.AuditLogDialog import AuditLogDialog
 
-from CORE.paths import data_dir as _data_dir
-_TOTP_FILE = _data_dir() / "totp_secret.json"
+from CORE.secret_store import load_totp_secret
 
 # ── Renk paletleri ────────────────────────────────────────────────────────────
 _DARK: dict[str, str] = {
@@ -1502,13 +1501,15 @@ class HycleusWindow(QMainWindow):
             self._refresh_folder_sidebar()
 
     def _on_folder_download(self, folder_id: int, folder_name: str) -> None:
-        import json as _json
         import zipfile
 
         try:
-            secret = _json.loads(_TOTP_FILE.read_text(encoding="utf-8"))["secret"]
-        except Exception:
-            QMessageBox.critical(self, "İndir", "TOTP anahtarı okunamadı.")
+            secret = load_totp_secret()
+        except Exception as exc:
+            QMessageBox.critical(self, "İndir", f"TOTP anahtarı okunamadı.\n\n{exc}")
+            return
+        if not secret:
+            QMessageBox.critical(self, "İndir", "TOTP anahtarı kurulmamış.")
             return
 
         code, ok = QInputDialog.getText(self, "Kimlik Doğrulama",
@@ -2179,9 +2180,12 @@ class HycleusWindow(QMainWindow):
             QMessageBox.warning(self, "İndir", "Dosya yolu bulunamadı.")
             return
         try:
-            secret = json.loads(_TOTP_FILE.read_text(encoding="utf-8"))["secret"]
-        except Exception:
-            QMessageBox.critical(self, "İndir", "TOTP anahtarı okunamadı.")
+            secret = load_totp_secret()
+        except Exception as exc:
+            QMessageBox.critical(self, "İndir", f"TOTP anahtarı okunamadı.\n\n{exc}")
+            return
+        if not secret:
+            QMessageBox.critical(self, "İndir", "TOTP anahtarı kurulmamış.")
             return
 
         code, ok = QInputDialog.getText(self, "Kimlik Doğrulama",
@@ -2419,9 +2423,12 @@ class HycleusWindow(QMainWindow):
         self, file_ids: list[int], filepaths: list[str],
     ) -> None:
         try:
-            secret = json.loads(_TOTP_FILE.read_text(encoding="utf-8"))["secret"]
-        except Exception:
-            QMessageBox.critical(self, "İndir", "TOTP anahtarı okunamadı.")
+            secret = load_totp_secret()
+        except Exception as exc:
+            QMessageBox.critical(self, "İndir", f"TOTP anahtarı okunamadı.\n\n{exc}")
+            return
+        if not secret:
+            QMessageBox.critical(self, "İndir", "TOTP anahtarı kurulmamış.")
             return
 
         code, ok = QInputDialog.getText(

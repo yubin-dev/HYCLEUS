@@ -184,6 +184,23 @@ def store(username: str, value: str) -> None:
         )
 
 
+def load_totp_secret() -> str | None:
+    """
+    TOTP paylaşılan sırrını kasadan okur. Kurulmamışsa None.
+
+    Tüm TOTP doğrulama noktaları (login, indirme, toplu indirme, klasör
+    indirme) buradan geçmelidir — data/totp_secret.json artık kullanılmıyor.
+    """
+    return load(TOTP_USERNAME)
+
+
+def store_totp_secret(secret: str) -> None:
+    """TOTP paylaşılan sırrını kasaya yazar (geri okuma doğrulamasıyla)."""
+    if not secret:
+        raise ValueError("TOTP sırrı boş olamaz.")
+    store(TOTP_USERNAME, secret)
+
+
 def erase(username: str) -> bool:
     """
     Kasadan bir sırrı siler.

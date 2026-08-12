@@ -97,6 +97,22 @@ def fake_keyring() -> Iterator[InMemoryKeyring]:
         keyring.set_keyring(original)
 
 
+@pytest.fixture(autouse=True)
+def isolate_totp_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """
+    Migration'ın baktığı totp_secret.json yolunu her test için tmp_path'e taşır.
+
+    autouse — migrate_totp_secret() dosyayı İMHA EDER. Bu koruma olmadan
+    testleri canlı bir kurulumda çalıştırmak kullanıcının gerçek TOTP sırrını
+    kalıcı olarak yok ederdi.
+    """
+    from CORE import secret_migration
+
+    isolated = tmp_path / "isolated_totp_secret.json"
+    monkeypatch.setattr(secret_migration, "_TOTP_FILE", isolated)
+    return isolated
+
+
 @pytest.fixture
 def use_keyring_backend():
     """Test içinde keyring arka ucunu değiştirmek için yardımcı (teardown fake_keyring'de)."""

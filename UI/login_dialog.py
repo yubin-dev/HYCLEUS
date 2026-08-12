@@ -47,7 +47,8 @@ from DB.db_manager import DBManager
 # ── Paths / constants ─────────────────────────────────────────────────────────
 
 from CORE.paths import data_dir as _data_dir
-_TOTP_FILE   = _data_dir() / "totp_secret.json"
+from CORE.secret_store import load_totp_secret, store_totp_secret
+
 _PIN_FILE    = _data_dir() / "pin_hash.json"
 _VAULT_PATH  = _data_dir() / ".hcl_vault"
 _APP_NAME    = "HYCLEUS"
@@ -190,15 +191,13 @@ def _load_role() -> str:
 
 
 def _load_secret() -> str | None:
-    try:
-        return json.loads(_TOTP_FILE.read_text())["secret"]
-    except Exception:
-        return None
+    """TOTP sırrını anahtar kasasından okur (eskiden data/totp_secret.json)."""
+    return load_totp_secret()
 
 
 def _save_secret(secret: str) -> None:
-    _TOTP_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _TOTP_FILE.write_text(json.dumps({"secret": secret}))
+    """TOTP sırrını anahtar kasasına yazar; geri okuma doğrulaması store() içinde."""
+    store_totp_secret(secret)
 
 
 def _save_pin_hash(pin: str, role: str) -> None:

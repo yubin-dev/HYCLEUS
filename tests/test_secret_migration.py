@@ -6,11 +6,13 @@ Migration mantığı mock'lanmaz; yalnızca kasa arka ucu değiştirilir.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from CORE import secret_migration, secret_store
+from CORE.secret_migration import MigrationError
 from CORE.secret_store import KeyringUnavailableError
 
 from conftest import BrokenKeyring, SilentlyFailingKeyring
@@ -69,7 +71,7 @@ def test_share_2_migration_round_trip(db, fake_keyring) -> None:
 
     assert report.ran is True
     assert report.share_2_migrated == 2
-    assert report.to_version == secret_migration.SCHEMA_SHARE_2
+    assert report.to_version == secret_migration.CURRENT_SCHEMA_VERSION
 
     # Kasadan okunan değer orijinalle aynı olmalı
     assert secret_store.load(secret_store.share_2_username(_HWID_A)) == _SHARE_A
@@ -145,7 +147,7 @@ def test_migration_with_no_tokens_is_noop(db) -> None:
     report = secret_migration.run_migrations(db)
     assert report.ran is True
     assert report.share_2_migrated == 0
-    assert secret_migration.get_schema_version(db) == secret_migration.SCHEMA_SHARE_2
+    assert secret_migration.get_schema_version(db) == secret_migration.CURRENT_SCHEMA_VERSION
 
 
 # ── Kasa erişilemez: sessizce eski davranışa DÜŞMEMELİ ────────────────────────
@@ -182,3 +184,105 @@ def test_migration_aborts_when_keyring_silently_drops_write(db, use_keyring_back
 
     assert _db_share_2(db, _HWID_A) == _SHARE_A, "yazma doğrulanmadan DB temizlenmiş — sır kaybı"
     assert secret_migration.get_schema_version(db) == 0
+
+
+# ── TOTP migration ────────────────────────────────────────────────────────────
+
+_TOTP_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+
+
+def _write_legacy_totp(tmp_path: Path, secret: str = _TOTP_SECRET) -> Path:
+    path = tmp_path / "totp_secret.json"
+    path.write_text(json.dumps({"secret": secret}), encoding="utf-8")
+    return path
+
+
+def test_totp_migration_round_trip(tmp_path: Path) -> None:
+    """Taşı → kasadan oku → orijinal TOTP sırrı ile eşleşmeli."""
+    path = _write_legacy_totp(tmp_path)
+
+    moved = secret_migration.migrate_totp_secret(path)
+
+    assert moved == _TOTP_SECRET
+    assert secret_store.load_totp_secret() == _TOTP_SECRET
+
+
+def test_totp_migration_shreds_the_file(tmp_path: Path) -> None:
+    """Dosya silinmeli ve içindeki sır diskte kalmamalı."""
+    path = _write_legacy_totp(tmp_path)
+    assert _TOTP_SECRET.encode() in path.read_bytes()  # ön koşul
+
+    secret_migration.migrate_totp_secret(path)
+
+    assert not path.exists(), "totp_secret.json silinmemiş"
+    # Aynı dizinde sırrı içeren başka bir kalıntı da olmamalı
+    for leftover in tmp_path.rglob("*"):
+        if leftover.is_file():
+            assert _TOTP_SECRET.encode() not in leftover.read_bytes(), f"kalıntı: {leftover}"
+
+
+def test_totp_migration_is_idempotent(tmp_path: Path) -> None:
+    path = _write_legacy_totp(tmp_path)
+    secret_migration.migrate_totp_secret(path)
+
+    # İkinci çağrı: dosya yok, sır kasada duruyor
+    assert secret_migration.migrate_totp_secret(path) is None
+    assert secret_store.load_totp_secret() == _TOTP_SECRET
+
+
+def test_totp_migration_keeps_file_when_keyring_write_fails(
+    tmp_path: Path, use_keyring_backend
+) -> None:
+    """Kasaya yazılamazsa dosya İMHA EDİLMEMELİ — yoksa TOTP kalıcı kaybolur."""
+    path = _write_legacy_totp(tmp_path)
+    use_keyring_backend(SilentlyFailingKeyring())
+
+    with pytest.raises(KeyringUnavailableError):
+        secret_migration.migrate_totp_secret(path)
+
+    assert path.exists(), "kasaya yazılamadı ama dosya silinmiş — TOTP sırrı kayboldu"
+    assert json.loads(path.read_text(encoding="utf-8"))["secret"] == _TOTP_SECRET
+
+
+def test_totp_migration_rejects_corrupt_file(tmp_path: Path) -> None:
+    """Bozuk dosya silinmemeli — elle kurtarma şansı bırakılmalı."""
+    path = tmp_path / "totp_secret.json"
+    path.write_text("{bozuk json", encoding="utf-8")
+
+    with pytest.raises(MigrationError):
+        secret_migration.migrate_totp_secret(path)
+
+    assert path.exists(), "bozuk dosya silinmemeli"
+
+
+def test_totp_migration_missing_file_is_noop(tmp_path: Path) -> None:
+    assert secret_migration.migrate_totp_secret(tmp_path / "yok.json") is None
+
+
+# ── Uçtan uca: iki migration birlikte ─────────────────────────────────────────
+
+def test_run_migrations_reaches_current_version(db, monkeypatch, tmp_path: Path) -> None:
+    """share_2 + TOTP birlikte çalışıp şemayı güncel versiyona getirmeli."""
+    _seed_legacy_token(db, _HWID_A, _SHARE_A)
+    totp_path = _write_legacy_totp(tmp_path)
+    monkeypatch.setattr(secret_migration, "_TOTP_FILE", totp_path)
+
+    report = secret_migration.run_migrations(db)
+
+    assert report.ran is True
+    assert report.share_2_migrated == 1
+    assert report.totp_migrated is True
+    assert report.to_version == secret_migration.CURRENT_SCHEMA_VERSION
+    assert secret_migration.get_schema_version(db) == secret_migration.CURRENT_SCHEMA_VERSION
+
+    # Her iki sır da kasadan okunabilir, orijinalleriyle aynı
+    assert secret_store.load(secret_store.share_2_username(_HWID_A)) == _SHARE_A
+    assert secret_store.load_totp_secret() == _TOTP_SECRET
+
+    # Her iki eski konum da temiz
+    assert _db_share_2(db, _HWID_A) == ""
+    assert not totp_path.exists()
+    assert _SHARE_A.encode() not in _all_db_bytes(db)
+
+    # Tekrar çalıştırılırsa hiçbir şey yapmamalı
+    assert secret_migration.run_migrations(db).ran is False
