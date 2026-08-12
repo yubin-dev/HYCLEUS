@@ -21,7 +21,7 @@
 
 ### What is HYCLEUS?
 
-HYCLEUS is a Windows desktop application that encrypts and manages sensitive files inside a hardware-bound vault. Every file is encrypted with **AES-256-GCM** before hitting disk. The master key is split via **Shamir 2-of-2 Secret Sharing**: share_1 lives in a local vault file (`.hclv`) encrypted with an Argon2id PIN-derived KEK; share_2 lives in the local SQLite database, guarded by HWID verification. Reconstructing the master key requires both the correct PIN and the registered USB device to be physically present.
+HYCLEUS is a Windows desktop application that encrypts and manages sensitive files inside a hardware-bound vault. Every file is encrypted with **AES-256-GCM** before hitting disk. The master key is split via **Shamir 2-of-2 Secret Sharing**: share_1 lives in a local vault file (`.hclv`) encrypted with an Argon2id PIN-derived KEK; share_2 lives in the **OS credential store** (Windows Credential Manager / macOS Keychain / Linux Secret Service) under `HYCLEUS` / `share_2:<hwid>`. The TOTP secret is stored the same way. If the credential store is unreachable, HYCLEUS refuses to start rather than falling back to plaintext. Reconstructing the master key requires both the correct PIN and the registered USB device to be physically present.
 
 ---
 
@@ -30,7 +30,8 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | Category | Feature |
 |----------|---------|
 | **Encryption** | AES-256-GCM per-file, unique nonce, AAD-bound to file metadata |
-| **Key Splitting** | Shamir 2-of-2 SSS — share_1 in Argon2id-encrypted vault file, share_2 in SQLite DB |
+| **Key Splitting** | Shamir 2-of-2 SSS — share_1 in Argon2id-encrypted vault file, share_2 in OS credential store |
+| **Secret Storage** | `keyring` — Windows DPAPI / macOS Keychain / Linux Secret Service; no plaintext secrets on disk |
 | **Authentication** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
 | **Hardware Lock** | USB HWID binding — vault locks instantly on USB removal |
 | **Access Control** | RBAC: Administrator / Standard / Read-only roles |
@@ -55,7 +56,7 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 │  PIN ──► Argon2id KEK ──► Decrypt vault file            │
 │                                └─► share_1              │
 │                                        │                │
-│  USB HWID verified ──► DB lookup ──► share_2            │
+│  USB HWID verified ──► OS keyring ──► share_2           │
 │                                        │                │
 │                   Shamir Reconstruct(share_1, share_2)  │
 │                                        │                │
@@ -67,7 +68,7 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 │                                                         │
 │  ⚠ Both shares reside on the same disk.                │
 │    share_1 is protected by Argon2id KEK (requires PIN). │
-│    share_2 is guarded by HWID check (requires USB).     │
+│    share_2 sits in the OS credential store (DPAPI).     │
 │    Physical USB presence is a mandatory second factor.  │
 └─────────────────────────────────────────────────────────┘
 
@@ -232,7 +233,6 @@ HYCLEUS/
 │   └── ContactDialog.py      # Support / contact dialog
 └── data/                     # Not committed — runtime data only
     ├── hycleus.db            # SQLite database (WAL mode)
-    ├── totp_secret.json      # TOTP base32 secret
     ├── usb_ids.json          # Registered USB HWID map
     └── vaults/               # AES-256-GCM encrypted .hcl files
 ```
@@ -250,7 +250,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ### HYCLEUS Nedir?
 
-HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için geliştirilmiş bir Windows masaüstü uygulamasıdır. Her dosya diske yazılmadan önce **AES-256-GCM** ile şifrelenir. Ana anahtar **Shamir 2-of-2 Gizli Paylaşımı** ile ikiye bölünür: share_1, Argon2id PIN-türevli KEK ile şifreli yerel kasa dosyasında (`.hclv`) saklanır; share_2, HWID doğrulamasıyla korunan yerel SQLite veritabanında bulunur. Ana anahtarı yeniden oluşturmak için hem doğru PIN hem de kayıtlı USB cihazının fiziksel olarak mevcut olması zorunludur.
+HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için geliştirilmiş bir Windows masaüstü uygulamasıdır. Her dosya diske yazılmadan önce **AES-256-GCM** ile şifrelenir. Ana anahtar **Shamir 2-of-2 Gizli Paylaşımı** ile ikiye bölünür: share_1, Argon2id PIN-türevli KEK ile şifreli yerel kasa dosyasında (`.hclv`) saklanır; share_2 ise **işletim sistemi anahtar kasasında** (Windows Credential Manager / macOS Keychain / Linux Secret Service) `HYCLEUS` / `share_2:<hwid>` adıyla tutulur. TOTP sırrı da aynı şekilde saklanır. Anahtar kasasına erişilemezse HYCLEUS düz metne geri dönmek yerine açılmayı reddeder. Ana anahtarı yeniden oluşturmak için hem doğru PIN hem de kayıtlı USB cihazının fiziksel olarak mevcut olması zorunludur.
 
 ---
 
@@ -259,7 +259,8 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | Kategori | Özellik |
 |----------|---------|
 | **Şifreleme** | AES-256-GCM, dosya başına benzersiz nonce, metadata'ya bağlı AAD |
-| **Anahtar Bölme** | Shamir 2-of-2 SSS — share_1 Argon2id şifreli kasa dosyasında, share_2 SQLite DB'de |
+| **Anahtar Bölme** | Shamir 2-of-2 SSS — share_1 Argon2id şifreli kasa dosyasında, share_2 OS anahtar kasasında |
+| **Sır Saklama** | `keyring` — Windows DPAPI / macOS Keychain / Linux Secret Service; diskte düz metin sır yok |
 | **Kimlik Doğrulama** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
 | **Donanım Kilidi** | USB HWID bağlama — USB çekilince kasa anında kilitlenir |
 | **Erişim Kontrolü** | RBAC: Yönetici / Standart / Salt Okunur rolleri |
@@ -284,7 +285,7 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 │  PIN ──► Argon2id KEK ──► Kasa dosyasını çöz           │
 │                                └─► share_1              │
 │                                        │                │
-│  USB HWID doğrulandı ──► DB sorgusu ──► share_2         │
+│  USB HWID doğrulandı ──► OS kasası ──► share_2          │
 │                                        │                │
 │                 Shamir Birleştirme(share_1, share_2)    │
 │                                        │                │
@@ -296,7 +297,7 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 │                                                         │
 │  ⚠ Her iki pay da aynı diskte bulunur.                 │
 │    share_1, Argon2id KEK ile korunur (PIN gerekli).     │
-│    share_2, HWID kontrolüyle korunur (USB gerekli).     │
+│    share_2, OS anahtar kasasında tutulur (DPAPI).       │
 │    Fiziksel USB varlığı zorunlu ikinci faktördür.       │
 └─────────────────────────────────────────────────────────┘
 
@@ -462,7 +463,6 @@ HYCLEUS/
 │   └── ContactDialog.py      # Destek / iletişim diyaloğu
 └── data/                     # Git'e gitmez — çalışma zamanı verileri
     ├── hycleus.db            # SQLite veritabanı (WAL modu)
-    ├── totp_secret.json      # TOTP base32 secret
     ├── usb_ids.json          # Kayıtlı USB HWID haritası
     └── vaults/               # AES-256-GCM şifreli .hcl dosyaları
 ```
@@ -472,7 +472,9 @@ HYCLEUS/
 ### 🔐 Güvenlik Notları
 
 - PIN `data/` içinde **Argon2id** ile hashlenerek saklanır — düz metin asla yazılmaz
-- TOTP secret `data/totp_secret.json` dosyasındadır; `data/` `.gitignore` kapsamındadır
+- TOTP sırrı ve `share_2` işletim sistemi anahtar kasasındadır (`HYCLEUS` servisi) — diskte düz metin olarak tutulmaz
+- Eski kurulumlardan gelen `data/totp_secret.json` ve DB'deki `share_2`, ilk açılışta otomatik olarak kasaya taşınır; eski kopyaların üzerine rastgele veri yazılıp silinir (`CORE/secret_migration.py`)
+- Anahtar kasasına erişilemezse (başsız Linux, servis yok) uygulama açılmaz — sessizce düz metne geri dönmez
 - Şifreli dosyalar (`.hcl`) ve `data/` içeriği depoya dahil edilmez
 - USB token çekilince tüm widget etkileşimleri `setEnabled(False)` ile bloke edilir
 - Denetim kaydı her işlemi kullanıcı kimliği, zaman damgası ve detayla saklar
