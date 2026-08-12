@@ -15,6 +15,8 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from CORE.scheduler import start_scheduler, stop_scheduler
+from CORE.secret_migration import MigrationError, run_migrations
+from CORE.secret_store import KeyringUnavailableError, backend_name, ensure_available
 from CORE.usb_manager import get_usb_hwid
 from DB.db_manager import DBManager, HWIDMissingError
 from UI.login_dialog import LoginDialog
@@ -66,11 +68,39 @@ def main() -> None:
         _first_run    = False   # DEV_MODE — LoginDialog gösterilmeyecek
     # ─────────────────────────────────────────────────────────────────────────
 
+    # ── Anahtar kasası zorunlu ───────────────────────────────────────────────
+    # Sırlar (share_2, TOTP) OS anahtar kasasında tutuluyor. Kasa açılamıyorsa
+    # ESKİ DÜZ METİN DAVRANIŞINA DÜŞÜLMEZ — uygulama açılmayı reddeder.
+    try:
+        ensure_available()
+        _log.info("Anahtar kasası hazır  backend=%s", backend_name())
+    except KeyringUnavailableError as exc:
+        QMessageBox.critical(None, "Anahtar Kasası Erişilemiyor", str(exc))
+        _log.critical("Anahtar kasası erişilemiyor — başlatma iptal: %s", exc)
+        sys.exit(1)
+
     # DB bağlantısını geçici boş anahtar ile aç (şifreleme anahtarı login'den sonra gelir)
     try:
         DBManager().connect(hwid=hwid, key=None)
     except HWIDMissingError as exc:
         QMessageBox.critical(None, "Hata", str(exc))
+        sys.exit(1)
+
+    # ── Sır migration'ı ──────────────────────────────────────────────────────
+    # Düz metin sırları (DB usb_tokens.share_2, data/totp_secret.json) kasaya
+    # taşır ve eski kopyaları imha eder. Şema versiyonu ile korunur; tamamlanmış
+    # migration tekrar çalışmaz.
+    try:
+        report = run_migrations(DBManager())
+        if report.ran:
+            _log.info("Sır migration'ı: %s", report.summary())
+            DBManager().log("secret_migration", detail=report.summary())
+            for note in report.notes:
+                _log.warning(note)
+                DBManager().log("secret_migration_warning", detail=note)
+    except (KeyringUnavailableError, MigrationError) as exc:
+        QMessageBox.critical(None, "Sır Taşıma Hatası", str(exc))
+        _log.critical("Migration başarısız — başlatma iptal: %s", exc)
         sys.exit(1)
 
     if dev_mode:

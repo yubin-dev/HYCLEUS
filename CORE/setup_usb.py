@@ -32,7 +32,11 @@ from typing import NoReturn
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from CORE.usb_manager import get_usb_hwid                    # noqa: E402
-from CORE.vault_manager import create_vault, read_vault_role  # noqa: E402
+from CORE.vault_manager import (  # noqa: E402
+    create_vault,
+    delete_usb_token,
+    read_vault_role,
+)
 from DB.db_manager import DBManager                           # noqa: E402
 
 _PIN_MIN = 4
@@ -107,8 +111,8 @@ def _do_reset(hwid: str, db: DBManager) -> None:
         _VAULT_FILE.unlink()
         deleted.append(str(_VAULT_FILE))
 
-    # DB kaydı
-    db.execute("DELETE FROM usb_tokens WHERE hwid = ?", (hwid,))
+    # DB kaydi + anahtar kasasindaki share_2 birlikte silinir
+    delete_usb_token(hwid)
     db.log("usb_reset", detail=f"hwid={hwid} deleted_files={len(deleted)}")
 
     if deleted:

@@ -22,7 +22,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from CORE.vault_manager import VaultTamperedError, blacklist_usb, change_vault_role
+from CORE.vault_manager import (
+    VaultTamperedError,
+    blacklist_usb,
+    change_vault_role,
+    delete_usb_token,
+)
 from DB.db_manager import DBManager
 
 _ROLES = ["Yönetici", "Standart", "Salt Okunur"]
@@ -516,7 +521,8 @@ class AdminPanel(QDialog):
 
         try:
             db = DBManager()
-            db.execute("DELETE FROM usb_tokens WHERE hwid = ?", (hwid,))
+            # DB satırı + kasadaki share_2 birlikte silinir
+            delete_usb_token(hwid)
             db.log("usb_deleted", detail=f"hwid={hwid}")
             QMessageBox.information(self, "Silindi", f"USB kaydı silindi:\n{hwid}")
         except Exception as exc:
@@ -698,7 +704,8 @@ class AdminPanel(QDialog):
         try:
             db = DBManager()
             db.execute("DELETE FROM users WHERE hwid = ?", (hwid,))
-            db.execute("DELETE FROM usb_tokens WHERE hwid = ?", (hwid,))
+            # DB satırı + kasadaki share_2 birlikte silinir
+            delete_usb_token(hwid)
             db.log(
                 "user_rejected",
                 detail=f"hwid={hwid} username={username} rejected_by={self._current_hwid}",

@@ -14,7 +14,10 @@ Vault dosya formatı (.hcl_vault, ikili):
 Shamir Secret Sharing (2-of-2):
   · master_key 2 parçaya bölünür (threshold=2, shares=2)
   · share_1 — vault ciphertext içinde şifreli olarak saklanır
-  · share_2 — DB usb_tokens tablosuna HWID ile eşleştirilmiş olarak yazılır
+  · share_2 — işletim sistemi anahtar kasasına yazılır (bkz. CORE/secret_store.py)
+              kasa kaydı: servis "HYCLEUS", kullanıcı adı "share_2:<hwid>"
+              DB'deki usb_tokens.share_2 sütunu şema uyumluluğu için duruyor
+              ama boş — sır orada TUTULMAZ (migration: CORE/secret_migration.py)
   · Master anahtarı yalnızca her iki parça mevcut olduğunda reconstruct_key() ile kurtarılır
 
 USB kimlik doğrulama katmanları (authenticate_usb):
@@ -48,6 +51,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.hmac import HMAC
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from CORE import secret_store
 from DB.db_manager import DBManager
 
 # ── Sabitler ──────────────────────────────────────────────────────────────────
@@ -199,11 +203,53 @@ def _sss_recover(share_1: str, share_2: str) -> bytes:
 
 
 def _save_usb_token(hwid: str, share_2: str, token_id_hex: str) -> None:
-    """USB token kaydını (share_2 + token_id) DB usb_tokens tablosuna yazar."""
+    """
+    USB token kaydını yazar: share_2 anahtar kasasına, token_id DB'ye.
+
+    share_2 artık DB'de TUTULMAZ. usb_tokens.share_2 sütunu şema uyumluluğu
+    için duruyor ama boş string yazılır — HWID satırının kendisi kimlik
+    doğrulama katmanları (HWID kaydı, token_id, blacklisted) için gerekli.
+
+    Kasaya yazma önce yapılır ve store() geri okuyup doğrular; kasa
+    yazamazsa KeyringUnavailableError fırlar ve DB'ye hiç dokunulmaz.
+    """
+    secret_store.store(secret_store.share_2_username(hwid), share_2)
     DBManager().execute(
-        "INSERT OR REPLACE INTO usb_tokens (hwid, share_2, token_id) VALUES (?, ?, ?)",
-        (hwid, share_2, token_id_hex),
+        "INSERT OR REPLACE INTO usb_tokens (hwid, share_2, token_id) VALUES (?, '', ?)",
+        (hwid, token_id_hex),
     )
+
+
+def _load_share_2(hwid: str) -> str:
+    """
+    share_2'yi anahtar kasasından okur.
+
+    Kasada yoksa DB'ye DÜŞÜLMEZ — migration çalışmamış ya da kayıt silinmiş
+    demektir; sessizce düz metin kaynağa dönmek migration'ın amacını yok eder.
+
+    Raises:
+        KeyringUnavailableError — kasaya erişilemiyorsa
+        ValueError              — kayıt kasada yoksa
+    """
+    share_2 = secret_store.load(secret_store.share_2_username(hwid))
+    if share_2 is None:
+        raise ValueError(
+            f"HWID '{hwid}' için share_2 anahtar kasasında bulunamadı — "
+            "master_key kurtarılamaz.\n"
+            "USB kaydı silinmiş ya da migration bu cihazda hiç çalışmamış olabilir."
+        )
+    return share_2
+
+
+def delete_usb_token(hwid: str) -> None:
+    """
+    Bir USB token'ın hem DB satırını hem kasadaki share_2 kaydını siler.
+
+    Yalnızca DB satırını silmek kasada yetim bir sır bırakır; iki kaynağın
+    birlikte temizlenmesi için tüm silme noktaları buradan geçmelidir.
+    """
+    secret_store.erase(secret_store.share_2_username(hwid))
+    DBManager().execute("DELETE FROM usb_tokens WHERE hwid = ?", (hwid,))
 
 
 def _set_readonly(path: Path) -> None:
@@ -677,11 +723,11 @@ def open_vault(hwid: str, pin: str) -> tuple[str, bytes]:
     share_1 = plaintext[2 : 2 + s1_len].decode()
     role    = plaintext[2 + s1_len :].decode()
 
-    row = DBManager().fetchone("SELECT share_2 FROM usb_tokens WHERE hwid = ?", (hwid,))
+    row = DBManager().fetchone("SELECT hwid FROM usb_tokens WHERE hwid = ?", (hwid,))
     if row is None:
         raise ValueError("USB token DB'de bulunamadı — master_key kurtarılamaz.")
 
-    master_key = _sss_recover(share_1, row["share_2"])
+    master_key = _sss_recover(share_1, _load_share_2(hwid))
     return role, master_key
 
 
