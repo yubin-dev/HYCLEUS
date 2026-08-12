@@ -33,6 +33,16 @@ ignore = [
 python_version = "3.11"
 files = ["CORE", "DB"]
 
+# HYCLEUS bir Windows uygulamasidir; tip denetimi her zaman Windows varsayimiyla
+# yapilir. Bu satir olmadan mypy calistigi platformu varsayar ve CI'in Ubuntu
+# ayagi ctypes.GetLastError, ctypes.windll, subprocess.CREATE_NO_WINDOW gibi
+# typeshed'in `sys.platform == "win32"` arkasina aldigi attribute'lari
+# "yok" sayarak kirilir — halbuki bu kod yalnizca Windows'ta calisir.
+#
+# Linux ayaginin isi Windows API cagrilarini dogrulamak degil; platformdan
+# bagimsiz kripto katmanini pytest ile calistirmak.
+platform = "win32"
+
 # CORE/ ve DB/ altında __init__.py yok (PEP 420 namespace paketleri).
 # Bunlar olmadan mypy CORE/x.py'yi hem "x" hem "CORE.x" olarak görüp hata verir.
 mypy_path = "."
