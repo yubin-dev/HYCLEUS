@@ -48,7 +48,7 @@ saldırganı yavaşlatan bir kontroldür. Diskteki veriyi okuyabilen bir
 saldırgana karşı savunma değildir. Gerçek savunma tam disk şifrelemesi +
 Argon2id maliyetidir.
 
-(Proje bir SECURITY.md kazandığında bu bölüm oraya taşınmalı.)
+Tam tehdit modeli için: SECURITY.md (§3 — korunmayan senaryolar).
 """
 from __future__ import annotations
 

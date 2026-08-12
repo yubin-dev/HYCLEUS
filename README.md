@@ -259,7 +259,7 @@ HYCLEUS/
 
 Full-disk encryption is the control that covers the offline-attacker case. HYCLEUS does not replace it.
 
-> A dedicated `SECURITY.md` has not been written yet — until it exists, this section is the reference.
+> The full threat model — trust boundaries, known weaknesses, and how to report a vulnerability — is in **[SECURITY.md](SECURITY.md)**. This section is the summary.
 
 ---
 
@@ -514,7 +514,7 @@ HYCLEUS/
 
 Çevrimdışı saldırgan senaryosunu kapatan kontrol tam disk şifrelemesidir. HYCLEUS onun yerine geçmez.
 
-> Ayrı bir `SECURITY.md` henüz yazılmadı — o dosya oluşana kadar referans bu bölümdür.
+> Tam tehdit modeli — güven sınırları, bilinen zayıflıklar ve açık bildirimi — **[SECURITY.md](SECURITY.md)** dosyasındadır. Bu bölüm özettir.
 
 ---
 
