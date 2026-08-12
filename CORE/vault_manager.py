@@ -831,6 +831,29 @@ def open_vault(hwid: str, pin: str) -> tuple[str, bytes]:
         VaultTamperedError — HMAC doğrulaması başarısızsa
         ValueError         — PIN yanlış veya vault formatı geçersizse
     """
+    share_1, role = _decrypt_vault(hwid, pin)
+
+    row = DBManager().fetchone("SELECT hwid FROM usb_tokens WHERE hwid = ?", (hwid,))
+    if row is None:
+        raise ValueError("USB token DB'de bulunamadı — master_key kurtarılamaz.")
+
+    master_key = _sss_recover(share_1, _load_share_2(hwid))
+    return role, master_key
+
+
+def _decrypt_vault(hwid: str, pin: str) -> tuple[str, str]:
+    """
+    Vault'u PIN ile çözer; (share_1, role) döndürür.
+
+    open_vault() ve export_recovery_share() ortak kullanır — kara liste ve
+    HMAC kontrolleri tek yerde dursun diye ayrıldı.
+
+    Raises:
+        USBAuthError       — cihaz kara listedeyse
+        FileNotFoundError  — vault dosyası yoksa
+        VaultTamperedError — HMAC doğrulaması başarısızsa
+        ValueError         — PIN yanlış veya vault formatı geçersizse
+    """
     # Kara liste EN BAŞTA — PIN doğru olsa bile açılmamalı, ve Argon2id
     # maliyetine girmeden reddedilmeli. authenticate_usb ile aynı kontrol.
     _reject_if_blacklisted(hwid)
@@ -862,15 +885,101 @@ def open_vault(hwid: str, pin: str) -> tuple[str, bytes]:
         raise ValueError("Vault içeriği çok kısa; bozulmuş.")
 
     s1_len  = struct.unpack(">H", plaintext[:2])[0]
-    share_1 = plaintext[2 : 2 + s1_len].decode()
-    role    = plaintext[2 + s1_len :].decode()
+    return plaintext[2 : 2 + s1_len].decode(), plaintext[2 + s1_len :].decode()
 
-    row = DBManager().fetchone("SELECT hwid FROM usb_tokens WHERE hwid = ?", (hwid,))
-    if row is None:
-        raise ValueError("USB token DB'de bulunamadı — master_key kurtarılamaz.")
 
-    master_key = _sss_recover(share_1, _load_share_2(hwid))
-    return role, master_key
+def _read_share_1(hwid: str, pin: str) -> str:
+    """Vault'tan yalnızca share_1'i okur (rol gerekmediğinde)."""
+    return _decrypt_vault(hwid, pin)[0]
+
+
+def has_recovery_share(hwid: str) -> bool:
+    """Bu HWID için kurtarma parçası daha önce dışa aktarılmış mı."""
+    row = DBManager().fetchone(
+        "SELECT recovery_issued_at FROM usb_tokens WHERE hwid = ?", (hwid,)
+    )
+    return bool(row and row["recovery_issued_at"])
+
+
+def export_recovery_share(hwid: str, pin: str) -> str:
+    """
+    Kurtarma parçasını (Shamir 3. payı) üretir ve döndürür.
+
+    ⚠️ Döndürülen değer SAKLANMAZ. Çağıran taraf kullanıcıya bir kez
+    gösterip bellekten bırakmalıdır. Buraya yazılan tek şey, parçanın
+    dışa aktarıldığı ZAMAN DAMGASIDIR — parçanın kendisi değil.
+
+    Parça, share_1 (vault, PIN ile açılır) ve share_2 (anahtar kasası)
+    üzerinden f(3) olarak türetilir. Aynı polinomdan geldiği için:
+      · Vault yeniden anahtarlanmaz, share_1/share_2 hiç değişmez
+      · 2-of-2 döneminde oluşturulmuş vault'lar da aynı koddan geçer
+      · Kaybedilirse (diğer iki pay hâlâ elde olduğu sürece) yeniden üretilebilir
+
+    Args:
+        hwid — USB donanım kimliği
+        pin  — vault'u açmak için gereken PIN
+
+    Returns:
+        "3:<hex>" biçiminde kurtarma payı
+
+    Raises:
+        USBAuthError       — cihaz kara listedeyse
+        ValueError         — PIN yanlışsa veya share_2 kasada yoksa
+        VaultTamperedError — vault bütünlüğü bozuksa
+    """
+    share_1 = _read_share_1(hwid, pin)
+    share_2 = _load_share_2(hwid)
+    share_3 = _sss_derive_share(share_1, share_2, _SSS_RECOVERY_INDEX)
+
+    # Yalnızca "dışa aktarıldı" bilgisi kaydedilir — parçanın kendisi ASLA
+    DBManager().execute(
+        "UPDATE usb_tokens SET recovery_issued_at = "
+        "strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE hwid = ?",
+        (hwid,),
+    )
+    DBManager().log("recovery_share_exported", detail=f"hwid={hwid}")
+    return share_3
+
+
+def recover_master_key(
+    hwid: str,
+    *,
+    recovery_share: str,
+    pin: str | None = None,
+) -> bytes:
+    """
+    Kurtarma parçası + kalan bir pay ile master_key'i yeniden oluşturur.
+
+    İki senaryo:
+      · share_2 kayıp (kasa silinmiş / yeni makine) → pin verilir, share_1
+        vault'tan okunur, (1,3) ile kurtarılır
+      · share_1 kayıp (vault dosyası yok/bozuk)     → pin verilmez, share_2
+        kasadan okunur, (2,3) ile kurtarılır
+
+    Args:
+        hwid           — USB donanım kimliği
+        recovery_share — "3:<hex>" kurtarma payı
+        pin            — verilirse share_1 vault'tan okunur; yoksa share_2 kasadan
+
+    Returns:
+        32 byte master_key
+
+    Raises:
+        ValueError — kurtarma payı geçersizse veya kalan pay okunamıyorsa
+    """
+    _parse_share(recovery_share)  # biçim doğrulaması, erken hata
+
+    if pin is not None:
+        kalan = _read_share_1(hwid, pin)
+    else:
+        kalan = _load_share_2(hwid)
+
+    master_key = _sss_recover(kalan, recovery_share)
+    DBManager().log(
+        "vault_recovered",
+        detail=f"hwid={hwid} kaynak={'share_1+share_3' if pin else 'share_2+share_3'}",
+    )
+    return master_key
 
 
 def reconstruct_key(share_a: str, share_b: str) -> bytes:

@@ -278,6 +278,16 @@ class DBManager:
                 created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             )
         """)
+        # Migration: usb_tokens.recovery_issued_at — Shamir 3. payının (kurtarma
+        # parçası) dışa aktarıldığı zaman. YALNIZCA ZAMAN DAMGASI; parçanın
+        # kendisi hiçbir zaman saklanmaz (bkz. CORE/recovery_share.py).
+        # NULL = henüz kurtarma parçası alınmamış → kullanıcı uyarılır.
+        try:
+            self._conn.execute(
+                "ALTER TABLE usb_tokens ADD COLUMN recovery_issued_at TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
         # Migration: login_attempts — giriş deneme sınırlama (bkz. CORE/rate_limit.py)
         # Sayaç bilerek DB'de tutulur: bellekte olsaydı uygulamayı yeniden
         # başlatmak kilidi sıfırlar ve kontrolü tamamen bypass edilebilir kılardı.
