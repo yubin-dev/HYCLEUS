@@ -26,11 +26,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from CORE.pin_policy import PIN_MIN_LEN as _PIN_MIN_LEN
+from CORE.pin_policy import validate_new_pin
 from CORE.usb_manager import _sanitize_hwid, get_usb_hwid
 from CORE.vault_manager import create_vault
 from DB.db_manager import DBManager
 
-_PIN_MIN_LEN = 4
 _PH          = PasswordHasher()
 
 # Yönetici dışındaki roller — Yönetici hesabı yalnızca ilk kurulumda oluşur
@@ -357,8 +358,9 @@ class RegisterDialog(QDialog):
         if len(username) < 3:
             self._show_error("Kullanıcı adı en az 3 karakter olmalı.")
             return
-        if len(pin) < _PIN_MIN_LEN:
-            self._show_error(f"PIN en az {_PIN_MIN_LEN} karakter olmalı.")
+        pin_error = validate_new_pin(pin)
+        if pin_error:
+            self._show_error(pin_error)
             return
         if pin != pin2:
             self._show_error("PIN'ler eşleşmiyor.")

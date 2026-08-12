@@ -47,12 +47,12 @@ from DB.db_manager import DBManager
 # ── Paths / constants ─────────────────────────────────────────────────────────
 
 from CORE.paths import data_dir as _data_dir
+from CORE.pin_policy import LOGIN_MIN_LEN, PIN_MIN_LEN, validate_new_pin
 from CORE.secret_store import load_totp_secret, store_totp_secret
 
 _PIN_FILE    = _data_dir() / "pin_hash.json"
 _VAULT_PATH  = _data_dir() / ".hcl_vault"
 _APP_NAME    = "HYCLEUS"
-_PIN_MIN_LEN = 4
 _TOTP_LEN    = 6
 _MAX_ATTEMPTS = 5
 
@@ -463,7 +463,9 @@ class LoginDialog(QDialog):
         lay.addSpacing(28)
 
         # PIN field
-        self._pin_input = _make_input("En az 4 karakter", password=True)
+        # Giriş ekranı: burada uzunluk ipucu verilmez — yeni politika 6 hane
+        # ama eski 4-5 haneli PIN'ler hâlâ geçerli, "en az 6" yazmak yanıltıcı olurdu.
+        self._pin_input = _make_input("PIN'inizi girin", password=True)
         self._pin_input.returnPressed.connect(self._on_login)
         lay.addWidget(_field("PIN", self._pin_input))
         lay.addSpacing(20)
@@ -557,7 +559,7 @@ class LoginDialog(QDialog):
         lay.addSpacing(20)
 
         # ── PIN ───────────────────────────────────────────────────────────
-        self._reg_pin = _make_input("En az 4 karakter", password=True)
+        self._reg_pin = _make_input(f"En az {PIN_MIN_LEN} karakter", password=True)
         lay.addWidget(_field("PIN", self._reg_pin))
         lay.addSpacing(20)
 
@@ -668,7 +670,7 @@ class LoginDialog(QDialog):
 
         # PIN
         self._pin_input = _make_input("••••", password=True)
-        lay.addWidget(_field(f"PIN (en az {_PIN_MIN_LEN} karakter)", self._pin_input))
+        lay.addWidget(_field(f"PIN (en az {PIN_MIN_LEN} karakter)", self._pin_input))
         lay.addSpacing(20)
 
         # PIN Tekrar
@@ -741,8 +743,9 @@ class LoginDialog(QDialog):
         pin2 = self._pin_confirm_input.text()
         code = self._totp_input.text().strip()
 
-        if len(pin) < _PIN_MIN_LEN:
-            self._show_error(f"PIN en az {_PIN_MIN_LEN} karakter olmalı")
+        pin_error = validate_new_pin(pin)
+        if pin_error:
+            self._show_error(pin_error)
             self._pin_input.setFocus()
             return
         if pin != pin2:
@@ -784,8 +787,11 @@ class LoginDialog(QDialog):
         pin  = self._pin_input.text()
         code = self._totp_input.text().strip()
 
-        if len(pin) < _PIN_MIN_LEN:
-            self._show_error(f"PIN en az {_PIN_MIN_LEN} karakter olmalı")
+        # DİKKAT: burada PIN_MIN_LEN (6) DEĞİL, LOGIN_MIN_LEN (4) kullanılır.
+        # Politika 6'ya çıkarılmadan önce kaydolmuş 4-5 haneli PIN sahipleri
+        # aksi hâlde kendi doğru PIN'leriyle giriş yapamazdı.
+        if len(pin) < LOGIN_MIN_LEN:
+            self._show_error(f"PIN en az {LOGIN_MIN_LEN} karakter olmalı")
             self._pin_input.setFocus()
             return
         if not code.isdigit() or len(code) != _TOTP_LEN:
@@ -851,8 +857,9 @@ class LoginDialog(QDialog):
         if len(username) < 3:
             self._show_reg_error("Kullanıcı adı en az 3 karakter olmalı.")
             return
-        if len(pin) < _PIN_MIN_LEN:
-            self._show_reg_error(f"PIN en az {_PIN_MIN_LEN} karakter olmalı.")
+        pin_error = validate_new_pin(pin)
+        if pin_error:
+            self._show_reg_error(pin_error)
             return
         if pin != pin2:
             self._show_reg_error("PIN'ler eşleşmiyor.")

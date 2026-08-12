@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from CORE.pin_policy import validate_new_pin
 from DB.db_manager import DBManager
 
 _QSS = """
@@ -334,8 +335,9 @@ class ProfileDialog(QDialog):
         if new != rep:
             QMessageBox.warning(self, "PIN", "Yeni PIN'ler eşleşmiyor.")
             return
-        if len(new) < 4:
-            QMessageBox.warning(self, "PIN", "PIN en az 4 karakter olmalıdır.")
+        pin_error = validate_new_pin(new)
+        if pin_error:
+            QMessageBox.warning(self, "PIN", pin_error)
             return
 
         try:

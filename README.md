@@ -155,7 +155,7 @@ When launched for the first time, the setup wizard guides you through:
    | Standard | File management, Critical tab visible |
    | Read-only | View only — drag-drop and Critical tab disabled |
 
-2. **Set PIN** — Minimum 4 characters, confirmed twice; stored as Argon2id hash
+2. **Set PIN** — Minimum 6 characters, confirmed twice; stored as Argon2id hash
 
 3. **Configure TOTP** — Scan the QR code with your authenticator app, then enter the 6-digit code to verify
 
@@ -384,7 +384,7 @@ pyinstaller HYCLEUS.spec
    | Standart | Dosya yönetimi, Kritik sekme görünür |
    | Salt Okunur | Yalnızca görüntüleme — drag-drop ve Kritik sekme devre dışı |
 
-2. **PIN belirleyin** — En az 4 karakter, iki kez girilir; Argon2id hash olarak saklanır
+2. **PIN belirleyin** — En az 6 karakter, iki kez girilir; Argon2id hash olarak saklanır
 
 3. **TOTP ayarlayın** — Authenticator uygulamasıyla QR kodu tarayın, ardından üretilen 6 haneli kodu doğrulama alanına girin
 

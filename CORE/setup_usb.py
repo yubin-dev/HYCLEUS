@@ -31,6 +31,7 @@ from typing import NoReturn
 # 'from DB.db_manager import ...' gibi importlarin calismasi icin gerekli
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from CORE.pin_policy import PIN_MAX_LEN, validate_new_pin  # noqa: E402
 from CORE.usb_manager import get_usb_hwid                    # noqa: E402
 from CORE.vault_manager import (  # noqa: E402
     create_vault,
@@ -39,8 +40,8 @@ from CORE.vault_manager import (  # noqa: E402
 )
 from DB.db_manager import DBManager                           # noqa: E402
 
-_PIN_MIN = 4
-_PIN_MAX = 32
+# Alt sinir artik validate_new_pin() icinde; ust sinir yalnizca CLI'da uygulaniyor
+_PIN_MAX = PIN_MAX_LEN
 
 _DATA_DIR          = Path(__file__).parent.parent / "data"
 _VAULT_FILE        = _DATA_DIR / ".hcl_vault"           # eski tek-dosya yolu
@@ -135,8 +136,9 @@ def _prompt_pin() -> str:
             print("\nIptal edildi.")
             sys.exit(0)
 
-        if len(pin) < _PIN_MIN:
-            _warn(f"PIN en az {_PIN_MIN} karakter olmali.")
+        pin_error = validate_new_pin(pin)
+        if pin_error:
+            _warn(pin_error)
             continue
         if len(pin) > _PIN_MAX:
             _warn(f"PIN en fazla {_PIN_MAX} karakter olabilir.")
