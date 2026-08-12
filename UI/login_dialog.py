@@ -15,7 +15,7 @@ import qrcode
 import qrcode.constants
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -47,14 +47,16 @@ from DB.db_manager import DBManager
 # ── Paths / constants ─────────────────────────────────────────────────────────
 
 from CORE.paths import data_dir as _data_dir
+from CORE import rate_limit
 from CORE.pin_policy import LOGIN_MIN_LEN, PIN_MIN_LEN, validate_new_pin
+from CORE.rate_limit import LockState
 from CORE.secret_store import load_totp_secret, store_totp_secret
 
 _PIN_FILE    = _data_dir() / "pin_hash.json"
 _VAULT_PATH  = _data_dir() / ".hcl_vault"
 _APP_NAME    = "HYCLEUS"
 _TOTP_LEN    = 6
-_MAX_ATTEMPTS = 5
+# Deneme sınırı ve kilit süreleri CORE/rate_limit.py'de — sayaç DB'de tutulur
 
 _PH = PasswordHasher()
 
@@ -300,8 +302,10 @@ class LoginDialog(QDialog):
         self.setAttribute(Qt.WA_TranslucentBackground)
 
         self._hwid          = hwid
-        self._fail_count    = 0
+        # Başarısız deneme sayacı DB'de (CORE/rate_limit.py) — burada tutulmaz,
+        # yoksa uygulamayı yeniden başlatmak sayacı sıfırlar ve kilidi bypass ederdi.
         self._locked_out    = False
+        self._lock_timer: QTimer | None = None
         self._role: str     = "Yönetici"
         self.session_key: bytes = b""
         self._drag_pos: QPoint | None = None
@@ -444,7 +448,6 @@ class LoginDialog(QDialog):
         lay = QVBoxLayout(page)
         lay.setContentsMargins(48, 32, 48, 40)
         lay.setSpacing(0)
-        self._login_lay = lay          # _do_lockout için referans
 
         # USB badge
         usb_row = QHBoxLayout()
@@ -781,6 +784,13 @@ class LoginDialog(QDialog):
         self.accept()
 
     def _on_login(self) -> None:
+        # Kilit DB'de tutulur — uygulamayı yeniden başlatmak kilidi kaldırmaz
+        lock = rate_limit.check(DBManager(), self._rl_key())
+        if lock.locked:
+            rate_limit.record_blocked_attempt(DBManager(), self._rl_key(), lock)
+            self._apply_lockout(lock)
+            return
+
         if self._locked_out:
             return
 
@@ -818,11 +828,12 @@ class LoginDialog(QDialog):
         totp_ok = pyotp.TOTP(self._secret).verify(code, valid_window=1)
 
         if not pin_ok or not totp_ok:
-            self._fail_count += 1
-            remaining = _MAX_ATTEMPTS - self._fail_count
-            if remaining <= 0:
-                self._do_lockout()
+            reason = f"pin_ok={pin_ok} totp_ok={totp_ok}"
+            state = rate_limit.record_failure(DBManager(), self._rl_key(), detail=reason)
+            if state.locked:
+                self._apply_lockout(state)
                 return
+            remaining = rate_limit.MAX_ATTEMPTS - state.fail_count
             suffix = f" ({remaining} deneme kaldı)" if remaining <= 2 else ""
             self._show_error(f"PIN veya Authenticator kodu hatalı{suffix}")
             return
@@ -834,6 +845,9 @@ class LoginDialog(QDialog):
             if row is not None and row["status"] == "pending":
                 self._show_error("Hesabınız yönetici onayı bekliyor — giriş yapılamaz")
                 return
+
+        # Başarılı giriş sayacı sıfırlar ve audit log'a düşer
+        rate_limit.record_success(DBManager(), self._rl_key())
 
         self._role = role
         _log.info(
@@ -899,25 +913,45 @@ class LoginDialog(QDialog):
         self._reg_btn.setEnabled(False)
         self._reg_pending.show()
 
-    def _do_lockout(self) -> None:
+    def _apply_lockout(self, state: LockState) -> None:
+        """
+        Süreli kilidi uygular: alanları kapatır, kalan süreyi saniye saniye gösterir.
+
+        Eski davranış kalıcı kilitti ("uygulamayı yeniden başlatın") — ama sayaç
+        bellekte olduğu için yeniden başlatmak kilidi tamamen kaldırıyordu, yani
+        koruma değil sadece rahatsızlıktı. Artık sayaç DB'de ve kilit süreli.
+        """
         self._locked_out = True
         self._pin_input.setEnabled(False)
         self._totp_input.setEnabled(False)
         self._login_btn.setEnabled(False)
-        self._error_label.hide()
+        self._show_error(state.message())
 
-        lockout = QLabel(
-            "Çok fazla hatalı deneme\nUygulama kilitlendi — yeniden başlatın"
-        )
-        lockout.setAlignment(Qt.AlignCenter)
-        lockout.setWordWrap(True)
-        lockout.setStyleSheet(
-            "color:#DC2626;font-size:13px;font-weight:600;"
-            "padding:10px;border:1px solid #FECACA;"
-            "border-radius:8px;background:#FEF2F2;"
-        )
-        # stretch item en sonda; ondan önce ekle
-        self._login_lay.insertWidget(self._login_lay.count() - 1, lockout)
+        if self._lock_timer is None:
+            self._lock_timer = QTimer(self)
+            self._lock_timer.setInterval(1000)
+            self._lock_timer.timeout.connect(self._tick_lockout)
+        self._lock_timer.start()
+
+    def _tick_lockout(self) -> None:
+        """Her saniye kalan süreyi tazeler; süre dolunca girişi geri açar."""
+        state = rate_limit.check(DBManager(), self._rl_key())
+        if state.locked:
+            self._show_error(state.message())
+            return
+
+        if self._lock_timer is not None:
+            self._lock_timer.stop()
+        self._locked_out = False
+        self._pin_input.setEnabled(True)
+        self._totp_input.setEnabled(True)
+        self._login_btn.setEnabled(True)
+        self._show_error("")
+        self._pin_input.setFocus()
+
+    def _rl_key(self) -> str:
+        """Rate limit anahtarı — giriş ekranı kullanıcı adı değil HWID bazlıdır."""
+        return self._hwid or "<no-hwid>"
 
     def _show_error(self, msg: str) -> None:
         if msg:

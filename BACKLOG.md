@@ -98,3 +98,61 @@ mypy tarafında gevşetilenler: `ignore_missing_imports = true`,
 mypy bu yüzden `explicit_package_bases` + `mypy_path = "."` ile
 yapılandırıldı; bunlar olmadan `CORE/x.py` hem `x` hem `CORE.x` olarak
 görülüp "Source file found twice" hatası veriyor.
+
+---
+
+## B-003 — Mevcut 4-5 haneli PIN kullanıcılarını 6 haneye taşıma
+
+**Durum:** Açık — geçici köprü devrede
+**Öncelik:** **Orta.** Güvenlik açığı değil, politika boşluğu: yeni kayıtlar
+6 hane zorunlu ama eski hesaplar süresiz olarak 4-5 hanede kalabiliyor.
+Yani politikanın koruduğu şey (kısa PIN'e karşı kaba kuvvet direnci) tam
+olarak en eski — ve büyük ihtimalle en yetkili — hesaplarda geçerli değil.
+Acil değil, çünkü PIN tek başına yeterli değil: fiziksel USB + TOTP de
+gerekiyor. Ama "yaptık" sayılmaması gereken bir iş.
+**İlgili:** PIN politikası 4 → 6 değişikliği (`f3b70cf`)
+**Bulundu:** 2026-08-13
+
+### Durum
+
+PIN minimum uzunluğu 4'ten 6'ya çıkarıldı ([`CORE/pin_policy.py`](CORE/pin_policy.py)).
+Ancak politika değişmeden önce kaydolmuş kullanıcıların PIN'i 4-5 hane
+olabilir ve Argon2id hash'i uzunluktan bağımsız doğrulandığı için bu PIN'ler
+hâlâ geçerlidir.
+
+Giriş ekranındaki uzunluk kontrolü `PIN_MIN_LEN` (6) ile yapılsaydı bu
+kullanıcılar kendi doğru PIN'leriyle giriş yapamazdı — **sessiz bir
+lockout**, üstelik hata mesajı da yanıltıcı olurdu. Bu yüzden giriş eşiği
+ayrı bir sabite alındı:
+
+```python
+PIN_MIN_LEN   = 6   # yeni PIN belirlerken
+LOGIN_MIN_LEN = 4   # giriş ekranı — geçici köprü
+```
+
+> ⚠️ `LOGIN_MIN_LEN` **`PIN_MIN_LEN` ile aynı yapılmamalıdır.** İkisi
+> eşitlenirse eski PIN sahipleri sessizce kilitlenir. Bu invariant
+> [`tests/test_pin_policy.py`](tests/test_pin_policy.py) içinde
+> `test_login_floor_stays_below_new_policy` ile korunuyor.
+
+### Yapılacak — zorunlu PIN yenileme akışı
+
+1. **Tespit:** Başarılı girişten sonra kullanılan PIN'in uzunluğuna bak.
+   PIN düz metin olarak yalnızca o anda elde, hash'ten uzunluk çıkarılamaz —
+   yani kontrol `_on_login` içinde, doğrulama başarılı olduktan hemen sonra
+   yapılmalı.
+2. **Yönlendirme:** `len(pin) < PIN_MIN_LEN` ise ana pencereyi açmadan önce
+   zorunlu PIN değiştirme diyaloğunu göster (iptal edilemez).
+3. **Uygulama:** `CORE.vault_manager.change_vault_pin(hwid, old, new)` zaten
+   var; yeni PIN `validate_new_pin()` ile doğrulanır.
+4. **Audit:** `db.log("pin_rotation_forced", ...)` düşülmeli.
+5. **Kapanış:** Tüm kullanıcılar taşındıktan sonra `LOGIN_MIN_LEN`
+   kaldırılıp giriş kontrolü de `PIN_MIN_LEN`'e çekilebilir. Bu adım
+   atılmadan köprü kaldırılmamalı.
+
+### Alternatif (daha zayıf)
+
+Zorunlu yerine uyarı: girişte "PIN'iniz kısa, güncelleyin" bildirimi. Daha
+az müdahaleci ama politika boşluğunu kapatmaz — kullanıcı süresiz erteler.
+Yalnızca geçiş dönemini yumuşatmak için, zorunlu akışın öncesinde
+kullanılmalı.

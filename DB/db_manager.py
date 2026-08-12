@@ -278,6 +278,17 @@ class DBManager:
                 created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             )
         """)
+        # Migration: login_attempts — giriş deneme sınırlama (bkz. CORE/rate_limit.py)
+        # Sayaç bilerek DB'de tutulur: bellekte olsaydı uygulamayı yeniden
+        # başlatmak kilidi sıfırlar ve kontrolü tamamen bypass edilebilir kılardı.
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                hwid         TEXT    PRIMARY KEY,
+                fail_count   INTEGER NOT NULL DEFAULT 0,
+                locked_until TEXT,
+                last_attempt TEXT
+            )
+        """)
         # Migration: settings — uygulama ayarları
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS settings (
