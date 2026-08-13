@@ -156,3 +156,49 @@ Zorunlu yerine uyarı: girişte "PIN'iniz kısa, güncelleyin" bildirimi. Daha
 az müdahaleci ama politika boşluğunu kapatmaz — kullanıcı süresiz erteler.
 Yalnızca geçiş dönemini yumuşatmak için, zorunlu akışın öncesinde
 kullanılmalı.
+
+---
+
+## B-004 — İmha Odası sayacı yalnızca UI açıkken işliyor
+
+**Bulundu:** 2026-08-13, saklama profili silme/imha akışı çalışması sırasında.
+**Durum:** düzeltilmedi — bulgu kaydı.
+
+### Bulgu
+
+İmha Odası'na atılan dosya `expires_at = now + imha_ttl_hours` alıyor, ama bu
+sayacı işleten iki mekanizmadan hiçbiri arka planda `Imha` etiketini
+temizlemiyor:
+
+| Mekanizma | Nerede | Hangi etiket |
+|---|---|---|
+| `_purge_expired` (APScheduler, 10 dk) | `CORE/scheduler.py` | **yalnızca `Karantina`** |
+| `_tick_expiry` (QTimer, 1 sn) | `UI/main_window.py` | `Imha` — **ama yalnızca İmha Odası sekmesi açıkken** |
+
+`_tick_expiry` ilk satırında `if self._current_label != "Imha": return` var.
+Yani süresi dolmuş bir İmha Odası dosyası, kullanıcı o sekmeye girmediği
+sürece süresiz olarak diskte kalıyor. "24 saat içinde silinecek" diyen
+kullanıcı mesajı (`main_window.py`, `_on_ctx_move_to_imha`) bu durumda
+doğru değil.
+
+### Etkisi
+
+Veri kaybı değil, veri KALIŞI: silinmesi beklenen dosya diskte duruyor.
+Kullanıcı sekmeyi açtığı anda toplu olarak siliniyor — yani silme zamanı
+kullanıcının gezinme davranışına bağlı, öngörülemez.
+
+### Saklama profilleriyle ilişkisi
+
+Saklama süresi süpürmesi (`CORE/disposal.py::sweep_retention_expired`) bu
+sayaca BİLEREK bağlanmadı: süresi dolan dosyaya `expires_at = NULL` yazıyor,
+çünkü sayaç kurmak dosyayı 24 saat sonra onaysız imha ederdi. Dolayısıyla bu
+bulgu saklama akışını etkilemiyor — süpürülen dosyalar zaten sayaçsız.
+
+### Olası çözüm (uygulanmadı)
+
+`_purge_expired` sorgusundaki `label = 'Karantina'` koşulunu
+`label IN ('Karantina', 'Imha')` yapmak sayacı arka plana taşır. DİKKAT: bu
+değişiklik yapılırsa `sweep_retention_expired`'in `expires_at = NULL`
+davranışı KRİTİK hale gelir — NULL olmayan her satır artık arka planda ve
+onaysız silinir. `CORE/disposal.py` modül docstring'i bu bağımlılığı
+açıklıyor, oradaki gerekçe okunmadan dokunulmamalı.
