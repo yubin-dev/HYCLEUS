@@ -259,3 +259,71 @@ dosyayla veritabanının tutarlı olup olmadığı sonradan gösterilemez.
 4. Çıpa dosyasının yolunu (ve `HYCLEUS_AUDIT_ANCHOR` ile
    değiştirilebildiğini) ayarlar ekranında göster — USB'ye yönlendirme şu an
    yalnızca ortam değişkeniyle mümkün ve hiçbir yerde yazmıyor.
+
+---
+
+## B-007 — Klasör görünümü mahrem etiket filtresini uygulamıyor
+
+**Durum:** Açık — mevcut davranış korundu, testle sabitlendi
+**Öncelik:** **Orta-yüksek.** Gizlilik boşluğu: mahrem olarak işaretlenmiş
+bir dosya, yönetici olmayan bir kullanıcıya bir görünümde gizlenirken
+başka bir görünümde gösteriliyor. Veri kaybı ya da kripto zafiyeti değil,
+ama "mahrem etiket" özelliğinin vaadi tam olarak bu.
+**İlgili:** 2.7 Faz 1 adım 3 (`CORE/file_queries.py`)
+**Bulundu:** 2026-08-13, dört liste sorgusu CORE'a taşınırken
+
+### Bulgu
+
+Mahrem etiket (`tags.is_private = 1`) taşıyan dosyalar yönetici olmayan
+kullanıcılardan gizleniyor — ama bu filtre dört liste görünümünün yalnızca
+ikisinde var:
+
+| Görünüm | SQL filtresi | Arayüz engeli | Sonuç |
+|---|---|---|---|
+| `files_by_label()` | ✅ var | — | gizli |
+| `search_files()` | ✅ var | — | gizli |
+| `files_by_tag()` | ❌ yok | ✅ mahrem etiket kenar çubuğunda gösterilmiyor, tıklanamıyor | pratikte kapalı |
+| `files_by_folder()` | ❌ yok | ❌ **yok** | **görünür** |
+
+Yani yönetici olmayan bir kullanıcı bir klasöre girdiğinde, o klasördeki
+mahrem etiketli dosyaları görüyor. Aynı dosyalar "Genel" etiket
+görünümünde ve aramada gizleniyor.
+
+Etiket görünümündeki eksik filtre şu an sömürülebilir değil: mahrem
+etiketler yönetici olmayana kenar çubuğunda hiç çizilmiyor
+([`UI/main_window.py`](UI/main_window.py) `_refresh_tag_sidebar`) ve
+tıklanması `_on_tag_click` içinde ayrıca engelleniyor. Ama savunma tek
+katman — kenar çubuğu mantığı değişirse sorgu bir engel sunmaz.
+
+### Neden 2.7'de düzeltilmedi
+
+2.7 saf bir yeniden düzenleme; sözü verilen şey davranışın DEĞİŞMEMESİ.
+Filtreyi dört görünüme birden uygulamak refactor'ü davranış değişikliğine
+çevirirdi ve gerçek bir düzeltme olsa bile 2900 satırlık bir taşıma
+commit'inin içinde gizlenmiş olurdu. Bulgu, düzeltilmesi gereken yerde
+görünür kalsın diye buraya yazıldı.
+
+Mevcut (hatalı) davranış [`tests/test_file_queries.py`](tests/test_file_queries.py)
+içinde `test_folder_view_does_NOT_filter_private_files` ve
+`test_tag_view_does_NOT_filter_private_files` ile **sabitlendi**. Bu testler
+bir onay değil, bir işaret: düzeltme yapıldığında ikisi de kırılacak ve
+güncellenmeleri gerekecek — yani düzeltme bilinçli bir karar olarak
+görünecek.
+
+### Yapılacaklar (uygulanmadı)
+
+1. `files_by_folder()` ve `files_by_tag()` fonksiyonlarına da
+   `include_private` parametresi ekle; `CORE/file_queries.py` içinde
+   `_EXCLUDE_PRIVATE` zaten hazır, tek satırlık ekleme.
+2. Çağrı yerlerini (`_load_folder_files`, `_load_tag_files`) diğer ikisiyle
+   aynı biçimde `include_private=self._role == "Yönetici"` ile bağla.
+3. `test_file_queries.py`'deki iki sabitleme testini yeni davranışa göre
+   güncelle (adlarındaki `does_NOT` ifadeleri de değişmeli).
+4. Kenar çubuğu engelini KALDIRMA — iki katman birlikte dursun.
+
+### Not — rol adı katman sınırında kalıyor
+
+`include_private` bilerek bir bool: `"Yönetici"` rol adı bir arayüz sabiti
+ve `CORE/file_queries.py` onu bilmiyor. Rol → yetki eşlemesini CORE'a
+taşımak ayrı bir iş (vault rolü ile `users.role` sütunu farklı şeyler ve
+şu an ikisi birbirine karışmış durumda).

@@ -71,6 +71,12 @@ from PySide6.QtWidgets import (
 import pyotp
 
 from CORE.crypto import AuthenticationError, decrypt_file, encrypt_file
+from CORE.file_queries import (
+    files_by_folder,
+    files_by_label,
+    files_by_tag,
+    search_files,
+)
 from CORE.file_records import record_encrypted_file
 from CORE.idle_lock import (
     DEFAULT_IDLE_MINUTES,
@@ -1229,39 +1235,10 @@ class HycleusWindow(QMainWindow):
         if in_imha:
             self._expiry_banner.setText("⏱  Hesaplanıyor...")
 
-        is_admin = self._role == "Yönetici"
-        if is_admin:
-            sql = """
-                SELECT f.id, f.filename, f.label, f.size_bytes, f.added_at,
-                       f.filepath, f.original_sha256, f.expires_at,
-                       (SELECT q.reason FROM quarantine q
-                        WHERE q.file_id = f.id
-                        ORDER BY q.quarantined_at DESC LIMIT 1) AS scan_reason
-                FROM files f
-                WHERE f.label = ?
-                ORDER BY f.added_at DESC
-            """
-            params: tuple = (db_label,)
-        else:
-            sql = """
-                SELECT f.id, f.filename, f.label, f.size_bytes, f.added_at,
-                       f.filepath, f.original_sha256, f.expires_at,
-                       (SELECT q.reason FROM quarantine q
-                        WHERE q.file_id = f.id
-                        ORDER BY q.quarantined_at DESC LIMIT 1) AS scan_reason
-                FROM files f
-                WHERE f.label = ?
-                  AND f.id NOT IN (
-                          SELECT ft.file_id FROM file_tags ft
-                          INNER JOIN tags t ON t.id = ft.tag_id
-                          WHERE t.is_private = 1
-                      )
-                ORDER BY f.added_at DESC
-            """
-            params = (db_label,)
-
         try:
-            rows = DBManager().fetchall(sql, params)
+            rows = files_by_label(
+                DBManager(), db_label, include_private=self._role == "Yönetici"
+            )
         except Exception as exc:
             QMessageBox.warning(self, "Veritabanı", str(exc))
             return
@@ -1270,20 +1247,7 @@ class HycleusWindow(QMainWindow):
     def _load_tag_files(self, tag_id: int) -> None:
         self._table.setRowCount(0)
         try:
-            rows = DBManager().fetchall(
-                """
-                SELECT f.id, f.filename, f.label, f.size_bytes, f.added_at,
-                       f.filepath, f.original_sha256, f.expires_at,
-                       (SELECT q.reason FROM quarantine q
-                        WHERE q.file_id = f.id
-                        ORDER BY q.quarantined_at DESC LIMIT 1) AS scan_reason
-                FROM files f
-                INNER JOIN file_tags ft ON ft.file_id = f.id
-                WHERE ft.tag_id = ?
-                ORDER BY f.added_at DESC
-                """,
-                (tag_id,),
-            )
+            rows = files_by_tag(DBManager(), tag_id)
         except Exception as exc:
             QMessageBox.warning(self, "Veritabanı", str(exc))
             return
@@ -1443,19 +1407,7 @@ class HycleusWindow(QMainWindow):
     def _load_folder_files(self, folder_id: int) -> None:
         self._table.setRowCount(0)
         try:
-            rows = DBManager().fetchall(
-                """
-                SELECT f.id, f.filename, f.label, f.size_bytes, f.added_at,
-                       f.filepath, f.original_sha256, f.expires_at,
-                       (SELECT q.reason FROM quarantine q
-                        WHERE q.file_id = f.id
-                        ORDER BY q.quarantined_at DESC LIMIT 1) AS scan_reason
-                FROM files f
-                WHERE f.folder_id = ?
-                ORDER BY f.added_at DESC
-                """,
-                (folder_id,),
-            )
+            rows = files_by_folder(DBManager(), folder_id)
         except Exception as exc:
             QMessageBox.warning(self, "Veritabanı", str(exc))
             return
@@ -1766,49 +1718,10 @@ class HycleusWindow(QMainWindow):
                 self._load_label(self._current_label)
             return
         self._table.setRowCount(0)
-        like = f"%{term}%"
-        is_admin = self._role == "Yönetici"
-        if is_admin:
-            sql = """
-                SELECT f.id, f.filename, f.label, f.size_bytes, f.added_at,
-                       f.filepath, f.original_sha256, f.expires_at,
-                       (SELECT q.reason FROM quarantine q
-                        WHERE q.file_id = f.id
-                        ORDER BY q.quarantined_at DESC LIMIT 1) AS scan_reason
-                FROM files f
-                WHERE (f.filename LIKE ? OR f.original_sha256 LIKE ?
-                   OR f.id IN (
-                       SELECT ft.file_id FROM file_tags ft
-                       INNER JOIN tags t ON t.id = ft.tag_id
-                       WHERE t.name LIKE ?
-                   ))
-                ORDER BY f.added_at DESC
-            """
-            params: tuple = (like, like, like)
-        else:
-            sql = """
-                SELECT f.id, f.filename, f.label, f.size_bytes, f.added_at,
-                       f.filepath, f.original_sha256, f.expires_at,
-                       (SELECT q.reason FROM quarantine q
-                        WHERE q.file_id = f.id
-                        ORDER BY q.quarantined_at DESC LIMIT 1) AS scan_reason
-                FROM files f
-                WHERE (f.filename LIKE ? OR f.original_sha256 LIKE ?
-                   OR f.id IN (
-                       SELECT ft.file_id FROM file_tags ft
-                       INNER JOIN tags t ON t.id = ft.tag_id
-                       WHERE t.name LIKE ?
-                   ))
-                  AND f.id NOT IN (
-                          SELECT ft2.file_id FROM file_tags ft2
-                          INNER JOIN tags t2 ON t2.id = ft2.tag_id
-                          WHERE t2.is_private = 1
-                      )
-                ORDER BY f.added_at DESC
-            """
-            params = (like, like, like)
         try:
-            rows = DBManager().fetchall(sql, params)
+            rows = search_files(
+                DBManager(), term, include_private=self._role == "Yönetici"
+            )
         except Exception as exc:
             QMessageBox.warning(self, "Arama", str(exc))
             return
