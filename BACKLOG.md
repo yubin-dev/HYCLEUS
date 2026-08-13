@@ -470,3 +470,57 @@ Mevcut davranış [`tests/test_export.py`](tests/test_export.py) içinde
 
 `CORE/export.py` her iki davranışı da destekliyor (`hwid_fallback`
 parametresi), yani düzeltme yalnızca çağrı yerlerinde tek satır.
+
+---
+
+## B-011 — Klasör oluşturma eksik `users` satırını uyduruyor
+
+**Durum:** Açık — mevcut davranış korundu, testle sabitlendi
+**Öncelik:** Orta (veri bütünlüğü; denetim kaydının güvenilirliğini etkiler)
+**İlgili:** 2.7 Faz 1 adım 6 (`CORE/folders.py`)
+**Bulundu:** 2026-08-13
+
+### Bulgu
+
+`create_folder()`, `owner_id` olarak verilen kullanıcı `users` tablosunda
+yoksa **onu uyduruyor**:
+
+```sql
+INSERT INTO users (id, username, password_hash, role, status, hwid)
+VALUES (?, 'yonetici', '', 'admin', 'approved', ?)
+```
+
+Yani: boş parola hash'i, `admin` rolü, `approved` durumu. Sebep
+`folders.owner_id` yabancı anahtarı — DEV_MODE'da ya da `users` satırı hiç
+yazılmamış bir oturumda klasör oluşturma FK hatasıyla düşerdi ve bu kaçamak
+onu susturuyor.
+
+### Etkisi
+
+- **Denetim kaydı güvenilirliğini zedeliyor.** Sonradan bakan biri
+  `users` tablosunda gerçek bir "yonetici" hesabı görüyor; o hesap hiç
+  kaydolmamış, sadece bir FK'yı susturmak için var.
+- **Boş parola hash'i.** Bugün zararsız: giriş yolu vault üzerinden
+  işliyor ve `users.password_hash` doğrulamada kullanılmıyor. Ama boş
+  hash'li `admin` rollü bir satır, ileride parola tabanlı bir yol
+  eklenirse hazır bir açık olur.
+- Aynı `user_id` ile ikinci kez çağrılırsa satır zaten var, dokunulmuyor —
+  yani tek seferlik bir kirlilik.
+
+### Kök neden
+
+Oturum açılırken `users` satırının yazılacağı garanti değil: kimlik vault
+dosyasından geliyor, `users` tablosu ise ayrı yaşıyor. İkisi arasında
+bir "oturum açan kullanıcıyı kaydet" adımı yok.
+
+### Yapılacaklar (uygulanmadı)
+
+1. Oturum açılışında (`main.py`, giriş başarılı olduktan hemen sonra)
+   kullanıcıyı gerçek bilgilerle `users` tablosuna yaz/güncelle.
+2. `ensure_owner_exists()` kaçamağını kaldır; `create_folder()` FK
+   hatasını olduğu gibi yükseltsin.
+3. Uydurulmuş satırları tespit etmek için tek seferlik bir kontrol:
+   `SELECT id FROM users WHERE password_hash = '' AND username = 'yonetici'`.
+
+Mevcut davranış [`tests/test_folders.py`](tests/test_folders.py) içinde
+`test_create_writes_a_placeholder_user_when_missing` ile sabitlendi.

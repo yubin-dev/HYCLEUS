@@ -74,6 +74,12 @@ from PySide6.QtWidgets import (
 import pyotp
 
 from CORE.crypto import AuthenticationError, decrypt_file, encrypt_file
+from CORE.folders import (
+    assign_file_to_folder,
+    create_folder,
+    delete_folder,
+    move_folder_to_imha,
+)
 from CORE.export import export_to_directory, export_to_zip, format_errors
 from CORE.expiry import banner_for, countdown_for, expiry_from_now, ttl_hours
 from CORE.file_queries import (
@@ -1449,21 +1455,9 @@ class HycleusWindow(QMainWindow):
         if not ok or not name.strip():
             return
         try:
-            db = DBManager()
-            row = db.fetchone("SELECT id FROM users WHERE id = ?", (self._user_id,))
-            if row is None:
-                effective_hwid = "DEV-HWID-1234" if _DEV_MODE else (self._hwid or "")
-                db.execute(
-                    "INSERT INTO users"
-                    " (id, username, password_hash, role, status, hwid)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
-                    (self._user_id, "yonetici", "", "admin", "approved", effective_hwid),
-                )
-            db.execute(
-                "INSERT INTO folders (name, owner_id) VALUES (?, ?)",
-                (name.strip(), self._user_id),
+            create_folder(
+                DBManager(), name, owner_id=self._user_id, hwid=self._hwid
             )
-            db.log("folder_created", detail=f"name={name.strip()} hwid={self._hwid}")
         except Exception as exc:
             QMessageBox.warning(self, "Hata", str(exc))
             return
@@ -1478,17 +1472,8 @@ class HycleusWindow(QMainWindow):
         )
         if confirm != QMessageBox.Yes:
             return
-        expires_at = expiry_from_now(DBManager())
         try:
-            db    = DBManager()
-            rows  = db.fetchall("SELECT id FROM files WHERE folder_id = ?", (folder_id,))
-            for r in rows:
-                db.execute(
-                    "UPDATE files SET label = 'Imha', expires_at = ? WHERE id = ?",
-                    (expires_at, r["id"]),
-                )
-                db.log("file_moved_to_imha", target_type="file", target_id=r["id"],
-                       detail=f"hwid={self._hwid} via=folder folder_id={folder_id} expires_at={expires_at}")
+            tasinan = move_folder_to_imha(DBManager(), folder_id, hwid=self._hwid)
         except Exception as exc:
             QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
             return
@@ -1503,7 +1488,7 @@ class HycleusWindow(QMainWindow):
                 self._load_label(self._current_label)
         QMessageBox.information(
             self, "İmha Odasına Taşındı",
-            f"'{folder_name}' klasöründeki {len(rows)} dosya 24 saat içinde imha edilecek.",
+            f"'{folder_name}' klasöründeki {tasinan} dosya 24 saat içinde imha edilecek.",
         )
 
     def _on_folder_delete(self, folder_id: int, folder_name: str) -> None:
@@ -1515,11 +1500,7 @@ class HycleusWindow(QMainWindow):
         if confirm != QMessageBox.Yes:
             return
         try:
-            db = DBManager()
-            db.execute("UPDATE files SET folder_id = NULL WHERE folder_id = ?", (folder_id,))
-            db.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
-            db.log("folder_deleted", target_type="folder", target_id=folder_id,
-                   detail=f"name={folder_name}")
+            delete_folder(DBManager(), folder_id, folder_name)
         except Exception as exc:
             QMessageBox.warning(self, "Hata", str(exc))
             return
@@ -1626,10 +1607,9 @@ class HycleusWindow(QMainWindow):
             return
         target_folder_id = acts[action]
         try:
-            db = DBManager()
-            db.execute("UPDATE files SET folder_id = ? WHERE id = ?", (target_folder_id, file_id))
-            db.log("file_moved_to_folder", target_type="file", target_id=file_id,
-                   detail=f"folder_id={target_folder_id} hwid={self._hwid}")
+            assign_file_to_folder(
+                DBManager(), file_id, target_folder_id, hwid=self._hwid
+            )
         except Exception as exc:
             QMessageBox.warning(self, "Hata", str(exc))
 
