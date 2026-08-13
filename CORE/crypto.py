@@ -3,15 +3,58 @@ HYCLEUS — AES-256-GCM dosya şifreleme modülü
 
 Dosya formatı (ikili):
   [4B ] magic     = b'HYCL'
-  [1B ] version   = 0x01
+  [1B ] version   = 0x01 (eski) | 0x02 (güncel)
   [12B] nonce     (rastgele, her şifrelemede yeni)
   [4B ] aad_len   (big-endian uint32)
   [xB ] aad       = JSON(metadata)  — şifrelenmez, bütünlük koruması altında
   [nB ] ciphertext (64 KB bloklarla akış)
   [16B] GCM authentication tag
+  [?B ] TS_TRAILER — OPSİYONEL, yalnızca v2; bkz. CORE/timestamp.py
 
 AAD alanları (tek karakter değişse decrypt_file() AuthenticationError fırlatır):
-  filename, created_at, uploaded_at, last_modified, user_id, hwid
+  filename, original_sha256, created_at, uploaded_at, last_modified,
+  user_id, hwid
+
+
+Versiyon 0x02 — RFC 3161 zaman damgası kabı
+-------------------------------------------
+v2 ile dosyanın SONUNA opsiyonel bir zaman damgası fragmanı (TS_TRAILER)
+eklenebilir hâle geldi. Üç kural:
+
+  · **v1 dosyalar okunmaya devam eder.** `_SUPPORTED_VERSIONS` ikisini de
+    kabul ediyor; v1'de fragman ARANMAZ (v1'in tanımı gereği fragmanı
+    yoktur ve ciphertext'in son byte'ları yanlışlıkla fragman sanılmasın).
+  · **Fragman opsiyoneldir.** Yeni şifrelenen her dosya v2 yazılıyor ama
+    fragmansız; damga sonradan, ayrı ve isteğe bağlı bir adımda ekleniyor.
+    "v2 ama fragmansız" tamamen geçerli bir dosyadır.
+  · **Fragman GCM tag'inin DIŞINDADIR.** Aşağıda ayrıntısı var.
+
+Neden başlık değil de fragman (trailer)
+---------------------------------------
+Damga, şifreleme BİTTİKTEN sonra üretiliyor — TSA'ya gidip dönmesi gerek.
+Başlığa yazmak, damgalanan her dosyanın tamamının yeniden yazılması ya da
+başlıkta baştan boş yer ayrılması demekti. Sona eklemek, kabın geri kalanını
+hiç değiştirmeden bırakıyor: nonce, AAD ve ciphertext ofsetleri sabit kalıyor,
+dolayısıyla v1 okuma yolu da aynen çalışmaya devam ediyor.
+
+Bedeli, fragmanın sondan geriye doğru bulunabilmesi gerektiği: bu yüzden
+uzunluk alanı ve ikinci bir magic sona konuyor (bkz. `_trailer_offset`).
+
+DÜRÜST SINIR — fragman kriptografik olarak bağlı DEĞİL
+------------------------------------------------------
+GCM tag'i yalnızca AAD + ciphertext'i kapsıyor; magic, versiyon byte'ı ve
+fragman kapsam dışında. Sonuç:
+
+  · Fragman SİLİNEBİLİR ya da kırpılabilir — GCM doğrulaması yine geçer,
+    dosya yalnızca "damgasız" görünür. Yani damga bir DOWNGRADE saldırısına
+    açık ve fragmanın yokluğu "hiç damgalanmadı" ile ayırt edilemez.
+  · Fragman UYDURULAMAZ — içindeki token TSA tarafından imzalı ve belirli
+    bir düz metin özetine bağlı. Başka bir dosyanın token'ı buraya
+    kopyalansa AAD'deki original_sha256 ile eşleşmez.
+
+Yani damga, denetim zinciriyle aynı sınıfta: kurcalamayı ENGELLEMİYOR,
+KANIT bırakıyor. Silinmeye karşı koruma, damga kaydının dosyadan bağımsız
+bir yerde de tutulmasını gerektirir — bu, sonraki adımların işi.
 """
 from __future__ import annotations
 
@@ -22,15 +65,42 @@ import os
 import struct
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import IO
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 _MAGIC = b"HYCL"
-_VERSION = 1
+
+#: İlk format. Zaman damgası fragmanını TANIMIYOR — bu sürümdeki dosyalarda
+#: fragman aranmaz. Okuma desteği kalıcıdır; mevcut kasalar dönüştürülmez.
+VERSION_LEGACY = 1
+
+#: Fragman taşıyabilen format. Fragmanın VARLIĞINI değil, İHTİMALİNİ belirtir.
+VERSION_TIMESTAMPED = 2
+
+#: Yeni şifrelemelerde yazılan sürüm.
+_VERSION = VERSION_TIMESTAMPED
+
+#: Okunabilen sürümler. Yeni bir sürüm eklendiğinde buraya da girmeli;
+#: tek bir `!= _VERSION` karşılaştırması eski dosyaları kilitlerdi.
+_SUPPORTED_VERSIONS = frozenset({VERSION_LEGACY, VERSION_TIMESTAMPED})
+
 _NONCE_SIZE = 12
 _TAG_SIZE = 16
 _CHUNK = 64 * 1024  # 64 KB
+
+#: Zaman damgası fragmanının magic'i. Fragmanın HEM başında HEM sonunda
+#: bulunur: sondaki onu bulmayı, baştaki doğru yere indiğimizi doğrulamayı
+#: sağlıyor (bkz. `_trailer_offset`).
+TRAILER_MAGIC = b"HTST"
+
+#: Fragmanın son 8 byte'ı: [4B toplam uzunluk][4B TRAILER_MAGIC].
+_TRAILER_FOOTER_SIZE = 8
+
+#: Boş bir fragmanın uzunluğu — magic(4) + sürüm(1) + dört adet boş
+#: uzunluk-önekli alan (4×4) + toplam uzunluk(4) + magic(4).
+_TRAILER_MIN_SIZE = 29
 
 # update_into() hedef tamponun len(veri) + blok_boyu - 1 kadar olmasını ister
 # (AES blok boyu 16 byte). Yuvarlak sayı için 16 alındı — bkz. verify_file().
@@ -68,6 +138,68 @@ def _sha256_file(path: Path) -> str:
 def generate_key() -> bytes:
     """32 byte (256-bit) kriptografik rastgele anahtar üretir."""
     return os.urandom(32)
+
+
+def _trailer_offset(fin: IO[bytes], file_size: int, body_start: int) -> int | None:
+    """
+    Zaman damgası fragmanının başladığı ofset — yoksa None.
+
+    Sondan geriye okur: son 4 byte TRAILER_MAGIC ise ondan önceki 4 byte
+    fragmanın TOPLAM uzunluğudur (iki magic ve uzunluk alanı DAHİL). O
+    uzunluk kadar geri gidilip baştaki magic de doğrulanır.
+
+    İki magic neden gerekli
+    -----------------------
+    Ciphertext rastgele byte'lardan oluşuyor ve sonu tesadüfen
+    TRAILER_MAGIC olabilir (2⁻³²). Tek başına bu, geçerli bir dosyanın
+    fragmanlı sanılmasına ve ciphertext'in kırpılmasına yol açardı.
+    Uzunluk alanının işaret ettiği yerde İKİNCİ magic'i de aramak, tesadüf
+    olasılığını 2⁻⁶⁴'e indiriyor ve uzunluğun tutarlı olmasını şart koşuyor.
+
+    Bu bir güvenlik kontrolü DEĞİL, bir kaza kontrolü: fragman GCM tag'inin
+    dışında olduğu için kasıtlı bir saldırgan zaten istediğini yazabilir
+    (bkz. modül docstring'i, "DÜRÜST SINIR").
+
+    Dosya imlecini oynatır; çağıran sonrasında kendi konumunu kurmalı.
+    """
+    # Fragman en azından gövdenin (ciphertext + tag) arkasına sığmalı.
+    if file_size - body_start < _TAG_SIZE + _TRAILER_MIN_SIZE:
+        return None
+
+    fin.seek(file_size - _TRAILER_FOOTER_SIZE)
+    footer = fin.read(_TRAILER_FOOTER_SIZE)
+    if len(footer) != _TRAILER_FOOTER_SIZE or footer[4:] != TRAILER_MAGIC:
+        return None
+
+    (total,) = struct.unpack(">I", footer[:4])
+    if total < _TRAILER_MIN_SIZE or total > file_size:
+        return None
+
+    start = file_size - total
+    # Gövde en az tag kadar yer kaplamalı; fragman onun içine taşamaz.
+    if start < body_start + _TAG_SIZE:
+        return None
+
+    fin.seek(start)
+    if fin.read(4) != TRAILER_MAGIC:
+        return None
+    return start
+
+
+def _body_end(fin: IO[bytes], file_size: int, version: int, body_start: int) -> int:
+    """
+    Ciphertext + GCM tag bölgesinin bittiği ofset.
+
+    Fragman yoksa (ya da dosya v1'se) dosyanın sonu. v1'de ARAMA YAPILMAZ:
+    o formatta fragman tanımlı değil ve ciphertext'in son byte'larının
+    yanlışlıkla fragman sanılması için hiçbir sebep yok.
+
+    Dosya imlecini oynatır; çağıran sonrasında kendi konumunu kurmalı.
+    """
+    if version < VERSION_TIMESTAMPED:
+        return file_size
+    offset = _trailer_offset(fin, file_size, body_start)
+    return file_size if offset is None else offset
 
 
 def encrypt_file(
@@ -217,8 +349,9 @@ def verify_file(
         version_byte = fin.read(1)
         if not version_byte:
             raise ValueError("Dosya çok kısa, bozulmuş olabilir.")
-        if version_byte[0] != _VERSION:
-            raise ValueError(f"Desteklenmeyen versiyon: {version_byte[0]}")
+        version = version_byte[0]
+        if version not in _SUPPORTED_VERSIONS:
+            raise ValueError(f"Desteklenmeyen versiyon: {version}")
 
         nonce = fin.read(_NONCE_SIZE)
         if len(nonce) != _NONCE_SIZE:
@@ -234,11 +367,15 @@ def verify_file(
 
         body_start = fin.tell()
         file_size = fin.seek(0, 2)
-        ciphertext_len = file_size - body_start - _TAG_SIZE
+        # Zaman damgası fragmanı varsa gövde ondan ÖNCE bitiyor; fragman
+        # byte'ları ciphertext sanılırsa GCM doğrulaması hatalı biçimde
+        # düşer ve sağlam bir dosya "bozuk" damgası yer.
+        body_end = _body_end(fin, file_size, version, body_start)
+        ciphertext_len = body_end - body_start - _TAG_SIZE
         if ciphertext_len < 0:
             raise ValueError("Dosya çok kısa, bozulmuş olabilir.")
 
-        fin.seek(-_TAG_SIZE, 2)
+        fin.seek(body_end - _TAG_SIZE)
         tag = fin.read(_TAG_SIZE)
         fin.seek(body_start)
 
@@ -316,7 +453,7 @@ def decrypt_file(
         if fin.read(4) != _MAGIC:
             raise ValueError("Geçersiz HYCL dosya formatı.")
         version = fin.read(1)[0]
-        if version != _VERSION:
+        if version not in _SUPPORTED_VERSIONS:
             raise ValueError(f"Desteklenmeyen versiyon: {version}")
         nonce = fin.read(_NONCE_SIZE)
         (aad_len,) = struct.unpack(">I", fin.read(4))
@@ -324,11 +461,13 @@ def decrypt_file(
 
         body_start = fin.tell()
         file_size = fin.seek(0, 2)
-        ciphertext_len = file_size - body_start - _TAG_SIZE
+        # Fragman varsa gövde ondan önce bitiyor — bkz. verify_file().
+        body_end = _body_end(fin, file_size, version, body_start)
+        ciphertext_len = body_end - body_start - _TAG_SIZE
         if ciphertext_len < 0:
             raise ValueError("Dosya çok kısa, bozulmuş olabilir.")
 
-        fin.seek(-_TAG_SIZE, 2)
+        fin.seek(body_end - _TAG_SIZE)
         tag = fin.read(_TAG_SIZE)
         fin.seek(body_start)
 

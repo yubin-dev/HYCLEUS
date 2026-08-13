@@ -524,3 +524,54 @@ bir "oturum açan kullanıcıyı kaydet" adımı yok.
 
 Mevcut davranış [`tests/test_folders.py`](tests/test_folders.py) içinde
 `test_create_writes_a_placeholder_user_when_missing` ile sabitlendi.
+
+---
+
+## B-012 — `decrypt_file()` kesik dosyada `IndexError` fırlatıyor
+
+**Durum:** Açık — RFC 3161 turunda fark edildi, plan dışı olduğu için dokunulmadı
+
+`CORE/crypto.py` içinde iki okuma yolu var ve kesik bir dosyada FARKLI
+davranıyorlar:
+
+```python
+# verify_file() — düzgün
+version_byte = fin.read(1)
+if not version_byte:
+    raise ValueError("Dosya çok kısa, bozulmuş olabilir.")
+
+# decrypt_file() — sürüm byte'ı yoksa IndexError
+version = fin.read(1)[0]
+```
+
+Dosya tam 4 byte'sa (yalnızca magic) `fin.read(1)` boş döner ve `[0]`
+`IndexError: index out of range` fırlatır.
+
+### Etkisi
+
+Küçük ama gerçek. `decrypt_file()`'ı çağıran yerler (`CORE/export.py`,
+`UI/main_window_files.py`) `ValueError` ve `AuthenticationError`
+yakalıyor; `IndexError` bu ağdan kaçıp kullanıcıya çıplak bir çökme
+olarak yansır. Bozuk/kesik bir dosya, "bu dosya bozulmuş" mesajı yerine
+beklenmedik bir hata veriyor.
+
+Aynı senaryoda `verify_file()` — dolayısıyla haftalık bütünlük taraması —
+doğru davranıyor, yani bozulma yine de tespit ediliyor. Sorun yalnızca
+kullanıcının tetiklediği açma/indirme yolunda.
+
+### Neden bu turda düzeltilmedi
+
+Bu tur `.hcl` kabına v2 sürümünü ve zaman damgası fragmanını ekledi;
+`decrypt_file()`'ın sürüm KARŞILAŞTIRMASI değişti ama bu okuma kalıbına
+dokunulmadı. Kapsam dışı bir davranış değişikliği, formatı değiştiren bir
+commit'e karışmasın diye ayrıldı.
+
+### Yapılacaklar (uygulanmadı)
+
+1. `decrypt_file()` içindeki başlık okumasını `verify_file()`'daki
+   kalıba getir (boş okuma kontrolü + `ValueError`).
+2. Daha iyisi: iki fonksiyonun kopyalanmış başlık ayrıştırmasını tek bir
+   `_read_header()` yardımcısına çıkar — bugün üç yerde (`verify_file`,
+   `decrypt_file`, `CORE/timestamp.read_aad`) benzer kod var ve format
+   her değiştiğinde üçü birden güncelleniyor.
+3. Kesik dosya için her iki yolda da aynı istisnayı doğrulayan test ekle.

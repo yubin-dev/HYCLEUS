@@ -375,6 +375,45 @@ stream straight to the path the user picks. SafeZone is infrastructure
 placed ahead of the open/preview flow, on the reasoning that whoever writes
 that flow will reach for `tempfile` if the safe path is not already there.
 
+### 4.9 Timestamps are stored, not yet verified — and can be stripped
+
+A `.hcl` file can now carry an RFC 3161 timestamp token, obtained by having
+a Timestamp Authority sign the **plaintext SHA-256** already recorded in the
+AAD (`original_sha256`). Because the hash is taken from the header, stamping
+needs **no key and never touches plaintext**. What the token proves is
+narrow but real: this content existed no later than the time the TSA signed.
+
+Three limits, all deliberate at this stage:
+
+**The signature is not checked yet.** This step obtains the token and
+validates its *shape* — status, message imprint, nonce, hash algorithm — but
+does not verify that the TSA's signature is genuine or that its certificate
+chains anywhere. Right now HYCLEUS **stores** what the TSA returned; it does
+not vouch for it. Offline verification is the next step, and until it lands
+a timestamp should be read as a record, not as proof.
+
+**The trailer is outside the GCM tag.** The tag covers the AAD and the
+ciphertext only — not the magic, the version byte, or the timestamp trailer.
+So a timestamp can be **deleted**: strip the trailer and the file still
+decrypts cleanly, simply looking unstamped. "Never stamped" and "stamp
+removed" are indistinguishable from the file alone. A timestamp cannot be
+*forged* — the token is bound to a specific plaintext hash — but it can be
+made to disappear. Defending against that requires recording stamps
+somewhere other than the file they describe, which is the same argument the
+audit anchor makes in §4.6.
+
+**Without a key, the stamped hash is unverified.** `original_sha256` sits in
+the AAD, which GCM protects — but checking that protection requires the key.
+Stamping without one takes the header's word for it. `timestamp_file()`
+accepts an optional key and runs `verify_file()` first when given one; the
+caller decides which trade it wants.
+
+Container versioning: files written before this change are version `0x01`
+and are still read unchanged. New files are `0x02`, and `0x02` **without** a
+trailer is entirely valid — the stamp is optional and added later. Version
+`0x01` files are never scanned for a trailer, since the format did not
+define one.
+
 ---
 
 ## 5. Cryptographic details
@@ -395,6 +434,7 @@ that flow will reach for `tempfile` if the safe path is not already there.
 | PIN storage | Argon2id hash (never plaintext); minimum 6 characters for new PINs |
 | Secret storage | OS credential store, service `HYCLEUS`, usernames `share_2:<hwid>` and `totp_secret` |
 | Second factor | TOTP (RFC 6238), 6 digits, ±1 window |
+| Trusted timestamp | RFC 3161, SHA-256 message imprint over the **plaintext** hash, nonce + `certReq`; token stored in an optional file trailer outside the GCM tag — signature not verified yet, see §4.9 |
 
 **Randomness** comes from `os.urandom` and `secrets` throughout — nonces,
 salts, master keys and the Shamir polynomial coefficient.
@@ -803,6 +843,43 @@ doğrudan kullanıcının seçtiği yola akıyor. SafeZone, aç/önizle akışı
 ÖNCE konmuş bir altyapı; gerekçesi basit: o akışı yazan kişi, güvenli yol
 hazır değilse `tempfile`'a uzanacaktır.
 
+### 4.9 Zaman damgaları saklanıyor, henüz doğrulanmıyor — ve silinebilir
+
+Bir `.hcl` dosyası artık RFC 3161 zaman damgası taşıyabiliyor: AAD'de zaten
+kayıtlı olan **düz metin SHA-256**'sı (`original_sha256`) bir Zaman Damgası
+Otoritesi'ne imzalatılıyor. Özet başlıktan okunduğu için damgalama
+**anahtar istemiyor ve düz metne hiç dokunmuyor**. Kanıtladığı şey dar ama
+gerçek: bu içerik, TSA'nın imzaladığı tarihte zaten vardı.
+
+Bu aşamada bilinçli üç sınır var:
+
+**İmza henüz doğrulanmıyor.** Bu adım token'ı alıyor ve *biçimini* kontrol
+ediyor — status, message imprint, nonce, özet algoritması. Ama TSA'nın
+imzasının gerçek olduğunu ya da sertifikasının bir yere zincirlendiğini
+doğrulamıyor. HYCLEUS şu an TSA'nın verdiğini **saklıyor**, ona kefil
+olmuyor. Çevrimdışı doğrulama sonraki adım; o gelene kadar bir zaman
+damgası kanıt değil, kayıt olarak okunmalı.
+
+**Fragman GCM tag'inin dışında.** Tag yalnızca AAD ile ciphertext'i
+kapsıyor; magic, sürüm byte'ı ve zaman damgası fragmanı kapsam dışı. Yani
+bir damga **silinebilir**: fragman kırpılırsa dosya sorunsuz çözülür,
+yalnızca damgasız görünür. "Hiç damgalanmadı" ile "damgası silindi" dosyaya
+bakarak ayırt EDİLEMEZ. Damga *uydurulamaz* — token belirli bir düz metin
+özetine bağlı — ama yok edilebilir. Buna karşı korunmak, damga kaydının
+tarif ettiği dosyadan başka bir yerde de tutulmasını gerektirir; §4.6'daki
+denetim çıpasının gerekçesiyle birebir aynı argüman.
+
+**Anahtarsız damgalamada özet doğrulanmamıştır.** `original_sha256` AAD'de
+duruyor ve GCM onu koruyor, ama bu korumayı kontrol etmek anahtar ister.
+Anahtarsız damgalama başlığın sözüne güvenir. `timestamp_file()` opsiyonel
+bir anahtar alıyor ve verilirse önce `verify_file()` çalıştırıyor; hangi
+takası istediğine çağıran karar veriyor.
+
+Kap sürümü: bu değişiklikten önce yazılan dosyalar `0x01` ve aynen okunmaya
+devam ediyor. Yeni dosyalar `0x02` ve fragmanı **olmayan** bir `0x02` de
+tamamen geçerli — damga opsiyonel ve sonradan ekleniyor. `0x01` dosyalarda
+fragman hiç aranmıyor, çünkü o formatta böyle bir şey tanımlı değildi.
+
 ## 5. Kriptografik ayrıntılar
 
 | Katman | Yapı |
@@ -821,6 +898,7 @@ hazır değilse `tempfile`'a uzanacaktır.
 | PIN saklama | Argon2id hash (asla düz metin); yeni PIN'ler için en az 6 karakter |
 | Sır saklama | OS anahtar kasası, servis `HYCLEUS`, adlar `share_2:<hwid>` ve `totp_secret` |
 | İkinci faktör | TOTP (RFC 6238), 6 hane, ±1 pencere |
+| Güvenilir zaman damgası | RFC 3161, **düz metin** özeti üzerinden SHA-256 message imprint, nonce + `certReq`; token GCM tag'inin dışındaki opsiyonel dosya fragmanında — imza henüz doğrulanmıyor, bkz. §4.9 |
 
 **Rastgelelik** baştan sona `os.urandom` ve `secrets`'tan gelir — nonce'lar,
 tuzlar, master key'ler ve Shamir polinom katsayısı.

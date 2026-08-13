@@ -224,6 +224,7 @@ HYCLEUS/
 │   ├── scanner.py            # Windows Defender integration
 │   ├── scheduler.py          # APScheduler — expired file cleanup
 │   ├── setup_usb.py          # CLI USB registration tool
+│   ├── timestamp.py          # RFC 3161 trusted timestamps (.hcl trailer)
 │   ├── usb_manager.py        # USB HWID detection (WMI)
 │   └── vault_manager.py      # Shamir SSS + key reconstruction
 ├── DB/
@@ -482,6 +483,7 @@ HYCLEUS/
 │   ├── scanner.py            # Windows Defender entegrasyonu
 │   ├── scheduler.py          # APScheduler — süresi dolmuş dosya temizliği
 │   ├── setup_usb.py          # CLI USB kayıt aracı
+│   ├── timestamp.py          # RFC 3161 zaman damgası (.hcl fragmanı)
 │   ├── usb_manager.py        # USB HWID tespiti (WMI)
 │   └── vault_manager.py      # Shamir SSS + anahtar birleştirme
 ├── DB/

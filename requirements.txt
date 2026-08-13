@@ -19,3 +19,10 @@ apscheduler<4
 # BSD-3-Clause (proje MIT ile uyumlu) ve platypus çok sayfalı tabloda
 # başlık satırını tekrarlar — denetim belgesi için gereken tam olarak bu.
 reportlab
+# RFC 3161 zaman damgası ASN.1 yapıları (CORE/timestamp.py).
+# Saf Python, SIFIR geçişli bağımlılık, MIT (proje MIT ile uyumlu).
+# rfc3161-client de tek paket ekliyordu ama istek üreten tek giriş noktası
+# HAM VERİYİ alıp özeti kendi hesaplıyor — AAD'de hazır duran SHA-256'yı
+# kullanamazdık, dosyayı çözüp düz metni kütüphaneye vermek gerekirdi.
+# Ayrıntılı gerekçe CORE/timestamp.py modül docstring'inde.
+asn1crypto
