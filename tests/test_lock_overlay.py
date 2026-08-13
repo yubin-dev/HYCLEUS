@@ -23,15 +23,30 @@ import os
 
 import pytest
 
-pytest.importorskip("PySide6", reason="Qt katmanı testleri PySide6 gerektirir")
-
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
-from PySide6.QtGui import QMouseEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
+# Qt import'ları TEK bir korumanın altında.
+#
+# `importorskip("PySide6")` YETMİYOR: paket kurulu olsa bile alt modüller
+# sistem kütüphanelerine bağlı (libEGL.so.1, libxkbcommon) ve çıplak bir
+# Linux runner'ında `from PySide6.QtGui import ...` ImportError veriyor.
+# Modül seviyesinde patlayan bir import, pytest'te ATLAMA değil TOPLAMA
+# HATASI olur (çıkış kodu 2) ve CI'ı kırar — nitekim 297327f'te Ubuntu ayağı
+# tam olarak böyle kırıldı.
+#
+# Bu yüzden UI import'u da dahil hepsi aynı blokta ve hata modül seviyesinde
+# atlamaya çevriliyor. Windows (asıl hedef platform) tam koşuyor.
+try:
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication, QWidget
 
-from UI.main_window import _ACTIVITY_EVENTS, HycleusWindow, _LockOverlay  # noqa: E402
+    from UI.main_window import _ACTIVITY_EVENTS, HycleusWindow, _LockOverlay
+except ImportError as _exc:  # pragma: no cover — ortama bağlı
+    pytest.skip(
+        f"Qt katmanı bu ortamda yüklenemedi ({_exc}) — testler atlanıyor",
+        allow_module_level=True,
+    )
 
 
 @pytest.fixture(scope="module")
