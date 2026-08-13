@@ -41,7 +41,10 @@ try:
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QApplication, QWidget
 
-    from UI.main_window import _ACTIVITY_EVENTS, HycleusWindow, _LockOverlay
+    # 2.7 Faz 2: kilit kodu UI/main_window_lock.py'ye taşındı. HycleusWindow
+    # hâlâ ana pencere; _lock/_unlock ona LockMixin üzerinden geliyor.
+    from UI.main_window import HycleusWindow
+    from UI.main_window_lock import _ACTIVITY_EVENTS, _LockOverlay
 except ImportError as _exc:  # pragma: no cover — ortama bağlı
     pytest.skip(
         f"Qt katmanı bu ortamda yüklenemedi ({_exc}) — testler atlanıyor",
