@@ -164,7 +164,7 @@ is a development convenience and is force-disabled in built executables
 
 ### 4.4 The recovery share is a third path to the key
 
-Since v2.2 the master key is split 2-of-3. The third share — the **recovery
+Since v2.1.2 the master key is split 2-of-3. The third share — the **recovery
 share** — is never stored by HYCLEUS: it is displayed once and kept
 physically by the user. That is a deliberate trade, and it cuts both ways:
 
@@ -426,7 +426,7 @@ bir makinede asla açmayın.
 
 ### 4.4 Kurtarma parçası anahtara giden üçüncü yoldur
 
-v2.2'den itibaren master key 2-of-3 bölünüyor. Üçüncü pay — **kurtarma
+v2.1.2'den itibaren master key 2-of-3 bölünüyor. Üçüncü pay — **kurtarma
 parçası** — HYCLEUS tarafından hiçbir zaman saklanmıyor: bir kez gösterilip
 kullanıcı tarafından fiziksel olarak saklanıyor. Bu bilinçli bir takas ve
 iki yönü var:
