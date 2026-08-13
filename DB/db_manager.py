@@ -382,6 +382,24 @@ class DBManager:
             "CREATE INDEX IF NOT EXISTS idx_audit_log_target"
             " ON audit_log(target_type, target_id)"
         )
+        # Migration: files.integrity_status / integrity_checked_at —
+        # haftalık bütünlük taramasının sonucu (bkz. CORE/integrity.py).
+        # NULL = bu dosya HİÇ kontrol edilmedi; 'ok' ile karıştırılmamalı,
+        # bu yüzden varsayılan verilmiyor. Değerler IntegrityStatus enum'u.
+        try:
+            self._conn.execute("ALTER TABLE files ADD COLUMN integrity_status TEXT")
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        try:
+            self._conn.execute("ALTER TABLE files ADD COLUMN integrity_checked_at TEXT")
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        # Bozuk dosyaları listelemek "WHERE integrity_status <> 'ok'" ile
+        # yapılıyor; indekssiz sorgu tüm dosya tablosunu tarardı.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_integrity"
+            " ON files(integrity_status)"
+        )
         # Migration: audit_log.entry_hash — denetim kaydı hash zinciri
         # (bkz. CORE/audit_chain.py). Bu sütun eklenmeden önce yazılmış
         # satırlarda NULL kalır ve zincire DAHİL EDİLMEZ: o kayıtlar

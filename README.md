@@ -43,7 +43,8 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | **Parallel Upload** | QThreadPool (max 6 workers) — process 150 files without UI freeze |
 | **Folder Hierarchy** | Drag-and-drop folder support, recursive vault creation |
 | **Tags** | Color-coded tags, private (admin-only) tags, bulk assignment |
-| **Audit Log** | Every action recorded with user, timestamp, and detail |
+| **Audit Log** | Every action recorded with user, timestamp, and detail; entries form a SHA-256 hash chain anchored outside the database |
+| **Integrity Sweep** | Weekly background verification of every `.hcl` GCM tag — verification only, plaintext is never assembled |
 | **Dark / Light UI** | Full theme support, readable in both modes |
 
 ---
@@ -297,7 +298,8 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | **Paralel Yükleme** | QThreadPool (max 6 worker) — 150 dosyayı UI donmadan işler |
 | **Klasör Hiyerarşisi** | Drag-and-drop klasör desteği, özyinelemeli kasa oluşturma |
 | **Etiket Sistemi** | Renkli etiketler, gizli (sadece Yönetici) etiketler, toplu atama |
-| **Denetim Kaydı** | Her işlem kullanıcı, zaman ve detayla kayıt altına alınır |
+| **Denetim Kaydı** | Her işlem kullanıcı, zaman ve detayla kayıt altına alınır; kayıtlar veritabanı dışına çıpalanan bir SHA-256 hash zinciri oluşturur |
+| **Bütünlük Taraması** | Haftalık arka plan taraması her `.hcl` dosyasının GCM tag'ini doğrular — yalnızca doğrulama, düz metin hiç birleştirilmez |
 | **Karanlık / Açık Tema** | Tam tema desteği, her iki modda da okunabilir |
 
 ---

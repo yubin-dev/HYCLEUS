@@ -60,6 +60,7 @@ is the PIN alone.
 | An audit entry edited or deleted from the middle of the log | ⚠️ Detected, not prevented | SHA-256 hash chain; `verify_audit_chain()` names the exact record — see §4.6 |
 | The newest audit entries deleted (log truncated) | ⚠️ Detected only via the anchor | The chain head is written outside the database to `data/audit_anchor.log` — see §4.6 |
 | The whole audit chain recomputed after an edit | ⚠️ Detected only via the anchor | The hash is unkeyed; only the external anchor disagrees — see §4.6 |
+| A `.hcl` file silently corrupted on disk (bit rot, bad copy, tampering) | ✅ Found without opening it | Weekly integrity sweep verifies every GCM tag; result in `files.integrity_status` — see §4.7 |
 
 ---
 
@@ -291,6 +292,44 @@ A remote append-only log would be stronger still. HYCLEUS is deliberately
 offline, so that option was not taken; the trade is stated here rather than
 papered over.
 
+### 4.7 The integrity sweep finds corruption, but its verdict lives in the DB
+
+A weekly background sweep (`CORE/integrity.py`) verifies the GCM tag of
+every registered `.hcl` and the vault's HMAC, writing the result to
+`files.integrity_status` and `files.integrity_checked_at`. Unlike the audit
+chain, this check is **keyed**: the GCM tag is computed under the AES-256
+master key, so nobody without the key can alter a file and produce a tag
+that still verifies. On that specific point it is strong.
+
+The limits:
+
+- **The verdict is stored in the unencrypted database.** `UPDATE files SET
+  integrity_status = 'ok'` erases the finding. The *file* cannot be forged;
+  the *report about it* can. The audit-log entry for the same finding is
+  harder to erase — it is in the hash chain (§4.6) — which is why the sweep
+  writes to both.
+- **Only files with a database row are checked.** Delete the row and the
+  `.hcl` becomes invisible to the sweep. Orphaned files on disk are not
+  reported.
+- **The sweep runs weekly, not continuously.** Worst case, corruption sits
+  undetected for a week plus however long the application stays closed.
+- **A wrong key looks exactly like mass corruption.** GCM cannot tell them
+  apart. If *every* file fails the tag check the sweep refuses to mark
+  anything, logs `integrity_sweep_aborted` and reports
+  `suspected_wrong_key`. The trade is deliberate: a genuinely
+  fully-corrupted vault also lands in this branch and is reported as a
+  suspected key problem instead of as corruption. Marking every file
+  corrupt on a wrong key would be worse — the user would lose the ability
+  to spot a real single-file failure.
+
+The sweep never reconstructs plaintext. It streams each file through the
+same GCM primitives as decryption but discards every block into a single
+reused buffer that is zeroed on exit, so verification costs constant memory
+regardless of file size. Plaintext still exists transiently per 64 KB block
+— GCM produces it while advancing — so the honest claim is "never
+accumulated, returned, or written", not "never produced". See
+`CORE.crypto.verify_file()`.
+
 ---
 
 ## 5. Cryptographic details
@@ -307,6 +346,7 @@ papered over.
 | Audit log integrity | SHA-256 hash chain, `hash_n = SHA256(hash_(n-1) ‖ canonical(entry_n))`, `hash_0` = 32 zero bytes; unkeyed — see §4.6 |
 | Audit record encoding | Fixed field order, length-prefixed UTF-8, `NULL` distinct from `""` — deterministic and library-independent |
 | Audit anchor | Chain head appended to `data/audit_anchor.log` (JSON Lines, each line carries SHA-256 of the previous); path overridable via `HYCLEUS_AUDIT_ANCHOR` |
+| Integrity sweep | Weekly GCM tag verification of every `.hcl` + vault HMAC; streaming, constant memory, no plaintext returned — see §4.7 |
 | PIN storage | Argon2id hash (never plaintext); minimum 6 characters for new PINs |
 | Secret storage | OS credential store, service `HYCLEUS`, usernames `share_2:<hwid>` and `totp_secret` |
 | Second factor | TOTP (RFC 6238), 6 digits, ±1 window |
@@ -405,6 +445,7 @@ Saldırgan oturum açmış OS kullanıcısı hâline geldiğinde anahtar kasası
 | Denetim kaydının ORTASINDAN bir satırın değiştirilmesi/silinmesi | ⚠️ Tespit edilir, engellenmez | SHA-256 hash zinciri; `verify_audit_chain()` tam olarak hangi kayıt olduğunu söyler — bkz. §4.6 |
 | En yeni denetim kayıtlarının silinmesi (kuyruğun kesilmesi) | ⚠️ Yalnızca çıpayla tespit edilir | Zincirin ucu veritabanının dışına, `data/audit_anchor.log`'a yazılır — bkz. §4.6 |
 | Değişiklikten sonra tüm zincirin yeniden hesaplanması | ⚠️ Yalnızca çıpayla tespit edilir | Hash anahtarsızdır; yalnızca dıştaki çıpa itiraz eder — bkz. §4.6 |
+| Bir `.hcl` dosyasının diskte sessizce bozulması (bit çürümesi, yarım kopyalama, müdahale) | ✅ Dosya açılmadan bulunur | Haftalık bütünlük taraması her GCM tag'ini doğrular; sonuç `files.integrity_status` içinde — bkz. §4.7 |
 
 ## 3. HYCLEUS'un **korumadığı** senaryolar
 
@@ -635,6 +676,44 @@ Uzak, yalnızca-ekleme yapılan bir günlük daha da güçlü olurdu. HYCLEUS
 bilinçli olarak çevrimdışıdır, bu yüzden o yol seçilmedi; takas üstü
 örtülmek yerine burada yazılıdır.
 
+### 4.7 Bütünlük taraması bozulmayı bulur, ama kararı veritabanında durur
+
+Haftalık arka plan taraması (`CORE/integrity.py`) kayıtlı her `.hcl`
+dosyasının GCM tag'ini ve vault'un HMAC'ını doğrular; sonucu
+`files.integrity_status` ve `files.integrity_checked_at` alanlarına yazar.
+Denetim zincirinin aksine bu kontrol **anahtarlıdır**: GCM tag'i AES-256
+master key altında hesaplanıyor, yani anahtarı olmayan biri dosyayı
+değiştirip hâlâ doğrulanan bir tag üretemez. Tam olarak bu noktada güçlüdür.
+
+Sınırlar:
+
+- **Karar şifresiz veritabanında saklanıyor.** `UPDATE files SET
+  integrity_status = 'ok'` bulguyu siler. *Dosya* taklit edilemez; *onun
+  hakkındaki rapor* edilebilir. Aynı bulgunun denetim kaydındaki karşılığını
+  silmek daha zordur — o hash zincirinin içinde (§4.6) — tarama bu yüzden
+  ikisine birden yazıyor.
+- **Yalnızca veritabanı kaydı olan dosyalar kontrol edilir.** Kaydı silinen
+  bir `.hcl` tarama için görünmez olur. Diskte öksüz kalmış dosyalar
+  raporlanmaz.
+- **Tarama haftalık, sürekli değil.** En kötü durumda bozulma bir hafta artı
+  uygulamanın kapalı kaldığı süre boyunca fark edilmez.
+- **Yanlış anahtar, toplu bozulmayla birebir aynı görünür.** GCM ikisini
+  ayırt edemez. *Tüm* dosyalar tag kontrolünü geçemezse tarama hiçbir şeyi
+  işaretlemeyi reddeder, `integrity_sweep_aborted` kaydı düşer ve
+  `suspected_wrong_key` raporlanır. Takas bilinçli: gerçekten tamamı
+  bozulmuş bir kasa da bu dala düşer ve bozulma yerine anahtar şüphesi
+  olarak raporlanır. Yanlış anahtarda her dosyayı bozuk işaretlemek daha
+  kötü olurdu — kullanıcı gerçek bir tek-dosya arızasını fark edemez hâle
+  gelirdi.
+
+Tarama düz metni hiçbir zaman yeniden oluşturmaz. Her dosyayı şifre
+çözmeyle aynı GCM ilkelleri üzerinden akıtır ama her bloğu yeniden
+kullanılan tek bir tampona atar ve çıkışta sıfırlar; böylece doğrulamanın
+bellek maliyeti dosya boyutundan bağımsız, sabittir. Düz metin yine de her
+64 KB'lık blokta kısa süreliğine oluşur — GCM ilerlerken üretiyor — yani
+dürüst iddia "biriktirilmez, döndürülmez, yazılmaz"dır, "hiç üretilmez"
+değil. Bkz. `CORE.crypto.verify_file()`.
+
 ## 5. Kriptografik ayrıntılar
 
 | Katman | Yapı |
@@ -649,6 +728,7 @@ bilinçli olarak çevrimdışıdır, bu yüzden o yol seçilmedi; takas üstü
 | Denetim kaydı bütünlüğü | SHA-256 hash zinciri, `hash_n = SHA256(hash_(n-1) ‖ kanonik(kayıt_n))`, `hash_0` = 32 sıfır byte; anahtarsız — bkz. §4.6 |
 | Denetim kaydı kodlaması | Sabit alan sırası, uzunluk önekli UTF-8, `NULL` ile `""` ayrı — deterministik ve kütüphaneden bağımsız |
 | Denetim çıpası | Zincirin ucu `data/audit_anchor.log`'a eklenir (JSON Lines, her satır bir öncekinin SHA-256'sını taşır); yol `HYCLEUS_AUDIT_ANCHOR` ile değiştirilebilir |
+| Bütünlük taraması | Haftalık GCM tag doğrulaması (her `.hcl`) + vault HMAC; akış hâlinde, sabit bellek, düz metin döndürülmez — bkz. §4.7 |
 | PIN saklama | Argon2id hash (asla düz metin); yeni PIN'ler için en az 6 karakter |
 | Sır saklama | OS anahtar kasası, servis `HYCLEUS`, adlar `share_2:<hwid>` ve `totp_secret` |
 | İkinci faktör | TOTP (RFC 6238), 6 hane, ±1 pencere |

@@ -1,4 +1,6 @@
 import logging
+import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +18,26 @@ _SWEEP_INTERVAL_MINUTES = 60
 # Denetim çıpası günde bir yazılır; saatlik bakmak gün dönümünü makul bir
 # gecikmeyle yakalar (bkz. _anchor_audit_chain).
 _ANCHOR_INTERVAL_MINUTES = 60
+
+# Bütünlük taraması HAFTALIK çalışır ama tetikleyicisi haftalık DEĞİL:
+# görev saatte bir "vakti geldi mi" diye soruyor, kapıyı
+# settings.integrity_last_sweep tutuyor. Gerekçe CORE/integrity.py —
+# maybe_run_weekly_sweep() docstring'inde: haftalık bir interval/cron
+# tetikleyicisi, haftalarca açık kalmayan bir masaüstü uygulamasında
+# taramanın hiç çalışmaması demek olurdu.
+_INTEGRITY_INTERVAL_MINUTES = 60
+
+# Oturum anahtarını taramaya taşıyan sağlayıcı. Anahtarın KOPYASI burada
+# tutulmuyor: start_scheduler() bir çağrılabilir alıyor ve anahtar zaten
+# HycleusWindow'da duruyor (bkz. SECURITY.md §3 — bellek). Sağlayıcı None
+# dönerse tarama sessizce atlanır.
+_key_provider: Callable[[], bytes | None] | None = None
+_hwid: str | None = None
+
+# Kapanışta yarıda kalan taramanın temiz durmasını sağlar. stop_scheduler()
+# shutdown(wait=False) çağırıyor, yani süren bir tarama daemon thread'iyle
+# birlikte yarıda kesilirdi ve özetini hiç yazmazdı.
+_stop_event = threading.Event()
 
 
 def _purge_expired() -> None:
@@ -119,9 +141,71 @@ def _anchor_audit_chain() -> None:
         logger.error("Denetim zinciri çıpası yazılamadı: %s", exc)
 
 
-def start_scheduler() -> None:
-    """Arka plan zamanlayıcısını başlatır. Uygulama başlangıcında bir kez çağrılır."""
-    global _scheduler
+def _integrity_sweep() -> None:
+    """
+    Haftalık bütünlük taraması — vakti gelmediyse hiçbir şey yapmaz.
+
+    UI THREAD'İ KULLANILMIYOR ve QThreadPool'a da gerek yok: APScheduler
+    zaten GUI dışı bir daemon thread'inde çalışıyor ve bu kod yolu Qt'ye hiç
+    dokunmuyor. Gerekçenin tamamı CORE/integrity.py'de; kısaca:
+
+      · İş disk-bağımlı. Dosya okumaları GIL'i bırakıyor, AES yerel kodda
+        64 KB'lık kısa parçalar hâlinde çalışıyor; GUI thread'i aç kalmıyor.
+      · QThreadPool kullanmak CORE'a Qt bağımlılığı sokardı. CORE şu an
+        başsız test edilebiliyor ve bu bilinçli bir kural
+        (bkz. CORE/file_records.py docstring'i — aynı dersin bedeli
+        ödenmişti).
+      · Paralellik de kazandırmazdı: tek diskte eşzamanlı okuma çoğu zaman
+        yavaşlatır, üstelik aynı SQLite bağlantısına yazma çekişmesi ekler.
+    """
+    from CORE.integrity import maybe_run_weekly_sweep
+    from DB.db_manager import DBManager
+
+    if _key_provider is None:
+        return
+    try:
+        key = _key_provider()
+    except Exception as exc:
+        logger.warning("Bütünlük taraması için anahtar alınamadı: %s", exc)
+        return
+    if not key:
+        # DEV_MODE öncesi ya da oturum kapanmış — sessizce atla.
+        return
+
+    try:
+        report = maybe_run_weekly_sweep(
+            DBManager(),
+            key,
+            hwid=_hwid,
+            should_continue=lambda: not _stop_event.is_set(),
+        )
+        if report is not None and not report.clean:
+            logger.warning("%s", report.summary())
+    except Exception as exc:
+        logger.error("Bütünlük taraması başarısız: %s", exc)
+
+
+def start_scheduler(
+    *,
+    key_provider: Callable[[], bytes | None] | None = None,
+    hwid: str | None = None,
+) -> None:
+    """
+    Arka plan zamanlayıcısını başlatır. Uygulama başlangıcında bir kez çağrılır.
+
+    Args:
+        key_provider: oturum anahtarını döndüren çağrılabilir. Verilmezse
+                      bütünlük taraması kayıtlı olur ama her turda anahtarsız
+                      olduğu için atlanır. Anahtarın kendisi yerine bir
+                      sağlayıcı alınıyor: modül düzeyinde ikinci bir kopya
+                      tutmamak için.
+        hwid:         verilirse AAD hwid kontrolü ve vault imzası doğrulaması
+                      da yapılır.
+    """
+    global _scheduler, _key_provider, _hwid
+    _key_provider = key_provider
+    _hwid = hwid
+    _stop_event.clear()
     if _scheduler is not None:
         return
 
@@ -155,20 +239,39 @@ def start_scheduler() -> None:
         next_run_time=datetime.now(timezone.utc),
         misfire_grace_time=300,
     )
+    # Bütünlük taraması. Saatlik tetikleniyor ama haftada bir kez iş yapıyor
+    # (bkz. _INTEGRITY_INTERVAL_MINUTES ve _integrity_sweep).
+    #
+    # next_run_time BİLEREK verilmedi — diğer görevlerin aksine bu, açılışta
+    # HEMEN çalışmamalı: binlerce dosyayı okuyan bir tarama, kullanıcı henüz
+    # ana pencereyi görmeden diski meşgul ederdi. İlk tur bir saat sonra.
+    _scheduler.add_job(
+        _integrity_sweep,
+        trigger="interval",
+        minutes=_INTEGRITY_INTERVAL_MINUTES,
+        id="integrity_sweep",
+        misfire_grace_time=600,
+    )
     _scheduler.start()
     logger.info(
         "Zamanlayıcı başlatıldı — karantina temizliği %d dk, "
-        "saklama süresi süpürmesi %d dk, denetim çıpası %d dk aralıkla.",
+        "saklama süresi süpürmesi %d dk, denetim çıpası %d dk, "
+        "bütünlük taraması %d dk aralıkla (haftalık kapıyla).",
         _INTERVAL_MINUTES,
         _SWEEP_INTERVAL_MINUTES,
         _ANCHOR_INTERVAL_MINUTES,
+        _INTEGRITY_INTERVAL_MINUTES,
     )
 
 
 def stop_scheduler() -> None:
     """Zamanlayıcıyı durdurur. Uygulama kapatılırken çağrılır."""
-    global _scheduler
+    global _scheduler, _key_provider
+    # Önce bayrağı kaldır: süren bir bütünlük taraması bir sonraki dosyaya
+    # geçmeden temiz biçimde dursun ve özetini yazabilsin.
+    _stop_event.set()
     if _scheduler is not None:
         _scheduler.shutdown(wait=False)
         _scheduler = None
         logger.info("Zamanlayıcı durduruldu.")
+    _key_provider = None

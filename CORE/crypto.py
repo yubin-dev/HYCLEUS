@@ -32,6 +32,10 @@ _NONCE_SIZE = 12
 _TAG_SIZE = 16
 _CHUNK = 64 * 1024  # 64 KB
 
+# update_into() hedef tamponun len(veri) + blok_boyu - 1 kadar olmasını ister
+# (AES blok boyu 16 byte). Yuvarlak sayı için 16 alındı — bkz. verify_file().
+_BLOCK_SLACK = 16
+
 _QUARANTINE_DIR = Path(__file__).parent.parent / "data" / "quarantine"
 
 
@@ -142,6 +146,139 @@ def encrypt_file(
         fout.write(encryptor.tag)
 
     return dst, sha256_hex, aad.decode()
+
+
+def verify_file(
+    src: Path | str,
+    key: bytes,
+    *,
+    hwid: str | None = None,
+) -> dict:
+    """
+    .hcl dosyasının GCM doğrulamasını yapar — DÜZ METNİ DÖNDÜRMEZ.
+
+    Bütünlük taramasının (CORE/integrity.py) kullandığı dar doğrulama yolu.
+    Sözleşmesi decrypt_file() ile aynıdır, tek farkı düz metni vermemesi:
+    aynı istisnaları aynı koşullarda fırlatır.
+
+    Returns:
+        metadata_dict — AAD içeriği. Düz metin DEĞİL; AAD zaten dosya
+        başlığında şifresiz duruyor (bkz. SECURITY.md §3, "Metadata
+        gizliliği"), dolayısıyla döndürmek yeni bir şey açığa çıkarmaz.
+
+    Neden decrypt_file() ÇAĞRILMIYOR
+    --------------------------------
+    decrypt_file() tasarımı gereği `bytes(buf)` döndürür: dosyanın tamamı
+    düz metin olarak bellekte, üstelik immutable bir nesnede. Kendi ara
+    tamponunu (`buf`) `finally` içinde sıfırlıyor ama DÖNDÜRDÜĞÜ kopyayı
+    sıfırlayamaz — `bytes` değiştirilemez. Yalnızca tag'i kontrol etmek için
+    onu çağırmak üç bedel getirirdi:
+
+      1. Dosyanın tamamı düz metin olarak, silinemeyen bir nesnede belliğe
+         açılır. 2 GB'lık bir dosya 2 GB RAM demek; haftalık tarama binlerce
+         dosyayı geziyor.
+      2. O kopya çöp toplayıcı onu geri alana kadar heap'te kalır ve
+         SECURITY.md §3'ün "bellek dökümü düz metin içerebilir" maddesini
+         hiç gerek yokken büyütür.
+      3. Doğrulamanın maliyeti dosya boyutuyla birlikte belleğe de yansır;
+         oysa akış hâlinde doğrulamanın bellek maliyeti sabittir.
+
+    Bu yüzden burada AYNI kripto ilkelleri (Cipher / GCM / AAD) kullanılıyor
+    ama düz metin BİRİKTİRİLMİYOR: her blok yeniden kullanılan tek bir
+    tampona yazılıp bir sonraki blokla üzerine yazılıyor, çıkışta da
+    ctypes.memset ile sıfırlanıyor. GCM'i elle yazmak SÖZ KONUSU DEĞİL —
+    tag doğrulaması cryptography kütüphanesinin finalize()'ına ait.
+
+    DÜRÜST SINIR — düz metin "hiç oluşmuyor" değil
+    ----------------------------------------------
+    GCM'de tag, ciphertext'in tamamı işlendikten sonra doğrulanır; akış
+    API'sinde update() çağrısı düz metni ÜRETİR. Yani doğrulama sırasında
+    her 64 KB'lık blok kısa süreliğine düz metin olarak `_scratch` içinde
+    bulunur. İddia şudur: düz metin hiçbir zaman biriktirilmez, döndürülmez,
+    diske yazılmaz ve tampon çıkışta sıfırlanır — "hiç var olmaz" değil.
+
+    Düz metni hiç üretmemek teorik olarak mümkün (tag, GHASH(AAD, C) ile
+    ciphertext üzerinden hesaplanabilir) ama bu GHASH'i elle yazmak demek.
+    Kendi GCM'ini yazmanın riski, üzerine hemen yazılan 64 KB'lık geçici bir
+    tampondan çok daha büyüktür. Takas bilinçli.
+
+    Raises:
+        ValueError          — bozuk başlık, desteklenmeyen versiyon, kısa dosya
+        AuthenticationError — ciphertext, anahtar veya AAD değiştirilmiş
+        OSError             — dosya okuma hatası
+    """
+    src = Path(src)
+    if len(key) != 32:
+        raise ValueError(f"Anahtar 32 byte olmalı, {len(key)} byte verildi.")
+
+    with open(src, "rb") as fin:
+        if fin.read(4) != _MAGIC:
+            raise ValueError("Geçersiz HYCL dosya formatı.")
+        version_byte = fin.read(1)
+        if not version_byte:
+            raise ValueError("Dosya çok kısa, bozulmuş olabilir.")
+        if version_byte[0] != _VERSION:
+            raise ValueError(f"Desteklenmeyen versiyon: {version_byte[0]}")
+
+        nonce = fin.read(_NONCE_SIZE)
+        if len(nonce) != _NONCE_SIZE:
+            raise ValueError("Dosya çok kısa, bozulmuş olabilir.")
+
+        raw_aad_len = fin.read(4)
+        if len(raw_aad_len) != 4:
+            raise ValueError("Dosya çok kısa, bozulmuş olabilir.")
+        (aad_len,) = struct.unpack(">I", raw_aad_len)
+        aad = fin.read(aad_len)
+        if len(aad) != aad_len:
+            raise ValueError("AAD bloğu eksik, dosya bozulmuş.")
+
+        body_start = fin.tell()
+        file_size = fin.seek(0, 2)
+        ciphertext_len = file_size - body_start - _TAG_SIZE
+        if ciphertext_len < 0:
+            raise ValueError("Dosya çok kısa, bozulmuş olabilir.")
+
+        fin.seek(-_TAG_SIZE, 2)
+        tag = fin.read(_TAG_SIZE)
+        fin.seek(body_start)
+
+        decryptor = Cipher(algorithms.AES(key), modes.GCM(nonce, tag)).decryptor()
+        decryptor.authenticate_additional_data(aad)
+
+        # Tek, yeniden kullanılan tampon. update_into() düz metni buraya
+        # yazar; bir sonraki blok üzerine yazar, çıkışta memset'lenir.
+        # update_into sözleşmesi: tampon >= len(veri) + blok_boyu - 1.
+        scratch = bytearray(_CHUNK + _BLOCK_SLACK)
+        try:
+            view = memoryview(scratch)
+            remaining = ciphertext_len
+            while remaining > 0:
+                chunk = fin.read(min(_CHUNK, remaining))
+                if not chunk:
+                    raise ValueError("Ciphertext beklenenden kısa, dosya kesilmiş.")
+                # Dönen uzunluk BİLEREK kullanılmıyor: düz metin okunmuyor,
+                # yalnızca GCM durumunun ilerlemesi için yazılıyor.
+                decryptor.update_into(chunk, view)
+                remaining -= len(chunk)
+            try:
+                decryptor.finalize()
+            except InvalidTag as exc:
+                raise AuthenticationError(
+                    "Dosya veya metadata bütünlüğü doğrulanamadı — "
+                    "şifreli içerik, anahtar veya AAD değiştirilmiş olabilir."
+                ) from exc
+        finally:
+            # memoryview, bytearray üzerinde dışa aktarılmış tampon tutuyor;
+            # ctypes.memset from_buffer() için serbest bırakılması gerekir.
+            view.release()
+            _zero(scratch)
+
+        meta = json.loads(aad.decode())
+        if hwid is not None and meta.get("hwid") is not None and meta["hwid"] != hwid:
+            raise AuthenticationError(
+                "HWID uyuşmazlığı — dosya farklı bir cihazda şifrelendi."
+            )
+        return meta
 
 
 def decrypt_file(

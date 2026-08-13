@@ -181,7 +181,11 @@ def main() -> None:
     except Exception as exc:  # DB/şema sorunları açılışı engellemesin
         _log.warning("Kurtarma parçası durumu okunamadı: %s", exc)
 
-    start_scheduler()
+    # key_provider: haftalık bütünlük taraması GCM tag'lerini doğrulamak için
+    # oturum anahtarına ihtiyaç duyuyor. Anahtarın kopyası zamanlayıcı
+    # modülünde tutulmuyor — buradaki tek örneğe erişen bir çağrılabilir
+    # geçiliyor (bkz. CORE/scheduler.py, start_scheduler).
+    start_scheduler(key_provider=lambda: session_key, hwid=hwid)
     app.aboutToQuit.connect(stop_scheduler)
 
     def _anchor_on_quit() -> None:
