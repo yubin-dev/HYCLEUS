@@ -309,7 +309,68 @@ class DBManager:
         self._conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('imha_ttl_hours', '24')"
         )
+        # Migration: retention_profiles — saklama süresi profilleri
+        # (bkz. CORE/retention.py — sabitler, CRUD ve imha tarihi hesabı orada)
+        #
+        # duration_value ile duration_unit arasındaki bağ CHECK ile zorlanıyor:
+        # 'suresiz' profilin süre değeri OLAMAZ, diğerlerinin ise NULL veya
+        # sıfır/negatif olamaz. Böylece "süresiz ama 5 birim" gibi anlamsız bir
+        # satır veritabanı seviyesinde temsil edilemez hâle geliyor.
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS retention_profiles (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                name           TEXT    NOT NULL UNIQUE,
+                duration_value INTEGER,
+                duration_unit  TEXT    NOT NULL
+                               CHECK(duration_unit IN ('gun', 'ay', 'yil', 'suresiz')),
+                start_type     TEXT    NOT NULL DEFAULT 'yukleme_tarihi'
+                               CHECK(start_type IN
+                                     ('yukleme_tarihi', 'belge_tarihi', 'olay_tarihi')),
+                legal_basis    TEXT,
+                early_delete_protection INTEGER NOT NULL DEFAULT 1
+                               CHECK(early_delete_protection IN (0, 1)),
+                is_builtin     INTEGER NOT NULL DEFAULT 0
+                               CHECK(is_builtin IN (0, 1)),
+                created_at     TEXT NOT NULL
+                               DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                updated_at     TEXT NOT NULL
+                               DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                CHECK (
+                    (duration_unit =  'suresiz' AND duration_value IS NULL)
+                 OR (duration_unit <> 'suresiz' AND duration_value IS NOT NULL
+                                                AND duration_value > 0)
+                )
+            )
+        """)
+        # Migration: files.retention_profile_id — dosyanın saklama profili.
+        # ON DELETE SET NULL bilinçli: profil silinince dosya KAYBOLMAMALI,
+        # yalnızca profilsiz kalmalı (added_by ile aynı mantık).
+        try:
+            self._conn.execute(
+                "ALTER TABLE files ADD COLUMN retention_profile_id INTEGER"
+                " REFERENCES retention_profiles(id) ON DELETE SET NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        # Migration: files.retention_start_date — kullanıcının elle girdiği
+        # başlangıç tarihi (YYYY-MM-DD). YALNIZCA start_type 'belge_tarihi' veya
+        # 'olay_tarihi' iken anlamlıdır; 'yukleme_tarihi' profillerinde NULL
+        # kalır ve hesapta files.added_at kullanılır.
+        try:
+            self._conn.execute("ALTER TABLE files ADD COLUMN retention_start_date TEXT")
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_retention"
+            " ON files(retention_profile_id)"
+        )
         self._conn.commit()
+
+        # Hazır şablonlar yalnızca ilk açılışta yazılır (bkz. CORE/retention.py).
+        # Yerel import: DB katmanı CORE'a modül seviyesinde bağlanmasın.
+        from CORE.retention import seed_builtin_templates
+
+        seed_builtin_templates(self)
 
     @property
     def conn(self) -> sqlite3.Connection:
