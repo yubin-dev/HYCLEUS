@@ -74,6 +74,7 @@ from PySide6.QtWidgets import (
 import pyotp
 
 from CORE.crypto import AuthenticationError, decrypt_file, encrypt_file
+from CORE.export import export_to_directory, export_to_zip, format_errors
 from CORE.expiry import banner_for, countdown_for, expiry_from_now, ttl_hours
 from CORE.file_queries import (
     files_by_folder,
@@ -1575,26 +1576,15 @@ class HycleusWindow(QMainWindow):
         if not save_path:
             return
 
-        from CORE.crypto import AuthenticationError as _AE, decrypt_file as _df
-        errors = []
         try:
-            with zipfile.ZipFile(save_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for f in files:
-                    try:
-                        aad_hwid: str | None = None
-                        if f["aad_metadata"]:
-                            aad_hwid = json.loads(f["aad_metadata"]).get("hwid")
-                        file_hwid = aad_hwid or ("DEV-HWID-1234" if _DEV_MODE else self._hwid)
-                        content, meta = _df(f["filepath"], self._key, hwid=file_hwid)
-                        zf.writestr(meta.get("filename", f["filename"]), content)
-                        del content
-                    except _AE:
-                        errors.append(f["filename"] + " (bütünlük hatası)")
-                    except Exception as exc:
-                        errors.append(f["filename"] + f" ({exc})")
+            sonuc = export_to_zip(
+                DBManager(), files, self._key, save_path,
+                hwid_fallback="DEV-HWID-1234" if _DEV_MODE else self._hwid,
+            )
         except Exception as exc:
             QMessageBox.critical(self, "ZIP Hatası", str(exc))
             return
+        errors = sonuc.errors
 
         DBManager().log("folder_downloaded", target_type="folder", target_id=folder_id,
                         detail=f"zip={save_path} hwid={self._hwid}")
@@ -2563,54 +2553,28 @@ class HycleusWindow(QMainWindow):
         prog.setMinimumDuration(0)
         prog.setValue(0)
 
-        saved: int       = 0
-        errors: list[str] = []
-
-        for i, (fid, filepath) in enumerate(zip(file_ids, filepaths)):
-            if prog.wasCanceled():
-                break
-            short = Path(filepath).name if filepath else "?"
-            prog.setLabelText(f"İndiriliyor ({i + 1}/{len(file_ids)}): {short}")
-            prog.setValue(i)
+        def _ilerleme(index: int, kisa_ad: str) -> None:
+            prog.setLabelText(f"İndiriliyor ({index + 1}/{len(file_ids)}): {kisa_ad}")
+            prog.setValue(index)
             QApplication.processEvents()
 
-            if not filepath:
-                errors.append(f"#{fid} (dosya yolu yok)")
-                continue
-            try:
-                aad_row  = DBManager().fetchone(
-                    "SELECT aad_metadata FROM files WHERE id = ?", (fid,)
-                )
-                aad_hwid = None
-                if aad_row and aad_row["aad_metadata"]:
-                    aad_hwid = json.loads(aad_row["aad_metadata"]).get("hwid")
-                content, meta = decrypt_file(filepath, self._key, hwid=aad_hwid)
-                original_name = meta.get("filename", Path(filepath).stem)
-                dest = dest_dir / original_name
-                if dest.exists():
-                    stem, suffix, n = dest.stem, dest.suffix, 1
-                    while dest.exists():
-                        dest = dest_dir / f"{stem}_{n}{suffix}"
-                        n   += 1
-                dest.write_bytes(content)
-                del content
-                DBManager().log("file_downloaded", target_type="file", target_id=fid,
-                                detail=f"hwid={self._hwid} dest={dest} bulk=True")
-                saved += 1
-            except AuthenticationError:
-                errors.append(short + " (bütünlük hatası)")
-            except Exception as exc:
-                errors.append(f"{short} ({exc})")
+        sonuc = export_to_directory(
+            DBManager(),
+            list(zip(file_ids, filepaths)),
+            self._key,
+            dest_dir,
+            session_hwid=self._hwid,
+            on_progress=_ilerleme,
+            should_continue=lambda: not prog.wasCanceled(),
+        )
+        saved, errors = sonuc.saved, sonuc.errors
 
         prog.setValue(len(file_ids))
         prog.close()
 
         msg = f"{saved} dosya kaydedildi:\n{save_dir}"
         if errors:
-            preview = "\n".join(errors[:10])
-            if len(errors) > 10:
-                preview += f"\n… ve {len(errors) - 10} daha"
-            msg += f"\n\nAtlanan ({len(errors)}):\n{preview}"
+            msg += f"\n\nAtlanan ({len(errors)}):\n{format_errors(errors)}"
         QMessageBox.information(self, "İndirme Tamamlandı", msg)
 
     def _on_ctx_scan(self, row: int, file_id: int | None, filepath: str | None) -> None:

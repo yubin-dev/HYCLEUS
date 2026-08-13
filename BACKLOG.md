@@ -387,3 +387,86 @@ gizlenmesi gereken şey.
    şu an sayaç sıfıra inip hiçbir şey olmaması kafa karıştırıcı olurdu.
 4. `except Exception: pass` bloklarını kaldır — silme başarısızlığı
    kullanıcıya ve denetim kaydına yansımalı.
+
+---
+
+## B-009 — Toplu indirme dosya başına ayrı sorgu atıyor (N+1)
+
+**Durum:** Açık — mevcut davranış korundu (saf refactor kuralı)
+**Öncelik:** Düşük (performans; doğruluk etkisi yok)
+**İlgili:** 2.7 Faz 1 adım 5 (`CORE/export.py`)
+**Bulundu:** 2026-08-13, iki indirme akışı yan yana getirilirken
+
+### Bulgu
+
+İki dışa aktarma akışı `aad_metadata`'yı farklı biçimde okuyor:
+
+| Akış | Sorgu |
+|---|---|
+| Klasör → ZIP | **tek sorgu**, tüm alanlar önden (`WHERE folder_id = ?`) |
+| Toplu → dizin | **dosya başına bir sorgu**, döngü içinde (`WHERE id = ?`) |
+
+500 dosyalık bir toplu indirme 500 ek sorgu atıyor. Sorgular indeksli
+(birincil anahtar) ve yerel SQLite'a gidiyor, dolayısıyla etkisi ölçülebilir
+ama küçük — asıl maliyet zaten çözme ve diske yazma.
+
+### Neden düzeltilmedi
+
+Değişiklik tek satırlık: `WHERE id IN (...)` ile bir kez okuyup sözlüğe
+almak. Ama 2.7 saf bir yeniden düzenleme ve sorgu sayısını değiştirmek
+teknik olarak davranış değişikliğidir (eşzamanlı bir yazma varsa okunan
+değer farklı olabilir). Bu turda taşınan kod birebir korundu.
+
+Kod `CORE/export.py::export_to_directory` içinde ve döngüdeki sorgu
+`# B-009` yorumuyla işaretli.
+
+### Yapılacak (uygulanmadı)
+
+1. `export_to_directory` çağrılmadan önce `aad_metadata`'yı tek sorguyla
+   toplayıp `{file_id: aad}` sözlüğü olarak geçir.
+2. `export_to_zip` zaten satırları hazır alıyor — iki akış aynı desende
+   buluşur ve `db` parametresi `export_to_directory`'de yalnızca denetim
+   kaydı için kalır.
+
+---
+
+## B-010 — İki indirme akışı AAD'sız dosyalarda farklı davranıyor
+
+**Durum:** Açık — mevcut davranış korundu, testle sabitlendi
+**Öncelik:** Orta (tutarsız güvenlik kontrolü; hangi tarafın doğru olduğu
+belirlenmeli)
+**İlgili:** B-009 ile aynı kod, 2.7 Faz 1 adım 5
+**Bulundu:** 2026-08-13
+
+### Bulgu
+
+`aad_metadata` boş ya da içinde `hwid` yoksa iki akış farklı karar veriyor:
+
+```
+ZIP     : hwid = aad_hwid or (DEV-HWID-1234 / oturum hwid'i)  → doğrulama YAPILIR
+Dizine  : hwid = aad_hwid                                      → doğrulama YAPILMAZ
+```
+
+Sonuç: AAD'sı olmayan eski bir kayıt, **klasör indirmede "bütünlük hatası"
+verip atlanırken toplu indirmede sorunsuz çözülüyor.** Aynı dosya, aynı
+anahtar, aynı kullanıcı — farklı sonuç.
+
+Bu bir açık değil (GCM doğrulaması her iki yolda da yapılıyor; farklı olan
+yalnızca AAD'daki hwid'in oturum hwid'iyle karşılaştırılıp
+karşılaştırılmadığı), ama tutarsız ve hangisinin kasıtlı olduğu belli değil.
+
+Mevcut davranış [`tests/test_export.py`](tests/test_export.py) içinde
+`test_zip_falls_back_to_the_session_hwid` ve
+`test_directory_export_does_NOT_fall_back_by_default` ile sabitlendi.
+
+### Yapılacak (uygulanmadı)
+
+Önce karar: AAD'da hwid yoksa oturum hwid'iyle doğrulanmalı mı?
+
+- **Evet ise** — toplu indirme de `hwid_fallback` almalı. Yan etki: başka
+  cihazda şifrelenmiş eski dosyalar toplu indirmede de erişilemez olur.
+- **Hayır ise** — ZIP akışındaki geri dönüş kaldırılmalı. Yan etki:
+  hwid doğrulaması AAD'sı olmayan dosyalarda tümüyle devre dışı kalır.
+
+`CORE/export.py` her iki davranışı da destekliyor (`hwid_fallback`
+parametresi), yani düzeltme yalnızca çağrı yerlerinde tek satır.
