@@ -327,3 +327,63 @@ görünecek.
 ve `CORE/file_queries.py` onu bilmiyor. Rol → yetki eşlemesini CORE'a
 taşımak ayrı bir iş (vault rolü ile `users.role` sütunu farklı şeyler ve
 şu an ikisi birbirine karışmış durumda).
+
+---
+
+## B-008 — Arayüzdeki imha sayacı saklama korumasını atlıyor
+
+**Durum:** Açık — mevcut davranış korundu (saf refactor kuralı)
+**Öncelik:** **Yüksek.** Veri kaybı riski: saklama süresi işleyen bir dosya,
+onay sorulmadan ve koruma hiç devreye girmeden diskten silinebiliyor.
+**İlgili:** B-004 (aynı bölge), 2.7 Faz 1 adım 4
+**Bulundu:** 2026-08-13, geri sayım matematiği CORE'a taşınırken
+
+### Bulgu
+
+Süresi dolmuş bir İmha Odası dosyasını silen **iki** kod yolu var ve
+yalnızca biri saklama korumasını uyguluyor:
+
+| Yol | Nerede | `is_retention_protected()` | Onay |
+|---|---|---|---|
+| `_purge_expired` (APScheduler, 10 dk) | [`CORE/scheduler.py`](CORE/scheduler.py) | ✅ kontrol ediyor, korumalıysa **atlıyor** ve `retention_hold` kaydı düşüyor | — |
+| `_purge_expired_file` (QTimer, 1 sn) | [`UI/main_window.py`](UI/main_window.py) | ❌ **kontrol etmiyor** | ❌ |
+
+Yani kullanıcı İmha Odası sekmesini açık bıraktığında, saklama süresi
+işleyen bir dosyanın sayacı sıfıra inerse dosya **diskten siliniyor ve DB
+kaydı düşüyor** — erken silme koruması hiç çalışmadan. Aynı dosya arka plan
+görevine yakalansaydı korunacaktı.
+
+Ek olarak arayüzdeki yol hataları sessizce yutuyor (`except Exception: pass`,
+iki yerde), dolayısıyla silme başarısız olsa bile kullanıcı bir şey görmüyor.
+
+### B-004 ile ilişkisi
+
+B-004 aynı bölgeyi tersten anlatıyor: arka plan görevi `Imha` etiketine hiç
+bakmıyor, dolayısıyla sayaç yalnızca UI açıkken işliyor. İkisi birlikte şu
+tabloyu üretiyor:
+
+- UI kapalı → dosya süresiz diskte kalıyor (B-004)
+- UI açık   → dosya korumaya bakılmadan siliniyor (B-008)
+
+Yani şu an davranışı belirleyen şey, kullanıcının hangi sekmede olduğu.
+**İkisi birlikte ele alınmalı**; B-004'teki "`label IN ('Karantina','Imha')`
+yap" önerisi tek başına uygulanırsa B-008'in silme yolu arka plana da
+taşınmış olur.
+
+### Neden 2.7'de düzeltilmedi
+
+2.7 saf bir yeniden düzenleme; bu adımda taşınan şey yalnızca geri sayım
+MATEMATİĞİ (`CORE/expiry.py`). `_purge_expired_file`'ın gövdesine
+dokunulmadı ve koruma kontrolü eklemek davranış değişikliği olurdu — üstelik
+veri silmeyi etkileyen bir değişiklik, bir taşıma commit'inin içinde en son
+gizlenmesi gereken şey.
+
+### Yapılacaklar (uygulanmadı)
+
+1. Silme mantığını tek bir CORE fonksiyonunda topla — `CORE/disposal.py`
+   içinde `purge_file()` zaten var ve onay/koruma kontrollerini biliyor.
+2. Her iki çağıran da (scheduler ve UI sayacı) o fonksiyonu kullansın.
+3. Koruma nedeniyle atlanan dosya için UI'da sayaç "korumalı" göstersin;
+   şu an sayaç sıfıra inip hiçbir şey olmaması kafa karıştırıcı olurdu.
+4. `except Exception: pass` bloklarını kaldır — silme başarısızlığı
+   kullanıcıya ve denetim kaydına yansımalı.

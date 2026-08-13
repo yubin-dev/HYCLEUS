@@ -1,7 +1,10 @@
 import json
 import logging
 import random
-from datetime import datetime, timedelta, timezone
+# timedelta modül seviyesinde artık kullanılmıyor: "şimdi + TTL" hesabı
+# CORE/expiry.py'ye taşındı. _FileRunnable.run() kendi yerel import'unu
+# yapıyor (worker thread'inde çalışıyor, bkz. satır ~218).
+from datetime import datetime, timezone
 from pathlib import Path
 
 _log = logging.getLogger("hycleus.ui")
@@ -71,6 +74,7 @@ from PySide6.QtWidgets import (
 import pyotp
 
 from CORE.crypto import AuthenticationError, decrypt_file, encrypt_file
+from CORE.expiry import banner_for, countdown_for, expiry_from_now, ttl_hours
 from CORE.file_queries import (
     files_by_folder,
     files_by_label,
@@ -1473,7 +1477,7 @@ class HycleusWindow(QMainWindow):
         )
         if confirm != QMessageBox.Yes:
             return
-        expires_at = (datetime.now(timezone.utc) + timedelta(hours=self._get_imha_ttl_hours())).strftime("%Y-%m-%dT%H:%M:%SZ")
+        expires_at = expiry_from_now(DBManager())
         try:
             db    = DBManager()
             rows  = db.fetchall("SELECT id FROM files WHERE folder_id = ?", (folder_id,))
@@ -2504,9 +2508,7 @@ class HycleusWindow(QMainWindow):
         )
         if confirm != QMessageBox.Yes:
             return
-        expires_at = (
-            datetime.now(timezone.utc) + timedelta(hours=self._get_imha_ttl_hours())
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        expires_at = expiry_from_now(DBManager())
         moved = 0
         try:
             db = DBManager()
@@ -2716,7 +2718,7 @@ class HycleusWindow(QMainWindow):
         )
         if confirm != QMessageBox.Yes:
             return
-        expires_at = (datetime.now(timezone.utc) + timedelta(hours=self._get_imha_ttl_hours())).strftime("%Y-%m-%dT%H:%M:%SZ")
+        expires_at = expiry_from_now(DBManager())
         try:
             db = DBManager()
             db.execute(
@@ -2743,11 +2745,18 @@ class HycleusWindow(QMainWindow):
     # ── İmha Odası sayacı ─────────────────────────────────────────────────────
 
     def _tick_expiry(self) -> None:
+        """
+        İmha Odası geri sayımını saniyede bir tazeler.
+
+        Matematiğin tamamı CORE/expiry.py'de: kalan süre, biçim, aciliyet
+        eşikleri ve "boş mu / süresiz mi" ayrımı. Buradaki iş yalnızca
+        hücreleri boyamak ve süresi dolanları tablodan düşürmek.
+        """
         if self._current_label != "Imha":
             return
         now = datetime.now(timezone.utc)
         expired_rows: list[tuple[int, int | None, str]] = []
-        min_remaining: float | None = None
+        kalanlar: list[float | None] = []
 
         for row in range(self._table.rowCount()):
             name_item = self._table.item(row, 0)
@@ -2757,75 +2766,33 @@ class HycleusWindow(QMainWindow):
             file_id: int | None = name_item.data(Qt.UserRole)
             filepath: str       = name_item.data(Qt.UserRole + 3) or ""
 
-            if not expires_str:
-                ci = self._table.item(row, 3)
-                if ci:
-                    ci.setText("—")
-                continue
-
-            try:
-                expires_dt = datetime.strptime(expires_str, "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=timezone.utc
-                )
-            except ValueError:
-                continue
-
-            remaining = (expires_dt - now).total_seconds()
-            if remaining <= 0:
+            durum = countdown_for(expires_str, now=now)
+            if durum.expired:
                 expired_rows.append((row, file_id, filepath))
                 continue
 
-            total_secs = int(remaining)
-            hrs, rest  = divmod(total_secs, 3600)
-            mins, secs = divmod(rest, 60)
-            text = f"{hrs:02d}:{mins:02d}:{secs:02d}"
-
-            color = (
-                self._T["red"]    if remaining < 600  else
-                self._T["yellow"] if remaining < 3600 else
-                self._T["green"]
-            )
+            kalanlar.append(durum.remaining)
             ci = self._table.item(row, 3)
             if ci:
-                ci.setText(text)
-                ci.setForeground(QColor(color))
-
-            if min_remaining is None or remaining < min_remaining:
-                min_remaining = remaining
+                ci.setText(durum.text())
+                aciliyet = durum.urgency()
+                if aciliyet is not None:
+                    ci.setForeground(QColor(self._T[aciliyet]))
 
         for row, file_id, filepath in sorted(expired_rows, key=lambda t: t[0], reverse=True):
             self._table.removeRow(row)
             self._purge_expired_file(file_id, filepath)
 
-        if min_remaining is not None:
-            total_secs = int(min_remaining)
-            hrs, rest  = divmod(total_secs, 3600)
-            mins, secs = divmod(rest, 60)
-            color = (
-                self._T["red"]    if min_remaining < 600  else
-                self._T["yellow"] if min_remaining < 3600 else
-                self._T["green"]
-            )
-            self._expiry_banner.setText(f"⏱  En yakın imha: {hrs:02d}:{mins:02d}:{secs:02d}")
-            self._expiry_banner.setStyleSheet(
-                f"color:{color}; font-size:13px; font-weight:600;"
-                f"background:{self._T['sidebar']}; border-radius:8px; padding:4px 12px;"
-                f"margin:4px 12px 0;"
-            )
-        elif self._table.rowCount() == 0:
-            self._expiry_banner.setText("İmha Odası boş")
-            self._expiry_banner.setStyleSheet(
-                f"color:{self._T['subtext']}; font-size:13px;"
-                f"background:{self._T['sidebar']}; border-radius:8px; padding:4px 12px;"
-                f"margin:4px 12px 0;"
-            )
-        else:
-            self._expiry_banner.setText("Süre belirlenmemiş dosyalar")
-            self._expiry_banner.setStyleSheet(
-                f"color:{self._T['subtext']}; font-size:13px;"
-                f"background:{self._T['sidebar']}; border-radius:8px; padding:4px 12px;"
-                f"margin:4px 12px 0;"
-            )
+        bant = banner_for(kalanlar, row_count=self._table.rowCount())
+        aciliyet = bant.urgency()
+        renk = self._T[aciliyet] if aciliyet else self._T["subtext"]
+        self._expiry_banner.setText(bant.text())
+        self._expiry_banner.setStyleSheet(
+            f"color:{renk}; font-size:13px;"
+            + ("font-weight:600;" if aciliyet else "")
+            + f"background:{self._T['sidebar']}; border-radius:8px; padding:4px 12px;"
+            f"margin:4px 12px 0;"
+        )
 
     def _purge_expired_file(self, file_id: int | None, filepath: str) -> None:
         if filepath:
@@ -2845,10 +2812,8 @@ class HycleusWindow(QMainWindow):
                 pass
 
     def _get_imha_ttl_hours(self) -> int:
-        try:
-            return int(DBManager().get_setting("imha_ttl_hours", "24"))
-        except Exception:
-            return 24
+        """İmha TTL süresi — hesap CORE/expiry.py'de."""
+        return ttl_hours(DBManager())
 
     def _refresh_usb_badge(self) -> None:
         hwid = get_usb_hwid()
