@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+# CI'in urettigi JUnit raporu (artifact olarak yukleniyor, depoda durmasi gerekmiyor)
+test-results.xml
 .mypy_cache/
 .ruff_cache/
 .env

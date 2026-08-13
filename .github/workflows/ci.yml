@@ -50,4 +50,26 @@ jobs:
         run: mypy
 
       - name: Test (pytest)
-        run: pytest
+        run: pytest --junitxml=test-results.xml
+
+      # Aşağıdaki iki adım `always()` taşıyor: asıl değerleri testler
+      # KIRILDIĞINDA ortaya çıkıyor. `pytest` adımı kırmızıysa iş yine
+      # başarısız sayılıyor — bunlar sonucu değiştirmiyor, görünür kılıyor.
+      - name: Test özeti
+        if: always()
+        run: >
+          python .github/scripts/test_summary.py
+          test-results.xml
+          "${{ matrix.os }} · Python ${{ matrix.python-version }}"
+          >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
+      # Sayıların günlüğe inmeden görünmesi için. Depo günlüklerini API'den
+      # indirmek yönetici yetkisi istiyor (403); artifact istemiyor.
+      - name: Test raporunu yükle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: test-results.xml
+          if-no-files-found: warn
