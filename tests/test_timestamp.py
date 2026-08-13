@@ -4,14 +4,13 @@ CORE.timestamp + CORE.crypto v2 kabı — RFC 3161 zaman damgası testleri.
 Ağ kullanımı
 ------------
 Damgalama akışının TAMAMI ağsız koşuyor. İki farklı sahte kaynak var ve
-ikisi de gerçek DER üretiyor/okuyor — "mock" değiller, asn1crypto ile
-kurulmuş gerçek ASN.1 yapıları:
+ikisi de gerçek DER üretiyor/okuyor — "mock" değiller:
 
-  · `fake_tsa` — İSTENEN özet ve nonce için TimeStampResp kuruyor. Rastgele
-    girdilerle akışın tamamını koşturmayı sağlıyor. İMZASIZ: bu adımda imza
-    doğrulaması yok (bkz. CORE/timestamp.py, "Bu adımın KAPSAMI"), dolayısıyla
-    imzasız bir token bu testler için yeterli. Sonraki adım imza doğrulamasını
-    eklediğinde bu sahtenin gerçekten imzalaması gerekecek.
+  · `tests/tsa_fixtures.py` — gerçek bir kök CA, gerçek bir TSA sertifikası
+    ve GERÇEKTEN İMZALI token üreten yerel bir otorite. İstenen özet ve
+    nonce için yanıt kuruyor, yani akışın tamamı rastgele girdilerle
+    koşuyor. (Adım 1'de imzasızdı; 3.1b imzayı doğruladığı için artık
+    gerçekten imzalıyor.)
   · `tests/data/freetsa_response.der` — freetsa.org'dan alınmış GERÇEK bir
     yanıt (sertifika zinciriyle 4.6 KB). Ayrıştırıcının sentetik değil,
     sahadaki bir TSA'nın çıktısını okuduğunu kanıtlıyor.
@@ -26,11 +25,11 @@ import hashlib
 import json
 import os
 import struct
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from asn1crypto import algos, cms, core, tsp
+from asn1crypto import cms, tsp
+from tsa_fixtures import FakeTSA, build_response, build_token, default_authority
 
 from CORE import crypto, timestamp
 from CORE.crypto import (
@@ -100,77 +99,6 @@ def hcl(tmp_path: Path, key: bytes, plain_bytes: bytes) -> Path:
     src.write_bytes(plain_bytes)
     dst, _sha, _aad = encrypt_file(src, key, _USER_ID, hwid=_HWID)
     return dst
-
-
-def _make_response(
-    digest: bytes,
-    nonce: int,
-    *,
-    status: str = "granted",
-    algorithm: str = "sha256",
-) -> bytes:
-    """
-    Gerçek DER kodlu bir TimeStampResp üretir (imzasız — bkz. modül docstring).
-    """
-    tst = tsp.TSTInfo({
-        "version": "v1",
-        "policy": "1.2.3.4.1",
-        "message_imprint": tsp.MessageImprint({
-            "hash_algorithm": algos.DigestAlgorithm({"algorithm": algorithm}),
-            "hashed_message": digest,
-        }),
-        "serial_number": 1,
-        "gen_time": datetime(2026, 8, 13, 12, 0, 0, tzinfo=timezone.utc),
-        "nonce": core.Integer(nonce),
-    })
-    signed = cms.SignedData({
-        "version": "v3",
-        "digest_algorithms": [algos.DigestAlgorithm({"algorithm": "sha256"})],
-        "encap_content_info": cms.EncapsulatedContentInfo({
-            "content_type": "tst_info",
-            "content": cms.ParsableOctetString(tst.dump()),
-        }),
-        "signer_infos": [],
-    })
-    return tsp.TimeStampResp({
-        "status": tsp.PKIStatusInfo({"status": status}),
-        "time_stamp_token": cms.ContentInfo({
-            "content_type": "signed_data", "content": signed,
-        }),
-    }).dump()
-
-
-class FakeTSA:
-    """
-    İsteği GERÇEKTEN ayrıştırıp ona uygun yanıt üreten sahte TSA.
-
-    `timestamp_file(transport=...)` imzasına uyuyor. Aldığı her isteği
-    kaydediyor, böylece testler yalnızca sonuca değil GÖNDERİLENE de
-    bakabiliyor.
-    """
-
-    def __init__(self, **response_kwargs) -> None:
-        self.requests: list[tsp.TimeStampReq] = []
-        self.urls: list[str] = []
-        self.response_kwargs = response_kwargs
-        self.override_digest: bytes | None = None
-        self.override_nonce: int | None = None
-
-    def __call__(self, url: str, body: bytes, timeout: int) -> bytes:
-        request = tsp.TimeStampReq.load(body)
-        self.requests.append(request)
-        self.urls.append(url)
-        digest = self.override_digest or request["message_imprint"]["hashed_message"].native
-        nonce = (
-            self.override_nonce
-            if self.override_nonce is not None
-            else request["nonce"].native
-        )
-        return _make_response(bytes(digest), nonce, **self.response_kwargs)
-
-    @property
-    def last_digest(self) -> bytes:
-        return bytes(self.requests[-1]["message_imprint"]["hashed_message"].native)
 
 
 @pytest.fixture
@@ -597,14 +525,14 @@ def test_a_replayed_response_is_rejected() -> None:
 
 def test_granted_with_mods_is_accepted() -> None:
     digest = hashlib.sha256(b"x").digest()
-    der = _make_response(digest, 5, status="granted_with_mods")
+    der = build_response(digest, 5, status="granted_with_mods")
     assert parse_response(der, digest=digest, nonce=5)
 
 
 @pytest.mark.parametrize("status", ["rejection", "waiting", "revocation_notification"])
 def test_a_non_granted_status_is_rejected(status: str) -> None:
     digest = hashlib.sha256(b"x").digest()
-    der = _make_response(digest, 5, status=status)
+    der = build_response(digest, 5, status=status)
     with pytest.raises(TimestampError, match="TSA damgayı vermedi"):
         parse_response(der, digest=digest, nonce=5)
 
@@ -632,9 +560,49 @@ def test_a_response_with_a_different_hash_algorithm_is_rejected() -> None:
     zaten düşer ama algoritma kontrolü hatayı doğru isimlendiriyor.
     """
     digest = hashlib.sha512(b"x").digest()
-    der = _make_response(digest, 5, algorithm="sha512")
+    der = build_response(digest, 5, hash_algorithm="sha512")
     with pytest.raises(TimestampError):
         parse_response(der, digest=digest, nonce=5)
+
+
+def test_a_token_without_certificates_is_refused() -> None:
+    """
+    `certReq=True` gönderiyoruz; sertifika gömmeyen bir TSA kabul
+    EDİLMEMELİ. Böyle bir damga sonradan çevrimdışı doğrulanamaz ve hatayı
+    aylar sonra değil, damgalama anında vermek gerekiyor.
+    """
+    digest = hashlib.sha256(b"x").digest()
+    der = build_response(digest, 5, include_certs=False)
+    with pytest.raises(TimestampError, match="sertifika gömmemiş"):
+        parse_response(der, digest=digest, nonce=5)
+
+
+def test_a_stamped_file_carries_the_full_certificate_chain(
+    hcl: Path, fake_tsa: FakeTSA
+) -> None:
+    """
+    Zincir fragmanda AYRI bir alan değil, token'ın İÇİNDE — bu yüzden
+    saklandığının kanıtı da token'dan okunuyor.
+    """
+    timestamp_file(hcl, transport=fake_tsa)
+    info = read_trailer(hcl)
+    assert info is not None
+
+    certs = cms.ContentInfo.load(info.token_der)["content"]["certificates"]
+    konular = [c.chosen.subject.native.get("common_name") for c in certs]
+    assert "HYCLEUS Test TSA" in konular
+    assert "HYCLEUS Test Root CA" in konular
+
+
+def test_the_real_freetsa_token_also_embeds_its_chain() -> None:
+    """Aynı şey sahadaki TSA için de geçerli — varsayım değil, ölçüm."""
+    token = parse_response(
+        _FIXTURE.read_bytes(), digest=_FIXTURE_DIGEST, nonce=_FIXTURE_NONCE
+    )
+    certs = cms.ContentInfo.load(token)["content"]["certificates"]
+    assert len(certs) == 2
+    assert any(c.chosen.ca for c in certs)          # kök CA
+    assert any(not c.chosen.ca for c in certs)      # imzalama sertifikası
 
 
 def test_garbage_is_not_parsed_as_a_response() -> None:

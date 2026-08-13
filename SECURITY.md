@@ -375,44 +375,72 @@ stream straight to the path the user picks. SafeZone is infrastructure
 placed ahead of the open/preview flow, on the reasoning that whoever writes
 that flow will reach for `tempfile` if the safe path is not already there.
 
-### 4.9 Timestamps are stored, not yet verified — and can be stripped
+### 4.9 Timestamps are verifiable offline — but the trust anchor comes from the file
 
-A `.hcl` file can now carry an RFC 3161 timestamp token, obtained by having
-a Timestamp Authority sign the **plaintext SHA-256** already recorded in the
+A `.hcl` file can carry an RFC 3161 timestamp token, obtained by having a
+Timestamp Authority sign the **plaintext SHA-256** already recorded in the
 AAD (`original_sha256`). Because the hash is taken from the header, stamping
 needs **no key and never touches plaintext**. What the token proves is
 narrow but real: this content existed no later than the time the TSA signed.
 
-Three limits, all deliberate at this stage:
+`verify_timestamp()` now checks that claim cryptographically, **with no
+network access at all** — the signing certificate and its chain travel
+inside the token (`certReq=True`), so verification uses nothing but the file
+itself. Ten checks run in order: the token parses and carries exactly one
+signer; the signer's certificate is embedded; the `message-digest` and
+`content-type` signed attributes match; the signature verifies against that
+certificate's public key; the certificate carries the `timeStamping` EKU
+(RFC 3161 §2.3); it was valid **at `genTime`**, not today; each certificate
+in the chain is signed by the next; and the stamped digest equals the file's
+`original_sha256`. There is a CLI for it:
 
-**The signature is not checked yet.** This step obtains the token and
-validates its *shape* — status, message imprint, nonce, hash algorithm — but
-does not verify that the TSA's signature is genuine or that its certificate
-chains anywhere. Right now HYCLEUS **stores** what the TSA returned; it does
-not vouch for it. Offline verification is the next step, and until it lands
-a timestamp should be read as a record, not as proof.
+```
+python CORE/verify_timestamp_cli.py --verify-timestamp <file.hcl> [--trusted-root ca.pem]
+```
+
+A timestamp is therefore no longer merely a record. Three limits remain, and
+the first is the one that matters:
+
+**The trust anchor comes from the artifact being verified.** What is proven
+is the chain's *internal consistency*, not that its root deserves trust — the
+root travels in the same file as the token. Anyone who can rewrite the
+trailer can mint their own CA, issue their own TSA certificate, sign a token
+saying whatever time they like, and this code will call it valid, because
+mathematically it is. Real trust requires comparing the root against a store
+held **outside** the file: `verify_timestamp(trusted_roots=...)`, or
+`--trusted-root` on the CLI. Without it the result carries
+`anchor_trusted=False` and the CLI prints an explicit warning every time —
+the default never quietly implies trust. This is the same shape of limit as
+the audit anchor in §4.6: evidence and the means of checking it must not
+live in the same place.
 
 **The trailer is outside the GCM tag.** The tag covers the AAD and the
 ciphertext only — not the magic, the version byte, or the timestamp trailer.
 So a timestamp can be **deleted**: strip the trailer and the file still
 decrypts cleanly, simply looking unstamped. "Never stamped" and "stamp
 removed" are indistinguishable from the file alone. A timestamp cannot be
-*forged* — the token is bound to a specific plaintext hash — but it can be
-made to disappear. Defending against that requires recording stamps
-somewhere other than the file they describe, which is the same argument the
-audit anchor makes in §4.6.
+*forged onto other content* — the digest is cross-checked against the AAD,
+and another file's token is rejected — but it can be made to disappear.
 
 **Without a key, the stamped hash is unverified.** `original_sha256` sits in
 the AAD, which GCM protects — but checking that protection requires the key.
-Stamping without one takes the header's word for it. `timestamp_file()`
-accepts an optional key and runs `verify_file()` first when given one; the
-caller decides which trade it wants.
+Both stamping and verification read it without one, so they answer "was the
+hash the header claims actually timestamped?" The companion question — "does
+the content actually hash to that?" — is `verify_file()`'s job, and needs the
+key. `timestamp_file()` accepts an optional key and runs `verify_file()`
+first when given one.
 
-Container versioning: files written before this change are version `0x01`
+**What is not checked:** certificate revocation (no OCSP or CRL — both need
+network, and this is deliberately offline), and the self-signature of a
+self-signed root, which is not a trust statement.
+
+Container versioning: files written before this feature are version `0x01`
 and are still read unchanged. New files are `0x02`, and `0x02` **without** a
 trailer is entirely valid — the stamp is optional and added later. Version
 `0x01` files are never scanned for a trailer, since the format did not
-define one.
+define one. The trailer format stayed at version `0x01`: the certificate
+chain lives inside the token, so no second copy was added — two lists that
+could disagree would be worse than one.
 
 ---
 
@@ -434,7 +462,8 @@ define one.
 | PIN storage | Argon2id hash (never plaintext); minimum 6 characters for new PINs |
 | Secret storage | OS credential store, service `HYCLEUS`, usernames `share_2:<hwid>` and `totp_secret` |
 | Second factor | TOTP (RFC 6238), 6 digits, ±1 window |
-| Trusted timestamp | RFC 3161, SHA-256 message imprint over the **plaintext** hash, nonce + `certReq`; token stored in an optional file trailer outside the GCM tag — signature not verified yet, see §4.9 |
+| Trusted timestamp | RFC 3161, SHA-256 message imprint over the **plaintext** hash, nonce + `certReq`; token in an optional file trailer outside the GCM tag |
+| Timestamp verification | Offline, no network: CMS signature over `signedAttrs` (ECDSA / RSA PKCS#1 v1.5 / PSS) against the embedded signer certificate, `timeStamping` EKU, validity at `genTime`, chain walked among embedded certs, digest cross-checked against the AAD — trust anchor must be supplied externally, see §4.9 |
 
 **Randomness** comes from `os.urandom` and `secrets` throughout — nonces,
 salts, master keys and the Shamir polynomial coefficient.
@@ -843,42 +872,71 @@ doğrudan kullanıcının seçtiği yola akıyor. SafeZone, aç/önizle akışı
 ÖNCE konmuş bir altyapı; gerekçesi basit: o akışı yazan kişi, güvenli yol
 hazır değilse `tempfile`'a uzanacaktır.
 
-### 4.9 Zaman damgaları saklanıyor, henüz doğrulanmıyor — ve silinebilir
+### 4.9 Zaman damgaları çevrimdışı doğrulanabiliyor — ama güven kökü dosyadan geliyor
 
-Bir `.hcl` dosyası artık RFC 3161 zaman damgası taşıyabiliyor: AAD'de zaten
+Bir `.hcl` dosyası RFC 3161 zaman damgası taşıyabiliyor: AAD'de zaten
 kayıtlı olan **düz metin SHA-256**'sı (`original_sha256`) bir Zaman Damgası
 Otoritesi'ne imzalatılıyor. Özet başlıktan okunduğu için damgalama
 **anahtar istemiyor ve düz metne hiç dokunmuyor**. Kanıtladığı şey dar ama
 gerçek: bu içerik, TSA'nın imzaladığı tarihte zaten vardı.
 
-Bu aşamada bilinçli üç sınır var:
+`verify_timestamp()` artık bu iddiayı kriptografik olarak, **hiç ağa
+çıkmadan** doğruluyor — imzalama sertifikası ve zinciri token'ın içinde
+geliyor (`certReq=True`), yani doğrulama dosyanın kendisinden başka hiçbir
+şey kullanmıyor. On kontrol sırayla koşuyor: token ayrıştırılabiliyor ve tam
+olarak bir imzalayan taşıyor; imzalayanın sertifikası gömülü; `message-digest`
+ve `content-type` imzalı öznitelikleri tutuyor; imza o sertifikanın açık
+anahtarıyla doğrulanıyor; sertifika `timeStamping` EKU'su taşıyor
+(RFC 3161 §2.3); **`genTime` anında** geçerliydi (bugün değil); zincirdeki
+her sertifika bir üsttekiyle imzalanmış; ve damgalanan özet dosyanın
+`original_sha256`'sıyla aynı. Komut satırı aracı da var:
 
-**İmza henüz doğrulanmıyor.** Bu adım token'ı alıyor ve *biçimini* kontrol
-ediyor — status, message imprint, nonce, özet algoritması. Ama TSA'nın
-imzasının gerçek olduğunu ya da sertifikasının bir yere zincirlendiğini
-doğrulamıyor. HYCLEUS şu an TSA'nın verdiğini **saklıyor**, ona kefil
-olmuyor. Çevrimdışı doğrulama sonraki adım; o gelene kadar bir zaman
-damgası kanıt değil, kayıt olarak okunmalı.
+```
+python CORE/verify_timestamp_cli.py --verify-timestamp <dosya.hcl> [--trusted-root ca.pem]
+```
+
+Yani zaman damgası artık yalnızca bir kayıt değil. Üç sınır kaldı ve
+birincisi asıl önemli olan:
+
+**Güven kökü, doğrulanan dosyanın içinden geliyor.** Kanıtlanan şey zincirin
+*iç tutarlılığı*; kökünün güvenilir olduğu değil — kök, token'la aynı
+dosyada seyahat ediyor. Fragmanı yeniden yazabilen biri kendi CA'sını
+üretir, kendi TSA sertifikasını keser, istediği tarihi söyleyen bir token
+imzalar ve bu kod ona GEÇERLİ der; çünkü matematiksel olarak geçerlidir.
+Gerçek güven, kökün dosyanın **dışında** tutulan bir depoyla
+karşılaştırılmasını gerektirir: `verify_timestamp(trusted_roots=...)` ya da
+CLI'da `--trusted-root`. Verilmezse sonuç `anchor_trusted=False` taşıyor ve
+CLI her seferinde açık bir uyarı basıyor — varsayılan sessizce güven ima
+etmiyor. Bu, §4.6'daki denetim çıpasıyla aynı biçimde bir sınır: kanıt ile
+kanıtı doğrulayan şey aynı yerde durmamalı.
 
 **Fragman GCM tag'inin dışında.** Tag yalnızca AAD ile ciphertext'i
 kapsıyor; magic, sürüm byte'ı ve zaman damgası fragmanı kapsam dışı. Yani
 bir damga **silinebilir**: fragman kırpılırsa dosya sorunsuz çözülür,
 yalnızca damgasız görünür. "Hiç damgalanmadı" ile "damgası silindi" dosyaya
-bakarak ayırt EDİLEMEZ. Damga *uydurulamaz* — token belirli bir düz metin
-özetine bağlı — ama yok edilebilir. Buna karşı korunmak, damga kaydının
-tarif ettiği dosyadan başka bir yerde de tutulmasını gerektirir; §4.6'daki
-denetim çıpasının gerekçesiyle birebir aynı argüman.
+bakarak ayırt EDİLEMEZ. Damga *başka bir içeriğe uydurulamaz* — özet AAD ile
+çapraz kontrol ediliyor ve başka bir dosyanın token'ı reddediliyor — ama yok
+edilebilir.
 
 **Anahtarsız damgalamada özet doğrulanmamıştır.** `original_sha256` AAD'de
 duruyor ve GCM onu koruyor, ama bu korumayı kontrol etmek anahtar ister.
-Anahtarsız damgalama başlığın sözüne güvenir. `timestamp_file()` opsiyonel
-bir anahtar alıyor ve verilirse önce `verify_file()` çalıştırıyor; hangi
-takası istediğine çağıran karar veriyor.
+Hem damgalama hem doğrulama onu anahtarsız okuyor, yani "başlığın iddia
+ettiği özet gerçekten damgalanmış mı" sorusuna yanıt veriyorlar. Eşlik eden
+soru — "içerik gerçekten o özete mi sahip" — `verify_file()`'ın işi ve
+anahtar ister. `timestamp_file()` opsiyonel bir anahtar alıyor ve verilirse
+önce `verify_file()` çalıştırıyor.
 
-Kap sürümü: bu değişiklikten önce yazılan dosyalar `0x01` ve aynen okunmaya
+**Kontrol EDİLMEYENLER:** sertifika iptali (OCSP ya da CRL yok — ikisi de ağ
+ister, burası bilerek çevrimdışı) ve kendini imzalayan bir kökün kendi
+imzası, ki o bir güven ifadesi taşımaz.
+
+Kap sürümü: bu özellikten önce yazılan dosyalar `0x01` ve aynen okunmaya
 devam ediyor. Yeni dosyalar `0x02` ve fragmanı **olmayan** bir `0x02` de
 tamamen geçerli — damga opsiyonel ve sonradan ekleniyor. `0x01` dosyalarda
 fragman hiç aranmıyor, çünkü o formatta böyle bir şey tanımlı değildi.
+Fragman biçimi `0x01`'de KALDI: sertifika zinciri token'ın içinde olduğu
+için ikinci bir kopya eklenmedi — birbirini tutmayabilecek iki liste, tek
+listeden kötü olurdu.
 
 ## 5. Kriptografik ayrıntılar
 
@@ -898,7 +956,8 @@ fragman hiç aranmıyor, çünkü o formatta böyle bir şey tanımlı değildi.
 | PIN saklama | Argon2id hash (asla düz metin); yeni PIN'ler için en az 6 karakter |
 | Sır saklama | OS anahtar kasası, servis `HYCLEUS`, adlar `share_2:<hwid>` ve `totp_secret` |
 | İkinci faktör | TOTP (RFC 6238), 6 hane, ±1 pencere |
-| Güvenilir zaman damgası | RFC 3161, **düz metin** özeti üzerinden SHA-256 message imprint, nonce + `certReq`; token GCM tag'inin dışındaki opsiyonel dosya fragmanında — imza henüz doğrulanmıyor, bkz. §4.9 |
+| Güvenilir zaman damgası | RFC 3161, **düz metin** özeti üzerinden SHA-256 message imprint, nonce + `certReq`; token GCM tag'inin dışındaki opsiyonel dosya fragmanında |
+| Zaman damgası doğrulaması | Çevrimdışı, ağsız: `signedAttrs` üzerindeki CMS imzası (ECDSA / RSA PKCS#1 v1.5 / PSS) gömülü imzalama sertifikasına karşı, `timeStamping` EKU, `genTime` anında geçerlilik, gömülü sertifikalar arasında zincir yürüyüşü, özetin AAD ile çapraz kontrolü — güven kökü dışarıdan verilmeli, bkz. §4.9 |
 
 **Rastgelelik** baştan sona `os.urandom` ve `secrets`'tan gelir — nonce'lar,
 tuzlar, master key'ler ve Shamir polinom katsayısı.

@@ -491,6 +491,17 @@ def parse_response(der: bytes, *, digest: bytes, nonce: int) -> bytes:
             "Yanıt bu isteğe ait değil (tekrar oynatma olabilir)."
         )
 
+    # Sertifika zinciri token'ın İÇİNDE olmak zorunda: çevrimdışı doğrulama
+    # (CORE/timestamp_verify.py) yalnızca dosyadaki veriyle çalışıyor ve
+    # imzayı doğrulayacak sertifikayı başka hiçbir yerden alamıyor.
+    # `certReq=True` gönderdik; uymayan bir TSA'yı SESSİZCE kabul etmek,
+    # aylar sonra doğrulanamayan bir damga bırakırdı. Hatayı şimdi ver.
+    if not token["content"]["certificates"]:
+        raise TimestampError(
+            "TSA token'a sertifika gömmemiş (certReq=True istenmesine rağmen) — "
+            "bu damga sonradan çevrimdışı doğrulanamaz."
+        )
+
     return bytes(token.dump())
 
 
