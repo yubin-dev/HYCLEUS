@@ -364,6 +364,14 @@ class DBManager:
             "CREATE INDEX IF NOT EXISTS idx_files_retention"
             " ON files(retention_profile_id)"
         )
+        # Migration: audit_log(target_type, target_id) — envanter raporu her
+        # dosya için "son işlem" tarihini bu tabloya sorguyor
+        # (CORE/inventory.py). İndekssiz sorgu, dosya sayısı × audit kaydı
+        # kadar tarama demekti.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_target"
+            " ON audit_log(target_type, target_id)"
+        )
         self._conn.commit()
 
         # Hazır şablonlar yalnızca ilk açılışta yazılır (bkz. CORE/retention.py).

@@ -152,6 +152,37 @@ class AdminPanel(QDialog):
         # Sekme 3 — Ayarlar
         tabs.addTab(self._make_settings_page(), "Ayarlar")
 
+        # ÖNERİ (uygulanmadı) — Sekme 4: "Saklama Envanteri"
+        #
+        # KVKK envanter raporunun CORE tarafı hazır (CORE/inventory.py);
+        # burada yalnızca UI eksik. Doğal yeri bu panel: rapor denetim
+        # belgesidir ve zaten yönetici yetkisi isteyen bir ekranda durmalı.
+        #
+        #   from CORE.inventory import (
+        #       generate_retention_inventory, export_inventory_csv,
+        #       export_inventory_pdf, ALL_STATUSES, STATUS_LABELS,
+        #   )
+        #
+        #   rows = generate_retention_inventory(
+        #       DBManager(),
+        #       profile_id=secili_profil_id,   # hepsi için None
+        #       status=secili_durumlar,        # hepsi için None
+        #       added_from=..., added_to=...,  # opsiyonel tarih aralığı
+        #   )
+        #   # tabloya bas: row.as_export_row() sütun sırası COLUMN_HEADERS ile aynı
+        #   # "CSV indir" / "PDF indir" düğmeleri:
+        #   path, _ = QFileDialog.getSaveFileName(self, "Kaydet", "envanter.csv")
+        #   export_inventory_csv(rows, path)
+        #
+        # Alternatif yer: main_window.py araç çubuğuna "Envanter Raporu"
+        # düğmesi. Panel tercih edilmeli — rapor tüm dosyaları kapsıyor,
+        # main_window ise o an seçili klasör/etikete göre çalışıyor.
+        #
+        # NOT: "Sahip" sütunu yalnızca bu düzeltmeden SONRA eklenen dosyalarda
+        # dolu gelir (files.added_by artık yazılıyor — CORE/file_records.py).
+        # Daha eski kayıtlarda "bilinmiyor" görünür ve öyle kalmalıdır:
+        # kimin yüklediği gerçekten bilinmiyor, geriye dönük dolgu tahmin olurdu.
+
         root.addWidget(tabs)
 
     def _make_table(self) -> QTableWidget:

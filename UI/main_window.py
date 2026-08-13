@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 import pyotp
 
 from CORE.crypto import AuthenticationError, decrypt_file, encrypt_file
+from CORE.file_records import record_encrypted_file
 from CORE.scanner import ScanResult, scan_file
 from CORE.usb_manager import DEV_MODE as _DEV_MODE, get_usb_hwid
 from CORE.vault_manager import (
@@ -197,29 +198,22 @@ class _FileRunnable(QRunnable):
 
         try:
             db = DBManager()
-            db.execute(
-                """
-                INSERT INTO files
-                    (filename, filepath, label, size_bytes, expires_at,
-                     original_sha256, aad_metadata, folder_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(filepath) DO UPDATE SET
-                    filename        = excluded.filename,
-                    label           = excluded.label,
-                    size_bytes      = excluded.size_bytes,
-                    expires_at      = excluded.expires_at,
-                    original_sha256 = excluded.original_sha256,
-                    aad_metadata    = excluded.aad_metadata,
-                    folder_id       = excluded.folder_id
-                """,
-                (self._src.name, str(hcl_path), self._label, size_bytes,
-                 expires_at, sha256_hex, aad_json, self._folder_id),
+            # SQL CORE/file_records.py'ye taşındı: satır içi durduğu sürece
+            # Qt'siz test edilemiyordu ve added_by kolonu gözden kaçmıştı.
+            file_id = record_encrypted_file(
+                db,
+                filename=self._src.name,
+                filepath=str(hcl_path),
+                label=self._label,
+                size_bytes=size_bytes,
+                expires_at=expires_at,
+                original_sha256=sha256_hex,
+                aad_metadata=aad_json,
+                folder_id=self._folder_id,
+                added_by=self._user_id,
             )
-            row = db.fetchone("SELECT id FROM files WHERE filepath = ?", (str(hcl_path),))
-            if row is None:
-                raise RuntimeError(f"files kaydı bulunamadı: {hcl_path}")
-            file_id = row["id"]
-            db.log("file_added", target_type="file", target_id=file_id,
+            db.log("file_added", user_id=self._user_id,
+                   target_type="file", target_id=file_id,
                    detail=f"label={self._label} hwid={self._hwid} hcl={hcl_path.name}")
         except Exception as exc:
             result["error"] = f"Veritabanı: {exc}"

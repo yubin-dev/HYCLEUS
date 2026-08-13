@@ -11,3 +11,11 @@ argon2-cffi
 keyring
 requests
 apscheduler<4
+# KVKK envanter raporunun PDF çıktısı (CORE/inventory.py).
+# Qt'nin QPdfWriter'ı da PDF üretebilirdi ve yeni bağımlılık gerektirmezdi,
+# ama QApplication örneği ister: CORE bugün tamamen GUI'siz ve bir denetim
+# raporunun üretimi ekran/olay döngüsüne bağlanmamalı (CLI, zamanlanmış
+# görev, başsız CI). reportlab saf Python API'siyle başsız çalışır,
+# BSD-3-Clause (proje MIT ile uyumlu) ve platypus çok sayfalı tabloda
+# başlık satırını tekrarlar — denetim belgesi için gereken tam olarak bu.
+reportlab
