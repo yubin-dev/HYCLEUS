@@ -61,6 +61,8 @@ is the PIN alone.
 | The newest audit entries deleted (log truncated) | ⚠️ Detected only via the anchor | The chain head is written outside the database to `data/audit_anchor.log` — see §4.6 |
 | The whole audit chain recomputed after an edit | ⚠️ Detected only via the anchor | The hash is unkeyed; only the external anchor disagrees — see §4.6 |
 | A `.hcl` file silently corrupted on disk (bit rot, bad copy, tampering) | ✅ Found without opening it | Weekly integrity sweep verifies every GCM tag; result in `files.integrity_status` — see §4.7 |
+| Someone reaching an unattended, still-unlocked session | ⚠️ Time-limited | Idle auto-lock: session locks after N minutes of no input even with the USB inserted; unlock requires the PIN — see §4.8 |
+| Decrypted copies left in the system temp directory | ✅ Not written there | Temporary plaintext goes to `data/safezone/`, shredded on exit and on next startup — see §4.8 |
 
 ---
 
@@ -330,6 +332,49 @@ regardless of file size. Plaintext still exists transiently per 64 KB block
 accumulated, returned, or written", not "never produced". See
 `CORE.crypto.verify_file()`.
 
+### 4.8 Idle lock and SafeZone close two gaps, neither completely
+
+**Idle auto-lock.** The hardware lock only fires when the USB is *removed*,
+but someone who walks away from their desk usually leaves it plugged in. The
+session now also locks after N minutes without mouse or keyboard input
+(default 10, configurable in the admin panel, `0` disables it and that
+disabling is audited under its own action). Unlocking requires the vault
+PIN — deliberately not "any mouse movement", which would make it a
+screensaver rather than a control.
+
+It is one overlay with two triggers and a set of lock *reasons*: if the USB
+is reinserted while the session is idle-locked, the session stays locked.
+The two triggers have different exit conditions, not different widgets.
+
+What it does not do: it constrains the **application window only**. It does
+not lock the workstation, and it does nothing about a machine left logged in
+with other applications open. The OS screen lock is the control for that;
+this one is narrower on purpose. The setting also lives in the unencrypted
+database, so `UPDATE settings SET value='0'` disables it — with the same
+caveat as every other application-level control (§4.5).
+
+**SafeZone.** When decrypted content has to reach disk it goes to
+`data/safezone/`, never the system temp directory. Temp is the wrong place
+for three reasons: its cleanup is on the OS's schedule and uses `unlink`
+rather than overwriting, its contents are indexed and backed up by tools we
+do not control, and it may sit on a different volume than the one
+`shred_file()`'s assumptions were written for. SafeZone files are shredded
+(random overwrite → fsync → truncate → unlink) when the work finishes, again
+at shutdown, and anything found at startup is treated as evidence of a crash,
+shredded, and logged under `safezone_orphans_purged`.
+
+Two honest notes. The overwrite carries exactly the same limits as
+everywhere else in this codebase — SSD wear levelling, copy-on-write
+filesystems and snapshots can leave the original blocks intact (§3). And on
+Windows the directory inherits `data/`'s ACL rather than getting owner-only
+permissions, so what protects SafeZone there is the protection on `data/`,
+not this code.
+
+As of this version **no flow writes plaintext to disk at all** — downloads
+stream straight to the path the user picks. SafeZone is infrastructure
+placed ahead of the open/preview flow, on the reasoning that whoever writes
+that flow will reach for `tempfile` if the safe path is not already there.
+
 ---
 
 ## 5. Cryptographic details
@@ -446,6 +491,8 @@ Saldırgan oturum açmış OS kullanıcısı hâline geldiğinde anahtar kasası
 | En yeni denetim kayıtlarının silinmesi (kuyruğun kesilmesi) | ⚠️ Yalnızca çıpayla tespit edilir | Zincirin ucu veritabanının dışına, `data/audit_anchor.log`'a yazılır — bkz. §4.6 |
 | Değişiklikten sonra tüm zincirin yeniden hesaplanması | ⚠️ Yalnızca çıpayla tespit edilir | Hash anahtarsızdır; yalnızca dıştaki çıpa itiraz eder — bkz. §4.6 |
 | Bir `.hcl` dosyasının diskte sessizce bozulması (bit çürümesi, yarım kopyalama, müdahale) | ✅ Dosya açılmadan bulunur | Haftalık bütünlük taraması her GCM tag'ini doğrular; sonuç `files.integrity_status` içinde — bkz. §4.7 |
+| Başında kimse olmayan, açık kalmış bir oturuma erişilmesi | ⚠️ Süreyle sınırlı | Hareketsizlik kilidi: USB takılı olsa bile N dakika giriş olmazsa oturum kilitlenir, açmak PIN ister — bkz. §4.8 |
+| Çözülmüş kopyaların sistem TEMP dizininde kalması | ✅ Oraya hiç yazılmaz | Geçici düz metin `data/safezone/`'a gider; çıkışta ve sonraki açılışta imha edilir — bkz. §4.8 |
 
 ## 3. HYCLEUS'un **korumadığı** senaryolar
 
@@ -713,6 +760,48 @@ bellek maliyeti dosya boyutundan bağımsız, sabittir. Düz metin yine de her
 64 KB'lık blokta kısa süreliğine oluşur — GCM ilerlerken üretiyor — yani
 dürüst iddia "biriktirilmez, döndürülmez, yazılmaz"dır, "hiç üretilmez"
 değil. Bkz. `CORE.crypto.verify_file()`.
+
+### 4.8 Hareketsizlik kilidi ve SafeZone iki boşluğu kapatıyor, ikisini de tam değil
+
+**Hareketsizlik kilidi.** Donanım kilidi yalnızca USB ÇEKİLDİĞİNDE devreye
+giriyor, ama masasından kalkan biri USB'yi genellikle takılı bırakır. Artık
+oturum, N dakika fare/klavye girdisi olmazsa da kilitleniyor (varsayılan 10
+dakika, yönetici panelinden yapılandırılabilir; `0` kapatır ve bu kapatma
+kendi action'ıyla denetime düşer). Kilidi açmak vault PIN'i istiyor —
+bilerek "herhangi bir fare hareketi" değil; öyle olsaydı bu bir ekran
+koruyucu olurdu, güvenlik kontrolü değil.
+
+Tek örtü, iki tetikleyici ve bir kilit NEDENLERİ kümesi: oturum
+hareketsizlikten kilitliyken USB geri takılırsa oturum KİLİTLİ KALIR. İki
+tetikleyicinin farkı görünüm değil, çıkış koşulu.
+
+Yapmadığı şey: yalnızca UYGULAMA PENCERESİNİ sınırlar. İş istasyonunu
+kilitlemez ve başka uygulamaları açık bırakılmış bir makine için hiçbir şey
+yapmaz. Onun kontrolü işletim sisteminin ekran kilidi; bu bilerek daha dar.
+Ayar da şifresiz veritabanında duruyor, yani `UPDATE settings SET
+value='0'` onu kapatır — her uygulama seviyesi kontrolle aynı çekince
+(§4.5).
+
+**SafeZone.** Çözülmüş içeriğin diske inmesi gerektiğinde hedef
+`data/safezone/`, asla sistem TEMP'i değil. TEMP üç nedenle yanlış yer:
+temizliği işletim sisteminin takvimine bağlı ve üzerine yazarak değil
+`unlink` ile yapılıyor, içeriği bizim kontrol etmediğimiz araçlarca
+indeksleniyor ve yedekleniyor, ayrıca `shred_file()`'ın varsayımlarının
+yazıldığı birimden başka bir birimde olabilir. SafeZone dosyaları iş
+bitince, kapanışta ve açılışta imha ediliyor (rastgele üzerine yazma →
+fsync → truncate → unlink); açılışta bulunan her şey bir ÇÖKME kanıtı
+sayılıp `safezone_orphans_purged` olarak kaydediliyor.
+
+İki dürüst not. Üzerine yazma, bu kod tabanının her yerindeki aynı sınırları
+taşıyor — SSD wear leveling, kopyala-yaz dosya sistemleri ve snapshot'lar
+orijinal blokları yerinde bırakabilir (§3). Windows'ta ise dizin,
+sahibe-özel izinler yerine `data/`'nın ACL'ini devralıyor; yani SafeZone'u
+orada koruyan şey `data/` üzerindeki koruma, bu kod değil.
+
+Bu sürüm itibarıyla **hiçbir akış düz metni diske yazmıyor** — indirmeler
+doğrudan kullanıcının seçtiği yola akıyor. SafeZone, aç/önizle akışından
+ÖNCE konmuş bir altyapı; gerekçesi basit: o akışı yazan kişi, güvenli yol
+hazır değilse `tempfile`'a uzanacaktır.
 
 ## 5. Kriptografik ayrıntılar
 

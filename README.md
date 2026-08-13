@@ -34,6 +34,8 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | **Secret Storage** | `keyring` — Windows DPAPI / macOS Keychain / Linux Secret Service; no plaintext secrets on disk |
 | **Authentication** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
 | **Hardware Lock** | USB HWID binding — vault locks instantly on USB removal (in-app control; see Security Notes) |
+| **Idle Auto-Lock** | Session locks after N minutes of inactivity even with the USB inserted; PIN required to resume (default 10 min, configurable) |
+| **SafeZone** | Temporary decrypted copies never touch the system temp directory — shredded on exit, and leftovers from a crash are shredded at startup |
 | **Brute-force Defence** | Login rate limit — 5 failures → 30s, escalating to 300s; counter persisted in DB |
 | **Access Control** | RBAC: Administrator / Standard / Read-only roles |
 | **Malware Scan** | Windows Defender (MpCmdRun.exe) on every uploaded file |
@@ -289,6 +291,8 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | **Sır Saklama** | `keyring` — Windows DPAPI / macOS Keychain / Linux Secret Service; diskte düz metin sır yok |
 | **Kimlik Doğrulama** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
 | **Donanım Kilidi** | USB HWID bağlama — USB çekilince kasa anında kilitlenir (arayüz seviyesi kontrol; bkz. Güvenlik Notları) |
+| **Hareketsizlik Kilidi** | USB takılı olsa bile N dakika hareketsizlikte oturum kilitlenir; devam için PIN gerekir (varsayılan 10 dk, yapılandırılabilir) |
+| **SafeZone** | Geçici çözülmüş kopyalar sistem TEMP'ine hiç yazılmaz — çıkışta imha edilir, çökme sonrası artıklar açılışta temizlenir |
 | **Kaba Kuvvet Savunması** | Giriş sınırlaması — 5 hatada 30 sn, 300 sn'ye kadar artan; sayaç DB'de kalıcı |
 | **Erişim Kontrolü** | RBAC: Yönetici / Standart / Salt Okunur rolleri |
 | **Zararlı Tarama** | Her yüklenen dosyaya Windows Defender (MpCmdRun.exe) taraması |

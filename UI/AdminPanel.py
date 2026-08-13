@@ -22,6 +22,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from CORE.idle_lock import (
+    DEFAULT_IDLE_MINUTES,
+    IDLE_DISABLED,
+    IDLE_OPTIONS,
+    get_idle_timeout_minutes,
+    set_idle_timeout_minutes,
+)
 from CORE.vault_manager import (
     VaultTamperedError,
     blacklist_usb,
@@ -798,6 +805,33 @@ class AdminPanel(QDialog):
         row.addStretch()
         lay.addLayout(row)
 
+        # ── Hareketsizlik kilidi ──────────────────────────────────────────
+        idle_lbl = QLabel("Hareketsizlik kilidi")
+        idle_lbl.setStyleSheet("color:#89b4fa; font-size:12px; font-weight:600;")
+        lay.addWidget(idle_lbl)
+
+        idle_row = QHBoxLayout()
+        idle_row.setSpacing(10)
+
+        self._idle_combo = QComboBox()
+        for m in IDLE_OPTIONS:
+            self._idle_combo.addItem("Kapalı" if m == IDLE_DISABLED else f"{m} dakika", m)
+        self._idle_combo.setFixedWidth(110)
+        self._idle_combo.setStyleSheet(
+            "QComboBox{background:#313244;color:#cdd6f4;border:1px solid #45475a;"
+            "border-radius:6px;padding:5px 10px;font-size:12px;}"
+            "QComboBox::drop-down{border:none;width:20px;}"
+            "QComboBox QAbstractItemView{background:#313244;color:#cdd6f4;"
+            "border:1px solid #45475a;selection-background-color:#45475a;}"
+        )
+        idle_row.addWidget(self._idle_combo)
+
+        idle_hint = QLabel("hareketsizlikten sonra oturum kilitlenir (USB takılı olsa bile)")
+        idle_hint.setStyleSheet("color:#a6adc8; font-size:12px;")
+        idle_row.addWidget(idle_hint)
+        idle_row.addStretch()
+        lay.addLayout(idle_row)
+
         btn_save = QPushButton("Kaydet")
         btn_save.setStyleSheet(_BTN_SUCCESS)
         btn_save.setCursor(Qt.PointingHandCursor)
@@ -818,16 +852,51 @@ class AdminPanel(QDialog):
                 self._ttl_combo.setCurrentIndex(i)
                 break
 
+        try:
+            idle_current = get_idle_timeout_minutes(DBManager())
+        except Exception:
+            idle_current = DEFAULT_IDLE_MINUTES
+        for i in range(self._idle_combo.count()):
+            if self._idle_combo.itemData(i) == idle_current:
+                self._idle_combo.setCurrentIndex(i)
+                break
+
     def _on_save_settings(self) -> None:
         hours = self._ttl_combo.currentData()
+        minutes = self._idle_combo.currentData()
         try:
             db = DBManager()
             db.set_setting("imha_ttl_hours", str(hours))
             db.log("setting_changed",
                    detail=f"key=imha_ttl_hours value={hours} hwid={self._current_hwid}")
+
+            # Doğrulama ve denetim kaydı CORE tarafında; kilidi KAPATMAK ayrı
+            # bir action ile yazılıyor (bkz. CORE/idle_lock.py).
+            set_idle_timeout_minutes(db, minutes, hwid=self._current_hwid)
+
+            # Açık pencereye anında uygula — yeniden başlatma beklenmesin.
+            self._apply_idle_timeout_to_main_window()
+
+            idle_text = "kapalı" if minutes == IDLE_DISABLED else f"{minutes} dakika"
             QMessageBox.information(
                 self, "Kaydedildi",
-                f"İmha Odası TTL süresi {hours} saat olarak güncellendi.",
+                f"İmha Odası TTL süresi {hours} saat olarak güncellendi.\n"
+                f"Hareketsizlik kilidi: {idle_text}.",
             )
         except Exception as exc:
             QMessageBox.critical(self, "Hata", str(exc))
+
+    def _apply_idle_timeout_to_main_window(self) -> None:
+        """
+        Ayarı çalışan ana pencereye bildirir.
+
+        Paneli açan pencere aranıyor; bulunamazsa sessizce geçiliyor —
+        ayar zaten kaydedildi ve bir sonraki açılışta okunacak.
+        """
+        parent = self.parent()
+        while parent is not None:
+            reload_fn = getattr(parent, "reload_idle_timeout", None)
+            if callable(reload_fn):
+                reload_fn()
+                return
+            parent = parent.parent()

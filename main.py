@@ -19,6 +19,7 @@ from CORE.audit_chain import (
     verify_against_anchor,
     write_anchor,
 )
+from CORE.safezone import purge_on_exit, purge_orphans
 from CORE.scheduler import start_scheduler, stop_scheduler
 from CORE.secret_migration import MigrationError, run_migrations
 from CORE.secret_store import KeyringUnavailableError, backend_name, ensure_available
@@ -122,6 +123,26 @@ def main() -> None:
     except Exception as exc:  # çıpa sorunu açılışı engellemesin
         _log.warning("Denetim çıpası işlenemedi: %s", exc)
 
+    # ── SafeZone artakalan temizliği ─────────────────────────────────────────
+    # SafeZone'da dosya bulmak, önceki oturumun DÜZGÜN KAPANMADIĞI anlamına
+    # gelir (normal kapanış onu boşaltıyor). Çözülmüş içerik diskte kalmış
+    # olabilir; imha edilip denetime yazılıyor. Bkz. CORE/safezone.py.
+    try:
+        rapor = purge_orphans(DBManager())
+        if rapor.had_leftovers:
+            _log.warning("Açılışta SafeZone artığı: %s", rapor.summary())
+        if not rapor.clean:
+            QMessageBox.warning(
+                None,
+                "Geçici Dosya Temizliği",
+                "Önceki oturumdan kalan geçici dosyaların bir kısmı "
+                "silinemedi:\n\n"
+                + "\n".join(f"· {ad}: {hata}" for ad, hata in rapor.errors[:5])
+                + "\n\nBu dosyalar çözülmüş içerik barındırıyor olabilir.",
+            )
+    except Exception as exc:  # temizlik sorunu açılışı engellemesin
+        _log.error("SafeZone açılış temizliği başarısız: %s", exc)
+
     # ── Sır migration'ı ──────────────────────────────────────────────────────
     # Düz metin sırları (DB usb_tokens.share_2, data/totp_secret.json) kasaya
     # taşır ve eski kopyaları imha eder. Şema versiyonu ile korunur; tamamlanmış
@@ -187,6 +208,23 @@ def main() -> None:
     # geçiliyor (bkz. CORE/scheduler.py, start_scheduler).
     start_scheduler(key_provider=lambda: session_key, hwid=hwid)
     app.aboutToQuit.connect(stop_scheduler)
+
+    def _safezone_on_quit() -> None:
+        """
+        Kapanışta SafeZone'u boşaltır — çözülmüş hiçbir kopya diskte kalmasın.
+
+        Çıpadan ÖNCE bağlanıyor: Qt aboutToQuit alıcılarını bağlanma
+        sırasıyla çağırıyor, dolayısıyla temizliğin denetim kaydı da
+        çıpalanan zincire giriyor.
+        """
+        try:
+            rapor = purge_on_exit(DBManager())
+            if rapor.had_leftovers:
+                _log.info("Kapanış SafeZone temizliği: %s", rapor.summary())
+        except Exception as exc:
+            _log.error("Kapanış SafeZone temizliği başarısız: %s", exc)
+
+    app.aboutToQuit.connect(_safezone_on_quit)
 
     def _anchor_on_quit() -> None:
         """Kapanışta zincirin son hâlini çıpalar — oturumun kapanış mührü."""
