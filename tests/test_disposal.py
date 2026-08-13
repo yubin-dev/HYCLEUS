@@ -586,7 +586,13 @@ class TestSchedulerEntegrasyonu:
         monkeypatch.setattr(scheduler, "_scheduler", None)
         try:
             scheduler.start_scheduler()
-            assert kayitli == ["purge_expired", "sweep_retention"]
+            # Bu testin konusu süpürme görevinin AYRI bir iş olarak kayıtlı
+            # olması (karantina temizliği düşerse süpürme çalışmaya devam
+            # etsin). Listenin tamamını sabitlemek, ilgisiz her yeni görevde
+            # bu testi kırardı — nitekim denetim çıpası eklenince kırıldı.
+            assert "sweep_retention" in kayitli
+            assert "purge_expired" in kayitli
+            assert len(set(kayitli)) == len(kayitli)  # id çakışması yok
         finally:
             monkeypatch.setattr(scheduler, "_scheduler", None)
 

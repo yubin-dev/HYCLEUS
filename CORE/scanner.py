@@ -113,6 +113,8 @@ def _scan_via_defender(path: Path, sha256: str) -> ScanResult | None:
 
 def _save_to_db(file_id: int, result: ScanResult) -> None:
     import sqlite3 as _sqlite3
+
+    from CORE.audit_chain import append_entry
     from DB.db_manager import DBManager
 
     # Thread-safe: singleton'ın connection'ını paylaşmak yerine
@@ -144,13 +146,22 @@ def _save_to_db(file_id: int, result: ScanResult) -> None:
                 "INSERT INTO quarantine (file_id, reason) VALUES (?, ?)",
                 (file_id, reason),
             )
-        conn.execute(
-            "INSERT INTO audit_log (action, target_type, target_id, detail)"
-            " VALUES (?, ?, ?, ?)",
-            ("defender_scan", "file", file_id,
-             f"verdict={result.verdict} mock={result.mock}"),
-        )
         conn.commit()
+
+        # Denetim kaydı hash zincirine eklenir (bkz. CORE/audit_chain.py).
+        # Düz INSERT bırakılsaydı satır hash'siz kalır ve doğrulama onu
+        # "unhashed" olarak — yani zincirde bir delik olarak — raporlardı.
+        #
+        # Karantina yazmasından SONRA ve ayrı bir transaction'da: append_entry
+        # kendi BEGIN IMMEDIATE'ini açıyor, araya sıkıştırılsaydı buradaki
+        # yarım işi erkenden commit ederdi.
+        append_entry(
+            conn,
+            "defender_scan",
+            target_type="file",
+            target_id=file_id,
+            detail=f"verdict={result.verdict} mock={result.mock}",
+        )
     finally:
         conn.close()
 

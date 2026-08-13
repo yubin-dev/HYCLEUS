@@ -14,6 +14,11 @@ _log = logging.getLogger("hycleus.main")
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from CORE.audit_chain import (
+    maybe_write_daily_anchor,
+    verify_against_anchor,
+    write_anchor,
+)
 from CORE.scheduler import start_scheduler, stop_scheduler
 from CORE.secret_migration import MigrationError, run_migrations
 from CORE.secret_store import KeyringUnavailableError, backend_name, ensure_available
@@ -87,6 +92,36 @@ def main() -> None:
         QMessageBox.critical(None, "Hata", str(exc))
         sys.exit(1)
 
+    # ── Denetim zinciri çıpası ───────────────────────────────────────────────
+    # Zincir DBManager.connect() içinde kuruluyor (bkz. CORE/audit_chain.py);
+    # burada yapılan iş yalnızca ucunu veritabanının DIŞINA sabitlemek.
+    #
+    # Önce ÖNCEKİ oturumun çıpasıyla karşılaştırılır: kuyruktan kayıt silmek
+    # ya da zinciri yeniden yazmak yalnızca burada görünür — zincirin kendi
+    # doğrulaması bu iki durumda kusursuz sonuç verir. Uyuşmazlık açılışı
+    # ENGELLEMEZ, çünkü denetim kaydı bir erişim kontrolü değil; ama hem
+    # kullanıcıya söylenir hem de kaydın kendisine düşülür.
+    try:
+        anchor_check = verify_against_anchor(DBManager())
+        if not anchor_check:
+            _log.critical("Denetim çıpası uyuşmuyor:\n%s", anchor_check.summary())
+            DBManager().log(
+                "audit_anchor_mismatch",
+                detail=" | ".join(anchor_check.problems),
+            )
+            QMessageBox.warning(
+                None,
+                "Denetim Kaydı Uyuşmuyor",
+                "Denetim kaydı, en son çıpalanan durumla eşleşmiyor —\n"
+                "kayıtlar silinmiş ya da değiştirilmiş olabilir.\n\n"
+                f"{anchor_check.summary()}\n\n"
+                "Uygulama açılmaya devam ediyor; bu bir erişim engeli değil,\n"
+                "bir kurcalama uyarısıdır.",
+            )
+        maybe_write_daily_anchor(DBManager())
+    except Exception as exc:  # çıpa sorunu açılışı engellemesin
+        _log.warning("Denetim çıpası işlenemedi: %s", exc)
+
     # ── Sır migration'ı ──────────────────────────────────────────────────────
     # Düz metin sırları (DB usb_tokens.share_2, data/totp_secret.json) kasaya
     # taşır ve eski kopyaları imha eder. Şema versiyonu ile korunur; tamamlanmış
@@ -148,6 +183,15 @@ def main() -> None:
 
     start_scheduler()
     app.aboutToQuit.connect(stop_scheduler)
+
+    def _anchor_on_quit() -> None:
+        """Kapanışta zincirin son hâlini çıpalar — oturumun kapanış mührü."""
+        try:
+            write_anchor(DBManager(), "shutdown")
+        except Exception as exc:
+            _log.warning("Kapanış çıpası yazılamadı: %s", exc)
+
+    app.aboutToQuit.connect(_anchor_on_quit)
 
     win = HycleusWindow(hwid=hwid, key=session_key, role=role)
     win.show()

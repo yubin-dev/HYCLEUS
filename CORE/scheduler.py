@@ -13,6 +13,10 @@ _INTERVAL_MINUTES = 10
 # Saatte bir, gün dönümünü makul bir gecikmeyle yakalar.
 _SWEEP_INTERVAL_MINUTES = 60
 
+# Denetim çıpası günde bir yazılır; saatlik bakmak gün dönümünü makul bir
+# gecikmeyle yakalar (bkz. _anchor_audit_chain).
+_ANCHOR_INTERVAL_MINUTES = 60
+
 
 def _purge_expired() -> None:
     """
@@ -95,6 +99,26 @@ def _sweep_retention() -> None:
         logger.error("Saklama süresi süpürmesi başarısız: %s", exc)
 
 
+def _anchor_audit_chain() -> None:
+    """
+    Denetim zincirinin ucunu günde bir kez veritabanının dışına yazar.
+
+    Açılış ve kapanış çıpaları main.py'de yazılıyor; bu görev günlerce açık
+    bırakılan kurulumlar için: uygulama hiç kapanmazsa iki çıpa arasında
+    haftalar geçebilirdi ve o aralıkta yapılan bir yeniden yazım
+    karşılaştırılacak hiçbir dış referans bulamazdı.
+
+    Zaten bugüne ait bir çıpa varsa hiçbir şey yazılmaz (bkz.
+    CORE/audit_chain.py — maybe_write_daily_anchor).
+    """
+    from CORE.audit_chain import maybe_write_daily_anchor
+    from DB.db_manager import DBManager
+    try:
+        maybe_write_daily_anchor(DBManager())
+    except Exception as exc:
+        logger.error("Denetim zinciri çıpası yazılamadı: %s", exc)
+
+
 def start_scheduler() -> None:
     """Arka plan zamanlayıcısını başlatır. Uygulama başlangıcında bir kez çağrılır."""
     global _scheduler
@@ -120,12 +144,24 @@ def start_scheduler() -> None:
         next_run_time=datetime.now(timezone.utc),
         misfire_grace_time=300,
     )
+    # Günlük denetim çıpası. Saatlik tetiklenir ama günde en fazla bir satır
+    # yazar — tetikleme sıklığı yalnızca gün dönümünü ne kadar gecikmeyle
+    # yakaladığını belirler.
+    _scheduler.add_job(
+        _anchor_audit_chain,
+        trigger="interval",
+        minutes=_ANCHOR_INTERVAL_MINUTES,
+        id="anchor_audit_chain",
+        next_run_time=datetime.now(timezone.utc),
+        misfire_grace_time=300,
+    )
     _scheduler.start()
     logger.info(
         "Zamanlayıcı başlatıldı — karantina temizliği %d dk, "
-        "saklama süresi süpürmesi %d dk aralıkla.",
+        "saklama süresi süpürmesi %d dk, denetim çıpası %d dk aralıkla.",
         _INTERVAL_MINUTES,
         _SWEEP_INTERVAL_MINUTES,
+        _ANCHOR_INTERVAL_MINUTES,
     )
 
 

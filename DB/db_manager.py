@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS quarantine (
                             CHECK(status IN ('active', 'released', 'destroyed'))
 );
 
+-- entry_hash: bkz. CORE/audit_chain.py. NULL = zincir dışı kayıt (zincir
+-- başlamadan önce yazılmış ya da append_entry() yerine doğrudan INSERT
+-- edilmiş). Zincir kurulumu sonradan geldiği için sütun NULL kabul eder;
+-- NOT NULL yapmak eski kayıtları taşınamaz hâle getirirdi.
 CREATE TABLE IF NOT EXISTS audit_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -56,7 +60,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
     target_type TEXT,
     target_id   INTEGER,
     detail      TEXT,
-    timestamp   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    timestamp   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    entry_hash  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS usb_tokens (
@@ -193,6 +198,11 @@ class DBManager:
         # commit edip autocommit moduna geçer; bağlantı ayarları ayrı execute ile kalıcı olur
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
+        # Denetim zinciri yazarken BEGIN IMMEDIATE ile yazma kilidi alınıyor
+        # (bkz. CORE/audit_chain.py). Tarama thread'i kendi bağlantısını
+        # açtığı için iki yazar çakışabilir; varsayılan 0 ms ile çakışan
+        # yazma anında "database is locked" ile düşerdi.
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(_SCHEMA)
         # Migration: expires_at sonradan eklendi
         try:
@@ -372,10 +382,28 @@ class DBManager:
             "CREATE INDEX IF NOT EXISTS idx_audit_log_target"
             " ON audit_log(target_type, target_id)"
         )
+        # Migration: audit_log.entry_hash — denetim kaydı hash zinciri
+        # (bkz. CORE/audit_chain.py). Bu sütun eklenmeden önce yazılmış
+        # satırlarda NULL kalır ve zincire DAHİL EDİLMEZ: o kayıtlar
+        # yazılırken "önceki hash" diye bir şey yoktu, geriye dönük
+        # hesaplanamaz. Sınır ensure_chain_started()'ın yazdığı genesis
+        # kaydıyla açıkça işaretlenir.
+        try:
+            self._conn.execute("ALTER TABLE audit_log ADD COLUMN entry_hash TEXT")
+        except sqlite3.OperationalError:
+            pass  # kolon zaten var
         self._conn.commit()
 
+        # Yerel importlar: DB katmanı CORE'a modül seviyesinde bağlanmasın.
+
+        # Zincir başlangıcı — idempotent, yalnızca ilk açılışta genesis yazar.
+        # seed_builtin_templates()'ten ÖNCE: genesis, denetim kaydının ilk
+        # satırı olsun.
+        from CORE.audit_chain import ensure_chain_started
+
+        ensure_chain_started(self._conn)
+
         # Hazır şablonlar yalnızca ilk açılışta yazılır (bkz. CORE/retention.py).
-        # Yerel import: DB katmanı CORE'a modül seviyesinde bağlanmasın.
         from CORE.retention import seed_builtin_templates
 
         seed_builtin_templates(self)
@@ -427,13 +455,37 @@ class DBManager:
         target_id: int | None = None,
         detail: str | None = None,
     ) -> None:
-        self.execute(
-            """
-            INSERT INTO audit_log (user_id, action, target_type, target_id, detail)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (user_id, action, target_type, target_id, detail),
+        """
+        Denetim kaydı yazar — kayıt hash zincirine eklenir.
+
+        Düz INSERT yerine CORE.audit_chain.append_entry() kullanılır: kayıt
+        eklenir, veritabanının ürettiği id/timestamp ile birlikte geri
+        okunur ve hash'i yazılır; üçü tek transaction içinde. Bu yolu
+        atlayan doğrudan bir INSERT hash'siz kalır ve verify_audit_chain()
+        tarafından "unhashed" olarak raporlanır.
+        """
+        from CORE.audit_chain import append_entry
+
+        append_entry(
+            self.conn,
+            action,
+            user_id=user_id,
+            target_type=target_type,
+            target_id=target_id,
+            detail=detail,
         )
+
+    def verify_audit_chain(self):
+        """
+        Denetim kaydı hash zincirini baştan sona doğrular.
+
+        CORE.audit_chain.verify_audit_chain()'e yönlendirir; ayrıntı ve
+        sınırlar için o modülün docstring'ine bakın. Sonuç doğruysa
+        truthy'dir, değilse hangi kayıttan itibaren kırıldığını raporlar.
+        """
+        from CORE.audit_chain import verify_audit_chain as _verify
+
+        return _verify(self.conn)
 
     # ------------------------------------------------------------------
     # Bağlam yöneticisi

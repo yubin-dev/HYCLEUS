@@ -113,6 +113,22 @@ def isolate_totp_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return isolated
 
 
+@pytest.fixture(autouse=True)
+def isolate_audit_anchor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """
+    Denetim zinciri çıpasını her test için tmp_path'e taşır.
+
+    autouse — isolate_totp_file ile aynı gerekçe: çıpa dosyası varsayılan
+    olarak data/audit_anchor.log'dur ve testlerin kullanıcının gerçek
+    denetim çıpasına satır eklemesi, o dosyanın kendi zincirini bozardı.
+    """
+    from CORE.audit_chain import ANCHOR_ENV_VAR
+
+    isolated = tmp_path / "audit_anchor.log"
+    monkeypatch.setenv(ANCHOR_ENV_VAR, str(isolated))
+    return isolated
+
+
 @pytest.fixture
 def use_keyring_backend():
     """Test içinde keyring arka ucunu değiştirmek için yardımcı (teardown fake_keyring'de)."""

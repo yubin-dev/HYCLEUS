@@ -2,6 +2,22 @@
 
 Planın doğrudan kapsamadığı, sonraya bırakılan bulgular.
 
+## Numara kullanımı
+
+B-NNN numaraları **bir kez** verilir ve geri dönüştürülmez — bir bulgu
+numarasını aldıktan sonra aynı turda düzeltilse ve bu dosyaya hiç girmese
+bile o numara harcanmış sayılır. Aksi hâlde commit mesajlarındaki atıflar
+zamanla başka bir bulguya işaret etmeye başlar.
+
+Harcanmış ama bu dosyada görünmeyen numaralar:
+
+| No | Nerede | Ne oldu |
+|---|---|---|
+| B-005 | `5463cc9` — "added_by kaydi duzeltmesi" | `files.added_by` hiçbir kod tarafından yazılmıyordu. Numara verildi, bulgu aynı commit'te düzeltildi, backlog'a hiç girmedi. |
+
+> Yeni madde açarken bu tabloya da bakın; yalnızca aşağıdaki en büyük
+> numaraya bakmak yetmez.
+
 ---
 
 ## B-001 — Karantina dosya adı çakışması (sessiz üzerine yazma)
@@ -202,3 +218,44 @@ değişiklik yapılırsa `sweep_retention_expired`'in `expires_at = NULL`
 davranışı KRİTİK hale gelir — NULL olmayan her satır artık arka planda ve
 onaysız silinir. `CORE/disposal.py` modül docstring'i bu bağımlılığı
 açıklıyor, oradaki gerekçe okunmadan dokunulmamalı.
+
+---
+
+## B-006 — Denetim zinciri doğrulamasının arayüzde karşılığı yok
+
+**Durum:** Açık — mekanizma çalışıyor, kullanıcıya görünmüyor
+**Öncelik:** Orta (özellik erişilemez durumda; güvenlik zafiyeti **değil**)
+**İlgili:** Denetim kaydı hash zinciri (`CORE/audit_chain.py`, SECURITY.md §4.6)
+**Bulundu:** 2026-08-13, zincir uygulaması sırasında
+
+### Bulgu
+
+Zincir doğrulaması üç yerden çağrılabiliyor: `db.verify_audit_chain()`,
+`verify_against_anchor()`, `verify_anchor_file()`. Hiçbirinin arayüzde
+düğmesi yok. Kullanıcının zinciri kontrol edebildiği tek an açılış: uyuşmazlık
+varsa `main.py` bir uyarı gösteriyor. "Şimdi kontrol et" diyebileceği bir yer
+yok, halbuki [`UI/AuditLogDialog.py`](UI/AuditLogDialog.py) bunun doğal yeri.
+
+Kurcalama kanıtı, ancak birileri kanıta BAKABİLİYORSA işe yarar.
+
+### İkinci bulgu — TXT dışa aktarımı zincirden habersiz
+
+`AuditLogDialog._export_txt()` yalnızca dört sütun yazıyor (zaman, işlem,
+kullanıcı, HWID). Hash yok, zincirin son ucu yok, doğrulama durumu yok.
+Halbuki bu dışa aktarım, kullanıcının denetim kaydını makine dışına
+taşıdığı tek yol — yani §4.6'nın "çıpayı başka bir güven alanına taşıyın"
+tavsiyesinin pratikte karşılığı olabilecek şey. Şu hâliyle dışa aktarılan
+dosyayla veritabanının tutarlı olup olmadığı sonradan gösterilemez.
+
+### Yapılacaklar (uygulanmadı)
+
+1. `AuditLogDialog`'a "Zinciri Doğrula" düğmesi; sonucu
+   `ChainVerification.summary()` ile göster (metin zaten kullanıcıya
+   gösterilecek biçimde yazıldı, Türkçe ve kırılma noktasını içeriyor).
+2. Kırık zincirde satırları görsel olarak işaretle — `_is_failure()`'ın
+   kırmızı satır deseni hazır.
+3. Dışa aktarıma zincir başlığı ekle: `chain_start_id`, son hash, doğrulama
+   sonucu ve varsa çıpa karşılaştırması.
+4. Çıpa dosyasının yolunu (ve `HYCLEUS_AUDIT_ANCHOR` ile
+   değiştirilebildiğini) ayarlar ekranında göster — USB'ye yönlendirme şu an
+   yalnızca ortam değişkeniyle mümkün ve hiçbir yerde yazmıyor.

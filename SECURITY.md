@@ -57,7 +57,9 @@ is the PIN alone.
 | `share_2` read out of the database | ✅ | It is no longer there — it lives in the OS credential store |
 | Only one Shamir share obtained | ✅ | 2-of-3 is information-theoretically secure; one share reveals nothing |
 | Brute-forcing the PIN through the app UI | ⚠️ Slowed | Rate limit: 5 failures → 30s, escalating to 300s, counter persisted in DB |
-| Someone tampering with the DB to hide their tracks | ⚠️ Partial | Audit log records every action — but see §3 |
+| An audit entry edited or deleted from the middle of the log | ⚠️ Detected, not prevented | SHA-256 hash chain; `verify_audit_chain()` names the exact record — see §4.6 |
+| The newest audit entries deleted (log truncated) | ⚠️ Detected only via the anchor | The chain head is written outside the database to `data/audit_anchor.log` — see §4.6 |
+| The whole audit chain recomputed after an edit | ⚠️ Detected only via the anchor | The hash is unkeyed; only the external anchor disagrees — see §4.6 |
 
 ---
 
@@ -72,9 +74,12 @@ planned migration, not a shipped feature. Encrypted file *contents* stay
 protected; everything around them does not.
 
 **An attacker who can write to the disk.** The audit log is an ordinary
-table in that same unencrypted database. Anyone who can write to the file
-can delete entries, and nothing detects it. The audit log is an operational
-record, not tamper-evident evidence.
+table in that same unencrypted database, and nothing stops anyone with write
+access from editing or deleting rows. Since v2.2 those edits are *detectable*
+— the log is a hash chain anchored outside the database — but detection is
+not prevention, the chain covers only entries written after the upgrade, and
+one of the two detection mechanisms can be defeated by an attacker who is
+thorough. Read §4.6 before relying on it.
 
 **Offline brute force of the vault.** Copy `.hclv` and attack it at leisure;
 this codebase never runs. The only cost imposed is Argon2id
@@ -214,6 +219,78 @@ files directly. We say this here because the earlier README claimed
 `share_2` was "guarded by HWID check" — it was not, and the claim has been
 corrected.
 
+### 4.6 The audit chain is tamper-evident, and only from v2.2 onward
+
+Since v2.2 every audit entry carries the hash of the one before it
+(`CORE/audit_chain.py`):
+
+```
+hash_n = SHA256( hash_(n-1) || canonical(entry_n) )
+```
+
+`hash_0` is 32 zero bytes. `canonical()` is a fixed-order, length-prefixed
+byte encoding of every `audit_log` column except the hash itself — `id`,
+`timestamp`, `user_id`, `action`, `target_type`, `target_id`, `detail`. The
+length prefix is what makes it unambiguous: without it, an attacker could
+write a separator and a field name into `detail` and forge the byte image of
+a different record. Verification is `verify_audit_chain()`, which walks the
+chain and reports the exact record where it breaks.
+
+**The chain starts at the upgrade, and the boundary is marked, not hidden.**
+Entries written before v2.2 cannot be chained: there was no "previous hash"
+when they were written, so no hash can be computed for them after the fact.
+Computing one now would produce a region that *looks* protected and is not —
+the worst possible outcome. Instead:
+
+- a real audit entry with `action = 'audit_chain_genesis'` is written as the
+  first link, and its `detail` records how many unchained rows existed and
+  the last unchained `id`;
+- its id is also stored in `settings.audit_chain_start_id`;
+- `verify_audit_chain()` refuses to verify anything before that id and
+  reports the count as `unchained_before`.
+
+**Everything before that marker is out of scope.** Pre-v2.2 entries can be
+edited or deleted with no trace whatsoever, exactly as before. If those
+entries matter, export them and store the export outside the machine.
+
+**What the chain does not do:**
+
+- **It is unkeyed.** SHA-256, not HMAC. Anyone who can write to the database
+  can edit a record and recompute every hash after it; the result verifies
+  perfectly. A keyed MAC would not fix this, because the key would have to
+  live on the same machine (the same problem as the vault HMAC, §4.2).
+- **It does not detect truncation.** Deleting the newest N entries leaves no
+  gap and no mismatch — the remainder verifies cleanly.
+- **It says nothing about events that were never logged.** The chain shows
+  that written entries are intact, not that the record is complete.
+
+**The anchor is what covers those two gaps.** The head of the chain — the
+last hash — is periodically written outside the database, to an append-only
+`data/audit_anchor.log`. Storing it in the database would add nothing: same
+file, same attacker, same single write. With the anchor, rewriting the log
+means keeping *two* files consistent, and one of them is a plain-text file
+that can be copied off the machine. It is written unconditionally at
+shutdown, and at most once per UTC day otherwise — at startup and hourly
+from the scheduler, so a machine left running for weeks still gets a daily
+mark. At startup `verify_against_anchor()` compares the newest anchor
+against the database and HYCLEUS warns if they disagree; the warning does
+not block login, because the audit log is a record, not an access control.
+
+Two honest caveats about the anchor. "Append-only" is a discipline of this
+code, **not an OS guarantee** — whoever can write the file can truncate it.
+Each line therefore carries the SHA-256 of the previous line
+(`verify_anchor_file()`), so editing a line in the middle is caught, but
+cutting the end is not. And an anchor sitting in `data/` next to the database
+shares much of its attack surface: it raises the cost of a rewrite, it does
+not close it. **The anchor is only as good as where it is kept.** Point
+`HYCLEUS_AUDIT_ANCHOR` at a USB stick, a network share or a read-only
+location to move it into a genuinely different trust domain — that is where
+the property becomes real rather than merely inconvenient for an attacker.
+
+A remote append-only log would be stronger still. HYCLEUS is deliberately
+offline, so that option was not taken; the trade is stated here rather than
+papered over.
+
 ---
 
 ## 5. Cryptographic details
@@ -227,6 +304,9 @@ corrected.
 | Vault sealing | AES-256-GCM, AAD = HWID (device binding) |
 | Vault signature | HMAC-SHA256, key = HKDF-SHA256(HWID) — see §4.2 |
 | Key splitting | Shamir 2-of-3 over GF(p), p = 2²⁵⁶ + 297 (verified prime); `f(x) = s + a₁x`, `a₁ ← [1, p−1]`; shares at x = 1, 2, 3 |
+| Audit log integrity | SHA-256 hash chain, `hash_n = SHA256(hash_(n-1) ‖ canonical(entry_n))`, `hash_0` = 32 zero bytes; unkeyed — see §4.6 |
+| Audit record encoding | Fixed field order, length-prefixed UTF-8, `NULL` distinct from `""` — deterministic and library-independent |
+| Audit anchor | Chain head appended to `data/audit_anchor.log` (JSON Lines, each line carries SHA-256 of the previous); path overridable via `HYCLEUS_AUDIT_ANCHOR` |
 | PIN storage | Argon2id hash (never plaintext); minimum 6 characters for new PINs |
 | Secret storage | OS credential store, service `HYCLEUS`, usernames `share_2:<hwid>` and `totp_secret` |
 | Second factor | TOTP (RFC 6238), 6 digits, ±1 window |
@@ -322,7 +402,9 @@ Saldırgan oturum açmış OS kullanıcısı hâline geldiğinde anahtar kasası
 | `share_2` veritabanından okundu | ✅ | Artık orada değil — OS anahtar kasasında |
 | Yalnızca bir Shamir payı ele geçirildi | ✅ | 2-of-3 bilgi-teorik olarak güvenli; tek pay hiçbir şey sızdırmaz |
 | Arayüz üzerinden PIN kaba kuvveti | ⚠️ Yavaşlatılır | 5 hatada 30 sn, 300 sn'ye tırmanır, sayaç DB'de kalıcı |
-| Saldırganın izlerini silmek için DB'yi kurcalaması | ⚠️ Kısmen | Denetim kaydı her işlemi tutar — ama bkz. §3 |
+| Denetim kaydının ORTASINDAN bir satırın değiştirilmesi/silinmesi | ⚠️ Tespit edilir, engellenmez | SHA-256 hash zinciri; `verify_audit_chain()` tam olarak hangi kayıt olduğunu söyler — bkz. §4.6 |
+| En yeni denetim kayıtlarının silinmesi (kuyruğun kesilmesi) | ⚠️ Yalnızca çıpayla tespit edilir | Zincirin ucu veritabanının dışına, `data/audit_anchor.log`'a yazılır — bkz. §4.6 |
+| Değişiklikten sonra tüm zincirin yeniden hesaplanması | ⚠️ Yalnızca çıpayla tespit edilir | Hash anahtarsızdır; yalnızca dıştaki çıpa itiraz eder — bkz. §4.6 |
 
 ## 3. HYCLEUS'un **korumadığı** senaryolar
 
@@ -335,9 +417,12 @@ geçiştir, mevcut bir özellik değil. Şifreli dosya *içerikleri* korunmaya
 devam eder; etraflarındaki her şey korunmaz.
 
 **Diske yazabilen saldırgan.** Denetim kaydı, aynı şifresiz veritabanında
-sıradan bir tablodur. Dosyaya yazabilen kayıtları silebilir ve bunu hiçbir
-şey tespit etmez. Denetim kaydı operasyonel bir kayıttır, kurcalanamaz bir
-delil değil.
+sıradan bir tablodur ve dosyaya yazabilen birinin satır değiştirmesini ya da
+silmesini hiçbir şey engellemez. v2.2'den itibaren bu müdahaleler *fark
+edilebilir* — kayıt, ucu veritabanının dışına çıpalanan bir hash zinciridir.
+Ama fark etmek engellemek değildir, zincir yalnızca yükseltmeden SONRAKİ
+kayıtları kapsar ve iki tespit mekanizmasından biri yeterince titiz bir
+saldırgan tarafından aşılabilir. Buna güvenmeden önce §4.6'yı okuyun.
 
 **Vault'un çevrimdışı kaba kuvvetle kırılması.** `.hclv` kopyalanıp rahatça
 saldırıya uğrayabilir; bu kod hiç çalışmaz. Dayatılan tek maliyet
@@ -478,6 +563,78 @@ birini sınırlamaz. Bunu burada söylüyoruz çünkü README daha önce `share_
 "HWID kontrolüyle korunduğunu" iddia ediyordu — korumuyordu ve iddia
 düzeltildi.
 
+### 4.6 Denetim zinciri kurcalama KANITIDIR ve yalnızca v2.2'den itibaren geçerlidir
+
+v2.2'den itibaren her denetim kaydı bir öncekinin hash'ini taşır
+(`CORE/audit_chain.py`):
+
+```
+hash_n = SHA256( hash_(n-1) || kanonik(kayıt_n) )
+```
+
+`hash_0` 32 sıfır byte'tır. `kanonik()`, `audit_log`'un hash dışındaki bütün
+sütunlarının — `id`, `timestamp`, `user_id`, `action`, `target_type`,
+`target_id`, `detail` — sabit sıralı, uzunluk önekli byte kodlamasıdır.
+Kodlamayı tek anlamlı kılan şey uzunluk önekidir: o olmasaydı saldırgan
+`detail` alanına bir ayraç ve alan adı yazarak başka bir kaydın byte
+görüntüsünü taklit edebilirdi. Doğrulama `verify_audit_chain()` ile yapılır;
+zinciri baştan sona gezer ve tam olarak hangi kayıtta kırıldığını söyler.
+
+**Zincir yükseltmeyle başlar ve bu sınır gizlenmez, işaretlenir.** v2.2
+öncesinde yazılmış kayıtlar zincire alınamaz: o kayıtlar yazılırken "önceki
+hash" diye bir şey yoktu, dolayısıyla geriye dönük hesaplanamaz. Şimdi
+hesaplansaydı ortaya korunuyormuş *gibi görünen* ama korunmayan bir bölge
+çıkardı — olabilecek en kötü sonuç. Bunun yerine:
+
+- zincirin ilk halkası olarak `action = 'audit_chain_genesis'` adlı gerçek
+  bir denetim kaydı yazılır; `detail` alanı o an kaç zincirlenmemiş satır
+  olduğunu ve son zincirlenmemiş `id`'yi tutar;
+- kaydın id'si ayrıca `settings.audit_chain_start_id` içine yazılır;
+- `verify_audit_chain()` bu id'den öncesini doğrulamayı reddeder ve sayıyı
+  `unchained_before` olarak raporlar.
+
+**Bu işaretten öncesi tamamen kapsam dışıdır.** v2.2 öncesi kayıtlar
+eskisi gibi hiçbir iz bırakmadan değiştirilebilir ya da silinebilir. O
+kayıtlar önemliyse dışa aktarın ve dışa aktarımı makinenin dışında saklayın.
+
+**Zincirin YAPMADIKLARI:**
+
+- **Anahtarsızdır.** HMAC değil, SHA-256. Veritabanına yazabilen biri bir
+  kaydı değiştirip ondan sonraki bütün hash'leri yeniden hesaplayabilir;
+  sonuç kusursuz doğrulanır. Anahtarlı bir MAC bunu çözmezdi, çünkü anahtar
+  aynı makinede durmak zorunda olurdu (vault HMAC'ıyla aynı sorun, §4.2).
+- **Kuyruğun kesilmesini yakalamaz.** En yeni N kaydı silmek ne boşluk ne
+  uyuşmazlık bırakır — kalan kısım temiz doğrulanır.
+- **Hiç yazılmamış olay hakkında bir şey söylemez.** Zincir yazılanların
+  bütünlüğünü gösterir, kaydın eksiksizliğini değil.
+
+**Bu iki boşluğu kapatan şey çıpadır.** Zincirin ucu — son hash — düzenli
+olarak veritabanının dışına, append-only bir `data/audit_anchor.log`
+dosyasına yazılır. Veritabanında saklamak hiçbir şey eklemezdi: aynı dosya,
+aynı saldırgan, aynı tek yazma. Çıpayla birlikte kaydı yeniden yazmak *iki*
+dosyayı tutarlı tutmayı gerektirir ve bunlardan biri makinenin dışına
+kopyalanabilir bir düz metin dosyasıdır. Çıpa kapanışta koşulsuz, bunun
+dışında günde en fazla bir kez (UTC) yazılır — açılışta ve zamanlayıcıdan
+saatlik, böylece haftalarca açık bırakılan bir makinede de günlük bir iz
+kalır. Açılışta `verify_against_anchor()` en son çıpayı veritabanıyla
+karşılaştırır ve uyuşmazlık varsa HYCLEUS uyarır; uyarı girişi ENGELLEMEZ,
+çünkü denetim kaydı bir erişim kontrolü değil, bir kayıttır.
+
+Çıpa hakkında iki dürüst çekince. "Append-only" bu kodun disiplinidir,
+**işletim sisteminin garantisi değil** — dosyaya yazabilen onu kesebilir de.
+Bu yüzden her satır bir öncekinin SHA-256'sını taşır
+(`verify_anchor_file()`); araya girip bir satırı değiştirmek yakalanır, ama
+sonundan kesmek yakalanmaz. Ayrıca veritabanının yanında, `data/` içinde
+duran bir çıpa onun saldırı yüzeyinin büyük kısmını paylaşır: yeniden yazma
+maliyetini artırır, kapatmaz. **Çıpa ancak tutulduğu yer kadar iyidir.**
+`HYCLEUS_AUDIT_ANCHOR` ile bir USB belleğe, ağ paylaşımına ya da salt-okunur
+bir konuma yönlendirin — gerçekten farklı bir güven alanına taşınması, bu
+özelliğin saldırgan için sadece zahmetli olmaktan çıkıp gerçek olduğu yerdir.
+
+Uzak, yalnızca-ekleme yapılan bir günlük daha da güçlü olurdu. HYCLEUS
+bilinçli olarak çevrimdışıdır, bu yüzden o yol seçilmedi; takas üstü
+örtülmek yerine burada yazılıdır.
+
 ## 5. Kriptografik ayrıntılar
 
 | Katman | Yapı |
@@ -489,6 +646,9 @@ düzeltildi.
 | Vault mühürleme | AES-256-GCM, AAD = HWID (cihaz bağlama) |
 | Vault imzası | HMAC-SHA256, anahtar = HKDF-SHA256(HWID) — bkz. §4.2 |
 | Anahtar bölme | GF(p) üzerinde Shamir 2-of-3, p = 2²⁵⁶ + 297 (asallığı doğrulandı); `f(x) = s + a₁x`, `a₁ ← [1, p−1]`; paylar x = 1, 2, 3 |
+| Denetim kaydı bütünlüğü | SHA-256 hash zinciri, `hash_n = SHA256(hash_(n-1) ‖ kanonik(kayıt_n))`, `hash_0` = 32 sıfır byte; anahtarsız — bkz. §4.6 |
+| Denetim kaydı kodlaması | Sabit alan sırası, uzunluk önekli UTF-8, `NULL` ile `""` ayrı — deterministik ve kütüphaneden bağımsız |
+| Denetim çıpası | Zincirin ucu `data/audit_anchor.log`'a eklenir (JSON Lines, her satır bir öncekinin SHA-256'sını taşır); yol `HYCLEUS_AUDIT_ANCHOR` ile değiştirilebilir |
 | PIN saklama | Argon2id hash (asla düz metin); yeni PIN'ler için en az 6 karakter |
 | Sır saklama | OS anahtar kasası, servis `HYCLEUS`, adlar `share_2:<hwid>` ve `totp_secret` |
 | İkinci faktör | TOTP (RFC 6238), 6 hane, ±1 pencere |
