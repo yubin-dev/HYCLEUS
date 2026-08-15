@@ -43,6 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from CORE.console import ensure_utf8_console  # noqa: E402
 from CORE.timestamp_verify import (  # noqa: E402
     TimestampVerification,
     verify_timestamp,
@@ -127,25 +128,11 @@ def _report(path: Path, result: TimestampVerification, *, show_chain: bool) -> N
     print()
 
 
-def _force_utf8() -> None:
-    """
-    Cikti akislarini UTF-8'e sabitler.
-
-    Windows konsolunda Python yerel kod sayfasini (cp1252/cp1254) seciyor;
-    zincir agacindaki cizgi karakterleri ve dogrulama mesajlarindaki Turkce
-    harfler UnicodeEncodeError ile dusuyor. Arac dogru sonucu hesaplayip
-    onu YAZDIRIRKEN cokuyordu.
-
-    errors="replace": kodlamayi gercekten yapamayan bir konsolda '?' yazmak,
-    denetim aracini tamamen kirmaktan iyidir.
-    """
-    for akis in (sys.stdout, sys.stderr):
-        if hasattr(akis, "reconfigure"):
-            akis.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-
-
 def main(argv: list[str] | None = None) -> int:
-    _force_utf8()
+    # Ilk satir, herhangi bir print()'ten once: zincir agacinin cizgi
+    # karakterleri ve Turkce mesajlar yerel kod sayfasinda dusuyor.
+    # Gerekce ve kod sayfasi tablosu CORE/console.py'de.
+    ensure_utf8_console()
     p = argparse.ArgumentParser(
         prog="verify_timestamp_cli.py",
         description=(

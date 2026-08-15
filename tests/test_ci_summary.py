@@ -180,6 +180,10 @@ def test_output_survives_a_non_utf8_locale(tmp_path: Path) -> None:
     sayfasını seçiyor; tablodaki ✅ ve Türkçe başlıklar UnicodeEncodeError
     ile düşüyordu. Betik alt süreç olarak, cp1252 dayatılarak çalıştırılıyor
     — düzeltme geri alınırsa bu test kırılır.
+
+    Düzeltmenin kendisi artık `CORE.console.ensure_utf8_console()`; bu test
+    onun BU BETİKTE etkili olduğunu sınıyor. Yardımcının kendi testleri
+    tests/test_console.py içinde.
     """
     import os
     import subprocess

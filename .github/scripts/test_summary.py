@@ -29,6 +29,21 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
+# Bu betik `.github/scripts/` altindan calisiyor, yani sys.path[0] depo koku
+# degil. Kok elle ekleniyor — CORE/recover_vault.py ile ayni desen.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+try:
+    from CORE.console import ensure_utf8_console  # noqa: E402
+except ImportError:  # pragma: no cover — depo yapisi bozuksa
+    # Bu betigin gorevi CI'in NE DURUMDA oldugunu soylemek; bu yuzden CORE
+    # import edilemedigi durumda bile bir sey yazabilmeli. Kucuk bir
+    # tekrar, "pytest hic rapor yazamadan dustu" mesajini kaybetmekten iyi.
+    def ensure_utf8_console() -> None:  # type: ignore[misc]
+        for _akis in (sys.stdout, sys.stderr):
+            if hasattr(_akis, "reconfigure"):
+                _akis.reconfigure(encoding="utf-8", errors="replace")
+
 #: Özette listelenecek en fazla başarısız test. Yüzlerce hata varsa iş
 #: özetini taşırmak yerine ilk birkaçını gösterip geri kalanı sayıyoruz.
 _MAX_LISTED = 20
@@ -120,12 +135,10 @@ def main(argv: list[str]) -> int:
     bir hata eklerdi ve asıl sebebi gölgeleyebilirdi. Testlerin geçip
     geçmediğine `pytest` adımının kendisi karar veriyor.
     """
-    # Çıktı UTF-8 olmalı. Windows koşucusunda Python, yönlendirilmiş
-    # stdout için yerel kod sayfasını (cp1252) seçiyor ve tablodaki ✅/❌
-    # UnicodeEncodeError ile düşüyor — Türkçe başlıklar da aynı şekilde.
-    # GITHUB_STEP_SUMMARY UTF-8 bekliyor, dolayısıyla zorluyoruz.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    # Ilk satir, herhangi bir print()'ten once. GITHUB_STEP_SUMMARY UTF-8
+    # bekliyor; Windows kosucusu yerel kod sayfasini seciyor ve tablodaki
+    # ✅/❌ ile Turkce basliklar dusuyor. Gerekce CORE/console.py'de.
+    ensure_utf8_console()
 
     if len(argv) < 2:
         print("kullanım: test_summary.py <junit.xml> [başlık]", file=sys.stderr)

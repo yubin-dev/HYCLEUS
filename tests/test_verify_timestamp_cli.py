@@ -234,6 +234,10 @@ def test_the_output_survives_a_non_utf8_console(stamped: Path) -> None:
 
     Bu yüzden alt süreç, cp1252 dayatılarak ve `--show-chain` ile
     çalıştırılıyor: hem ağaç karakterleri hem Türkçe metin yolda.
+
+    Düzeltmenin kendisi artık `CORE.console.ensure_utf8_console()`; bu test
+    onun BU ARAÇTA etkili olduğunu sınıyor. Yardımcının kendi testleri
+    tests/test_console.py içinde.
     """
     import os
 

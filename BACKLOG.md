@@ -575,3 +575,51 @@ commit'e karışmasın diye ayrıldı.
    `decrypt_file`, `CORE/timestamp.read_aad`) benzer kod var ve format
    her değiştiğinde üçü birden güncelleniyor.
 3. Kesik dosya için her iki yolda da aynı istisnayı doğrulayan test ekle.
+
+---
+
+## B-013 — `setup_usb.py` İngilizce Windows konsolunda çöküyor
+
+**Durum:** Açık — `CORE/console.py` turunda ölçüldü, plan dışı olduğu için dokunulmadı
+
+`CORE/setup_usb.py` çıktısında `ı` (U+0131) ve `—` (U+2014) geçiyor. Bu
+karakterler Windows'un yerel kod sayfalarının hepsinde kodlanamıyor:
+
+| Kod sayfası | Nerede varsayılan | Sonuç |
+|---|---|---|
+| cp1254 | Türkçe Windows | sorun yok |
+| cp1252 | Batı Avrupa / İngilizce Windows | **kırılır** — `ı` |
+| cp437 | Klasik İngilizce konsol (OEM) | **kırılır** — `ı`, `—` |
+
+Yani araç geliştirme makinesinde (Türkçe kurulum) çalışıyor, İngilizce bir
+kurulumda `UnicodeEncodeError` ile düşüyor. "Türkçe'de çalışıyor" bu hata
+sınıfı için yeterli bir kanıt değil.
+
+### Etkisi
+
+`setup_usb.py` **ilk kurulum** aracı: USB kaydını yapan, vault'u oluşturan
+ilk adım. Çökme noktası hesaplamadan sonra, yani kurulum yarım kalmış
+olabilecek bir anda çıktı yazarken oluyor. Kullanıcının gördüğü şey bir
+Python traceback'i.
+
+`CORE/recover_vault.py` bugün **güvenli** — çıktısındaki tek ASCII dışı
+karakter `·` (U+00B7) ve o üç kod sayfasında da var. Ama bu tesadüf: tek
+bir Türkçe harf eklendiğinde aynı hataya düşer.
+
+### Kök neden
+
+Aynı hata bu projede üç kez çıktı (CI özet betiği, TSA doğrulama CLI'ı, bu).
+İlk ikisi düzeltildi ve `CORE/console.py::ensure_utf8_console()` bu iş için
+paylaşılan yardımcı hâline getirildi — bu madde onu çağırmayan son yer.
+
+### Yapılacaklar (uygulanmadı)
+
+1. `setup_usb.py::main()` içinde ilk satır olarak `ensure_utf8_console()`
+   çağır (tek satır + import).
+2. Aynısını `recover_vault.py` için de yap — bugün kırık değil ama bir
+   diacritic uzaklıkta.
+3. Yeni bir CLI eklenirken bu adımın atlanmadığını denetleyen bir test
+   düşünülebilir: `CORE/*_cli.py` ve `CORE/{setup_usb,recover_vault}.py`
+   için AST ile "print() var ve ensure_utf8_console() yok" taraması.
+   `tests/test_console.py::test_the_known_call_sites_use_the_helper`
+   bugün yalnızca bilinen iki yeri kontrol ediyor.
