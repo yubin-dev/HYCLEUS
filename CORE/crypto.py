@@ -211,6 +211,8 @@ def encrypt_file(
     created_at: str | None = None,
     uploaded_at: str | None = None,
     last_modified: str | None = None,
+    dst: Path | str | None = None,
+    filename: str | None = None,
 ) -> tuple[Path, str, str]:
     """
     src dosyasını AES-256-GCM ile şifreler, data/quarantine/<ad>.hcl'e yazar.
@@ -231,6 +233,21 @@ def encrypt_file(
     created_at / last_modified verilmezse src dosyasının OS zaman damgaları kullanılır.
     uploaded_at verilmezse şifreleme anı kullanılır.
 
+    dst / filename — yeniden şifreleme için
+    ---------------------------------------
+    Normalde çıktı `data/quarantine/<src.name>.hcl` ve AAD'deki `filename`
+    de `src.name`'dir. İki durumda bu yetmiyor:
+
+      · `dst` — çıktının BAŞKA bir yola yazılması gerektiğinde. Şeffaf
+        erişim (CORE/checkout.py) düzenlenmiş dosyayı önce geçici bir
+        yola şifreleyip `os.replace()` ile yerine koyuyor; yarıda kesilen
+        bir yazma orijinal `.hcl`'i bozmasın diye.
+      · `filename` — AAD'ye yazılacak ad. Yeniden şifrelemede kaynak,
+        SafeZone'daki RASTGELE adlı geçici kopya; `src.name` kullanılsaydı
+        belgenin gerçek adı o rastgele adla kalıcı olarak değişirdi.
+
+    İkisi de verilmezse davranış değişmez.
+
     Returns:
         (hcl_path, original_sha256_hex)
 
@@ -247,7 +264,7 @@ def encrypt_file(
 
     stat = src.stat()
     metadata = {
-        "filename": src.name,
+        "filename": filename or src.name,
         "original_sha256": sha256_hex,
         "created_at": created_at or _fmt_ts(stat.st_ctime),
         "uploaded_at": uploaded_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -256,7 +273,7 @@ def encrypt_file(
         "hwid": hwid,
     }
 
-    dst = _QUARANTINE_DIR / f"{src.name}.hcl"
+    dst = Path(dst) if dst is not None else _QUARANTINE_DIR / f"{src.name}.hcl"
     dst.parent.mkdir(parents=True, exist_ok=True)
 
     nonce = os.urandom(_NONCE_SIZE)

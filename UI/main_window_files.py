@@ -102,6 +102,19 @@ class FileActionsMixin:
 
         menu     = QMenu(self)
         menu.setStyleSheet(menu_style)
+
+        # Şeffaf erişim: açıksa "Bitir", değilse "Aç". İkisi aynı anda
+        # anlamsız olurdu — belge ya çıkışta ya değil.
+        act_open = act_close = None
+        if label != "Imha":
+            acik = file_id is not None and file_id in getattr(
+                self, "_checkouts", ())
+            if acik:
+                act_close = menu.addAction("✔  Bitir  (geri şifrele)")
+            else:
+                act_open = menu.addAction("📄  Aç")
+            menu.addSeparator()
+
         act_tags = menu.addAction("🏷  Etiket Ata")
 
         act_scan = act_download = act_approve = act_reject = act_move_folder = act_kritik = act_imha = None
@@ -129,7 +142,13 @@ class FileActionsMixin:
 
         action = menu.exec(self._table.viewport().mapToGlobal(pos))
 
-        if action == act_tags:
+        if action is None:
+            return
+        if action == act_open:
+            self._on_ctx_open(file_id, filepath)
+        elif action == act_close:
+            self._on_ctx_close_file(file_id)
+        elif action == act_tags:
             self._on_ctx_assign_tags(file_id)
         elif action == act_scan:
             self._on_ctx_scan(row, file_id, filepath)

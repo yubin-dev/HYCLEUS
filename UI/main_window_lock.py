@@ -234,6 +234,15 @@ class LockMixin:
     def _lock(self, reason: str = "usb") -> None:
         self._lock_reasons.add(reason)
         self._locked = True
+        # Açık belgeleri kapat: kilit ekranı düz metin kopyaları SafeZone'da
+        # bırakırsa, kilidin koruduğu şeyin yanında açık bir kapı kalırdı.
+        # getattr koruması, _lock'u tam pencere kurulumu olmadan çalıştıran
+        # testler için (tests/test_lock_overlay.py).
+        if getattr(self, "_checkouts", None):
+            try:
+                self._close_all_checkouts(reason=f"lock:{reason}")
+            except Exception as exc:
+                _log.error("kilit check-in basarisiz: %s", exc)
         title, sub = self._LOCK_MESSAGES.get(reason, self._LOCK_MESSAGES["usb"])
         self._overlay.set_message(title, sub)
         self.centralWidget().setEnabled(False)

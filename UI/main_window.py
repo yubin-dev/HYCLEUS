@@ -43,6 +43,7 @@ from UI.main_window_bulk import BulkActionsMixin
 from UI.main_window_files import FileActionsMixin
 from UI.main_window_layout import LayoutMixin
 from UI.main_window_lock import LockMixin, _LockOverlay
+from UI.main_window_open import OpenMixin
 from UI.main_window_palette import _DARK, _ROLE_BADGE, _SIDEBAR_NAV
 from UI.main_window_table import TableMixin, _ProcessSignals
 from UI.main_window_theme import ThemeMixin
@@ -61,6 +62,7 @@ class HycleusWindow(
     TableMixin,
     FileActionsMixin,
     BulkActionsMixin,
+    OpenMixin,
     LockMixin,
     QMainWindow,
 ):
@@ -150,11 +152,35 @@ class HycleusWindow(
         self._idle_timer.timeout.connect(self._tick_idle)
         self._idle_timer.start()
 
+        # Şeffaf erişim: açık belgelerin kaydı + dosya izleyici.
+        self._init_checkout()
+
         self._refresh_usb_badge()
         self._on_sidebar_click("Genel", self._nav_btns["Genel"])
         self._refresh_tag_sidebar()
         self._refresh_folder_sidebar()
 
+
+    def closeEvent(self, event) -> None:
+        """
+        Kapanışta açık belgeleri geri şifreler ve geçici kopyaları siler.
+
+        SIRALAMA KRİTİK. `main.py` kapanışta `purge_on_exit()` çağırıyor ve
+        o, SafeZone'daki HER dosyayı güvenli siliyor. Geri yazma ondan
+        SONRA olsaydı ya da hiç olmasaydı, kullanıcının düzenlemesi
+        sessizce yok edilirdi — dosya silinir, `.hcl` eski hâlinde kalır
+        ve hiçbir hata görünmezdi.
+
+        `closeEvent` pencere kapanırken, `aboutToQuit` ondan sonra
+        çalışıyor; yani check-in temizlikten önce yapılmış oluyor. Bu
+        bağımlılık ikisi arasında yazılı bir sözleşme değil, Qt'nin olay
+        sırası — bu yüzden burada açıkça belirtiliyor.
+        """
+        try:
+            self._close_all_checkouts(reason="shutdown")
+        except Exception as exc:
+            _log.error("kapanis check-in basarisiz: %s", exc)
+        super().closeEvent(event)
 
     # ── Rol kısıtlamaları ─────────────────────────────────────────────────────
 

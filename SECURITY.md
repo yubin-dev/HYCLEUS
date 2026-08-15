@@ -370,10 +370,10 @@ Windows the directory inherits `data/`'s ACL rather than getting owner-only
 permissions, so what protects SafeZone there is the protection on `data/`,
 not this code.
 
-As of this version **no flow writes plaintext to disk at all** — downloads
-stream straight to the path the user picks. SafeZone is infrastructure
-placed ahead of the open/preview flow, on the reasoning that whoever writes
-that flow will reach for `tempfile` if the safe path is not already there.
+SafeZone was introduced ahead of the flow that needed it. That flow now
+exists — transparent access, §4.10 — and it is the only thing that writes
+plaintext to disk. Downloads still stream straight to the path the user
+picks and never touch SafeZone.
 
 ### 4.9 Timestamps are verifiable offline — but the trust anchor comes from the file
 
@@ -441,6 +441,49 @@ trailer is entirely valid — the stamp is optional and added later. Version
 define one. The trailer format stayed at version `0x01`: the certificate
 chain lives inside the token, so no second copy was added — two lists that
 could disagree would be worse than one.
+
+### 4.10 Transparent access puts plaintext on disk for as long as you edit
+
+"Open" decrypts a document into SafeZone, launches it in the default
+application, writes any edit back re-encrypted with a fresh nonce, and
+shreds the temporary copy. It closes a real gap — previously a user had to
+download, remember to re-encrypt, and remember to delete — but it does so
+by putting a plaintext copy on disk, which is a trade worth stating plainly.
+
+**There is no "closed" event.** `os.startfile()` returns immediately with no
+handle, and on Windows most applications launch a shim that hands off to an
+already-running instance and exits — "process ended" does not mean "document
+closed". So the model is check-out / check-in, like version control: the
+document stays registered as open until a change is detected and settles,
+the user clicks Finish, the app shuts down, or the session locks. Locking is
+included on purpose: a lock screen that leaves plaintext on disk would guard
+the front door and leave a window open. The window title bar shows how many
+documents are open, because "I forgot to close it" must not be a silent state.
+
+**Correctness does not depend on the file watcher.** Word, Excel and many
+editors save by writing a new file and renaming it over the original, which
+drops a `QFileSystemWatcher` path watch — the event never arrives. So the
+watcher is an optimisation, layered over a 5-second poll, layered over a
+check-in at shutdown. All three ask the same question: does the plaintext
+SHA-256 differ from the last encrypted state? Even if every watcher event is
+missed, the change is caught before the copy is shredded. `mtime` alone was
+not enough: some applications preserve it while writing, some tools touch a
+file without changing it.
+
+**Write-back is atomic.** The re-encrypted file goes to a temporary path and
+is moved into place with `os.replace()`. A crash mid-write leaves the
+original `.hcl` untouched — the same pattern, and the same reasoning, as the
+timestamp trailer in §4.9: a half-written `.hcl` fails GCM verification, and
+the weekly integrity sweep would report a healthy document as corrupt.
+
+**The exposure window is the editing session.** While a document is open its
+plaintext sits in `data/safezone/` and every limit in §3 applies to it: an
+attacker who can read the disk can read it, and the shred that follows is
+best-effort at the logical layer (SSD wear levelling, copy-on-write
+filesystems, snapshots). Opening a document is audited (`file_opened`) —
+that entry marks the moment plaintext reached the disk. A full virtual drive
+(Dokan/WinFsp), which would keep plaintext out of the filesystem entirely,
+is out of scope; this is the interim answer.
 
 ---
 
@@ -867,10 +910,9 @@ orijinal blokları yerinde bırakabilir (§3). Windows'ta ise dizin,
 sahibe-özel izinler yerine `data/`'nın ACL'ini devralıyor; yani SafeZone'u
 orada koruyan şey `data/` üzerindeki koruma, bu kod değil.
 
-Bu sürüm itibarıyla **hiçbir akış düz metni diske yazmıyor** — indirmeler
-doğrudan kullanıcının seçtiği yola akıyor. SafeZone, aç/önizle akışından
-ÖNCE konmuş bir altyapı; gerekçesi basit: o akışı yazan kişi, güvenli yol
-hazır değilse `tempfile`'a uzanacaktır.
+SafeZone, ihtiyaç duyacak akıştan ÖNCE konmuş bir altyapıydı. O akış artık
+var — şeffaf erişim, §4.10 — ve düz metni diske yazan tek şey o. İndirmeler
+hâlâ doğrudan kullanıcının seçtiği yola akıyor, SafeZone'a hiç uğramıyor.
 
 ### 4.9 Zaman damgaları çevrimdışı doğrulanabiliyor — ama güven kökü dosyadan geliyor
 
@@ -937,6 +979,49 @@ fragman hiç aranmıyor, çünkü o formatta böyle bir şey tanımlı değildi.
 Fragman biçimi `0x01`'de KALDI: sertifika zinciri token'ın içinde olduğu
 için ikinci bir kopya eklenmedi — birbirini tutmayabilecek iki liste, tek
 listeden kötü olurdu.
+
+### 4.10 Şeffaf erişim, düzenlediğiniz sürece düz metni diskte tutuyor
+
+"Aç", belgeyi SafeZone'a çözüyor, varsayılan uygulamayla açıyor,
+değişikliği yeni bir nonce ile geri şifreliyor ve geçici kopyayı güvenli
+siliyor. Gerçek bir boşluğu kapatıyor — önceden kullanıcı indirmek, geri
+şifrelemeyi hatırlamak ve silmeyi hatırlamak zorundaydı — ama bunu diske
+bir düz metin kopyası koyarak yapıyor. Bu takas açıkça yazılmalı.
+
+**"Kapandı" diye bir olay yok.** `os.startfile()` hemen dönüyor ve tutamaç
+vermiyor; Windows'ta çoğu uygulama, dosyayı zaten açık olan asıl örneğe
+devredip çıkan bir başlatıcı çalıştırıyor — "süreç bitti" ile "belge
+kapandı" aynı şey değil. Bu yüzden model sürüm kontrolündeki gibi
+çıkış/giriş kaydı: belge, değişiklik algılanıp durulana, kullanıcı "Bitir"
+diyene, uygulama kapanana ya da oturum kilitlenene kadar açık kayıtlı
+duruyor. Kilit bilerek dâhil: düz metni diskte bırakan bir kilit ekranı ön
+kapıyı tutup pencereyi açık bırakırdı. Kaç belgenin açık olduğu pencerede
+görünüyor, çünkü "kapatmayı unuttum" sessiz bir durum olmamalı.
+
+**Doğruluk dosya izleyicisine bağlı DEĞİL.** Word, Excel ve pek çok
+düzenleyici kaydederken yeni bir dosya yazıp adını eskisinin üzerine
+taşıyor; bu, `QFileSystemWatcher`'ın yol izlemesini düşürüyor ve olay hiç
+gelmiyor. Bu yüzden izleyici bir optimizasyon: altında 5 saniyelik yoklama,
+onun da altında kapanıştaki check-in var. Üçü de aynı soruyu soruyor: düz
+metin SHA-256'sı en son şifrelenen hâlden farklı mı? İzleyici her olayı
+kaçırsa bile değişiklik, kopya silinmeden önce yakalanıyor. `mtime` tek
+başına yetmezdi: bazı uygulamalar onu koruyarak yazıyor, bazı araçlar
+içerik değişmeden dokunuyor.
+
+**Geri yazma atomik.** Yeniden şifrelenen dosya geçici bir yola yazılıp
+`os.replace()` ile yerine konuyor. Yazma sırasında bir çökme orijinal
+`.hcl`'i BOZMUYOR — §4.9'daki zaman damgası fragmanıyla aynı desen ve aynı
+gerekçe: yarım yazılmış bir `.hcl` GCM doğrulamasını geçemez ve haftalık
+bütünlük taraması sağlam bir belgeyi "bozuk" olarak raporlardı.
+
+**Maruziyet penceresi düzenleme oturumu.** Belge açıkken düz metni
+`data/safezone/` içinde duruyor ve §3'teki bütün sınırlar ona da geçerli:
+diski okuyabilen bir saldırgan onu okuyabilir, ardından gelen güvenli silme
+de mantıksal katmanda elinden geleni yapıyor (SSD wear leveling,
+kopyala-yaz dosya sistemleri, snapshot'lar). Belge açma denetim kaydına
+giriyor (`file_opened`) — o kayıt, düz metnin diske indiği anı işaretliyor.
+Düz metni dosya sisteminden tamamen uzak tutacak tam sanal sürücü
+(Dokan/WinFsp) kapsam dışı; bu ara çözüm.
 
 ## 5. Kriptografik ayrıntılar
 
