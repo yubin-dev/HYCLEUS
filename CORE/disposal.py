@@ -469,6 +469,88 @@ def sweep_retention_expired(
     return moved
 
 
+def purge_expired_file(
+    db: DBManager,
+    file_id: int,
+    *,
+    source: str,
+    filepath: str | None = None,
+) -> bool:
+    """
+    Süresi dolmuş bir dosyayı otomatik olarak siler — SAKLAMA KORUMASI DAHİL.
+
+    Otomatik temizleyicilerin TEK giriş noktası. İki çağıranı var ve ikisi
+    de farklı bir sayacı işletiyor:
+
+        CORE/scheduler.py::_purge_expired   → Karantina'nın 24 saatlik sayacı
+        UI/main_window_table.py::_tick_expiry → İmha Odası geri sayımı
+
+    Neden tek fonksiyon
+    -------------------
+    Bu iki akış daha önce AYRI yazılmıştı ve yalnızca biri saklama
+    korumasını uyguluyordu. Sonuç, kullanıcının göremeyeceği bir tutarsızlık
+    olmuştu: uygulama KAPALIYKEN saklama süresi işleyen bir dosya korunuyor,
+    uygulama AÇIKKEN aynı dosya korumasız siliniyordu (BACKLOG B-008; kök
+    nedeni B-004 ile aynı — "aynı iş, iki uygulama, farklı güvenlik").
+
+    `purge_file()` bu işi YAPAMAZDI: o kullanıcı tetiklemeli yol ve onay
+    istiyor (`EarlyDeletionBlocked` fırlatıyor). Otomatik bir sayacın
+    soracağı kimse yok; doğru davranış sormak değil, ATLAMAK.
+
+    Args:
+        source: Hangi sayaç tetikledi — denetim kaydına giriyor. "Bu dosya
+            neden silindi" sorusunun yanıtı hangi mekanizmanın çalıştığını
+            içermeli.
+        filepath: Biliniyorsa diskteki yol. Verilmezse DB'den okunuyor;
+            arayüz onu zaten elinde tuttuğu için ikinci bir sorgu gerekmiyor.
+
+    Returns:
+        True  — dosya silindi
+        False — saklama süresi işlediği için ATLANDI (dosya duruyor)
+
+    İstisna FIRLATMIYOR: iki çağıran da döngü içinde ve tek bir dosyanın
+    hatası kalanları durdurmamalı. Hatalar günlüğe yazılıyor.
+    """
+    if is_retention_protected(db, file_id):
+        row = db.fetchone("SELECT filename FROM files WHERE id = ?", (file_id,))
+        ad = row["filename"] if row else "?"
+        logger.info(
+            "Otomatik temizlik atlandı — saklama süresi işliyor (id=%s, %s, %s)",
+            file_id, ad, source,
+        )
+        db.log(
+            "retention_hold",
+            target_type="file",
+            target_id=file_id,
+            detail=f"filename={ad} source={source} otomatik temizlikten korundu",
+        )
+        return False
+
+    row = db.fetchone("SELECT filename, filepath FROM files WHERE id = ?", (file_id,))
+    ad = row["filename"] if row else "?"
+    yol = filepath or (row["filepath"] if row else None)
+
+    if yol:
+        try:
+            path = Path(yol)
+            if path.exists():
+                path.unlink()
+        except OSError as exc:
+            # Dosya silinemese bile DB kaydı temizleniyor: aksi hâlde satır
+            # her turda yeniden denenir ve kullanıcı süresi dolmuş bir
+            # dosyayı listede görmeye devam ederdi.
+            logger.warning("Dosya diskten silinemedi %s: %s", yol, exc)
+
+    db.execute("DELETE FROM files WHERE id = ?", (file_id,))
+    db.log(
+        "expired_purge",
+        target_type="file",
+        target_id=file_id,
+        detail=f"filename={ad} filepath={yol} source={source}",
+    )
+    return True
+
+
 def is_retention_protected(db: DBManager, file_id: int, *, today: date | None = None) -> bool:
     """
     Dosya hâlâ saklama süresi altında mı — otomatik temizleyiciler için kısa kontrol.

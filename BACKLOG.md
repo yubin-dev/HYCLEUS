@@ -14,6 +14,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | No | Nerede | Ne oldu |
 |---|---|---|
 | B-005 | `5463cc9` — "added_by kaydi duzeltmesi" | `files.added_by` hiçbir kod tarafından yazılmıyordu. Numara verildi, bulgu aynı commit'te düzeltildi, backlog'a hiç girmedi. |
+| B-008 | `60d6255` sonrası — B-008 düzeltmesi | Arayüzdeki imha sayacı saklama korumasını atlıyordu. İki ayrı silme uygulaması `CORE.disposal.purge_expired_file()` altında birleştirildi; ikinci bir uygulamanın geri gelmesini AST denetimi engelliyor (`tests/test_disposal.py::test_iki_akis_ayni_fonksiyonu_cagiriyor`). |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
 > Yeni madde açarken bu tabloya da bakın; yalnızca aşağıdaki en büyük
@@ -331,66 +332,6 @@ taşımak ayrı bir iş (vault rolü ile `users.role` sütunu farklı şeyler ve
 
 ---
 
-## B-008 — Arayüzdeki imha sayacı saklama korumasını atlıyor
-
-**Durum:** Açık — mevcut davranış korundu (saf refactor kuralı)
-**Öncelik:** **Yüksek.** Veri kaybı riski: saklama süresi işleyen bir dosya,
-onay sorulmadan ve koruma hiç devreye girmeden diskten silinebiliyor.
-**İlgili:** B-004 (aynı bölge), 2.7 Faz 1 adım 4
-**Bulundu:** 2026-08-13, geri sayım matematiği CORE'a taşınırken
-
-### Bulgu
-
-Süresi dolmuş bir İmha Odası dosyasını silen **iki** kod yolu var ve
-yalnızca biri saklama korumasını uyguluyor:
-
-| Yol | Nerede | `is_retention_protected()` | Onay |
-|---|---|---|---|
-| `_purge_expired` (APScheduler, 10 dk) | [`CORE/scheduler.py`](CORE/scheduler.py) | ✅ kontrol ediyor, korumalıysa **atlıyor** ve `retention_hold` kaydı düşüyor | — |
-| `_purge_expired_file` (QTimer, 1 sn) | [`UI/main_window.py`](UI/main_window.py) | ❌ **kontrol etmiyor** | ❌ |
-
-Yani kullanıcı İmha Odası sekmesini açık bıraktığında, saklama süresi
-işleyen bir dosyanın sayacı sıfıra inerse dosya **diskten siliniyor ve DB
-kaydı düşüyor** — erken silme koruması hiç çalışmadan. Aynı dosya arka plan
-görevine yakalansaydı korunacaktı.
-
-Ek olarak arayüzdeki yol hataları sessizce yutuyor (`except Exception: pass`,
-iki yerde), dolayısıyla silme başarısız olsa bile kullanıcı bir şey görmüyor.
-
-### B-004 ile ilişkisi
-
-B-004 aynı bölgeyi tersten anlatıyor: arka plan görevi `Imha` etiketine hiç
-bakmıyor, dolayısıyla sayaç yalnızca UI açıkken işliyor. İkisi birlikte şu
-tabloyu üretiyor:
-
-- UI kapalı → dosya süresiz diskte kalıyor (B-004)
-- UI açık   → dosya korumaya bakılmadan siliniyor (B-008)
-
-Yani şu an davranışı belirleyen şey, kullanıcının hangi sekmede olduğu.
-**İkisi birlikte ele alınmalı**; B-004'teki "`label IN ('Karantina','Imha')`
-yap" önerisi tek başına uygulanırsa B-008'in silme yolu arka plana da
-taşınmış olur.
-
-### Neden 2.7'de düzeltilmedi
-
-2.7 saf bir yeniden düzenleme; bu adımda taşınan şey yalnızca geri sayım
-MATEMATİĞİ (`CORE/expiry.py`). `_purge_expired_file`'ın gövdesine
-dokunulmadı ve koruma kontrolü eklemek davranış değişikliği olurdu — üstelik
-veri silmeyi etkileyen bir değişiklik, bir taşıma commit'inin içinde en son
-gizlenmesi gereken şey.
-
-### Yapılacaklar (uygulanmadı)
-
-1. Silme mantığını tek bir CORE fonksiyonunda topla — `CORE/disposal.py`
-   içinde `purge_file()` zaten var ve onay/koruma kontrollerini biliyor.
-2. Her iki çağıran da (scheduler ve UI sayacı) o fonksiyonu kullansın.
-3. Koruma nedeniyle atlanan dosya için UI'da sayaç "korumalı" göstersin;
-   şu an sayaç sıfıra inip hiçbir şey olmaması kafa karıştırıcı olurdu.
-4. `except Exception: pass` bloklarını kaldır — silme başarısızlığı
-   kullanıcıya ve denetim kaydına yansımalı.
-
----
-
 ## B-009 — Toplu indirme dosya başına ayrı sorgu atıyor (N+1)
 
 **Durum:** Açık — mevcut davranış korundu (saf refactor kuralı)
@@ -615,3 +556,38 @@ DÜZ METNİN özeti (şifrelemeden önce hesaplanıyor); `hash_sha256` adından
    olduğunu ve `original_sha256` kullanılması gerektiğini yaz.
 
 Şimdilik `CORE/duplicates.py` modül docstring'i bu ayrımı açıklıyor.
+
+---
+
+## B-015 — `main.py`'nin son yedekten haberi yok
+
+**Durum:** Açık — 3.3 (yedekleme) turunda fark edildi
+
+Yedekleme özelliği var ama HATIRLATMASI yok. Haftalık bütünlük taraması
+(`CORE/integrity.py`) "son çalışma zamanı" ayarını tutup kapı deseniyle
+kendini tetikliyor; yedeklemede böyle bir şey yok.
+
+Sonuç: yedek yalnızca kullanıcı aklına geldiğinde alınıyor. Kullanılmayan
+bir yedekleme özelliği, olmayan bir yedekleme özelliğidir — ve bu, 3.3'ün
+kapatmayı amaçladığı boşluğu (medya kaybı) fiilen açık bırakıyor.
+
+### Yapılacaklar (uygulanmadı)
+
+1. `create_backup()` başarıyla bittiğinde `settings`'e son yedek zamanını
+   yaz (`backup_last_run`, `integrity_last_sweep` ile aynı desen).
+2. Açılışta ya da zamanlayıcıda kontrol: son yedek N günden eskiyse
+   (ya da hiç alınmamışsa) arayüzde kalıcı olmayan bir uyarı göster.
+   Eşik ayarlanabilir olsun; `0` uyarıyı kapatsın (hareketsizlik kilidi
+   ayarıyla aynı kalıp).
+3. Uyarı ENGELLEYİCİ olmamalı — tekrar tespitindeki gibi bilgilendirici.
+4. `CORE.backup.latest_backup()` zaten var; hedef dizin ayarlarda
+   tutulursa uyarı o dizine bakarak "yedek gerçekten duruyor mu" da
+   diyebilir.
+
+### Not
+
+Yedek hedefi ayarlarda tutulacaksa, harici diskin takılı olmadığı
+durumun sessizce "yedek yok" gibi görünmemesi gerekir — "hedef
+erişilemiyor" ile "yedek eski" farklı mesajlar.
+
+**Öncelik:** düşük-orta. Düzeltme değil, eksik özellik tamamlaması.

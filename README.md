@@ -230,6 +230,7 @@ HYCLEUS/
 │   ├── backup.py             # Encrypted backup + verifiable restore
 │   ├── backup_cli.py         # CLI: --verify / --restore
 │   ├── checkout.py           # Transparent access (open → edit → re-encrypt)
+│   ├── hwid_probe.py         # PROTOTYPE: cross-platform USB id (not wired in)
 │   ├── timestamp.py          # RFC 3161 trusted timestamps (.hcl trailer)
 │   ├── timestamp_verify.py   # Offline timestamp verification (no network)
 │   ├── verify_timestamp_cli.py  # CLI: --verify-timestamp <file>
@@ -497,6 +498,7 @@ HYCLEUS/
 │   ├── backup.py             # Şifreli yedekleme + doğrulanabilir geri yükleme
 │   ├── backup_cli.py         # CLI: --verify / --restore
 │   ├── checkout.py           # Şeffaf erişim (aç → düzenle → geri şifrele)
+│   ├── hwid_probe.py         # PROTOTİP: çapraz platform USB kimliği (bağlı değil)
 │   ├── timestamp.py          # RFC 3161 zaman damgası (.hcl fragmanı)
 │   ├── timestamp_verify.py   # Çevrimdışı damga doğrulama (ağ gerekmez)
 │   ├── verify_timestamp_cli.py  # CLI: --verify-timestamp <dosya>

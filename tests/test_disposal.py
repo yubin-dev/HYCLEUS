@@ -20,6 +20,7 @@ from CORE.disposal import (
     check_disposal,
     is_admin,
     is_retention_protected,
+    purge_expired_file,
     move_to_imha,
     purge_file,
     sweep_retention_expired,
@@ -556,6 +557,66 @@ class TestKarantinaTemizligiKorumasi:
 
         assert not serbest_hcl.exists()                          # eski davranış sürüyor
         assert db.fetchone("SELECT id FROM files WHERE id = ?", (serbest,)) is None
+
+    def test_imha_sayaci_da_saklamayi_atliyor(self, db, tmp_path):
+        """
+        B-008: ARAYÜZÜN İmha Odası sayacı da saklama korumasını uygulamalı.
+
+        Eskiden iki ayrı uygulama vardı ve yalnızca zamanlayıcı bu kontrolü
+        yapıyordu. Sonuç, kullanıcının göremeyeceği bir tutarsızlıktı:
+        uygulama KAPALIYKEN dosya korunuyor, AÇIKKEN aynı dosya korumasız
+        siliniyordu. Şimdi iki akış da `purge_expired_file()` çağırıyor.
+        """
+        korumali, korumali_hcl, _ = _active_file(db, tmp_path, filename="korumali.pdf")
+        db.execute("UPDATE files SET label = 'Imha' WHERE id = ?", (korumali,))
+
+        silindi = purge_expired_file(
+            db, korumali, source="imha_countdown", filepath=str(korumali_hcl))
+
+        assert silindi is False
+        assert korumali_hcl.exists()
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (korumali,)) is not None
+        assert "retention_hold" in _actions(db, korumali)
+
+    def test_imha_sayaci_korumasiz_dosyayi_siliyor(self, db, tmp_path):
+        """Koruma yoksa sayaç işini yapmaya devam etmeli."""
+        fid, hcl = _mk_file(db, tmp_path, label="Imha", filename="serbest.pdf")
+
+        assert purge_expired_file(
+            db, fid, source="imha_countdown", filepath=str(hcl)) is True
+        assert not hcl.exists()
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid,)) is None
+        assert "expired_purge" in _actions(db, fid)
+
+    def test_iki_akis_ayni_fonksiyonu_cagiriyor(self):
+        """
+        KÖK NEDENİN TESTİ. B-004 ve B-008'in ortak sebebi "aynı iş, iki
+        uygulama, farklı güvenlik"tı. Bu test ikinci bir uygulamanın geri
+        gelmesini yakalıyor: her iki çağrı yeri de tek fonksiyonu
+        kullanmalı ve kendi DELETE'ini yazmamalı.
+        """
+        import ast
+        from pathlib import Path as _P
+
+        kok = _P(__file__).resolve().parent.parent
+        for yol, fn in (
+            ("CORE/scheduler.py", "_purge_expired"),
+            ("UI/main_window_table.py", "_purge_expired_file"),
+        ):
+            src = (kok / yol).read_text(encoding="utf-8")
+            agac = ast.parse(src)
+            hedef = next(
+                n for n in ast.walk(agac)
+                if isinstance(n, ast.FunctionDef) and n.name == fn
+            )
+            govde = ast.get_source_segment(src, hedef) or ""
+            assert "purge_expired_file" in govde, f"{yol}::{fn} ortak fonksiyonu çağırmıyor"
+            assert "DELETE FROM files" not in govde, (
+                f"{yol}::{fn} kendi silme SQL'ini yazmış — ikinci uygulama geri gelmiş")
+
+    def test_purge_expired_file_bilinmeyen_dosyada_patlamiyor(self, db):
+        """Döngü içinde çağrılıyor; tek bir kayıp satır turu durdurmamalı."""
+        assert purge_expired_file(db, 9999, source="test") in (True, False)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

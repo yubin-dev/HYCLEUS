@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
 
 
 from CORE.crypto import encrypt_file
+from CORE.disposal import purge_expired_file
 from CORE.duplicates import (
     find_duplicates_for_file,
     format_duplicate_warning,
@@ -349,21 +350,25 @@ class TableMixin:
         )
 
     def _purge_expired_file(self, file_id: int | None, filepath: str) -> None:
-        if filepath:
-            try:
-                p = Path(filepath)
-                if p.exists():
-                    p.unlink()
-            except Exception:
-                pass
-        if file_id is not None:
-            try:
-                db = DBManager()
-                db.execute("DELETE FROM files WHERE id = ?", (file_id,))
-                db.log("expired_purge", target_type="file", target_id=file_id,
-                       detail=f"label=Imha filepath={filepath}")
-            except Exception:
-                pass
+        """
+        İmha Odası sayacı dolan bir dosyayı siler.
+
+        Silme mantığı burada DEĞİL: `CORE.disposal.purge_expired_file()`
+        çağrılıyor ve zamanlayıcının Karantina temizliği de aynı fonksiyonu
+        kullanıyor. Daha önce iki ayrı uygulama vardı ve yalnızca biri
+        saklama korumasını yapıyordu — uygulama açıkken korumasız silme
+        (B-008). Aynı işi iki yerde yazmak, ikisinin ayrışmasını zamana
+        bırakmak demekti.
+        """
+        if file_id is None:
+            return
+        try:
+            purge_expired_file(
+                DBManager(), file_id, source="imha_countdown", filepath=filepath
+            )
+        except Exception as exc:
+            # Tek bir dosyanın hatası sayaç turunu durdurmamalı.
+            _log.warning("purge_expired_failed  file_id=%s exc=%s", file_id, exc)
 
     def _get_imha_ttl_hours(self) -> int:
         """İmha TTL süresi — hesap CORE/expiry.py'de."""

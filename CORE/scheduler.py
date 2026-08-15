@@ -50,7 +50,7 @@ def _purge_expired() -> None:
     erken silme koruması hiç devreye girmez. Bu yüzden temizlik, saklama
     süresi altındaki dosyaları ATLAR (bkz. CORE/disposal.py).
     """
-    from CORE.disposal import is_retention_protected
+    from CORE.disposal import purge_expired_file
     from DB.db_manager import DBManager
     try:
         db = DBManager()
@@ -66,38 +66,15 @@ def _purge_expired() -> None:
         if not expired:
             return
 
-        purged = 0
-        for row in expired:
-            if is_retention_protected(db, row["id"]):
-                logger.info(
-                    "Karantina temizliği atlandı — saklama süresi işliyor (id=%s, %s)",
-                    row["id"], row["filename"],
-                )
-                db.log(
-                    "retention_hold",
-                    target_type="file",
-                    target_id=row["id"],
-                    detail=f"filename={row['filename']} karantina temizliginden korundu",
-                )
-                continue
-
-            # .hcl dosyasını diskten sil
-            try:
-                hcl = Path(row["filepath"])
-                if hcl.exists():
-                    hcl.unlink()
-            except Exception as exc:
-                logger.warning("Dosya silinemedi %s: %s", row["filepath"], exc)
-
-            # DB kaydını sil — quarantine ON DELETE CASCADE ile otomatik silinir
-            db.execute("DELETE FROM files WHERE id = ?", (row["id"],))
-            db.log(
-                "expired_purge",
-                target_type="file",
-                target_id=row["id"],
-                detail=f"filename={row['filename']}",
+        # Silme mantığı CORE/disposal.py'de ve arayüzün İmha sayacı da AYNI
+        # fonksiyonu çağırıyor. İki ayrı uygulama olduğu sürece yalnızca
+        # birinde saklama koruması vardı (B-008).
+        purged = sum(
+            purge_expired_file(
+                db, row["id"], source="quarantine_ttl", filepath=row["filepath"]
             )
-            purged += 1
+            for row in expired
+        )
 
         if purged:
             logger.info("%d süresi dolmuş dosya temizlendi.", purged)
