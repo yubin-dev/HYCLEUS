@@ -485,6 +485,54 @@ that entry marks the moment plaintext reached the disk. A full virtual drive
 (Dokan/WinFsp), which would keep plaintext out of the filesystem entirely,
 is out of scope; this is the interim answer.
 
+### 4.11 A backup takes the vault off the machine — the database goes with it, encrypted
+
+Shamir recovery (§4.4) covers a lost *key*. It does nothing for a lost
+*disk*. Backup closes that gap, and the two stay deliberately separate:
+
+    backup → media loss        Shamir → key loss
+
+**`.hcl` files are copied verbatim, not re-wrapped.** They are already
+AES-256-GCM with a per-file nonce. A second layer would buy no
+confidentiality — the AAD (original filename, plaintext SHA-256,
+timestamps, `user_id`, `hwid`) is readable in the header *on the source
+machine too* (§3), so wrapping would hide in the backup what is already
+open in the vault. Fixing AAD exposure is a format change, not a backup
+feature. The honest consequence: backup filenames leak exactly what the
+vault leaks, no more.
+
+**The database is the real exposure, and it is encrypted.** §3 concedes
+that SQLite is plaintext on disk: filenames, user records, roles, HWIDs and
+the whole audit log. Copying that to external media would write the entire
+inventory in the clear onto something designed to leave the building. So
+the needed tables are exported to canonical JSON and encrypted with
+`encrypt_file()` — same primitive, same key, no new crypto. The temporary
+plaintext dump is shredded before the backup is finished.
+
+**The key file is not backed up.** `.hclv` holds Argon2id-protected
+`share_1`. On external media it would be a ready-made offline brute-force
+target, and external media is exactly what goes missing. Losing the key is
+Shamir's problem. The consequence, stated plainly: **restoring from this
+backup requires a working key.** If the key is gone too, recover it first
+(§4.4), then restore.
+
+**The audit log is backed up but never restored.** It is worth keeping for
+compliance, but writing it into another database would create a second
+chain claiming the same history and disagreeing with the anchor (§4.6).
+Restore writes it to a separate file: readable, and out of the live chain.
+`users`, `usb_tokens` and `settings` are not backed up at all.
+
+**Verification runs before restore, and works without the key.** The
+manifest carries the SHA-256 of each *ciphertext*, so corruption,
+truncation and missing files are caught with no key at all — a scheduled
+script can check a backup without opening the vault. With the key,
+`verify_backup()` additionally runs the GCM tag check through
+`verify_file()` (no plaintext assembled) and compares the plaintext
+manifest against an encrypted copy of the same list, which is what makes a
+rewritten manifest detectable. Restore refuses to run if verification
+fails, and refuses a non-empty destination unless overwrite is explicit —
+it never writes into the live vault or database.
+
 ---
 
 ## 5. Cryptographic details
@@ -505,6 +553,7 @@ is out of scope; this is the interim answer.
 | PIN storage | Argon2id hash (never plaintext); minimum 6 characters for new PINs |
 | Secret storage | OS credential store, service `HYCLEUS`, usernames `share_2:<hwid>` and `totp_secret` |
 | Second factor | TOTP (RFC 6238), 6 digits, ±1 window |
+| Backup | `.hcl` files copied verbatim (already GCM); DB tables exported to canonical JSON and encrypted with the same primitive; manifest carries ciphertext SHA-256 so integrity is checkable without the key — `.hclv` deliberately excluded, see §4.11 |
 | Trusted timestamp | RFC 3161, SHA-256 message imprint over the **plaintext** hash, nonce + `certReq`; token in an optional file trailer outside the GCM tag |
 | Timestamp verification | Offline, no network: CMS signature over `signedAttrs` (ECDSA / RSA PKCS#1 v1.5 / PSS) against the embedded signer certificate, `timeStamping` EKU, validity at `genTime`, chain walked among embedded certs, digest cross-checked against the AAD — trust anchor must be supplied externally, see §4.9 |
 
@@ -1023,6 +1072,54 @@ giriyor (`file_opened`) — o kayıt, düz metnin diske indiği anı işaretliyo
 Düz metni dosya sisteminden tamamen uzak tutacak tam sanal sürücü
 (Dokan/WinFsp) kapsam dışı; bu ara çözüm.
 
+### 4.11 Yedek kasayı makineden çıkarıyor — veritabanı da şifreli olarak gidiyor
+
+Shamir kurtarma (§4.4) kaybolan ANAHTARI kapsıyor; kaybolan DİSK için
+hiçbir şey yapmıyor. Yedek o boşluğu kapatıyor ve ikisi bilerek ayrı
+duruyor:
+
+    yedek → medya kaybı        Shamir → anahtar kaybı
+
+**`.hcl` dosyaları olduğu gibi kopyalanıyor, yeniden sarmalanmıyor.**
+Zaten AES-256-GCM ve dosya başına ayrı nonce taşıyorlar. İkinci bir katman
+gizlilik kazandırmazdı: AAD (özgün ad, düz metin SHA-256, zaman
+damgaları, `user_id`, `hwid`) KAYNAK MAKİNEDE de başlıkta okunabilir
+durumda (§3); sarmalamak, kasada zaten açık olanı yalnızca yedekte
+gizlerdi. AAD maruziyetini düzeltmek bir format değişikliğidir, bir
+yedekleme özelliği değil. Dürüst sonuç: yedekteki dosya adları kasanın
+sızdırdığının aynısını sızdırıyor, fazlasını değil.
+
+**Asıl maruziyet veritabanı ve o şifreleniyor.** §3 açıkça kabul ediyor:
+SQLite diskte düz metin — dosya adları, kullanıcı kayıtları, roller,
+HWID'ler ve denetim günlüğünün tamamı. Bunu harici medyaya kopyalamak,
+binadan çıkmak üzere tasarlanmış bir şeye bütün envanteri açıkça yazmak
+olurdu. Bu yüzden gereken tablolar kanonik JSON'a çıkarılıp
+`encrypt_file()` ile şifreleniyor — aynı ilkel, aynı anahtar, yeni kripto
+yok. Geçici düz metin döküm, yedek bitmeden güvenli siliniyor.
+
+**Anahtar kasası yedeklenmiyor.** `.hclv` içinde Argon2id ile korunan
+`share_1` var. Harici medyada bu, hazır bir çevrimdışı kaba kuvvet hedefi
+olurdu — ve kaybolan tam olarak harici medyadır. Anahtar kaybı Shamir'in
+işi. Sonucu açıkça: **bu yedekten dönmek çalışan bir anahtar gerektiriyor.**
+Anahtar da gittiyse önce §4.4, sonra geri yükleme.
+
+**Denetim günlüğü yedekleniyor ama geri yüklenmiyor.** Uyumluluk için
+saklanması değerli, ama başka bir veritabanına yazmak aynı geçmişi iddia
+eden ikinci bir zincir yaratırdı ve çıpayla (§4.6) tutmazdı. Geri yükleme
+onu ayrı bir dosyaya çıkarıyor: okunabilir, canlı zincirin dışında.
+`users`, `usb_tokens` ve `settings` hiç yedeklenmiyor.
+
+**Doğrulama geri yüklemeden ÖNCE çalışıyor ve anahtar istemiyor.**
+Manifesto her dosyanın ŞİFRELİ hâlinin SHA-256'sını taşıyor; bozulma,
+kesilme ve eksik dosya anahtarsız yakalanıyor — zamanlanmış bir betik
+yedeği kasayı açmadan kontrol edebiliyor. Anahtar verilirse
+`verify_backup()` ek olarak `verify_file()` üzerinden GCM tag doğrulaması
+yapıyor (düz metin birleştirilmiyor) ve düz metin manifestoyu aynı listenin
+şifreli kopyasıyla karşılaştırıyor — yeniden yazılmış bir manifestoyu
+yakalayan şey bu. Geri yükleme, doğrulama düşerse ÇALIŞMIYOR; dolu bir
+hedefe açık onay olmadan yazmıyor ve canlı kasaya ya da veritabanına hiç
+dokunmuyor.
+
 ## 5. Kriptografik ayrıntılar
 
 | Katman | Yapı |
@@ -1041,6 +1138,7 @@ Düz metni dosya sisteminden tamamen uzak tutacak tam sanal sürücü
 | PIN saklama | Argon2id hash (asla düz metin); yeni PIN'ler için en az 6 karakter |
 | Sır saklama | OS anahtar kasası, servis `HYCLEUS`, adlar `share_2:<hwid>` ve `totp_secret` |
 | İkinci faktör | TOTP (RFC 6238), 6 hane, ±1 pencere |
+| Yedekleme | `.hcl` dosyaları olduğu gibi (zaten GCM); DB tabloları kanonik JSON'a çıkarılıp aynı ilkelle şifreleniyor; manifesto ciphertext SHA-256 taşıyor, yani bütünlük anahtarsız kontrol edilebiliyor — `.hclv` bilerek hariç, bkz. §4.11 |
 | Güvenilir zaman damgası | RFC 3161, **düz metin** özeti üzerinden SHA-256 message imprint, nonce + `certReq`; token GCM tag'inin dışındaki opsiyonel dosya fragmanında |
 | Zaman damgası doğrulaması | Çevrimdışı, ağsız: `signedAttrs` üzerindeki CMS imzası (ECDSA / RSA PKCS#1 v1.5 / PSS) gömülü imzalama sertifikasına karşı, `timeStamping` EKU, `genTime` anında geçerlilik, gömülü sertifikalar arasında zincir yürüyüşü, özetin AAD ile çapraz kontrolü — güven kökü dışarıdan verilmeli, bkz. §4.9 |
 

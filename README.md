@@ -37,6 +37,7 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | **Idle Auto-Lock** | Session locks after N minutes of inactivity even with the USB inserted; PIN required to resume (default 10 min, configurable) |
 | **SafeZone** | Temporary decrypted copies never touch the system temp directory — shredded on exit, and leftovers from a crash are shredded at startup |
 | **Transparent Access** | Open a document in its default application; edits are re-encrypted automatically with a fresh nonce and the plaintext copy is shredded — no manual re-encrypt step |
+| **Encrypted Backup** | Copy the vault to external media; database metadata is encrypted, never plaintext. Backups verify **without the key** and restore refuses to run on a corrupt one (`backup_cli.py --verify`) |
 | **Brute-force Defence** | Login rate limit — 5 failures → 30s, escalating to 300s; counter persisted in DB |
 | **Access Control** | RBAC: Administrator / Standard / Read-only roles |
 | **Malware Scan** | Windows Defender (MpCmdRun.exe) on every uploaded file |
@@ -226,6 +227,8 @@ HYCLEUS/
 │   ├── scanner.py            # Windows Defender integration
 │   ├── scheduler.py          # APScheduler — expired file cleanup
 │   ├── setup_usb.py          # CLI USB registration tool
+│   ├── backup.py             # Encrypted backup + verifiable restore
+│   ├── backup_cli.py         # CLI: --verify / --restore
 │   ├── checkout.py           # Transparent access (open → edit → re-encrypt)
 │   ├── timestamp.py          # RFC 3161 trusted timestamps (.hcl trailer)
 │   ├── timestamp_verify.py   # Offline timestamp verification (no network)
@@ -300,6 +303,7 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | **Hareketsizlik Kilidi** | USB takılı olsa bile N dakika hareketsizlikte oturum kilitlenir; devam için PIN gerekir (varsayılan 10 dk, yapılandırılabilir) |
 | **SafeZone** | Geçici çözülmüş kopyalar sistem TEMP'ine hiç yazılmaz — çıkışta imha edilir, çökme sonrası artıklar açılışta temizlenir |
 | **Şeffaf Erişim** | Belgeyi varsayılan uygulamasında açın; düzenleme yeni bir nonce ile otomatik geri şifrelenir ve düz metin kopya güvenli silinir — elle yeniden şifreleme adımı yok |
+| **Şifreli Yedekleme** | Kasayı harici medyaya kopyalayın; veritabanı metadata'sı şifreli gider, düz metin asla. Yedekler **anahtarsız** doğrulanabilir ve bozuk bir yedek geri yüklenmez (`backup_cli.py --verify`) |
 | **Kaba Kuvvet Savunması** | Giriş sınırlaması — 5 hatada 30 sn, 300 sn'ye kadar artan; sayaç DB'de kalıcı |
 | **Erişim Kontrolü** | RBAC: Yönetici / Standart / Salt Okunur rolleri |
 | **Zararlı Tarama** | Her yüklenen dosyaya Windows Defender (MpCmdRun.exe) taraması |
@@ -490,6 +494,8 @@ HYCLEUS/
 │   ├── scanner.py            # Windows Defender entegrasyonu
 │   ├── scheduler.py          # APScheduler — süresi dolmuş dosya temizliği
 │   ├── setup_usb.py          # CLI USB kayıt aracı
+│   ├── backup.py             # Şifreli yedekleme + doğrulanabilir geri yükleme
+│   ├── backup_cli.py         # CLI: --verify / --restore
 │   ├── checkout.py           # Şeffaf erişim (aç → düzenle → geri şifrele)
 │   ├── timestamp.py          # RFC 3161 zaman damgası (.hcl fragmanı)
 │   ├── timestamp_verify.py   # Çevrimdışı damga doğrulama (ağ gerekmez)

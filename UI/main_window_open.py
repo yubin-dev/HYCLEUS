@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QFileSystemWatcher, QTimer
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from CORE.checkout import (
     CheckoutError,
@@ -264,3 +264,77 @@ class OpenMixin:
         n = len(self._checkouts)
         etiket.setText(f"  {n} belge açık  " if n else "")
         etiket.setVisible(bool(n))
+
+
+class BackupMixin:
+    """
+    Yedek alma — arayüz tarafı.
+
+    Yalnızca yedek ALMA burada. Doğrulama ve GERİ YÜKLEME komut satırında
+    (`CORE/backup_cli.py`) ve bu ayrım bilinçli: geri yüklemenin tipik
+    senaryosu "disk gitti, yeni makine" ve o makinede grafik arayüz
+    AÇILMIYOR — `main.py` takılı ve kayıtlı bir USB ile bir vault dosyası
+    istiyor, ikisi de yok. Ayrıntılı gerekçe `CORE/backup_cli.py` modül
+    docstring'inde.
+
+    Yedek alma ise rutin bir iş ve zaten çalışan bir oturum gerektiriyor
+    (metadata'yı şifrelemek için oturum anahtarı lazım). Menüde olmasının
+    sebebi basit: bulunamayan bir yedekleme özelliği, olmayan bir
+    yedekleme özelliğidir.
+    """
+
+    def _on_create_backup(self) -> None:
+        from PySide6.QtWidgets import QFileDialog, QProgressDialog
+
+        from CORE.backup import BackupError, create_backup, default_backup_name
+
+        hedef = QFileDialog.getExistingDirectory(
+            self, "Yedeğin yazılacağı dizini seçin (harici disk önerilir)")
+        if not hedef:
+            return
+
+        yol = Path(hedef) / default_backup_name()
+        if yol.exists():
+            QMessageBox.warning(
+                self, "Yedek Al",
+                f"Bu ada sahip bir dizin zaten var:\n{yol}\n\n"
+                "Bir dakika bekleyip tekrar deneyin.")
+            return
+
+        ilerleme = QProgressDialog("Yedekleniyor…", "İptal", 0, 0, self)
+        ilerleme.setWindowTitle("Yedek Al")
+        ilerleme.setMinimumDuration(0)
+        ilerleme.setValue(0)
+
+        def _adim(i: int, n: int, ad: str) -> None:
+            ilerleme.setMaximum(n)
+            ilerleme.setValue(i)
+            ilerleme.setLabelText(f"({i}/{n})  {ad}")
+            QApplication.processEvents()
+
+        try:
+            rapor = create_backup(
+                DBManager(), yol, self._key,
+                user_id=self._user_id, hwid=self._hwid, on_progress=_adim,
+            )
+        except BackupError as exc:
+            ilerleme.close()
+            QMessageBox.critical(self, "Yedek Al", str(exc))
+            return
+        finally:
+            ilerleme.close()
+
+        mesaj = [rapor.summary(), ""]
+        if rapor.skipped:
+            mesaj += [
+                f"⚠  {len(rapor.skipped)} dosya kopyalanamadı ve yedeğe "
+                "GİRMEDİ:", *(f"   • {ad}" for ad in rapor.skipped[:10]), "",
+            ]
+        mesaj += [
+            "Yedeği doğrulamak için:",
+            f"  python CORE/backup_cli.py --verify \"{yol}\" --deep",
+            "",
+            "Not: anahtar kasası (.hclv) yedeğe DAHİL DEĞİL. Anahtar kaybı",
+            "için kurtarma parçasını kullanın (recover_vault.py --export).",
+        ]
+        QMessageBox.information(self, "Yedek Tamamlandı", "\n".join(mesaj))

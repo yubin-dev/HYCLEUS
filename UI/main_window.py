@@ -43,7 +43,7 @@ from UI.main_window_bulk import BulkActionsMixin
 from UI.main_window_files import FileActionsMixin
 from UI.main_window_layout import LayoutMixin
 from UI.main_window_lock import LockMixin, _LockOverlay
-from UI.main_window_open import OpenMixin
+from UI.main_window_open import BackupMixin, OpenMixin
 from UI.main_window_palette import _DARK, _ROLE_BADGE, _SIDEBAR_NAV
 from UI.main_window_table import TableMixin, _ProcessSignals
 from UI.main_window_theme import ThemeMixin
@@ -63,6 +63,7 @@ class HycleusWindow(
     FileActionsMixin,
     BulkActionsMixin,
     OpenMixin,
+    BackupMixin,
     LockMixin,
     QMainWindow,
 ):
@@ -304,6 +305,8 @@ class HycleusWindow(
         act_usb     = menu.addAction("🔌  USB Yönetimi")
         act_support = menu.addAction("💬  Destek")
         menu.addSeparator()
+        act_backup  = menu.addAction("💾  Yedek Al…")
+        menu.addSeparator()
         act_about   = menu.addAction("ℹ  Hakkında")
 
         btn_pos = self._btn_view.mapToGlobal(self._btn_view.rect().bottomLeft())
@@ -315,6 +318,8 @@ class HycleusWindow(
             self._on_open_admin_panel()
         elif action == act_support:
             self._on_open_contact()
+        elif action == act_backup:
+            self._on_create_backup()
         elif action == act_about:
             QMessageBox.information(
                 self, "HYCLEUS — Hakkında",
