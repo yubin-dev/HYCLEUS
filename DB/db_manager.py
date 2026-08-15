@@ -87,6 +87,12 @@ CREATE TABLE IF NOT EXISTS file_tags (
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_label       ON files(label);
+-- Tekrar tespiti (CORE/duplicates.py) her yüklemede bu sütunu sorguluyor;
+-- indekssiz her dosya için tam tablo taraması olurdu. Kısmi indeks:
+-- original_sha256 eski kayıtlarda NULL ve NULL satırlar hiçbir zaman
+-- eşleşmiyor, dolayısıyla indekste yer kaplamalarına gerek yok.
+CREATE INDEX IF NOT EXISTS idx_files_sha256      ON files(original_sha256)
+                                                 WHERE original_sha256 IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_quarantine_status ON quarantine(status);
 CREATE INDEX IF NOT EXISTS idx_audit_log_user    ON audit_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_time    ON audit_log(timestamp);

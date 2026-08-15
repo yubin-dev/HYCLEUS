@@ -576,3 +576,42 @@ commit'e karışmasın diye ayrıldı.
    `decrypt_file`, `CORE/timestamp.read_aad`) benzer kod var ve format
    her değiştiğinde üçü birden güncelleniyor.
 3. Kesik dosya için her iki yolda da aynı istisnayı doğrulayan test ekle.
+
+---
+
+## B-014 — `files.hash_sha256` ölü sütun
+
+**Durum:** Açık — 2.6 (tekrar tespiti) turunda fark edildi, plan dışı olduğu için dokunulmadı
+
+`files` tablosunda iki özet sütunu var ve yalnızca biri kullanılıyor:
+
+| Sütun | Yazan | Okuyan |
+|---|---|---|
+| `original_sha256` | `CORE/file_records.py` | `CORE/duplicates.py`, `CORE/file_queries.py`, arayüz |
+| `hash_sha256` | **hiç kimse** | **hiç kimse** |
+
+Depoda tek geçtiği yer şema tanımının kendisi (`DB/db_manager.py:34`).
+
+### Etkisi
+
+Doğrudan bir hata değil — boş bir sütun yer kaplıyor, o kadar. Asıl risk
+YANILTICI OLMASI: adı, iki sütundan "dosyanın hash'i" gibi duran daha genel
+olanı. Tekrar tespitini yazarken doğal refleks `hash_sha256`'ya uzanmaktı;
+her satırı NULL olduğu için sorgu hiçbir zaman eşleşme bulmaz ve özellik
+sessizce çalışmaz görünürdü. Bir sonraki kişi aynı tuzağa düşebilir.
+
+İki sütunun anlam farkı da hiçbir yerde yazılı değil: `original_sha256`
+DÜZ METNİN özeti (şifrelemeden önce hesaplanıyor); `hash_sha256` adından
+şifreli dosyanın özeti gibi duruyor ama öyle bir şey hiç üretilmedi.
+
+### Yapılacaklar (uygulanmadı)
+
+1. Sütunun gerçekten hiç yazılmadığını canlı bir veritabanında doğrula:
+   `SELECT COUNT(*) FROM files WHERE hash_sha256 IS NOT NULL`.
+2. Boşsa `ALTER TABLE files DROP COLUMN hash_sha256` (SQLite 3.35+).
+   Şema sürümü `PRAGMA user_version` ile takip ediliyor
+   (`CORE/secret_migration.py`), migration oraya eklenebilir.
+3. Düşürülmeyecekse en azından şemaya bir yorum: sütunun terk edilmiş
+   olduğunu ve `original_sha256` kullanılması gerektiğini yaz.
+
+Şimdilik `CORE/duplicates.py` modül docstring'i bu ayrımı açıklıyor.
