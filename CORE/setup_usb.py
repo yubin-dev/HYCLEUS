@@ -31,6 +31,7 @@ from typing import NoReturn
 # 'from DB.db_manager import ...' gibi importlarin calismasi icin gerekli
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from CORE.console import ensure_utf8_console                # noqa: E402
 from CORE.pin_policy import PIN_MAX_LEN, validate_new_pin  # noqa: E402
 from CORE.usb_manager import get_usb_hwid                    # noqa: E402
 from CORE.vault_manager import (  # noqa: E402
@@ -160,6 +161,12 @@ def _prompt_pin() -> str:
 # ── Ana fonksiyon ─────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # Ilk satir, herhangi bir print()'ten once. Bu aracin ciktisi `ı` ve `—`
+    # iceriyor; ikisi de Ingilizce Windows konsolunda (cp1252/cp437)
+    # kodlanamiyor ve ILK KURULUM ortasinda traceback'e donusuyordu.
+    # Gerekce ve kod sayfasi tablosu CORE/console.py'de.
+    ensure_utf8_console()
+
     args = _build_parser().parse_args()
     role: str  = args.role.strip()
     do_reset   = args.reset

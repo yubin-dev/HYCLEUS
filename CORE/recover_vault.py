@@ -31,6 +31,7 @@ from typing import NoReturn
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from CORE.console import ensure_utf8_console  # noqa: E402
 from CORE.recovery_share import (  # noqa: E402
     RecoveryShareError,
     build_export,
@@ -218,6 +219,12 @@ def _cmd_status(_args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    # Ilk satir, herhangi bir print()'ten once. Bu aracin ciktisi BUGUN
+    # cp1252'de kodlanabiliyor (tek ASCII disi karakteri `·`), yani cagri
+    # ONLEYICI: kural "ASCII disi cikti ureten her CLI" diyor ve tek bir
+    # Turkce harf eklendiginde bu arac da duserdi. Bkz. CORE/console.py.
+    ensure_utf8_console()
+
     p = argparse.ArgumentParser(
         prog="recover_vault.py",
         description="HYCLEUS kurtarma parcasi araci (Shamir 2-of-3, 3. pay).",
