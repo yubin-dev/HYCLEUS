@@ -136,6 +136,38 @@ def render(totals: Totals, failed: list[str], *, title: str) -> str:
     return "\n".join(satirlar) + "\n"
 
 
+def render_annotations(failed: list[str], *, title: str) -> str:
+    """
+    Başarısız test adlarını GitHub Actions *annotation* komutu olarak yazar.
+
+    Neden ayrı bir kip
+    ------------------
+    Özet tablosu `$GITHUB_STEP_SUMMARY`'ye yönlendiriliyor ve orada duran
+    bir şey **yalnızca oturum açmış bir tarayıcıdan** okunabiliyor. İş
+    günlükleri de öyle: `GET /actions/jobs/<id>/logs` yetkisiz istekte
+    "Must have admin rights" diyor, herkese açık bir depoda bile.
+
+    Annotation'lar farklı: check-run API'sinden **yetkisiz okunabiliyorlar**.
+    Yani bir CI hatasının hangi testte olduğunu öğrenmenin, tarayıcıya
+    girmeden mümkün olan tek yolu bu.
+
+    Bu bir kolaylık değil, bir gereklilikti: 3.5 turunda Windows ayağı
+    kırıldı ve hangi testin düştüğü hiçbir yerden okunamadı.
+    """
+    if not failed:
+        return ""
+    satirlar = [
+        f"::error title=Basarisiz test ({title})::{ad}"
+        for ad in failed[:_MAX_LISTED]
+    ]
+    if len(failed) > _MAX_LISTED:
+        satirlar.append(
+            f"::error title=Basarisiz test ({title})::"
+            f"… ve {len(failed) - _MAX_LISTED} tane daha"
+        )
+    return "\n".join(satirlar) + "\n"
+
+
 def main(argv: list[str]) -> int:
     """
     Her zaman 0 döndürür — bu betik RAPORLAR, karar vermez.
@@ -143,18 +175,31 @@ def main(argv: list[str]) -> int:
     Sıfırdan farklı bir çıkış, zaten kırmızı olan bir adımın üstüne ikinci
     bir hata eklerdi ve asıl sebebi gölgeleyebilirdi. Testlerin geçip
     geçmediğine `pytest` adımının kendisi karar veriyor.
+
+    `--annotations` verilirse markdown tablosu yerine GitHub Actions
+    annotation komutları basılır (bkz. `render_annotations`).
     """
     # Ilk satir, herhangi bir print()'ten once. GITHUB_STEP_SUMMARY UTF-8
     # bekliyor; Windows kosucusu yerel kod sayfasini seciyor ve tablodaki
     # ✅/❌ ile Turkce basliklar dusuyor. Gerekce CORE/console.py'de.
     ensure_utf8_console()
 
-    if len(argv) < 2:
-        print("kullanım: test_summary.py <junit.xml> [başlık]", file=sys.stderr)
+    bayraklar = [a for a in argv[1:] if a.startswith("--")]
+    konum = [a for a in argv[1:] if not a.startswith("--")]
+    annotations = "--annotations" in bayraklar
+
+    if not konum:
+        print("kullanım: test_summary.py <junit.xml> [başlık] [--annotations]",
+              file=sys.stderr)
         return 0
 
-    path = Path(argv[1])
-    title = argv[2] if len(argv) > 2 else "Test sonuçları"
+    path = Path(konum[0])
+    title = konum[1] if len(konum) > 1 else "Test sonuçları"
+
+    if annotations and not path.exists():
+        print(f"::error title=Test raporu yok::{path} bulunamadı — "
+              "pytest rapor yazamadan düştü.")
+        return 0
 
     if not path.exists():
         # pytest XML yazmadan çöktüyse (toplama hatası, segfault) özet yine
@@ -165,10 +210,16 @@ def main(argv: list[str]) -> int:
     try:
         totals, failed = parse(path)
     except ET.ParseError as exc:
-        print(f"### ⚠️ {title}\n\n`{path}` ayrıştırılamadı: {exc}\n")
+        if annotations:
+            print(f"::error title=Rapor bozuk::{path} ayrıştırılamadı: {exc}")
+        else:
+            print(f"### ⚠️ {title}\n\n`{path}` ayrıştırılamadı: {exc}\n")
         return 0
 
-    print(render(totals, failed, title=title))
+    if annotations:
+        print(render_annotations(failed, title=title), end="")
+    else:
+        print(render(totals, failed, title=title))
     return 0
 
 

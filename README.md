@@ -220,7 +220,17 @@ Administrators have access to:
 HYCLEUS/
 ├── main.py                   # Entry point
 ├── requirements.txt
+├── requirements-dev.txt      # pytest, ruff, mypy, bandit
+├── requirements-security.txt # semgrep (separate — 57 MB wheel)
+├── pyproject.toml            # ruff / mypy / bandit config
 ├── HYCLEUS.spec              # PyInstaller spec
+├── .semgrep/hycleus.yml      # Project-specific semgrep rules
+├── .github/workflows/
+│   ├── ci.yml                # Tests, ruff, mypy, bandit, semgrep
+│   └── fuzz.yml              # atheris fuzzing — manually triggered
+├── tests/
+│   ├── fuzz/                 # Fuzz targets (crypto container, Shamir)
+│   └── canary_semgrep/       # Deliberately unsafe — proves rules fire
 ├── CORE/
 │   ├── crypto.py             # AES-256-GCM encryption (.hcl format)
 │   ├── paths.py              # data_dir() — EXE-aware path resolution
@@ -488,6 +498,16 @@ Yöneticiler şu özelliklere erişebilir:
 HYCLEUS/
 ├── main.py                   # Giriş noktası
 ├── requirements.txt
+├── requirements-dev.txt      # pytest, ruff, mypy, bandit
+├── requirements-security.txt # semgrep (ayrı — 57 MB tekerlek)
+├── pyproject.toml            # ruff / mypy / bandit yapılandırması
+├── .semgrep/hycleus.yml      # Projeye özel semgrep kuralları
+├── .github/workflows/
+│   ├── ci.yml                # Testler, ruff, mypy, bandit, semgrep
+│   └── fuzz.yml              # atheris fuzzing — elle tetiklenir
+├── tests/
+│   ├── fuzz/                 # Fuzz hedefleri (kripto kabı, Shamir)
+│   └── canary_semgrep/       # Bilerek güvensiz — kuralların canlı kanıtı
 ├── HYCLEUS.spec              # PyInstaller spec
 ├── CORE/
 │   ├── crypto.py             # AES-256-GCM şifreleme (.hcl formatı)

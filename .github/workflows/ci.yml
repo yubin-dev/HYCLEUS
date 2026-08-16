@@ -74,6 +74,24 @@ jobs:
           >> "$GITHUB_STEP_SUMMARY"
         shell: bash
 
+      # Başarısız test ADLARINI annotation olarak yayınla.
+      #
+      # Özet tablosu ve iş günlükleri yalnızca oturum açmış bir tarayıcıdan
+      # okunabiliyor; annotation'lar check-run API'sinden YETKİSİZ okunuyor.
+      # 3.5 turunda Windows ayağı kırıldı ve hangi testin düştüğü hiçbir
+      # yerden öğrenilemedi — bu adım o boşluğu kapatıyor.
+      #
+      # Çıktı BİLEREK $GITHUB_STEP_SUMMARY'ye yönlendirilmiyor: workflow
+      # komutları günlük akışında olmalı, özet dosyasında değil.
+      - name: Başarısız testleri işaretle
+        if: failure()
+        run: >
+          python .github/scripts/test_summary.py
+          test-results.xml
+          "${{ matrix.os }} · Python ${{ matrix.python-version }}"
+          --annotations
+        shell: bash
+
       # Sayıların günlüğe inmeden görünmesi için. Depo günlüklerini API'den
       # indirmek yönetici yetkisi istiyor (403); artifact istemiyor.
       - name: Test raporunu yükle

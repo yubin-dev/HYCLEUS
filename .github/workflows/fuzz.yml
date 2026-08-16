@@ -1,0 +1,148 @@
+name: Fuzzing
+
+# ELLE TETİKLENİR — her push'ta değil.
+#
+# Gerekçe: kapsam güdümlü fuzzing dakikalarca (istenirse saatlerce) sürüyor
+# ve ana CI'ın işi "bu commit sağlam mı" sorusunu HIZLI yanıtlamak. Fuzzing
+# farklı bir soru soruyor: "yeterince uzun uğraşırsak ne kırılır?" İkisini
+# aynı iş akışına koymak, hızlı olanı yavaşlatır ve yavaş olanı da kısaltmaya
+# zorlar.
+#
+# Haftalık bir `schedule:` de eklenebilir; bilerek eklenmedi. Kimsenin
+# bakmadığı bir zamanlanmış iş, yeşil olduğu sürece görünmez, kırmızı
+# olduğunda da gürültü sayılır. Fuzzing kasten çalıştırılmalı.
+on:
+  workflow_dispatch:
+    inputs:
+      hedef:
+        description: "Hangi hedef"
+        type: choice
+        default: "hepsi"
+        options: ["hepsi", "crypto", "shamir"]
+      sure:
+        description: "Hedef başına saniye (atheris varken)"
+        type: string
+        default: "300"
+      adet:
+        description: "Yerel sürücü girdi sayısı (atheris yokken)"
+        type: string
+        default: "20000"
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: ${{ matrix.hedef }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # `hepsi` seçilirse ikisi de koşar; tek hedef seçilirse aşağıdaki
+        # `if` diğerini atlar. GitHub Actions matrisi girdiye göre
+        # daraltılamadığı için filtre adım seviyesinde.
+        hedef: [crypto, shamir]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Python 3.11: atheris'in tekerlek yayınladığı en yeni sürüm serisi.
+      # Ana CI da 3.11'de koşuyor, yani fuzz'lanan yorumlayıcı test edilenle
+      # aynı.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # atheris Linux'ta bile her Python sürümünde tekerlek bulmuyor ve
+      # kaynaktan derlemesi clang istiyor. Kurulum BAŞARISIZ OLABİLİR ve
+      # bu işi kırmamalı: harness'lar atheris olmadan da koşuyor (yerel
+      # rastgele sürücü). Hangisinin koştuğu aşağıda açıkça yazılıyor —
+      # "fuzz'ladık" demekle "kapsam güdümlü fuzz'ladık" demek aynı şey
+      # değil ve rapor bunu gizlememeli.
+      - name: atheris kurulumu (başarısız olabilir)
+        id: atheris
+        continue-on-error: true
+        run: |
+          pip install atheris
+          python -c "import atheris; print('atheris', atheris.__version__ if hasattr(atheris,'__version__') else 'ok')"
+
+      - name: Hedefi atla (seçilmediyse)
+        id: filtre
+        run: |
+          SECIM="${{ inputs.hedef }}"
+          if [ "$SECIM" = "hepsi" ] || [ "$SECIM" = "${{ matrix.hedef }}" ]; then
+            echo "kos=evet" >> "$GITHUB_OUTPUT"
+          else
+            echo "kos=hayir" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.hedef }} bu koşuda seçilmedi."
+          fi
+
+      - name: Fuzz — kapsam güdümlü (atheris)
+        if: steps.filtre.outputs.kos == 'evet' && steps.atheris.outcome == 'success'
+        run: |
+          mkdir -p fuzz-artifacts corpus/${{ matrix.hedef }}
+          python tests/fuzz/fuzz_${{ matrix.hedef }}.py \
+            -max_total_time=${{ inputs.sure }} \
+            -artifact_prefix=fuzz-artifacts/${{ matrix.hedef }}- \
+            -print_final_stats=1 \
+            corpus/${{ matrix.hedef }}
+
+      - name: Fuzz — yerel sürücü (atheris yok)
+        if: steps.filtre.outputs.kos == 'evet' && steps.atheris.outcome != 'success'
+        run: |
+          echo "::warning::atheris kurulamadı — kapsam güdümlü DEĞİL, "\
+               "tohumlu rastgele sürücüyle koşuluyor. Bulma gücü belirgin "\
+               "biçimde düşük."
+          python tests/fuzz/fuzz_${{ matrix.hedef }}.py \
+            --yerel --adet ${{ inputs.adet }}
+
+      # libFuzzer bir çökme bulduğunda girdiyi dosyaya yazıyor. O dosya
+      # olmadan bulgu tekrar üretilemez; rapordaki yığın izi tek başına
+      # yetmez.
+      - name: Çökme girdilerini yükle
+        if: always() && steps.filtre.outputs.kos == 'evet'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.hedef }}
+          path: fuzz-artifacts/
+          if-no-files-found: ignore
+
+      - name: Korpusu yükle
+        if: always() && steps.filtre.outputs.kos == 'evet'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-${{ matrix.hedef }}
+          path: corpus/${{ matrix.hedef }}/
+          if-no-files-found: ignore
+
+      - name: Özet
+        if: always() && steps.filtre.outputs.kos == 'evet'
+        run: |
+          {
+            echo "### Fuzz — ${{ matrix.hedef }}"
+            echo
+            if [ "${{ steps.atheris.outcome }}" = "success" ]; then
+              echo "- Sürücü: **atheris / libFuzzer** (kapsam güdümlü)"
+              echo "- Süre: ${{ inputs.sure }} sn"
+            else
+              echo "- Sürücü: **yerel rastgele** — atheris kurulamadı"
+              echo "- Girdi sayısı: ${{ inputs.adet }}"
+            fi
+            echo "- Sonuç: \`${{ job.status }}\`"
+            echo
+            echo "Bilinen ve düzeltilmemiş ihlaller harness'ların"
+            echo "\`BILINEN\` listesinde ve BACKLOG.md'de kayıtlı; bu koşu"
+            echo "onları hata saymaz."
+          } >> "$GITHUB_STEP_SUMMARY"

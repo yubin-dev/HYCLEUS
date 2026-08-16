@@ -211,3 +211,62 @@ def test_the_script_never_fails_the_build(tmp_path: Path) -> None:
                              '<failure/></testcase></testsuite>')
     assert summary.main(["x", str(kirik)]) == 0
     assert summary.main(["x"]) == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# --annotations kipi
+# ══════════════════════════════════════════════════════════════════════════════
+
+_KIRIK = """<?xml version="1.0" encoding="utf-8"?>
+<testsuite name="pytest" errors="1" failures="1" skipped="0" tests="3" time="1.5">
+  <testcase classname="tests.test_a" name="test_gecen"/>
+  <testcase classname="tests.test_b" name="test_dusen"><failure/></testcase>
+  <testcase classname="tests.test_c" name="test_hatali"><error/></testcase>
+</testsuite>
+"""
+
+
+def test_annotations_basarisiz_adlari_workflow_komutu_olarak_basar(
+    tmp_path: Path, capsys
+) -> None:
+    """
+    ASIL DEĞERİ BURADA: annotation'lar check-run API'sinden yetkisiz
+    okunabiliyor; özet tablosu ve iş günlükleri okunamıyor. Bir CI
+    hatasının hangi testte olduğunu tarayıcı olmadan öğrenmenin tek yolu.
+    """
+    rapor = _write(tmp_path, _KIRIK)
+    assert summary.main(["x", str(rapor), "ubuntu · 3.11", "--annotations"]) == 0
+    cikti = capsys.readouterr().out
+
+    assert "tests.test_b::test_dusen" in cikti
+    assert "tests.test_c::test_hatali" in cikti
+    assert "tests.test_a::test_gecen" not in cikti
+    for satir in cikti.strip().splitlines():
+        assert satir.startswith("::error title="), satir
+    # Markdown tablosu KARIŞMAMALI — bu çıktı günlük akışına gidiyor.
+    assert "|" not in cikti
+
+
+def test_annotations_gecen_kosuda_sessiz(tmp_path: Path, capsys) -> None:
+    """Hiçbir test düşmediyse tek bir annotation bile basılmamalı."""
+    rapor = _write(tmp_path, _GERCEK)
+    assert summary.main(["x", str(rapor), "t", "--annotations"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_annotations_rapor_yoksa_da_konusur(tmp_path: Path, capsys) -> None:
+    """
+    pytest XML yazamadan çöktüyse (toplama hatası, segfault) sessizlik en
+    kötü sonuç: adım kırmızı ama hiçbir yerde sebep yok.
+    """
+    assert summary.main(["x", str(tmp_path / "yok.xml"), "t", "--annotations"]) == 0
+    cikti = capsys.readouterr().out
+    assert cikti.startswith("::error title=Test raporu yok::")
+
+
+def test_bayrak_konumdan_bagimsiz(tmp_path: Path, capsys) -> None:
+    """`--annotations` başta verilse de çalışmalı — yol/başlık ayrıştırması
+    bayrakları konumsal argüman sanmamalı."""
+    rapor = _write(tmp_path, _KIRIK)
+    assert summary.main(["x", "--annotations", str(rapor), "t"]) == 0
+    assert "::error" in capsys.readouterr().out

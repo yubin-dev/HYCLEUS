@@ -508,15 +508,43 @@ Bu tur `.hcl` kabına v2 sürümünü ve zaman damgası fragmanını ekledi;
 dokunulmadı. Kapsam dışı bir davranış değişikliği, formatı değiştiren bir
 commit'e karışmasın diye ayrıldı.
 
+### Fuzzing ne ekledi (2026-08-16, 3.5 turu)
+
+`tests/fuzz/fuzz_crypto.py` bu bulgunun **tek örnek olmadığını** gösterdi.
+`decrypt_file()` başlığı okurken `verify_file()`'ın yaptığı uzunluk
+kontrollerinin **hiçbirini** yapmıyor:
+
+| Okuma | `verify_file` | `decrypt_file` | Kesik dosyada |
+|---|---|---|---|
+| sürüm baytı | `if not version_byte` | yok | `IndexError` |
+| nonce (12 bayt) | `if len(nonce) != 12` | yok | kısa nonce GCM'e gidiyor |
+| AAD uzunluğu (4 bayt) | `if len(raw) != 4` | yok | **`struct.error`** |
+| AAD gövdesi | `if len(aad) != aad_len` | yok | kısa AAD sessizce kabul |
+
+`struct.error` satırı bu turda fuzz ile bulundu; girdi `HYCL` + tek sürüm
+baytı (5 bayt). `IndexError` gibi o da belgelenmiş kümenin dışında ve
+çağıranların `except ValueError` ağından kaçıyor.
+
+Dördüncü satır ayrı bir tür sorun: istisna fırlatmıyor ama kesik bir AAD
+`AuthenticationError` üretiyor — yani "dosya bozuk" yerine "birileri
+kurcalamış" deniyor. Kullanıcıya yanlış şey söyleniyor.
+
+İki ihlal `tests/fuzz/fuzz_crypto.py::BILINEN` içinde kayıtlı;
+`tests/test_fuzz_harness.py` onlara hâlâ ulaşılabildiğini her koşuda
+doğruluyor. Düzeltildiklerinde o test kırılacak ve listeden çıkarılmalarını
+hatırlatacak.
+
 ### Yapılacaklar (uygulanmadı)
 
 1. `decrypt_file()` içindeki başlık okumasını `verify_file()`'daki
-   kalıba getir (boş okuma kontrolü + `ValueError`).
+   kalıba getir — yukarıdaki tablonun dört satırı da.
 2. Daha iyisi: iki fonksiyonun kopyalanmış başlık ayrıştırmasını tek bir
    `_read_header()` yardımcısına çıkar — bugün üç yerde (`verify_file`,
    `decrypt_file`, `CORE/timestamp.read_aad`) benzer kod var ve format
-   her değiştiğinde üçü birden güncelleniyor.
+   her değiştiğinde üçü birden güncelleniyor. Tablodaki ayrışmanın kök
+   nedeni bu; 1. maddeyi yapıp 2.'yi yapmamak aynı sapmayı geri getirir.
 3. Kesik dosya için her iki yolda da aynı istisnayı doğrulayan test ekle.
+4. Düzeltildikten sonra `fuzz_crypto.py::BILINEN` listesini boşalt.
 
 ---
 
@@ -839,3 +867,66 @@ Yukarı akış düzeltirse: `PYTHONUTF8=1`'i üç yerden birden kaldır.
 `tests/test_static_analysis.py::test_windows_pythonutf8_olmadan_kural_dosyasi_okunamiyor`
 o gün otomatik olarak `skip`'e düşecek ve mesajında bunu söyleyecek —
 yani bu maddeyi kapatma zamanını test haber verecek.
+
+---
+
+## B-021 — `reconstruct_key()` belgelenmemiş `OverflowError` fırlatıyor
+
+**Durum:** Açık — 3.5 turunda fuzzing ile bulundu
+**Öncelik:** Düşük-orta (erişilebilirlik/hata mesajı; gizlilik kaybı DEĞİL)
+**Bulundu:** 2026-08-16, `tests/fuzz/fuzz_shamir.py`
+
+### Bulgu
+
+Shamir asalı `_SSS_PRIME = 2**256 + 297`. Sır 32 bayt, yani `< 2**256`.
+Ama Lagrange interpolasyonu **herhangi bir** `[0, asal)` değeri
+üretebiliyor ve son satır bunu 32 bayta sığdırmaya çalışıyor:
+
+```python
+secret_int = _lagrange_at([(idx_a, y_a), (idx_b, y_b)], 0)
+return secret_int.to_bytes(_KEY_SIZE, "big")     # _KEY_SIZE = 32
+```
+
+Sonuç `[2**256, 2**256 + 296]` aralığına düşerse — 297 değer —
+`OverflowError: int too big to convert`.
+
+`reconstruct_key()` docstring'i yalnızca `ValueError` vaat ediyor:
+
+> Raises: ValueError — paylar geçersiz formattaysa veya aynı indisliyse
+
+### Neden önemli, neden panik değil
+
+**Önemli:** pay 3 (kurtarma parçası) **kullanıcının elle yazdığı** bir
+girdi. Kurtarma akışı (`CORE/recover_vault.py`) ve arayüz `ValueError`
+yakalıyor; `OverflowError` o ağdan kaçıp çıplak bir çökme olarak yansır.
+Kullanıcı zaten kasasına giremediği için kurtarmaya başvurmuş durumda —
+karşılaştığı şeyin "parça hatalı" değil bir yığın izi olması en kötü an.
+
+**Panik değil:** rastgele bir yanlış yazımın bu aralığa düşme olasılığı
+`297/2**256`. Yani kazara neredeyse imkânsız. Kurulabilir ama kuran kişi
+zaten iki geçerli pay üretebiliyor demektir — bir gizlilik kaybı yok, tek
+etkisi yanlış istisna tipi.
+
+Fuzzer bunu rastgele bulamadı; `fuzz_shamir.py::_tasan_pay_tohumu()`
+girdiyi elle kuruyor. "Fuzz'ladık, çıkmadı" ile "yok" arasındaki farkın
+somut bir örneği.
+
+### Yapılacak (uygulanmadı)
+
+`_sss_recover()` içinde dönüşü sarmalayın:
+
+```python
+try:
+    return secret_int.to_bytes(_KEY_SIZE, "big")
+except OverflowError as exc:
+    raise ValueError(
+        "Paylar geçerli bir anahtara çözülmedi — "
+        "büyük ihtimalle biri yanlış girildi."
+    ) from exc
+```
+
+Mesaj önemli: kullanıcıya "içeride bir şey patladı" değil "parçayı
+kontrol edin" denmeli. Düzeltme sonrası `fuzz_shamir.py::BILINEN`
+listesinden B-021 kaydını çıkarın —
+`tests/test_fuzz_harness.py::test_bilinen_ihlallere_gercekten_ulasiliyor`
+bunu zaten hatırlatacak.
