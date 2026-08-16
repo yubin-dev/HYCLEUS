@@ -182,8 +182,13 @@ kullanılmalı.
 
 ## B-004 — İmha Odası sayacı yalnızca UI açıkken işliyor
 
-**Bulundu:** 2026-08-13, saklama profili silme/imha akışı çalışması sırasında.
 **Durum:** düzeltilmedi — bulgu kaydı.
+**Öncelik:** Orta. Veri kaybı değil ama **veri kalışı**: silinmesi beklenen
+dosya, kullanıcı sekmeye girene kadar diskte duruyor ve arayüzdeki "24 saat
+içinde silinecek" mesajı bu sürede doğru olmuyor. Düzeltmenin kendisi tek
+satır, ama `CORE/disposal.py`'nin `expires_at = NULL` davranışını **kritik
+hale getiriyor** — o bağımlılık okunmadan dokunulmamalı (aşağıda).
+**Bulundu:** 2026-08-13, saklama profili silme/imha akışı çalışması sırasında.
 
 ### Bulgu
 
@@ -514,6 +519,7 @@ DÜZ METNİN özeti (şifrelemeden önce hesaplanıyor); `hash_sha256` adından
 ## B-015 — `main.py`'nin son yedekten haberi yok
 
 **Durum:** Açık — 3.3 (yedekleme) turunda fark edildi
+**Öncelik:** Düşük-orta. Düzeltme değil, eksik özellik tamamlaması.
 
 Yedekleme özelliği var ama HATIRLATMASI yok. Haftalık bütünlük taraması
 (`CORE/integrity.py`) "son çalışma zamanı" ayarını tutup kapı deseniyle
@@ -541,8 +547,6 @@ kapatmayı amaçladığı boşluğu (medya kaybı) fiilen açık bırakıyor.
 Yedek hedefi ayarlarda tutulacaksa, harici diskin takılı olmadığı
 durumun sessizce "yedek yok" gibi görünmemesi gerekir — "hedef
 erişilemiyor" ile "yedek eski" farklı mesajlar.
-
-**Öncelik:** düşük-orta. Düzeltme değil, eksik özellik tamamlaması.
 
 ---
 
