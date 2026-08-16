@@ -795,6 +795,17 @@ değişirse yeni bir şey girmiş demektir — sayılar bilerek orada duruyor,
 `tests/test_static_analysis.py::test_bandit_skips_listesi_belgeli` de her
 skip'in gerekçesinin var olduğunu denetliyor.
 
+### Kapatılmış yan bulgu — bandit'in `custom` biçimlendiricisi
+
+Açık madde DEĞİL, kayıt: bandit 1.9'un `formatters/custom.py` dosyası,
+şablonda yalnızca `{test_id}` istense bile tüm etiketleri hevesle
+hesaplıyor. Bunlardan biri `os.path.relpath` ve o da sürücü sınırında
+`ValueError` fırlatıyor. GitHub Windows koşucusunda çalışma alanı `D:`,
+TEMP `C:` — kanarya testi bu yüzden kırıldı ve bandit "boş çıktı +
+sıfırdan farklı çıkış" verdiği için "bulgu yok" ile "araç çöktü" ayırt
+edilemedi. Çözüm: `-f json`. Gerekçe testin docstring'inde, yerel
+üretimi `subst X:` ile yapıldı.
+
 ---
 
 ## B-019 — CI özet betiği `defusedxml` kullanmıyor

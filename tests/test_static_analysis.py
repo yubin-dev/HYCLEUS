@@ -105,17 +105,46 @@ def bandit_kanarya(tmp_path_factory) -> Path:
 
 @bandit_gerekli
 def test_bandit_yapilandirmasi_kanaryayi_yakaliyor(bandit_kanarya: Path) -> None:
-    """Proje yapılandırmasıyla bile tehlikeli desenler kapıyı geçemiyor."""
+    """
+    Proje yapılandırmasıyla bile tehlikeli desenler kapıyı geçemiyor.
+
+    Neden `-f json`, `-f custom` değil
+    ----------------------------------
+    İlk sürüm `-f custom --msg-template "{test_id}"` kullanıyordu ve GitHub'ın
+    Windows koşucusunda kırıldı. Sebep bandit 1.9'daki bir hata:
+    `formatters/custom.py` şablonda YALNIZCA `{test_id}` istense bile
+    `tag_mapper`'ın TÜM girdilerini hevesle hesaplıyor — `relpath` dahil.
+    `os.path.relpath` ise sürücü sınırında `ValueError` fırlatıyor:
+
+        ValueError: path is on mount 'C:', start on mount 'D:'
+
+    GitHub Windows koşucusunda çalışma alanı `D:\\a\\...`, TEMP ise
+    `C:\\Users\\runneradmin\\...`. Yani `tmp_path`'e yazılan her kanarya
+    farklı sürücüde kalıyor ve bandit boş çıktıyla, sıfırdan farklı bir kod
+    döndürüyor: "hiçbir bulgu yok" ile "araç çöktü" ayırt edilemez hâle
+    geliyor.
+
+    `-f json` bu biçimlendiriciye hiç uğramıyor ve sürücü varsayımı
+    taşımıyor. Bulgu `subst X:` ile yerel olarak birebir üretildi.
+    """
+    import json
+
     sonuc = _calistir([
         "bandit", "-c", str(KOK / "pyproject.toml"),
-        "-q", "-f", "custom", "--msg-template", "{test_id}",
-        str(bandit_kanarya),
+        "-q", "-f", "json", str(bandit_kanarya),
     ])
+    assert sonuc.stdout.strip(), (
+        "bandit çıktı üretmedi — araç çöktü mü?\n"
+        f"exit={sonuc.returncode}\nstderr:\n{sonuc.stderr}"
+    )
+    veri = json.loads(sonuc.stdout)
+    assert not veri.get("errors"), veri["errors"]
     assert sonuc.returncode != 0, (
         "bandit kanarya dosyasında hiçbir şey bulmadı — yapılandırma her "
         f"şeyi susturuyor olabilir.\nstdout:\n{sonuc.stdout}\n{sonuc.stderr}"
     )
-    yakalanan = set(sonuc.stdout.split())
+
+    yakalanan = {b["test_id"] for b in veri["results"]}
     for beklenen in ("B307", "B602", "B324", "B301", "B105"):
         assert beklenen in yakalanan, (
             f"{beklenen} yakalanmadı. Yakalananlar: {sorted(yakalanan)}"
