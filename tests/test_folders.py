@@ -9,6 +9,8 @@ ayrıştırılabilir olmalı, dolayısıyla biçim taşıma sırasında değişm
 """
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from CORE.audit_chain import verify_audit_chain
@@ -18,7 +20,6 @@ from CORE.folders import (
     assign_file_to_folder,
     create_folder,
     delete_folder,
-    ensure_owner_exists,
     list_folders,
     move_folder_to_imha,
 )
@@ -76,29 +77,67 @@ def test_create_is_audited(db):
     assert f"hwid={_HWID}" in detail
 
 
-def test_create_writes_a_placeholder_user_when_missing(db):
+def test_create_does_not_invent_a_user_anymore(db):
     """
-    KORUNAN DAVRANIŞ — eksik `users` satırı uydurulup yazılıyor.
+    DAVRANIŞ DEĞİŞİKLİĞİ (B-011) — eksik sahip artık UYDURULMUYOR.
 
-    folders.owner_id yabancı anahtarı yüzünden, DEV_MODE'da ya da users
-    satırı hiç yazılmamış bir oturumda klasör oluşturma FK hatasıyla
-    düşerdi. Mevcut kaçamak olduğu gibi taşındı — bkz. BACKLOG B-011.
+    Bu test, adı `test_create_writes_a_placeholder_user_when_missing`
+    olan sabitleme testinin yerini aldı. Eskisi kaçamağı KORUYORDU:
+    `owner_id` yoksa "yonetici" adlı, boş parola hash'li, `admin` rollü
+    bir satır yazılıyordu ve test bunu doğruluyordu.
+
+    Artık FK hatası yükseliyor. Gerekçe: oturum kullanıcısı girişte
+    `CORE.session_user.sync_session_user()` ile yazılıyor, dolayısıyla
+    buraya var olmayan bir `owner_id` gelmesi bir programlama hatası —
+    susturulması değil görünmesi gerekiyor.
     """
     assert db.fetchone("SELECT id FROM users WHERE id = 7") is None
-    create_folder(db, "Klasor", owner_id=7, hwid=_HWID)
 
-    row = db.fetchone("SELECT username, role, password_hash FROM users WHERE id = 7")
-    assert row is not None
-    assert row["username"] == "yonetici"
-    assert row["role"] == "admin"
-    assert row["password_hash"] == "", "boş parola hash'i — B-011"
+    with pytest.raises(sqlite3.IntegrityError):
+        create_folder(db, "Klasor", owner_id=7, hwid=_HWID)
+
+    assert db.fetchone("SELECT id FROM users WHERE id = 7") is None, (
+        "kaçamak geri gelmiş — users satırı hâlâ uyduruluyor"
+    )
 
 
-def test_ensure_owner_does_not_touch_an_existing_user(db):
-    _add_user(db, 3)
-    db.execute("UPDATE users SET username = 'gercek' WHERE id = 3")
-    ensure_owner_exists(db, 3)
-    assert db.fetchone("SELECT username FROM users WHERE id = 3")["username"] == "gercek"
+def test_ensure_owner_exists_artik_yok(db):
+    """
+    Kaçamağın fonksiyonu tümüyle KALDIRILDI, susturulmadı.
+
+    Boş bir gövdeye indirgenip bırakılsaydı çağrı yerleri sessizce
+    çalışmaya devam eder ve bir sonraki kişi onu yeniden doldurabilirdi.
+    """
+    import CORE.folders as folders_modulu
+
+    assert not hasattr(folders_modulu, "ensure_owner_exists")
+
+
+def test_create_folder_audit_extra_alan_sirasini_koruyor(db):
+    """
+    Sürükle-bırak akışının denetim detayı birebir korunmalı.
+
+    O akış eskiden kendi INSERT'ünü yapıp kendi kaydını yazıyordu
+    (kaçamağın İKİNCİ kopyası oradaydı). Tek uygulamada birleşirken
+    `via=drag_drop files=N` bilgisi kaybolabilirdi; `audit_extra`
+    parametresi tam olarak bunu taşıyor ve alan sırası değişmiyor —
+    denetim kayıtları geriye dönük ayrıştırılabilir kalmalı.
+    """
+    uid = _add_user(db)
+    create_folder(
+        db, "Surukle", owner_id=uid, hwid=_HWID,
+        audit_extra="via=drag_drop files=12",
+    )
+    assert _detail(db, "folder_created") == (
+        f"name=Surukle hwid={_HWID} via=drag_drop files=12"
+    )
+
+
+def test_create_folder_audit_extra_verilmezse_bicim_degismiyor(db):
+    """`audit_extra` yoksa detay eski biçimiyle aynı kalmalı."""
+    uid = _add_user(db)
+    create_folder(db, "Duz", owner_id=uid, hwid=_HWID)
+    assert _detail(db, "folder_created") == f"name=Duz hwid={_HWID}"
 
 
 def test_create_allows_duplicate_names(db):

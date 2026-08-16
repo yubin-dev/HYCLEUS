@@ -68,6 +68,7 @@ from CORE.duplicates import (
 )
 from CORE.expiry import banner_for, countdown_for, ttl_hours
 from CORE.file_records import record_encrypted_file
+from CORE.folders import create_folder
 from CORE.scanner import ScanResult, scan_file
 from CORE.usb_manager import DEV_MODE as _DEV_MODE, get_usb_hwid
 from DB.db_manager import DBManager
@@ -473,24 +474,13 @@ class TableMixin:
         folder_id: int | None = None
         try:
             db = DBManager()
-            _urow = db.fetchone("SELECT id FROM users WHERE id = ?", (self._user_id,))
-            if _urow is None:
-                _ehwid = "DEV-HWID-1234" if _DEV_MODE else (self._hwid or "")
-                db.execute(
-                    "INSERT INTO users (id, username, password_hash, role, status, hwid)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
-                    (self._user_id, "yonetici", "", "admin", "approved", _ehwid),
-                )
-            db.execute("INSERT INTO folders (name, owner_id) VALUES (?, ?)",
-                       (folder.name, self._user_id))
-            _frow = db.fetchone(
-                "SELECT id FROM folders WHERE name = ? AND owner_id = ? ORDER BY id DESC LIMIT 1",
-                (folder.name, self._user_id),
+            # B-011: burada eskiden `users` satırı uydurulurdu — CORE/folders.py
+            # içindekiyle aynı kaçamağın ikinci kopyasıydı. Oturum kullanıcısı
+            # artık girişte yazıldığı için (CORE.session_user) gerek kalmadı.
+            folder_id = create_folder(
+                db, folder.name, owner_id=self._user_id, hwid=self._hwid,
+                audit_extra=f"via=drag_drop files={len(files)}",
             )
-            if _frow:
-                folder_id = _frow["id"]
-            db.log("folder_created",
-                   detail=f"name={folder.name} hwid={self._hwid} via=drag_drop files={len(files)}")
         except Exception as exc:
             _log.warning("folder_create_failed  exc=%s", exc)
 

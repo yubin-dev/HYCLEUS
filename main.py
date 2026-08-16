@@ -23,6 +23,7 @@ from CORE.safezone import purge_on_exit, purge_orphans
 from CORE.scheduler import start_scheduler, stop_scheduler
 from CORE.secret_migration import MigrationError, run_migrations
 from CORE.secret_store import KeyringUnavailableError, backend_name, ensure_available
+from CORE.session_user import sync_session_user
 from CORE.usb_manager import get_usb_hwid
 from CORE.vault_manager import has_recovery_share
 from DB.db_manager import DBManager, HWIDMissingError
@@ -248,7 +249,23 @@ def main() -> None:
 
     app.aboutToQuit.connect(_anchor_on_quit)
 
-    win = HycleusWindow(hwid=hwid, key=session_key, role=role)
+    # ── Oturum kullanıcısını `users` tablosuna bağla (B-011) ─────────────────
+    # Buraya kadar kimlik yalnızca vault dosyasında yaşıyordu; `users` tablosu
+    # ondan habersizdi. HycleusWindow'a `user_id` hiç geçilmediği için sahiplik
+    # her oturumda varsayılan 1'e yazılıyor, o satır yoksa da klasör oluşturma
+    # sırasında UYDURULUYORDU (iki ayrı yerde). Artık bağlantı burada, giriş
+    # anında ve gerçek bilgiyle kuruluyor.
+    #
+    # Başarısızlık açılışı ENGELLEMİYOR: kullanıcı zaten USB + PIN ile
+    # doğrulandı ve dosyalarına erişimi `users` tablosuna bağlı değil. Geri
+    # düşülen 1 değeri eski davranış — ama artık sessiz değil, kaydı düşüyor.
+    try:
+        user_id = sync_session_user(DBManager(), hwid=hwid, role=role)
+    except Exception as exc:
+        _log.error("Oturum kullanıcısı eşlenemedi (hwid=%s): %s", hwid, exc)
+        user_id = 1
+
+    win = HycleusWindow(hwid=hwid, key=session_key, role=role, user_id=user_id)
     win.show()
     # Kısıtlamalar show() sonrasında uygulanmalı — Qt ilk paint'te
     # __init__ içindeki setVisible() çağrılarını sıfırlayabilir.

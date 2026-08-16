@@ -18,6 +18,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | B-012 | `3.5` turu sonu — B-012 düzeltmesi | `decrypt_file()` başlığı kendi başına ayrıştırıyor, `verify_file()`'ın dört uzunluk kontrolünün hiçbirini yapmıyordu: kesik dosyada `IndexError`, beş baytlık dosyada `struct.error` (ikincisini fuzzing buldu). İkisi de belgelenmiş kümenin dışındaydı. Kök neden eksik `if`'ler değil İKİ KOPYAYDI; `CORE.crypto._read_header()` altında birleştirildi. Her korumanın kendi mesajı var ve mesajlar testte sabitlendi — mesaj sabitlenmeden iki koruma mutasyonla ölmüyordu. İkinci bir uygulamanın geri gelmesini AST denetimi engelliyor (`tests/test_crypto.py::test_iki_okuma_yolu_ayni_basligi_kullaniyor`). |
 | B-017 | `3.5` turu sonu — B-017 düzeltmesi | Sürüm dizesi beş yerde elle yazılıydı ve beşi farklı şey söylüyordu (etiket `v2.1.2`, SECURITY.md `v2.1.0`, README rozeti `2.0`, Hakkında `v1.6`, İletişim `v1.5`). Bildirim akışını kırıyordu: §6.3 "etkilenen sürüm" istiyor, kullanıcının gördüğü tek sürüm yanlıştı. `CORE/version.py` tek kaynak oldu; arayüz oradan okuyor, belgeler `tests/test_version.py` ile karşılaştırılıyor (belgeler kod okuyamıyor, ayrışmaları yine sessiz olurdu). İki sabit var ve ikisi de gerekli: `__version__` (çalıştırılan kod) ve `SON_YAYIN` (düzeltme alan etiket). Tarihsel "v2.1.0'a kadar…" atıfları toplu değiştirmeden korundu, ayrı test var. |
 | B-021 | `3.5` turu sonu — B-021 düzeltmesi | `reconstruct_key()`, Lagrange sonucu `[2**256, asal)` aralığına düştüğünde `to_bytes(32)` ile `OverflowError` fırlatıyordu; docstring yalnızca `ValueError` vaat ediyor ve kurtarma akışı onu yakalıyor. Kurtarma parçası elle yazılan tek kripto girdisi olduğu için erişilebilir bir yoldu. `_sss_recover()` artık yakalayıp "parçayı kontrol edin" diyen bir `ValueError`'a çeviriyor; asıl sebep `__cause__` zincirinde kalıyor. Fuzzing bulmuştu, tohum korpusundaki girdi geri alınmayı yakalamak için yerinde bırakıldı. |
+| B-011 | `①` grubu — B-011 düzeltmesi | `create_folder()`, `owner_id` `users` tablosunda yoksa uydurma bir satır yazıyordu ("yonetici", boş parola hash'i, `admin` rolü) ve aynı kaçamağın İKİNCİ kopyası `UI/main_window_table.py`'de duruyordu. Kök neden orada değildi: `main.py` `HycleusWindow`'a `user_id` hiç geçmiyordu, yani oturum kim olursa olsun sahiplik varsayılan **1**'e yazılıyordu. `CORE/session_user.py::sync_session_user()` girişte oturumu gerçek bir `users.id`'ye bağlıyor; satır yoksa açılan kayıt artık insan taklit etmiyor (`vault:<hwid>`, gerçek rol, ayrıştırılamaz parola sentinel'i) ve denetim kaydına düşüyor. Kaçamak iki yerden de kaldırıldı; `user_id` argümanının sessizce düşmesini AST denetimleri engelliyor (`tests/test_session_user.py`). |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
 > Yeni madde açarken bu tabloya da bakın; yalnızca aşağıdaki en büyük
@@ -420,60 +421,6 @@ Mevcut davranış [`tests/test_export.py`](tests/test_export.py) içinde
 
 `CORE/export.py` her iki davranışı da destekliyor (`hwid_fallback`
 parametresi), yani düzeltme yalnızca çağrı yerlerinde tek satır.
-
----
-
-## B-011 — Klasör oluşturma eksik `users` satırını uyduruyor
-
-**Durum:** Açık — mevcut davranış korundu, testle sabitlendi
-**Öncelik:** Orta (veri bütünlüğü; denetim kaydının güvenilirliğini etkiler)
-**İlgili:** 2.7 Faz 1 adım 6 (`CORE/folders.py`)
-**Bulundu:** 2026-08-13
-
-### Bulgu
-
-`create_folder()`, `owner_id` olarak verilen kullanıcı `users` tablosunda
-yoksa **onu uyduruyor**:
-
-```sql
-INSERT INTO users (id, username, password_hash, role, status, hwid)
-VALUES (?, 'yonetici', '', 'admin', 'approved', ?)
-```
-
-Yani: boş parola hash'i, `admin` rolü, `approved` durumu. Sebep
-`folders.owner_id` yabancı anahtarı — DEV_MODE'da ya da `users` satırı hiç
-yazılmamış bir oturumda klasör oluşturma FK hatasıyla düşerdi ve bu kaçamak
-onu susturuyor.
-
-### Etkisi
-
-- **Denetim kaydı güvenilirliğini zedeliyor.** Sonradan bakan biri
-  `users` tablosunda gerçek bir "yonetici" hesabı görüyor; o hesap hiç
-  kaydolmamış, sadece bir FK'yı susturmak için var.
-- **Boş parola hash'i.** Bugün zararsız: giriş yolu vault üzerinden
-  işliyor ve `users.password_hash` doğrulamada kullanılmıyor. Ama boş
-  hash'li `admin` rollü bir satır, ileride parola tabanlı bir yol
-  eklenirse hazır bir açık olur.
-- Aynı `user_id` ile ikinci kez çağrılırsa satır zaten var, dokunulmuyor —
-  yani tek seferlik bir kirlilik.
-
-### Kök neden
-
-Oturum açılırken `users` satırının yazılacağı garanti değil: kimlik vault
-dosyasından geliyor, `users` tablosu ise ayrı yaşıyor. İkisi arasında
-bir "oturum açan kullanıcıyı kaydet" adımı yok.
-
-### Yapılacaklar (uygulanmadı)
-
-1. Oturum açılışında (`main.py`, giriş başarılı olduktan hemen sonra)
-   kullanıcıyı gerçek bilgilerle `users` tablosuna yaz/güncelle.
-2. `ensure_owner_exists()` kaçamağını kaldır; `create_folder()` FK
-   hatasını olduğu gibi yükseltsin.
-3. Uydurulmuş satırları tespit etmek için tek seferlik bir kontrol:
-   `SELECT id FROM users WHERE password_hash = '' AND username = 'yonetici'`.
-
-Mevcut davranış [`tests/test_folders.py`](tests/test_folders.py) içinde
-`test_create_writes_a_placeholder_user_when_missing` ile sabitlendi.
 
 ---
 

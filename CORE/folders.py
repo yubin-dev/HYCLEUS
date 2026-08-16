@@ -24,17 +24,22 @@ Sonuç doğru ama iki farklı mekanizmadan geliyor; biri açık SQL, diğeri
 şema kısıtı.
 
 
-KORUNAN DAVRANIŞ — eksik kullanıcı satırı oluşturuluyor
--------------------------------------------------------
-`create_folder()`, `owner_id` olarak verilen kullanıcı `users` tablosunda
-yoksa onu ÖNCE oluşturuyor. Bunun nedeni `folders.owner_id` yabancı
-anahtarı: DEV_MODE'da ya da vault'tan gelen bir oturumda `users` satırı hiç
-yazılmamış olabiliyor ve klasör oluşturma yabancı anahtar hatasıyla
-düşerdi.
+KALDIRILAN KAÇAMAK — artık kullanıcı satırı UYDURULMUYOR (B-011)
+----------------------------------------------------------------
+`create_folder()` eskiden, `owner_id` `users` tablosunda yoksa onu
+uyduruyordu ("yonetici", boş parola hash'i, `admin` rolü). Sebep
+`folders.owner_id` yabancı anahtarıydı: `users` satırı yazılmamış bir
+oturumda klasör oluşturma FK hatasıyla düşerdi.
 
-Bu bir onarım değil, bir kaçamak — ve uydurma bir kullanıcı satırı
-("yonetici", boş parola hash'i, admin rolü) yaratıyor. Olduğu gibi taşındı;
-bkz. BACKLOG.md B-011.
+Kök neden burada değildi. `main.py` `HycleusWindow`'a `user_id` hiç
+geçmiyordu, yani oturum kim olursa olsun sahip **1** numaralı kullanıcı
+oluyordu; o satır da çoğu zaman yoktu. Kaçamak, eksik bir giriş adımını
+yanlış katmanda örtüyordu.
+
+Artık giriş akışı `CORE.session_user.sync_session_user()` ile oturumu
+gerçek bir `users.id`'ye bağlıyor ve o id buraya geliyor. Dolayısıyla
+`create_folder()` FK hatasını **bastırmıyor**: sahip yoksa bu bir
+programlama hatasıdır ve görünmesi gerekir.
 """
 from __future__ import annotations
 
@@ -66,28 +71,13 @@ def list_folders(db: Any) -> list[FolderInfo]:
     return [FolderInfo(id=r["id"], name=r["name"], file_count=r["n"]) for r in rows]
 
 
-def ensure_owner_exists(db: Any, user_id: int, *, hwid: str = "") -> None:
-    """
-    `users` tablosunda satır yoksa oluşturur — bkz. modül docstring'i.
-
-    Mevcut davranış birebir korundu: uydurma bir yönetici satırı yazılıyor.
-    Doğru çözüm oturum açılırken kullanıcıyı gerçekten kaydetmek olurdu
-    (BACKLOG B-011).
-    """
-    if db.fetchone("SELECT id FROM users WHERE id = ?", (user_id,)) is not None:
-        return
-    _log.warning(
-        "users satırı yok (id=%s) — klasör sahipliği için yer tutucu yazılıyor", user_id
-    )
-    db.execute(
-        "INSERT INTO users (id, username, password_hash, role, status, hwid)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, "yonetici", "", "admin", "approved", hwid),
-    )
-
-
 def create_folder(
-    db: Any, name: str, *, owner_id: int, hwid: str | None = None
+    db: Any,
+    name: str,
+    *,
+    owner_id: int,
+    hwid: str | None = None,
+    audit_extra: str | None = None,
 ) -> int:
     """
     Klasör oluşturur ve id'sini döndürür.
@@ -95,13 +85,28 @@ def create_folder(
     Ad kırpılıyor (`strip`) — mevcut davranış. BOŞ ad kontrolü burada
     DEĞİL: arayüz zaten boş girişte diyaloğu kapatıyor ve o bir arayüz
     doğrulaması.
+
+    Args:
+        audit_extra: Denetim kaydı detayının SONUNA eklenecek ek alanlar
+            (ör. `"via=drag_drop files=12"`). Sürükle-bırak akışı kendi
+            INSERT'ünü yaparken bu bilgiyi yazıyordu; tek uygulamada
+            birleşirken kaybolmasın diye parametreye alındı. Alan sırası
+            mevcut kayıtlarla birebir aynı kalıyor.
+
+    Raises:
+        sqlite3.IntegrityError: `owner_id` `users` tablosunda yoksa.
+            Bu hata artık BASTIRILMIYOR (B-011): oturum kullanıcısı
+            giriş anında `CORE.session_user.sync_session_user()` ile
+            yazılıyor, dolayısıyla eksik sahip bir programlama hatasıdır.
     """
-    ensure_owner_exists(db, owner_id, hwid=hwid or "")
     temiz = name.strip()
     cur = db.execute(
         "INSERT INTO folders (name, owner_id) VALUES (?, ?)", (temiz, owner_id)
     )
-    db.log("folder_created", detail=f"name={temiz} hwid={hwid}")
+    detay = f"name={temiz} hwid={hwid}"
+    if audit_extra:
+        detay = f"{detay} {audit_extra}"
+    db.log("folder_created", detail=detay)
     return int(cur.lastrowid)
 
 
