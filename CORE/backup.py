@@ -373,6 +373,16 @@ def create_backup(
     except Exception as exc:  # denetim kaydı yedeği engellemesin
         _log.warning("backup_log_failed  exc=%s", exc)
 
+    # B-015: hatırlatma kapısını ilerlet. Yedek BURADA tamamlandı — damgayı
+    # arayüzün yazmasına bırakmak, CLI'dan alınan yedeklerin hatırlatmayı
+    # susturmaması demek olurdu (CORE/backup_cli.py aynı fonksiyonu
+    # çağırıyor). Denetim kaydı gibi bu da yedeği engellemiyor.
+    try:
+        from CORE.backup_reminder import yedek_alindi
+        yedek_alindi(db, zaman=rapor.created_at)
+    except Exception as exc:
+        _log.warning("backup_reminder_update_failed  exc=%s", exc)
+
     _log.info("backup  %s", rapor.summary())
     return rapor
 

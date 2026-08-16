@@ -23,6 +23,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | B-009 | `①` grubu — B-009 düzeltmesi | `export_to_directory()` `aad_metadata`'yı döngü içinde dosya başına bir sorguyla okuyordu; `export_to_zip()` aynı bilgiyi zaten tek sorguda alıyordu. `aad_map()` tek `WHERE id IN (...)` ile önden okuyor, 900'lük parçalara bölüyor (SQLite'ın eski `SQLITE_MAX_VARIABLE_NUMBER` sınırı) ve tekrarlı id'leri tekilleştiriyor. Ölçüm sorgu SAYISINA bakıyor, kodun şekline değil. |
 | B-010 | `①` grubu — B-010 düzeltmesi | İki indirme akışı, DB'nin `aad_metadata` sütununda hwid bulunmadığında ayrışıyordu: ZIP oturum hwid'iyle doğrulayıp dosyayı atlıyor, toplu indirme `hwid=None` geçtiği için kontrolü hiç çalıştırmıyordu. Fark yalnızca DB sütunu ile DOSYANIN AAD'ı ayrıştığında görünür (kontrol `decrypt_file` içinde ve dosyanın kendi AAD'ına bakıyor). ZIP'in davranışı doğru kabul edildi: sütunun eksilmesi "bu dosya bu cihazda mı şifrelendi" sorusunu geçersiz kılmıyor. Toplu indirme artık `hwid_fallback` alıyor. Kabul edilen risk: DB'si eksilmiş ve başka cihazda şifrelenmiş dosyalar toplu indirmede de atlanıyor — ama ZIP'te zaten atlanıyordu. |
 | B-004 | `④` grubu — B-004 düzeltmesi | İmha Odası sayacını işleten tek yer `UI/main_window_table.py::_tick_expiry` idi ve o metot `if self._current_label != "Imha": return` ile başlıyordu — süresi dolmuş dosya, kullanıcı o sekmeye girmedikçe diskte kalıyordu. Zamanlayıcının `_purge_expired` görevi artık `Karantina` yanında `Imha` etiketini de işliyor; iki etiket ayrı denetim kaynağı yazıyor (`quarantine_ttl` / `imha_ttl`). Arayüz sayacı KALDIRILMADI, ikisi de aynı `purge_expired_file()`'ı çağırıyor (B-008). Saklama süpürmesiyle gelen `expires_at = NULL` satırlar korunuyor; korumanın kaynağı SQLite'ın üç değerli mantığı (`datetime(NULL) <= …` → NULL), ölçüldü. Bu maddeyi "son çalışma zamanı + kapı" deseni ÇÖZMEDİ: oradaki kapı global değil dosya başına. |
+| B-015 | `④` grubu — B-015 düzeltmesi | Yedekleme özelliği vardı ama HATIRLATMASI yoktu; yedek yalnızca kullanıcının aklına geldiğinde alınıyordu. `CORE/backup_reminder.py` eklendi ve `ZamanKapisi`'nı (`backup_last_run`) kullanıyor — ④ grubunda deseni gerçekten kullanan tek madde. Damga `create_backup()` içinde yazılıyor, arayüzde değil: CLI'dan alınan yedekler de hatırlatmayı susturmalı. Uyarı ENGELLEYİCİ değil, "sonra sorma" bir eşik süresi kadar (süresiz değil) ve eşik `0` hatırlatmayı kapatıyor. "Hedef erişilemiyor" ile "hiç yedek yok" AYRI durumlar — harici disk takılı değilse yedek yok değil, görünmüyor. Negatif eşik kapatmıyor, varsayılana düşüyor. |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
 > Yeni madde açarken bu tabloya da bakın; yalnızca aşağıdaki en büyük
@@ -262,40 +263,6 @@ DÜZ METNİN özeti (şifrelemeden önce hesaplanıyor); `hash_sha256` adından
    olduğunu ve `original_sha256` kullanılması gerektiğini yaz.
 
 Şimdilik `CORE/duplicates.py` modül docstring'i bu ayrımı açıklıyor.
-
----
-
-## B-015 — `main.py`'nin son yedekten haberi yok
-
-**Durum:** Açık — 3.3 (yedekleme) turunda fark edildi
-**Öncelik:** Düşük-orta. Düzeltme değil, eksik özellik tamamlaması.
-
-Yedekleme özelliği var ama HATIRLATMASI yok. Haftalık bütünlük taraması
-(`CORE/integrity.py`) "son çalışma zamanı" ayarını tutup kapı deseniyle
-kendini tetikliyor; yedeklemede böyle bir şey yok.
-
-Sonuç: yedek yalnızca kullanıcı aklına geldiğinde alınıyor. Kullanılmayan
-bir yedekleme özelliği, olmayan bir yedekleme özelliğidir — ve bu, 3.3'ün
-kapatmayı amaçladığı boşluğu (medya kaybı) fiilen açık bırakıyor.
-
-### Yapılacaklar (uygulanmadı)
-
-1. `create_backup()` başarıyla bittiğinde `settings`'e son yedek zamanını
-   yaz (`backup_last_run`, `integrity_last_sweep` ile aynı desen).
-2. Açılışta ya da zamanlayıcıda kontrol: son yedek N günden eskiyse
-   (ya da hiç alınmamışsa) arayüzde kalıcı olmayan bir uyarı göster.
-   Eşik ayarlanabilir olsun; `0` uyarıyı kapatsın (hareketsizlik kilidi
-   ayarıyla aynı kalıp).
-3. Uyarı ENGELLEYİCİ olmamalı — tekrar tespitindeki gibi bilgilendirici.
-4. `CORE.backup.latest_backup()` zaten var; hedef dizin ayarlarda
-   tutulursa uyarı o dizine bakarak "yedek gerçekten duruyor mu" da
-   diyebilir.
-
-### Not
-
-Yedek hedefi ayarlarda tutulacaksa, harici diskin takılı olmadığı
-durumun sessizce "yedek yok" gibi görünmemesi gerekir — "hedef
-erişilemiyor" ile "yedek eski" farklı mesajlar.
 
 ---
 

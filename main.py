@@ -216,6 +216,40 @@ def main() -> None:
     except Exception as exc:  # DB/şema sorunları açılışı engellemesin
         _log.warning("Kurtarma parçası durumu okunamadı: %s", exc)
 
+    # ── Yedekleme hatırlatması (B-015) ───────────────────────────────────────
+    # Yedekleme özelliği vardı ama hatırlatması yoktu; yedek yalnızca
+    # kullanıcının aklına geldiğinde alınıyordu. Kullanılmayan bir yedekleme
+    # özelliği, olmayan bir yedekleme özelliğidir.
+    #
+    # ENGELLEYİCİ DEĞİL: uyarı gösterilip geçiliyor, açılış durmuyor. "Sonra
+    # sorma" bir eşik süresi daha susturuyor. Kararın hangi durumda hangi
+    # cümleyi kurduğu CORE/backup_reminder.py'de — burada yalnızca gösterim.
+    try:
+        from CORE.backup_reminder import YedekDurum, ertele, yedek_durumu
+
+        durum = yedek_durumu(DBManager())
+        if durum.uyarilmali:
+            _log.info("Yedek hatırlatması: %s", durum.durum)
+            kutu = QMessageBox(None)
+            kutu.setIcon(QMessageBox.Warning)
+            kutu.setWindowTitle("Yedekleme Hatırlatması")
+            kutu.setText(durum.mesaj())
+            tamam = kutu.addButton("Tamam", QMessageBox.AcceptRole)
+            sonra = kutu.addButton(
+                f"Sonra sorma ({durum.esik_gun} gün)", QMessageBox.RejectRole
+            )
+            # Hedef erişilemiyorsa erteleme sunulmuyor: sorun yedeğin eskimesi
+            # değil, kontrol edilememesi — ve o disk takılınca kendiliğinden
+            # geçiyor. Ertelemek, gerçek bir "yedek eski" uyarısını da
+            # bastırırdı.
+            if durum.durum is YedekDurum.HEDEF_ERISILEMIYOR:
+                kutu.removeButton(sonra)
+            kutu.exec()
+            if kutu.clickedButton() is not tamam:
+                ertele(DBManager())
+    except Exception as exc:  # hatırlatma açılışı engellemesin
+        _log.warning("Yedek hatırlatması gösterilemedi: %s", exc)
+
     # key_provider: haftalık bütünlük taraması GCM tag'lerini doğrulamak için
     # oturum anahtarına ihtiyaç duyuyor. Anahtarın kopyası zamanlayıcı
     # modülünde tutulmuyor — buradaki tek örneğe erişen bir çağrılabilir
