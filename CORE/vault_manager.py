@@ -207,10 +207,61 @@ def _fmt_share(index: int, y: int) -> str:
 
 def _parse_share(share: str) -> tuple[int, int]:
     """
-    "index:<hex>" payını (index, y) olarak ayrıştırır.
+    "index:<hex>" payını (index, y) olarak ayrıştırır ve DOĞRULAR.
 
     Raises:
-        ValueError — biçim bozuksa veya indis geçerli aralıkta değilse
+        ValueError — biçim bozuksa, indis geçerli aralıkta değilse, hex
+                     uzunluğu kanonik değilse veya değer `(0, p)` aralığının
+                     dışındaysa
+
+    Neden doğrulama BURADA (dış inceleme bulgusu, issue #1)
+    -------------------------------------------------------
+    Bir inceleme sorusu şunu ortaya çıkardı: kurtarma parçası çözücüsü
+    (`CORE/recovery_share.decode_share`) 33 baytlık uzunluğu denetliyordu ama
+    DEĞER ARALIĞINI hiçbir katman denetlemiyordu. 33 bayt `2**264` değer
+    taşıyabiliyor, alan ise yalnızca `p = 2**256 + 297` — yani kanonik paylar
+    temsil edilebilir uzayın **1/255'i** (ölçüldü).
+
+    Kontrol `decode_share` yerine buraya kondu çünkü `decode_share` üç
+    girişten yalnızca biri. Her yol buradan geçiyor:
+
+        decode_share ─┐
+        vault dosyası ─┼─→ _parse_share ─→ _sss_recover / _sss_split
+        anahtar kasası ┘
+
+    `reconstruct_key()` alt çizgisiz, belgeli bir genel API; `decode_share`'i
+    atlayan bir çağıran (gelecekteki bir CLI, üçüncü bir entegrasyon) tek
+    korumayı da atlamış olurdu. Darboğaza koymak o boşluğu kapatıyor.
+
+    BU BİR GÜVENLİK AÇIĞI DÜZELTMESİ DEĞİLDİR
+    -----------------------------------------
+    `_lagrange_at` zaten `mod p` çalışıyor, yani `y` ile `y + p` **aynı
+    anahtarı** üretiyordu. Kanonik olmayan bir pay kimseye erişemeyeceği bir
+    şey vermiyordu; sömürmek için zaten geçerli bir paya sahip olmak
+    gerekiyordu. Kazanç derinlemesine savunma ve HATA MESAJINDA:
+
+        tek karakterlik yazım hatası → %4,6'sı `y >= p` üretiyor
+                                     → bugüne kadar sessizce kabul,
+                                       yanlış anahtar, geç ve belirsiz hata
+        kalan %95,3                  → matematiksel olarak meşru bir başka
+                                       paydan ayırt EDİLEMEZ; hiçbir kontrol
+                                       yakalayamaz
+
+    Yani bu değişiklik hataların %4,6'sını erken ve net söylüyor, fazlasını
+    değil. Bkz. SECURITY.md §4.12.
+
+    Geriye dönük uyumluluk
+    ----------------------
+    Elde basılı duran parçalar ETKİLENMİYOR: `_fmt_share()` her zaman
+    `(… ) % _SSS_PRIME` sonucunu 66 haneye sıfır dolgulu yazıyor ve bu biçim
+    v1.5'ten (`cdce520`) beri hiç değişmedi — 2-of-2 dönemindeki kod da aynı
+    `_SSS_SHARE_HEX_LEN` sabitini kullanıyordu. Yani HYCLEUS'un ürettiği her
+    pay zaten kanonik. `tests/test_vault_manager.py` bunu üretilmiş paylar
+    üzerinde ve gerçek bir vault round-trip'iyle doğruluyor.
+
+    `y == 0` reddi teorik olarak meşru bir payı da elerdi (olasılık ~2⁻²⁵⁶,
+    donanım arızasının çok altında). Karşılığında boş bırakılmış/sıfırlarla
+    doldurulmuş bir form net bir hata alıyor — takas bilinçli.
     """
     if ":" not in share:
         raise ValueError(f"Pay biçimi 'indis:hex' olmalı, alınan: {share[:16]!r}")
@@ -221,10 +272,22 @@ def _parse_share(share: str) -> tuple[int, int]:
         raise ValueError(f"Pay indisi sayı olmalı, alınan: {idx_raw!r}") from exc
     if index not in _SSS_INDEXES:
         raise ValueError(f"Geçersiz pay indisi {index}; beklenen: {_SSS_INDEXES}")
+
+    if len(hex_raw) != _SSS_SHARE_HEX_LEN:
+        raise ValueError(
+            f"Pay değeri {_SSS_SHARE_HEX_LEN} onaltılık karakter olmalı, "
+            f"{len(hex_raw)} karakter verildi — parça eksik ya da fazla."
+        )
     try:
         y = int(hex_raw, 16)
     except ValueError as exc:
         raise ValueError("Pay değeri geçerli onaltılık sayı değil.") from exc
+
+    if not 0 < y < _SSS_PRIME:
+        raise ValueError(
+            "Pay değeri geçerli aralıkta değil — kurtarma parçasında yazım "
+            "hatası olabilir. Parçayı harf harf kontrol edip yeniden deneyin."
+        )
     return index, y
 
 
@@ -1024,7 +1087,19 @@ def recover_master_key(
     Raises:
         ValueError — kurtarma payı geçersizse veya kalan pay okunamıyorsa
     """
-    _parse_share(recovery_share)  # biçim doğrulaması, erken hata
+    kurtarma_indisi, _y = _parse_share(recovery_share)  # biçim + aralık
+
+    # Kurtarma parçası 3 indisli OLMALI. `_parse_share` 1/2/3'ün üçünü de
+    # kabul ediyor (üçü de geçerli pay indisi), ama bu fonksiyonun sözleşmesi
+    # dar: "kullanıcının elindeki basılı parça". share_1 ya da share_2'yi
+    # buraya vermek bir bypass değil — onlar zaten geçerli paylar ve veren
+    # kişi onlara sahip demektir — ama sessizce çalışması akışı bulanıklaştırır
+    # ve denetim kaydına "kurtarma" diye yanlış bir olay düşer.
+    if kurtarma_indisi != _SSS_RECOVERY_INDEX:
+        raise ValueError(
+            f"Kurtarma parçası {_SSS_RECOVERY_INDEX} indisli olmalı, "
+            f"{kurtarma_indisi} indisli bir pay verildi."
+        )
 
     if pin is not None:
         kalan = _read_share_1(hwid, pin)

@@ -219,3 +219,125 @@ def test_anchored_split_reproduces_every_share(ortam: Path, db) -> None:
     for cipa in (s1, s2, s3):
         y1, y2, y3 = vault_manager._sss_split(secret, anchor=cipa)
         assert (y1, y2, y3) == (s1, s2, s3), f"çıpa {cipa[:2]} ile paylar farklı çıktı"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _parse_share doğrulaması mevcut akışı kırdı mı? — dış inceleme (issue #1)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `_parse_share`'e uzunluk (66 hex) ve aralık (0 < y < p) kontrolleri eklendi.
+# Bu, bugüne kadar kabul edilen bazı girdileri reddediyor — yani DAVRANIŞ
+# DEĞİŞİKLİĞİ. Elde basılı duran kurtarma parçalarının etkilenmediğini
+# birim testleri `_sss_split` çıktısı üzerinde gösteriyor; aşağıdaki test
+# aynı iddiayı GERÇEK BİR VAULT üzerinde, kâğıttan okuma turuyla birlikte
+# kanıtlıyor. Kırılması, kullanıcının doğru parçasının reddedilmesi demektir.
+
+
+def test_kurtarma_parcasi_roundtrip_dogrulamadan_sonra_da_calisiyor(
+    ortam: Path, db
+) -> None:
+    """
+    GERÇEK VAULT round-trip: oluştur → dışa aktar → kâğıt → içe al → kurtar.
+
+    `_parse_share`'e eklenen kontrollerin mevcut akışı kırmadığının asıl
+    kanıtı. Yol boyunca parça dört kez ayrıştırıcıdan geçiyor:
+      1. `export_recovery_share` içinde türetilirken
+      2. `encode_share` → base32
+      3. `decode_share` → "3:<hex>"
+      4. `recover_master_key` → `_parse_share` → `_sss_recover`
+
+    Kâğıttan okuma bilerek "kirli": küçük harf, tireler boşluğa çevrilmiş,
+    araya satır sonu konmuş — kullanıcının gerçekte yazdığı gibi.
+    """
+    create_vault(_ESKI_HWID, _ESKI_PIN, _ROLE)
+    _role, master_key = open_vault(_ESKI_HWID, _ESKI_PIN)
+
+    share_3 = export_recovery_share(_ESKI_HWID, _ESKI_PIN)
+
+    # Türetilen parça kontrollerden geçmeli — 1. ayrıştırma
+    index, y = vault_manager._parse_share(share_3)
+    assert index == 3
+    assert 0 < y < vault_manager._SSS_PRIME
+    assert len(share_3.split(":", 1)[1]) == vault_manager._SSS_SHARE_HEX_LEN
+
+    basili = encode_share(share_3)
+    kirli = "  " + basili.lower().replace("-", " ").replace(" ", "\n", 1) + "\n"
+
+    geri = decode_share(kirli)
+    assert geri == share_3, "kâğıttan okuma parçayı değiştirdi"
+
+    _usbyi_kaybet(_ESKI_HWID)
+    kurtarilan = recover_master_key(_ESKI_HWID, recovery_share=geri, pin=_ESKI_PIN)
+    assert kurtarilan == master_key, (
+        "doğrulama eklendikten sonra gerçek kurtarma akışı bozuldu"
+    )
+
+
+def test_yeniden_kurulan_vaultun_parcasi_da_kanonik(ortam: Path, db) -> None:
+    """
+    Kurtarma sonrası yeniden kurulum, kanonik OLMAYAN bir pay üretebilir mi?
+
+    `reprovision_vault` polinomu çıpaya göre yeniden kuruyor
+    (`_sss_split(anchor=...)`) — yani burada yeni paylar hesaplanıyor. O
+    hesap `% _SSS_PRIME` uygulamayı unutsaydı, kullanıcı kendi kâğıdıyla
+    kurtardığı vault'a bir sonraki seferde giremezdi.
+    """
+    create_vault(_ESKI_HWID, _ESKI_PIN, _ROLE)
+    _r, master_key = open_vault(_ESKI_HWID, _ESKI_PIN)
+    basili = encode_share(export_recovery_share(_ESKI_HWID, _ESKI_PIN))
+
+    _usbyi_kaybet(_ESKI_HWID)
+    parca = decode_share(basili)
+    k = recover_master_key(_ESKI_HWID, recovery_share=parca, pin=_ESKI_PIN)
+    reprovision_vault(
+        _YENI_HWID, _YENI_PIN, _ROLE, master_key=k, recovery_share=parca
+    )
+
+    # Yeniden kurulan vault'un share_1'i ve yeni kurtarma parçası kanonik mi?
+    yeni_share_1 = vault_manager._read_share_1(_YENI_HWID, _YENI_PIN)
+    yeni_share_3 = export_recovery_share(_YENI_HWID, _YENI_PIN)
+    for pay in (yeni_share_1, yeni_share_3):
+        i, y = vault_manager._parse_share(pay)   # takılırsa fırlar
+        assert 0 < y < vault_manager._SSS_PRIME
+        assert len(pay.split(":", 1)[1]) == vault_manager._SSS_SHARE_HEX_LEN
+
+    assert yeni_share_3 == parca, "kâğıt sessizce geçersizleşti"
+
+
+def test_share_1_kurtarma_parcasi_yerine_verilemez(ortam: Path, db) -> None:
+    """
+    `recover_master_key` yalnızca 3 indisli parçayı kabul ediyor.
+
+    Bypass DEĞİL: share_1'e sahip olan kişi zaten geçerli bir paya sahip.
+    Ama `pin=None` yolunda share_2 okunup (2,1) kombinasyonuyla kurtarma
+    SESSİZCE ÇALIŞIYORDU — denetim kaydına "kurtarma" diye yanlış bir olay
+    düşüyor ve akış bulanıklaşıyordu.
+    """
+    create_vault(_ESKI_HWID, _ESKI_PIN, _ROLE)
+    share_1 = vault_manager._read_share_1(_ESKI_HWID, _ESKI_PIN)
+
+    with pytest.raises(ValueError, match=r"3 indisli olmalı"):
+        recover_master_key(_ESKI_HWID, recovery_share=share_1, pin=None)
+
+
+def test_kanonik_olmayan_parca_artik_reddediliyor(ortam: Path, db) -> None:
+    """
+    DAVRANIŞ DEĞİŞİKLİĞİNİN kendisi — bilerek sabitleniyor.
+
+    `y` ile `y + p` aynı anahtarı üretiyordu (Lagrange mod p çalışıyor), yani
+    kanonik olmayan bir parça ESKİDEN ÇALIŞIYORDU. Artık reddediliyor.
+
+    Bu testin işi düzeltmeyi değil, RİSKİ görünür tutmak: HYCLEUS'un ürettiği
+    hiçbir parça bu biçimde değil (bkz. `test_uretilen_her_pay_zaten_kanonik`),
+    ama elle üretilmiş bir parça varsa artık çalışmaz.
+    """
+    create_vault(_ESKI_HWID, _ESKI_PIN, _ROLE)
+    share_3 = export_recovery_share(_ESKI_HWID, _ESKI_PIN)
+    _i, y = vault_manager._parse_share(share_3)
+
+    # Aynı payın kanonik olmayan gösterimi: y + p
+    kanonik_olmayan = f"3:{y + vault_manager._SSS_PRIME:0{vault_manager._SSS_SHARE_HEX_LEN}x}"
+    assert len(kanonik_olmayan.split(":", 1)[1]) == vault_manager._SSS_SHARE_HEX_LEN
+
+    with pytest.raises(ValueError, match="geçerli aralıkta değil"):
+        recover_master_key(_ESKI_HWID, recovery_share=kanonik_olmayan, pin=_ESKI_PIN)

@@ -267,13 +267,22 @@ def _tasiran_paylar(kaydirma: int = 0) -> tuple[str, str]:
     da bulamadı — `tests/fuzz/fuzz_shamir.py` tohum korpusunda elle kuruyor.
     """
     s = 2**256 + kaydirma
-    return (
-        vault_manager._fmt_share(1, (s + 1) % vault_manager._SSS_PRIME),
-        vault_manager._fmt_share(2, (s + 2) % vault_manager._SSS_PRIME),
-    )
+    a = vault_manager._fmt_share(1, (s + 1) % vault_manager._SSS_PRIME)
+    b = vault_manager._fmt_share(2, (s + 2) % vault_manager._SSS_PRIME)
+
+    # PAYLARIN KENDİSİ KANONİK OLMALI. Bu testin sınadığı şey ARA SONUCUN
+    # taşması; girdiler `_parse_share`'in aralık kontrolüne takılırsa test
+    # B-021'i değil o kontrolü sınamış olur ve sessizce yanlış şeyi ölçer.
+    #
+    # Sınır dar: y1 = s+1 < p ve y2 = s+2 < p gerekiyor, yani
+    # kaydirma <= 294. `kaydirma = 296` bir zamanlar buradaydı ve tam olarak
+    # bu tuzağa düştü: s+1 = p, yani y1 = 0 — dejenere pay.
+    for pay in (a, b):
+        vault_manager._parse_share(pay)
+    return a, b
 
 
-@pytest.mark.parametrize("kaydirma", [0, 1, 148, 296])
+@pytest.mark.parametrize("kaydirma", [0, 1, 148, 294])
 def test_tasan_paylar_valueerror_veriyor(kaydirma: int) -> None:
     """
     GERÇEK BİR HATANIN TESTİ (B-021, fuzzing ile bulundu).
@@ -339,3 +348,188 @@ def test_sinirin_hemen_altindaki_sir_calisiyor() -> None:
     a = vault_manager._fmt_share(1, (s + 1) % vault_manager._SSS_PRIME)
     b = vault_manager._fmt_share(2, (s + 2) % vault_manager._SSS_PRIME)
     assert vault_manager.reconstruct_key(a, b) == s.to_bytes(32, "big")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _parse_share doğrulaması — dış inceleme bulgusu (issue #1)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Bir inceleme sorusu şunu ortaya çıkardı: 33 baytlık kurtarma parçası yükü
+# `2**264` değer taşıyabiliyor, alan ise `p = 2**256 + 297`. Kanonik paylar
+# temsil edilebilir uzayın 1/255'i ve DEĞER ARALIĞINI hiçbir katman
+# denetlemiyordu — ne `decode_share` ne de çağıran taraf.
+#
+# Bu bir güvenlik açığı DEĞİLDİ: `_lagrange_at` zaten mod p çalışıyor, yani
+# `y` ile `y + p` aynı anahtarı üretiyordu. Sömürmek için zaten geçerli bir
+# paya sahip olmak gerekiyordu. Kazanç derinlemesine savunma + hata mesajı.
+
+_P = vault_manager._SSS_PRIME
+_HEX = vault_manager._SSS_SHARE_HEX_LEN
+
+
+def _pay(index: int, y: int) -> str:
+    """Ham pay dizesi — `_fmt_share` mod p uyguladığı için ONU KULLANMIYORUZ."""
+    return f"{index}:{y:0{_HEX}x}"
+
+
+# ── Aralık ────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "ad,y",
+    [
+        ("y = p (tam modulus)", _P),
+        ("y = p + 1", _P + 1),
+        ("y = 2**264 - 1 (33 baytin azamisi)", 2**264 - 1),
+        ("y = 2**256 + 297 uzeri", _P + 12345),
+    ],
+)
+def test_p_ve_uzeri_degerler_reddediliyor(ad: str, y: int) -> None:
+    """
+    `y >= p` artık parser seviyesinde reddediliyor.
+
+    Önceden sessizce kabul edilip `mod p` indirgeniyordu — aynı anahtarı
+    üretiyordu, yani zararsızdı; ama yazım hatalarının %4,6'sı tam olarak
+    bu aralığa düşüyor ve kullanıcı geç, belirsiz bir hata alıyordu.
+    """
+    with pytest.raises(ValueError, match="geçerli aralıkta değil"):
+        vault_manager._parse_share(_pay(3, y))
+
+
+def test_sifir_dejenere_pay_reddediliyor() -> None:
+    """
+    `y = 0` reddediliyor.
+
+    Boş bırakılmış ya da sıfırlarla doldurulmuş bir form en olası kaynak.
+    Meşru bir sıfır payın olasılığı ~2⁻²⁵⁶ — donanım arızasının çok altında;
+    takas `_parse_share` docstring'inde yazılı.
+    """
+    with pytest.raises(ValueError, match="geçerli aralıkta değil"):
+        vault_manager._parse_share(_pay(3, 0))
+
+
+@pytest.mark.parametrize("y", [1, 2, 2**128, _P - 2, _P - 1])
+def test_kanonik_degerler_hala_kabul_ediliyor(y: int) -> None:
+    """Sınırın iki ucu dahil, geçerli aralık aynen çalışmalı."""
+    index, cozulen = vault_manager._parse_share(_pay(3, y))
+    assert (index, cozulen) == (3, y)
+
+
+# ── Uzunluk ───────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "ad,hex_govde",
+    [
+        ("2 karakter", "ff"),
+        ("65 karakter (bir eksik)", "a" * 65),
+        ("67 karakter (bir fazla)", "a" * 67),
+        ("130 karakter", "f" * 130),
+        ("64 karakter (32 bayt — makul ama kanonik degil)", "1" * 64),
+    ],
+)
+def test_kanonik_olmayan_uzunluk_reddediliyor(ad: str, hex_govde: str) -> None:
+    """
+    `decode_share` uzunluğu zaten denetliyordu; `_parse_share` denetlemiyordu.
+
+    Fark önemli çünkü `reconstruct_key()` alt çizgisiz, belgeli bir GENEL
+    API: `decode_share`'i atlayan bir çağıran (gelecekteki bir CLI, üçüncü
+    bir entegrasyon) tek korumayı da atlıyordu.
+    """
+    with pytest.raises(ValueError, match="onaltılık karakter olmalı"):
+        vault_manager._parse_share(f"3:{hex_govde}")
+
+
+def test_genel_api_uzerinden_de_reddediliyor() -> None:
+    """
+    Kapı gerçekten darboğazda mı? `reconstruct_key` üzerinden sına.
+
+    Bu, düzeltmenin ASIL GEREKÇESİ: koruma `decode_share`'de olsaydı bu
+    çağrı yine geçerdi.
+    """
+    with pytest.raises(ValueError, match="onaltılık karakter olmalı"):
+        vault_manager.reconstruct_key("3:ff", "1:aa")
+
+    with pytest.raises(ValueError, match="geçerli aralıkta değil"):
+        vault_manager.reconstruct_key(_pay(3, _P), _pay(1, 5))
+
+
+# ── Kurtarma indisi ───────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("index", [1, 2])
+def test_recover_master_key_yalnizca_3_indisli_parcayi_kabul_ediyor(
+    index: int, monkeypatch
+) -> None:
+    """
+    `share_1` / `share_2`'yi "kurtarma parçası" olarak vermek reddedilmeli.
+
+    Bypass DEĞİL — ikisi de geçerli pay ve veren kişi onlara sahip demektir.
+    Ama sessizce çalışması akışı bulanıklaştırıyor ve denetim kaydına
+    "kurtarma" diye yanlış bir olay düşüyordu.
+
+    Kontrol `_parse_share`'den ÖNCE değil sonra: önce biçim, sonra rol.
+    """
+    _s1, _s2, _s3 = vault_manager._sss_split(b"\x33" * 32)
+    yanlis_pay = (_s1, _s2)[index - 1]
+
+    with pytest.raises(ValueError, match=r"3 indisli olmalı"):
+        vault_manager.recover_master_key(
+            "USB-YOK", recovery_share=yanlis_pay, pin=None
+        )
+
+
+def test_gecerli_3_indisli_parca_indis_kontrolune_takilmiyor() -> None:
+    """
+    İndis kontrolü doğru parçayı ELEMEMELİ.
+
+    Burada kurtarma daha ileride (kalan pay okunamadığı için) düşecek —
+    önemli olan hatanın indis kontrolünden GELMEMESİ.
+    """
+    _s1, _s2, s3 = vault_manager._sss_split(b"\x44" * 32)
+    with pytest.raises(Exception) as bilgi:
+        vault_manager.recover_master_key("USB-YOK", recovery_share=s3, pin=None)
+    assert "3 indisli olmalı" not in str(bilgi.value)
+
+
+# ── Geriye dönük uyumluluk ────────────────────────────────────────────────────
+
+def test_uretilen_her_pay_zaten_kanonik() -> None:
+    """
+    GERİYE DÖNÜK UYUMLULUĞUN KANITI.
+
+    Yeni kontroller elde basılı duran parçaları reddedebilir mi? Hayır:
+    `_fmt_share()` her zaman `(…) % _SSS_PRIME` sonucunu 66 haneye sıfır
+    dolgulu yazıyor. Bu biçim v1.5'ten (`cdce520`) beri değişmedi — 2-of-2
+    dönemindeki kod da aynı `_SSS_SHARE_HEX_LEN` sabitini kullanıyordu.
+
+    Yani HYCLEUS'un ürettiği hiçbir pay bu kontrollere takılamaz.
+    """
+    for _ in range(300):
+        for pay in vault_manager._sss_split(secrets.token_bytes(32)):
+            index, y = vault_manager._parse_share(pay)   # takılırsa fırlar
+            assert index in vault_manager._SSS_INDEXES
+            assert 0 < y < _P
+            assert len(pay.split(":", 1)[1]) == _HEX
+
+
+def test_turetilmis_ucuncu_pay_da_kanonik() -> None:
+    """`_sss_derive_share` çıktısı da kontrollerden geçmeli."""
+    s1, s2, s3 = vault_manager._sss_split(secrets.token_bytes(32))
+    turetilen = vault_manager._sss_derive_share(s1, s2, 3)
+    assert turetilen == s3
+    vault_manager._parse_share(turetilen)
+
+
+def test_base32_roundtrip_kanonik_kaliyor() -> None:
+    """
+    `encode_share` → `decode_share` turu `_parse_share`'den geçmeli.
+
+    İki katman arasındaki sözleşme: çözücünün ürettiği her dize, ayrıştırıcı
+    için geçerli olmalı. Aksi hâlde kullanıcı doğru parçayı yazar ve
+    reddedilir — düzeltmenin yapabileceği en kötü şey bu olurdu.
+    """
+    from CORE.recovery_share import decode_share, encode_share
+
+    for _ in range(200):
+        _s1, _s2, s3 = vault_manager._sss_split(secrets.token_bytes(32))
+        geri = decode_share(encode_share(s3))
+        assert geri == s3
+        vault_manager._parse_share(geri)

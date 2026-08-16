@@ -535,6 +535,57 @@ it never writes into the live vault or database.
 
 ---
 
+### 4.12 Shamir shares are validated at the parser, and this is hardening — not a fix for a hole
+
+An external reviewer asked (issue #1) whether the recovery-share decoder
+checks that the decoded value is in canonical form **and** below the field
+prime. The honest answer at the time was: the length was checked, the range
+was checked **nowhere** — not by the decoder, not by the caller.
+
+**This was not a vulnerability, and it is important to say why.** Lagrange
+interpolation already runs `mod p`, so a share `y` and the same share
+`y + p` reconstruct the *identical* key. A non-canonical share gave nobody
+access to anything they could not already reach: to exploit it you must
+already hold a valid share, and holding a valid share is the whole secret.
+No confidentiality was lost and the 2-of-3 threshold never dropped.
+
+What it did cost was **error reporting**, and we measured how much:
+
+| | |
+|---|---|
+| Canonical shares as a fraction of the 33-byte payload space | **1 in 255** (0.39%) |
+| First byte of a canonical share | always `0x00` |
+| Single-character typos that land on `y >= p` | **4.6%** — silently accepted before |
+| Single-character typos that stay in range | 95.3% — indistinguishable from a legitimate different share, uncatchable by any check |
+
+So the range check converts 4.6% of typos from "wrong key, failure later,
+unclear message" into "your recovery share has a typo". That is the whole
+benefit. It is worth having; it is not a security fix.
+
+**The check lives in `_parse_share()`, not in the decoder.** The decoder is
+one of three entrances — the other two are the vault file and the OS
+keyring — and `reconstruct_key()` is a public, documented API that a future
+CLI or third-party integration could call directly, bypassing the decoder
+entirely. Putting the validation at the chokepoint closes that gap.
+`recover_master_key()` additionally now requires index 3; passing share 1 or
+2 was never a bypass (both are valid shares held by whoever passes them) but
+it worked silently and logged the wrong event.
+
+**Two smaller things stay as they are.** Base32 leaves one slack bit in a
+53-character body, so every share has two textual encodings that decode
+identically (Python's `b32decode` does not validate trailing bits). And a
+value of exactly `0` is now rejected as degenerate, which would also reject
+a legitimate zero share — probability ~2^-256, far below hardware failure.
+
+**Backward compatibility:** printed recovery shares are unaffected.
+`_fmt_share()` has always written `(...) % p` zero-padded to 66 hex
+characters, and that format has not changed since v1.5 (`cdce520`) — the
+2-of-2 era code used the same constant. Every share HYCLEUS has ever
+produced is already canonical, and the test suite proves it on generated
+shares and on a real vault round-trip.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -1212,6 +1263,58 @@ yapıyor (düz metin birleştirilmiyor) ve düz metin manifestoyu aynı listenin
 yakalayan şey bu. Geri yükleme, doğrulama düşerse ÇALIŞMIYOR; dolu bir
 hedefe açık onay olmadan yazmıyor ve canlı kasaya ya da veritabanına hiç
 dokunmuyor.
+
+### 4.12 Shamir payları ayrıştırıcıda doğrulanıyor — bu sertleştirme, bir açığın kapatılması değil
+
+Bir dış incelemeci (issue #1) kurtarma parçası çözücüsünün, çözülen değerin
+kanonik biçimde olduğunu **ve** alan asalından küçük olduğunu kontrol edip
+etmediğini sordu. O günkü dürüst yanıt şuydu: uzunluk kontrol ediliyordu,
+aralık **hiçbir yerde** kontrol edilmiyordu — ne çözücüde ne çağıranda.
+
+**Bu bir güvenlik açığı değildi ve nedenini söylemek önemli.** Lagrange
+interpolasyonu zaten `mod p` çalışıyor, yani `y` payı ile `y + p` payı
+**aynı** anahtarı kurtarıyor. Kanonik olmayan bir pay kimseye zaten
+erişemeyeceği bir şey vermiyordu: sömürmek için elinizde geçerli bir pay
+olması gerekiyor ve zaten sırrın tamamı o. Gizlilik kaybı yok, 2-of-3 eşiği
+hiç düşmedi.
+
+Maliyeti **hata bildirimindeydi** ve ne kadar olduğunu ölçtük:
+
+| | |
+|---|---|
+| Kanonik payların 33 baytlık uzaydaki payı | **1/255** (%0,39) |
+| Kanonik bir payın ilk baytı | daima `0x00` |
+| `y >= p` üreten tek karakterlik yazım hataları | **%4,6** — önceden sessizce kabul |
+| Aralıkta kalan tek karakterlik hatalar | %95,3 — meşru bir başka paydan ayırt edilemez, hiçbir kontrol yakalayamaz |
+
+Yani aralık kontrolü yazım hatalarının %4,6'sını "yanlış anahtar, sonradan
+gelen belirsiz hata"dan "kurtarma parçanızda yazım hatası var"a çeviriyor.
+Kazanç bundan ibaret. Değerli, ama güvenlik düzeltmesi değil.
+
+**Kontrol çözücüde değil, `_parse_share()` içinde.** Çözücü üç girişten
+yalnızca biri — diğer ikisi vault dosyası ve işletim sistemi anahtar kasası
+— ve `reconstruct_key()` genel, belgeli bir API: gelecekteki bir CLI ya da
+üçüncü taraf bir entegrasyon onu doğrudan çağırıp çözücüyü tamamen
+atlayabilirdi. Doğrulamayı darboğaza koymak o boşluğu kapatıyor. Ayrıca
+`recover_master_key()` artık indisin 3 olmasını şart koşuyor; pay 1 veya 2
+vermek hiçbir zaman bypass değildi (ikisi de geçerli pay ve veren kişi
+onlara sahip demektir) ama sessizce çalışıp denetim kaydına yanlış olay
+düşürüyordu.
+
+**İki küçük şey olduğu gibi kalıyor.** Base32, 53 karakterlik gövdede bir
+bit boşluk bırakıyor; her payın aynı sonuca çözülen iki metin gösterimi var
+(Python'un `b32decode`'u artık bitleri sınamıyor). Ve tam olarak `0` değeri
+artık dejenere sayılıp reddediliyor — bu, meşru bir sıfır payı da elerdi;
+olasılığı ~2^-256, donanım arızasının çok altında.
+
+**Geriye dönük uyumluluk:** basılı kurtarma parçaları etkilenmiyor.
+`_fmt_share()` her zaman `(...) % p` sonucunu 66 haneye sıfır dolgulu
+yazıyor ve bu biçim v1.5'ten (`cdce520`) beri değişmedi — 2-of-2 dönemi
+kodu da aynı sabiti kullanıyordu. HYCLEUS'un ürettiği her pay zaten
+kanonik; test paketi bunu hem üretilmiş paylar üzerinde hem gerçek bir
+vault round-trip'iyle kanıtlıyor.
+
+---
 
 ## 5. Kriptografik ayrıntılar
 
