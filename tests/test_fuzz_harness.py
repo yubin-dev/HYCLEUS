@@ -249,3 +249,69 @@ def test_bilinen_ihlallere_gercekten_ulasiliyor(hedef) -> None:
 def test_bos_girdi_cokmuyor(hedef) -> None:
     """En kısa girdi. Harness burada çökerse fuzzer ilk adımda ölür."""
     hedef.one_input(b"")
+
+
+def test_hedefin_core_importlari_enstrumantasyon_blogunda(hedef) -> None:
+    """
+    GERÇEK BİR HATANIN TESTİ — sessiz olanı.
+
+    atheris Python kodunu kendiliğinden izlemiyor; kapsam sayaçlarını
+    `instrument_imports()` takıyor. O blok olmadan libFuzzer sorunsuz
+    çalışır, hızlıdır, yeşil biter — ama geri bildirim almadığı için
+    **kapsam güdümlü değildir**.
+
+    İlk gerçek `fuzz.yml` koşusunda tam olarak bu oldu ve rakamlar iyi
+    görünüyordu: shamir hedefi 91 saniyede 1.076.692 girdi çalıştırdı.
+    Yalnızca libFuzzer'ın kendi uyarısı ele veriyordu:
+
+        WARNING: no interesting inputs were found so far.
+                 Is the code instrumented for coverage?
+        stat::new_units_added: 0
+
+    Diğer hatalar kırmızı verir; bu hata yeşil verir. Bu yüzden testi var.
+
+    Kontrol AST üzerinde: `from CORE...` import'ları bir `with` bloğunun
+    içinde olmalı. Blok bağlamının adını da doğruluyoruz, yoksa herhangi
+    bir `with` testi geçirirdi.
+    """
+    import ast
+
+    kaynak = Path(hedef.__file__).read_text(encoding="utf-8")
+    agac = ast.parse(kaynak)
+
+    def _core_importlari(dugumler) -> list[str]:
+        bulunan = []
+        for d in dugumler:
+            for n in ast.walk(d):
+                if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("CORE"):
+                    bulunan.append(n.module or "")
+        return bulunan
+
+    korumali: list[str] = []
+    for dugum in agac.body:
+        if not isinstance(dugum, ast.With):
+            continue
+        adlar = {
+            n.func.id
+            for e in dugum.items
+            for n in [e.context_expr]
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        }
+        if "enstrumante" in adlar:
+            korumali += _core_importlari(dugum.body)
+
+    ciplak = [
+        n.module or ""
+        for n in agac.body
+        if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("CORE")
+    ]
+
+    assert korumali, (
+        f"{hedef.__name__}: hiçbir CORE import'u `with enstrumante():` "
+        "içinde değil — atheris kapsam sayacı takmayacak ve fuzzing "
+        "kapsam güdümlü olmayacak (sessizce)."
+    )
+    assert not ciplak, (
+        f"{hedef.__name__}: şu CORE import'ları enstrümantasyon bloğunun "
+        f"DIŞINDA: {ciplak}. Blok dışında import edilen modül izlenmez."
+    )

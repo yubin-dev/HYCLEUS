@@ -38,6 +38,7 @@ gördüğünde kırılıyor. Yani liste hem bir kayıt hem bir kapı.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import random
 import sys
@@ -48,6 +49,60 @@ from pathlib import Path
 KOK = Path(__file__).resolve().parent.parent.parent
 if str(KOK) not in sys.path:
     sys.path.insert(0, str(KOK))
+
+
+def atheris_kullanilacak_mi() -> bool:
+    """
+    Bu koşu atheris ile mi yapılacak?
+
+    `main()` ile AYNI kararı vermeli, çünkü enstrümantasyon import zamanında
+    yapılıyor — yani karar `main()` çağrılmadan ÖNCE gerekiyor.
+    """
+    if os.environ.get("HYCLEUS_FUZZ_LOCAL") == "1":
+        return False
+    if "--yerel" in sys.argv:
+        return False
+    try:
+        import atheris  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@contextlib.contextmanager
+def enstrumante() -> Iterator[None]:
+    """
+    Blok içinde import edilen modülleri atheris ile enstrümante eder.
+
+    NEDEN ŞART
+    ----------
+    atheris Python kodunu kendiliğinden izlemez; kapsam sayaçlarını
+    `instrument_imports()` (ya da `instrument_all()`) takıyor. Bu adım
+    atlanırsa libFuzzer çalışır, hızlıdır, sayılar da güzel görünür — ama
+    geri bildirim almadığı için **kapsam güdümlü değildir**: yalnızca hızlı
+    rastgele girdi üretir ve dallar arasında yol arayamaz.
+
+    İlk gerçek koşuda tam olarak bu oldu. shamir hedefi 91 saniyede
+    1.076.692 girdi çalıştırdı ve libFuzzer şunu bastı:
+
+        #2 INITED exec/s: 0
+        WARNING: no interesting inputs were found so far.
+                 Is the code instrumented for coverage?
+        stat::new_units_added: 0
+
+    Bir milyon koşu, sıfır yeni korpus birimi. Rakamlar "fuzz'ladık" diyor,
+    araç "hayır" diyor.
+
+    atheris yoksa (ya da `--yerel` istendiyse) hiçbir şey yapmayan bir
+    bağlam — hedef modüller her yerde import edilebilmeli.
+    """
+    if not atheris_kullanilacak_mi():
+        yield
+        return
+    import atheris
+
+    with atheris.instrument_imports():
+        yield
 
 
 class SozlesmeIhlali(AssertionError):
@@ -302,27 +357,27 @@ def main(
     ayristirici.add_argument("--adet", type=int, default=2_000)
     secenek, kalan = ayristirici.parse_known_args(argv)
 
-    zorla_yerel = secenek.yerel or os.environ.get("HYCLEUS_FUZZ_LOCAL") == "1"
+    # Karar `atheris_kullanilacak_mi()` ile TEK YERDE veriliyor. İki ayrı
+    # kopya olsaydı ayrışabilirlerdi ve ayrışmanın sonucu sessiz olurdu:
+    # enstrümantasyon (import zamanı) "atheris var" derken sürücü (çalışma
+    # zamanı) "yok" derse, hiçbir hata mesajı çıkmadan kapsamsız koşulur.
+    if atheris_kullanilacak_mi():
+        import atheris  # type: ignore[import-not-found]
 
-    if not zorla_yerel:
-        try:
-            import atheris  # type: ignore[import-not-found]
-        except ImportError:
-            print(
-                f"[{ad}] atheris kurulu değil — yerel rastgele sürücüye "
-                "düşülüyor. Kapsam güdümlü koşum için Linux + "
-                "`pip install atheris` gerekiyor.",
-                file=sys.stderr,
-            )
-        else:
-            # Sarmalayıcı ŞART: libFuzzer yakalanmamış her istisnayı çökme
-            # sayıp duruyor. Filtresiz verilirse koşu ilk saniyede bilinen
-            # bir ihlale çarpıp ölür ve arkasındaki hiçbir şey keşfedilmez.
-            atheris.Setup(
-                [sys.argv[0], *kalan], bilinen_suzgeci(one_input, bilinen)
-            )
-            atheris.Fuzz()
-            return 0  # Fuzz() normalde dönmez
+        # Sarmalayıcı ŞART: libFuzzer yakalanmamış her istisnayı çökme
+        # sayıp duruyor. Filtresiz verilirse koşu ilk saniyede bilinen
+        # bir ihlale çarpıp ölür ve arkasındaki hiçbir şey keşfedilmez.
+        atheris.Setup([sys.argv[0], *kalan], bilinen_suzgeci(one_input, bilinen))
+        atheris.Fuzz()
+        return 0  # Fuzz() normalde dönmez
+
+    if not secenek.yerel and os.environ.get("HYCLEUS_FUZZ_LOCAL") != "1":
+        print(
+            f"[{ad}] atheris kurulu değil — yerel rastgele sürücüye "
+            "düşülüyor. Kapsam güdümlü koşum için Linux + "
+            "`pip install atheris` gerekiyor.",
+            file=sys.stderr,
+        )
 
     print(f"[{ad}] yerel sürücü: tohum={secenek.tohum} adet={secenek.adet}")
     yeni, _gorulen = yerel_kos(

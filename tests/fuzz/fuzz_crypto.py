@@ -39,14 +39,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness import BilinenIhlal, Tuketici, cagir, main  # noqa: E402
+from harness import BilinenIhlal, Tuketici, cagir, enstrumante, main  # noqa: E402
 
-from CORE.crypto import (  # noqa: E402
-    AuthenticationError,
-    decrypt_file,
-    encrypt_file,
-    verify_file,
-)
+# `enstrumante()` bloğu ŞART: atheris Python kodunu kendiliğinden izlemiyor.
+# Bu blok olmadan libFuzzer çalışır ama geri bildirim almaz — hızlı rastgele
+# fuzzing olur, kapsam güdümlü olmaz. Bkz. harness.enstrumante docstring'i;
+# gerçek bir koşuda 1 milyon girdi, 0 yeni korpus birimi üretildi.
+with enstrumante():  # noqa: E402
+    from CORE.crypto import (
+        AuthenticationError,
+        decrypt_file,
+        encrypt_file,
+        verify_file,
+    )
 
 #: `decrypt_file` / `verify_file` docstring'lerinin vaat ettiği küme.
 IZINLI: tuple[type[BaseException], ...] = (ValueError, AuthenticationError, OSError)

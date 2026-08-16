@@ -34,18 +34,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness import BilinenIhlal, Tuketici, cagir, main  # noqa: E402
+from harness import BilinenIhlal, Tuketici, cagir, enstrumante, main  # noqa: E402
 
-from CORE.recovery_share import (  # noqa: E402
-    RecoveryShareError,
-    decode_share,
-    encode_share,
-)
-from CORE.vault_manager import (  # noqa: E402
-    _parse_share,
-    _sss_split,
-    reconstruct_key,
-)
+# Enstrümantasyon bloğu — bkz. fuzz_crypto.py'deki aynı yorum ve
+# harness.enstrumante docstring'i. Bu olmadan kapsam güdümlü değil.
+with enstrumante():  # noqa: E402
+    from CORE.recovery_share import (
+        RecoveryShareError,
+        decode_share,
+        encode_share,
+    )
+    from CORE.vault_manager import (
+        _parse_share,
+        _sss_split,
+        reconstruct_key,
+    )
 
 IZINLI_PAY: tuple[type[BaseException], ...] = (ValueError,)
 IZINLI_KODLAMA: tuple[type[BaseException], ...] = (RecoveryShareError, ValueError)
