@@ -52,6 +52,7 @@ from CORE.expiry import expiry_from_now
 from DB.db_manager import DBManager
 
 from CORE.secret_store import load_totp_secret
+from CORE.usb_manager import DEV_MODE as _DEV_MODE
 
 
 class BulkActionsMixin:
@@ -252,6 +253,10 @@ class BulkActionsMixin:
             self._key,
             dest_dir,
             session_hwid=self._hwid,
+            # B-010: klasör→ZIP akışıyla aynı değer. Eskiden buraya hiçbir
+            # şey geçilmiyordu, yani AAD sütunu eksik dosyalarda hwid
+            # doğrulaması sessizce devre dışı kalıyordu.
+            hwid_fallback="DEV-HWID-1234" if _DEV_MODE else self._hwid,
             on_progress=_ilerleme,
             should_continue=lambda: not prog.wasCanceled(),
         )

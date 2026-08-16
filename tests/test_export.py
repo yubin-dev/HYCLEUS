@@ -18,6 +18,7 @@ from CORE.crypto import encrypt_file
 from CORE.export import (
     ExportResult,
     aad_hwid_of,
+    aad_map,
     export_to_directory,
     export_to_zip,
     format_errors,
@@ -296,19 +297,19 @@ def test_directory_export_can_be_cancelled(db, tmp_path: Path):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. KORUNAN FARK — hwid geri dönüşü
+# 4. GİDERİLEN FARK — hwid geri dönüşü (B-010)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 def test_zip_falls_back_to_the_session_hwid(db, tmp_path: Path):
     """
-    AAD'da hwid yoksa ZIP akışı OTURUM hwid'iyle doğruluyor.
+    DB sütununda hwid yoksa ZIP akışı OTURUM hwid'iyle doğruluyor.
 
     Dosya başka bir hwid ile şifrelenmişse bu doğrulama düşer ve dosya
-    atlanır — mevcut davranış.
+    atlanır. B-010'da bu davranış DOĞRU olan seçildi.
     """
     _add_encrypted(db, tmp_path, "baska.txt", b"x", hwid="BASKA-CIHAZ")
-    # aad_metadata'yı boşalt: AAD'da hwid okunamasın
+    # aad_metadata'yı boşalt: DB sütunundan hwid okunamasın
     db.execute("UPDATE files SET aad_metadata = NULL")
 
     sonuc = export_to_zip(db, _rows(db), _KEY, tmp_path / "c.zip", hwid_fallback=_HWID)
@@ -316,39 +317,219 @@ def test_zip_falls_back_to_the_session_hwid(db, tmp_path: Path):
     assert "bütünlük hatası" in sonuc.errors[0]
 
 
-def test_directory_export_does_NOT_fall_back_by_default(db, tmp_path: Path):
+def test_directory_export_falls_back_like_zip(db, tmp_path: Path):
     """
-    BİLİNEN FARK — mevcut davranış, bilerek korundu.
+    B-010 DÜZELTMESİ — bu testin adı ve iddiası BİLEREK tersine çevrildi.
 
-    Aynı dosya, aynı anahtar: ZIP akışı reddediyor (yukarıdaki test), toplu
-    indirme kabul ediyor. Çünkü toplu indirme AAD'da hwid yoksa
-    doğrulamayı hiç yapmıyor (hwid=None geçiyor).
+    Eski hâli `test_directory_export_does_NOT_fall_back_by_default` idi ve
+    farkı SABİTLİYORDU: aynı dosyayı ZIP akışı reddederken toplu indirme
+    kabul ediyordu, çünkü çağıran `hwid_fallback` geçmediği için
+    `decrypt_file`'a `hwid=None` gidiyor ve kontrol hiç çalışmıyordu.
 
-    Bu test bir onay değil, bir SABİTLEME — bkz. CORE/export.py
-    docstring'i, "KORUNAN FARK".
+    Artık iki akış aynı kararı veriyor.
     """
     fid, yol = _add_encrypted(db, tmp_path, "baska.txt", b"icerik", hwid="BASKA-CIHAZ")
     db.execute("UPDATE files SET aad_metadata = NULL")
     hedef = tmp_path / "cikti"
     hedef.mkdir()
 
-    sonuc = export_to_directory(db, [(fid, str(yol))], _KEY, hedef, session_hwid=_HWID)
+    sonuc = export_to_directory(
+        db, [(fid, str(yol))], _KEY, hedef,
+        session_hwid=_HWID, hwid_fallback=_HWID,
+    )
 
-    assert sonuc.saved == 1, "toplu indirme hwid doğrulaması yapmıyor — mevcut davranış"
-    assert (hedef / "baska.txt").read_bytes() == b"icerik"
+    assert sonuc.saved == 0
+    assert "bütünlük hatası" in sonuc.errors[0]
+    assert not (hedef / "baska.txt").exists()
 
 
-def test_directory_export_honours_an_explicit_fallback(db, tmp_path: Path):
-    """Parametre verilirse toplu indirme de ZIP gibi davranabiliyor."""
-    fid, yol = _add_encrypted(db, tmp_path, "baska.txt", b"x", hwid="BASKA-CIHAZ")
+def test_iki_akis_ayni_dosyada_ayni_karari_veriyor(db, tmp_path: Path):
+    """
+    B-010'UN ÖZÜ: bulgu "toplu indirme doğrulamıyor" değil, İKİSİNİN
+    AYRIŞMASIYDI. İkisini tek testte yan yana koymak, ileride biri
+    değişirse bunu tek kırılmayla gösterir.
+    """
+    fid, yol = _add_encrypted(db, tmp_path, "baska.txt", b"icerik", hwid="BASKA-CIHAZ")
     db.execute("UPDATE files SET aad_metadata = NULL")
     hedef = tmp_path / "cikti"
     hedef.mkdir()
 
-    sonuc = export_to_directory(
+    zip_sonuc = export_to_zip(
+        db, _rows(db), _KEY, tmp_path / "c.zip", hwid_fallback=_HWID
+    )
+    dizin_sonuc = export_to_directory(
         db, [(fid, str(yol))], _KEY, hedef, hwid_fallback=_HWID
     )
-    assert sonuc.saved == 0
+    assert zip_sonuc.saved == dizin_sonuc.saved
+    assert bool(zip_sonuc.errors) == bool(dizin_sonuc.errors)
+
+
+def test_dogru_cihazda_iki_akis_da_calisiyor(db, tmp_path: Path):
+    """
+    Düzeltme yalnızca YANLIŞ cihazı reddetmeli.
+
+    Bu test olmadan "her şeyi reddet" mutasyonu da geçerdi.
+    """
+    fid, yol = _add_encrypted(db, tmp_path, "bizim.txt", b"icerik", hwid=_HWID)
+    db.execute("UPDATE files SET aad_metadata = NULL")
+    hedef = tmp_path / "cikti"
+    hedef.mkdir()
+
+    assert export_to_zip(
+        db, _rows(db), _KEY, tmp_path / "c.zip", hwid_fallback=_HWID
+    ).saved == 1
+    assert export_to_directory(
+        db, [(fid, str(yol))], _KEY, hedef, hwid_fallback=_HWID
+    ).saved == 1
+
+
+def test_bulk_cagri_yeri_hwid_fallback_geciyor():
+    """
+    ASIL KORUMA — `hwid_fallback` varsayılanı None olduğu için, çağrı
+    yerinden düşerse hiçbir şey patlamaz: doğrulama sessizce kapanır.
+    B-010'un ilk hâli tam olarak buydu.
+    """
+    import ast
+    from pathlib import Path as _P
+
+    kaynak = (_P(__file__).resolve().parent.parent / "UI" / "main_window_bulk.py")
+    cagrilar = [
+        d
+        for d in ast.walk(ast.parse(kaynak.read_text(encoding="utf-8")))
+        if isinstance(d, ast.Call)
+        and isinstance(d.func, ast.Name)
+        and d.func.id == "export_to_directory"
+    ]
+    assert cagrilar, "toplu indirme artık export_to_directory çağırmıyor"
+    for cagri in cagrilar:
+        assert "hwid_fallback" in {k.arg for k in cagri.keywords}, (
+            "hwid_fallback geçilmiyor — hwid doğrulaması sessizce kapanır"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. N+1 sorgu (B-009)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class _SayanDB:
+    """`fetchall`/`fetchone` çağrılarını sayan ince sarmalayıcı."""
+
+    def __init__(self, gercek):
+        self._gercek = gercek
+        self.fetchall_sayisi = 0
+        self.fetchone_sayisi = 0
+        #: Her `fetchall` çağrısına bağlanan parametre sayısı.
+        self.bagli_parametreler: list[int] = []
+
+    def fetchall(self, *a, **k):
+        self.fetchall_sayisi += 1
+        self.bagli_parametreler.append(len(a[1]) if len(a) > 1 else 0)
+        return self._gercek.fetchall(*a, **k)
+
+    def fetchone(self, *a, **k):
+        self.fetchone_sayisi += 1
+        return self._gercek.fetchone(*a, **k)
+
+    def __getattr__(self, ad):
+        return getattr(self._gercek, ad)
+
+
+def test_toplu_indirme_dosya_basina_sorgu_atmiyor(db, tmp_path: Path):
+    """
+    B-009 DÜZELTMESİ — sorgu sayısı dosya sayısıyla ARTMAMALI.
+
+    Ölçüm sayıya bakıyor, kodun şekline değil: `WHERE id IN (...)` tekrar
+    döngüye girerse bu test söyler.
+    """
+    hedef = tmp_path / "cikti"
+    hedef.mkdir()
+    items = [
+        _add_encrypted(db, tmp_path, f"d{i}.txt", b"x", hwid=_HWID)
+        for i in range(8)
+    ]
+    sayan = _SayanDB(db)
+
+    sonuc = export_to_directory(
+        sayan, [(fid, str(yol)) for fid, yol in items], _KEY, hedef,
+        hwid_fallback=_HWID,
+    )
+
+    assert sonuc.saved == 8
+    assert sayan.fetchone_sayisi == 0, "döngü içi fetchone geri gelmiş"
+    assert sayan.fetchall_sayisi == 1, (
+        f"8 dosya için {sayan.fetchall_sayisi} sorgu — N+1 geri gelmiş"
+    )
+
+
+def test_aad_map_bulunamayan_idyi_atliyor(db, tmp_path: Path):
+    """Olmayan id sözlükte yer almamalı; çağıran `.get()` ile None'a düşer."""
+    fid, _yol = _add_encrypted(db, tmp_path, "var.txt", b"x", hwid=_HWID)
+    harita = aad_map(db, [fid, 9999])
+    assert fid in harita
+    assert 9999 not in harita
+    assert harita.get(9999) is None
+
+
+def test_aad_map_tekrarli_idleri_bir_kez_soruyor(db, tmp_path: Path):
+    """
+    Aynı id birden çok kez verilirse sorguya BİR KEZ bağlanmalı.
+
+    İlk yazılışında bu test yalnızca sonuç sözlüğüne ve sorgu sayısına
+    bakıyordu — ikisi de tekilleştirme olmadan da doğru çıkıyor, yani
+    test hiçbir şey kanıtlamıyordu (mutasyon hayatta kaldı). Asıl ölçüm
+    BAĞLANAN PARAMETRE SAYISI: tekilleştirme olmazsa 2000 tekrarlı id
+    parça sınırını gereksiz yere aşar.
+    """
+    fid, _yol = _add_encrypted(db, tmp_path, "var.txt", b"x", hwid=_HWID)
+    sayan = _SayanDB(db)
+
+    harita = aad_map(sayan, [fid, fid, fid])
+
+    assert list(harita) == [fid]
+    assert sayan.fetchall_sayisi == 1
+    assert sayan.bagli_parametreler == [1], (
+        f"tekilleştirme yok — {sayan.bagli_parametreler[0]} parametre bağlandı"
+    )
+
+
+def test_aad_map_tekilleştirme_parcalamayi_da_etkiliyor(db):
+    """
+    Tekilleştirmenin neden yalnızca süs olmadığı: 2000 tekrarlı id,
+    tekilleştirilmezse 3 sorguya bölünür; tekilleştirilince 1 sorgu.
+    """
+    sayan = _SayanDB(db)
+    aad_map(sayan, [7] * 2000)
+    assert sayan.fetchall_sayisi == 1
+    assert sayan.bagli_parametreler == [1]
+
+
+def test_aad_map_bos_liste_sorgu_atmiyor(db):
+    sayan = _SayanDB(db)
+    assert aad_map(sayan, []) == {}
+    assert sayan.fetchall_sayisi == 0
+
+
+def test_aad_map_parametre_sinirinin_uzerinde_parcaliyor(db):
+    """
+    SQLite'ın `SQLITE_MAX_VARIABLE_NUMBER` sınırı (eski varsayılan 999).
+
+    Parçalama olmasaydı büyük bir toplu indirme `OperationalError` ile
+    düşerdi — N+1'i düzeltirken kolayca eklenebilecek bir gerileme.
+
+    İd sayısı SABİT (2000), `_IN_CHUNK`'tan TÜRETİLMİYOR. İlk yazılışında
+    türetiliyordu ve sabiti büyüten bir mutasyon testin kendisine iki
+    milyarlık liste ayırttı — testi askıda bıraktı. Sabiti sınayan bir
+    test, boyutunu o sabitten almamalı.
+    """
+    from CORE.export import _IN_CHUNK
+
+    assert _IN_CHUNK <= 999, "SQLite'ın eski parametre sınırının üstünde"
+
+    sayan = _SayanDB(db)
+    harita = aad_map(sayan, list(range(1, 2001)))   # takılırsa fırlar
+    assert harita == {}                              # hiçbiri gerçek değil
+    assert sayan.fetchall_sayisi == 3                # ceil(2000 / 900)
 
 
 def test_export_result_defaults_are_clean():

@@ -28,20 +28,42 @@ SECURITY.md §3'te anlatılan sınırın aynısı: `bytes` değiştirilemez,
 silinemez.
 
 
-KORUNAN FARK — hwid geri dönüşü
--------------------------------
-İki akış AAD'da hwid bulunmadığında FARKLI davranıyor:
+GİDERİLEN FARK — hwid geri dönüşü (B-010)
+-----------------------------------------
+İki akış, DB'deki `aad_metadata` sütununda hwid bulunmadığında FARKLI
+davranıyordu:
 
     ZIP     : hwid = aad_hwid or (DEV-HWID-1234 / oturum hwid'i)
-              → AAD'da yoksa oturum hwid'iyle doğrulama YAPILIR
-    Dizine  : hwid = aad_hwid  (yoksa None)
-              → AAD'da yoksa hwid doğrulaması HİÇ YAPILMAZ
+    Dizine  : hwid = aad_hwid  (yoksa None — çağıran fallback vermiyordu)
 
-Yani eski kayıtlarda (AAD'sız ya da hwid'siz) ZIP indirme
-`AuthenticationError` verip dosyayı atlarken, toplu indirme aynı dosyayı
-sorunsuz çözüyor. Hangisinin doğru olduğu ayrı bir tartışma —
-`hwid_fallback` parametresi bu farkı görünür kılıyor ve iki çağıran da
-bugünkü değerini geçiriyor. Davranış birebir korundu.
+Farkın nerede görünür olduğunu anlamak için `decrypt_file()`'ın kontrolüne
+bakmak gerekiyor:
+
+    if hwid is not None and meta.get("hwid") is not None and meta["hwid"] != hwid
+
+`meta`, DOSYANIN kendi AAD'ından geliyor; `aad_hwid_of()` ise DB'nin
+`aad_metadata` SÜTUNUNDAN okuyor. İkisi normalde aynı şeyi söylüyor ve o
+zaman kontrol kendisiyle karşılaştırma yapıp her zaman geçiyor. Fark
+yalnızca ikisi AYRIŞTIĞINDA ortaya çıkıyor: DB satırında hwid yok ama
+dosyanın AAD'ında var. O durumda
+
+    ZIP     → oturum hwid'iyle karşılaştırılır, uyuşmazsa dosya ATLANIR
+    Dizine  → `hwid=None` geçildiği için kontrol HİÇ ÇALIŞMAZ
+
+Aynı dosya, aynı anahtar, aynı kullanıcı — farklı sonuç.
+
+Karar: **ZIP'in davranışı doğru olan.** Kontrolün amacı "bu dosya bu
+cihazda mı şifrelendi" sorusunu yanıtlamak (SECURITY.md §4.5) ve DB
+sütununun eksilmiş olması o soruyu geçersiz kılmıyor — dosya hâlâ
+yanıtı taşıyor. `hwid=None` geçmek "kontrol etme" demek, yani gerçek bir
+sinyali atmak. Toplu indirme artık `hwid_fallback` alıyor ve iki akış
+aynı kararı veriyor.
+
+RİSK — bilinçli kabul edildi: DB'si `aad_metadata`'sını kaybetmiş ve
+BAŞKA bir cihazda şifrelenmiş dosyalar artık toplu indirmede de
+"bütünlük hatası" verip atlanıyor. Bu yeni bir başarısızlık sınıfı
+değil; aynı dosyalar ZIP akışında zaten atlanıyordu. Değişen, iki yolun
+aynı şeyi söylemesi.
 """
 from __future__ import annotations
 
@@ -87,6 +109,49 @@ def aad_hwid_of(aad_metadata: str | None) -> str | None:
         return json.loads(aad_metadata).get("hwid")
     except (ValueError, AttributeError):
         return None
+
+
+#: Tek sorguda kaç `?` yer tutucu kullanılacağı. SQLite'ın eski
+#: `SQLITE_MAX_VARIABLE_NUMBER` varsayılanı 999; yeni sürümler çok daha
+#: yüksek ama derleme seçeneğine bağlı. 900, hangi sürümle karşılaşırsak
+#: karşılaşalım güvenli — ve 500 dosyalık tipik bir turu zaten tek
+#: sorguda bitiriyor.
+_IN_CHUNK = 900
+
+
+def aad_map(db: Any, file_ids: Sequence[int]) -> dict[int, str | None]:
+    """
+    Verilen dosya id'leri için `aad_metadata` değerlerini TEK turda okur.
+
+    B-009: `export_to_directory()` bunu döngü içinde dosya başına bir
+    sorguyla yapıyordu — 500 dosyalık bir indirme 500 ek sorgu demekti.
+    Sorgular indeksliydi ve yerel SQLite'a gidiyordu, yani maliyet küçük;
+    ama `export_to_zip()` aynı bilgiyi zaten tek sorguda alıyordu ve iki
+    akışın aynı deseni kullanması bu modülün varlık sebebi.
+
+    Bulunamayan id'ler sözlükte YER ALMAZ — çağıran `.get(id)` ile
+    None'a düşüyor, tıpkı eski `fetchone()` None döndüğünde olduğu gibi.
+
+    DAVRANIŞ NOTU: okuma artık döngüden ÖNCE, tek anda yapılıyor.
+    Eşzamanlı bir yazma varsa eski kod ilk dosya için eski, son dosya
+    için yeni değeri görebilirdi; yeni kod hepsi için tutarlı bir
+    anlık görüntü kullanıyor. Tutarlı olan doğru olan, ama fark
+    teknik olarak bir davranış değişikliği — 2.7'de bu yüzden
+    ertelenmişti.
+    """
+    sonuc: dict[int, str | None] = {}
+    benzersiz = list(dict.fromkeys(file_ids))
+    for i in range(0, len(benzersiz), _IN_CHUNK):
+        parca = benzersiz[i : i + _IN_CHUNK]
+        yer_tutucu = ",".join("?" * len(parca))
+        # nosemgrep: python.lang.security.audit.formatted-sql-query
+        # Enterpolasyona giren tek şey `?` karakterleri; değerler bağlı.
+        for row in db.fetchall(
+            f"SELECT id, aad_metadata FROM files WHERE id IN ({yer_tutucu})",
+            tuple(parca),
+        ):
+            sonuc[row["id"]] = row["aad_metadata"]
+    return sonuc
 
 
 def unique_path(directory: Path, filename: str) -> Path:
@@ -164,20 +229,25 @@ def export_to_directory(
 
     Args:
         items:           (file_id, filepath) çiftleri.
-        session_hwid:    denetim kaydına yazılır (dosya doğrulamasında
-                         KULLANILMAZ — bkz. hwid_fallback).
+        session_hwid:    denetim kaydına yazılır.
+        hwid_fallback:   DB'nin `aad_metadata` sütununda hwid yoksa
+                         kullanılacak değer (B-010). `export_to_zip()`
+                         ile aynı anlam; iki akış artık aynı kararı
+                         veriyor.
         on_progress:     her dosyadan önce (sıra_no, kısa_ad) ile çağrılır.
         should_continue: False dönerse döngü durur ve `cancelled=True`.
 
-    N+1 SORGU — bilerek korundu: her dosya için `aad_metadata` ayrı bir
-    sorguyla okunuyor. Tek bir `WHERE id IN (...)` ile toplanabilirdi ve
-    öyle olmalı, ama bu 2.7'de saf refactor kuralı gereği değiştirilmedi.
-    Bkz. BACKLOG.md B-009.
+    `aad_metadata` artık TEK sorguda önden okunuyor (B-009) — bkz.
+    `aad_map()`.
     """
     hedef_dizin = Path(dest_dir)
     errors: list[str] = []
     saved = 0
     cancelled = False
+
+    # B-009: döngüden ÖNCE tek sorgu. İptal edilse bile hepsi okunuyor —
+    # tek bir indeksli sorgu, iptalin kazandıracağı şeyden ucuz.
+    aadler = aad_map(db, [fid for fid, _yol in items])
 
     for index, (file_id, filepath) in enumerate(items):
         if should_continue is not None and not should_continue():
@@ -193,12 +263,7 @@ def export_to_directory(
             continue
 
         try:
-            # B-009: döngü içi sorgu — mevcut davranış korunuyor.
-            aad_row = db.fetchone(
-                "SELECT aad_metadata FROM files WHERE id = ?", (file_id,)
-            )
-            hwid = aad_hwid_of(aad_row["aad_metadata"] if aad_row else None)
-            hwid = hwid or hwid_fallback
+            hwid = aad_hwid_of(aadler.get(file_id)) or hwid_fallback
 
             content, meta = decrypt_file(filepath, key, hwid=hwid)
             try:

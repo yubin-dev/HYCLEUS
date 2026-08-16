@@ -20,6 +20,8 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | B-021 | `3.5` turu sonu — B-021 düzeltmesi | `reconstruct_key()`, Lagrange sonucu `[2**256, asal)` aralığına düştüğünde `to_bytes(32)` ile `OverflowError` fırlatıyordu; docstring yalnızca `ValueError` vaat ediyor ve kurtarma akışı onu yakalıyor. Kurtarma parçası elle yazılan tek kripto girdisi olduğu için erişilebilir bir yoldu. `_sss_recover()` artık yakalayıp "parçayı kontrol edin" diyen bir `ValueError`'a çeviriyor; asıl sebep `__cause__` zincirinde kalıyor. Fuzzing bulmuştu, tohum korpusundaki girdi geri alınmayı yakalamak için yerinde bırakıldı. |
 | B-011 | `①` grubu — B-011 düzeltmesi | `create_folder()`, `owner_id` `users` tablosunda yoksa uydurma bir satır yazıyordu ("yonetici", boş parola hash'i, `admin` rolü) ve aynı kaçamağın İKİNCİ kopyası `UI/main_window_table.py`'de duruyordu. Kök neden orada değildi: `main.py` `HycleusWindow`'a `user_id` hiç geçmiyordu, yani oturum kim olursa olsun sahiplik varsayılan **1**'e yazılıyordu. `CORE/session_user.py::sync_session_user()` girişte oturumu gerçek bir `users.id`'ye bağlıyor; satır yoksa açılan kayıt artık insan taklit etmiyor (`vault:<hwid>`, gerçek rol, ayrıştırılamaz parola sentinel'i) ve denetim kaydına düşüyor. Kaçamak iki yerden de kaldırıldı; `user_id` argümanının sessizce düşmesini AST denetimleri engelliyor (`tests/test_session_user.py`). |
 | B-007 | `①` grubu — B-007 düzeltmesi | Mahrem etiketli (`tags.is_private = 1`) bir dosya `files_by_label()` ve `search_files()` görünümlerinde yönetici olmayandan gizlenirken `files_by_folder()`'da GÖRÜNÜYORDU; klasör görünümünde arayüz tarafında da engel yoktu. Dört görünüm de artık `include_private` alıyor ve dördü de role bağlı çağrılıyor. Kenar çubuğu engeli KALDIRILMADI — iki katman birlikte duruyor. Varsayılan bilerek `True` bırakıldı (ters çevirmek, parametre geçmeyen çağrılarda sessizce veri gizlerdi); asıl korumayı çağrı yerlerinin parametreyi açıkça vermesi sağlıyor ve bunu AST denetimi sabitliyor. İki `does_NOT` sabitleme testi bilerek kırılıp beklenen davranışa çevrildi. |
+| B-009 | `①` grubu — B-009 düzeltmesi | `export_to_directory()` `aad_metadata`'yı döngü içinde dosya başına bir sorguyla okuyordu; `export_to_zip()` aynı bilgiyi zaten tek sorguda alıyordu. `aad_map()` tek `WHERE id IN (...)` ile önden okuyor, 900'lük parçalara bölüyor (SQLite'ın eski `SQLITE_MAX_VARIABLE_NUMBER` sınırı) ve tekrarlı id'leri tekilleştiriyor. Ölçüm sorgu SAYISINA bakıyor, kodun şekline değil. |
+| B-010 | `①` grubu — B-010 düzeltmesi | İki indirme akışı, DB'nin `aad_metadata` sütununda hwid bulunmadığında ayrışıyordu: ZIP oturum hwid'iyle doğrulayıp dosyayı atlıyor, toplu indirme `hwid=None` geçtiği için kontrolü hiç çalıştırmıyordu. Fark yalnızca DB sütunu ile DOSYANIN AAD'ı ayrıştığında görünür (kontrol `decrypt_file` içinde ve dosyanın kendi AAD'ına bakıyor). ZIP'in davranışı doğru kabul edildi: sütunun eksilmesi "bu dosya bu cihazda mı şifrelendi" sorusunu geçersiz kılmıyor. Toplu indirme artık `hwid_fallback` alıyor. Kabul edilen risk: DB'si eksilmiş ve başka cihazda şifrelenmiş dosyalar toplu indirmede de atlanıyor — ama ZIP'te zaten atlanıyordu. |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
 > Yeni madde açarken bu tabloya da bakın; yalnızca aşağıdaki en büyük
@@ -271,89 +273,6 @@ dosyayla veritabanının tutarlı olup olmadığı sonradan gösterilemez.
 4. Çıpa dosyasının yolunu (ve `HYCLEUS_AUDIT_ANCHOR` ile
    değiştirilebildiğini) ayarlar ekranında göster — USB'ye yönlendirme şu an
    yalnızca ortam değişkeniyle mümkün ve hiçbir yerde yazmıyor.
-
----
-
-## B-009 — Toplu indirme dosya başına ayrı sorgu atıyor (N+1)
-
-**Durum:** Açık — mevcut davranış korundu (saf refactor kuralı)
-**Öncelik:** Düşük (performans; doğruluk etkisi yok)
-**İlgili:** 2.7 Faz 1 adım 5 (`CORE/export.py`)
-**Bulundu:** 2026-08-13, iki indirme akışı yan yana getirilirken
-
-### Bulgu
-
-İki dışa aktarma akışı `aad_metadata`'yı farklı biçimde okuyor:
-
-| Akış | Sorgu |
-|---|---|
-| Klasör → ZIP | **tek sorgu**, tüm alanlar önden (`WHERE folder_id = ?`) |
-| Toplu → dizin | **dosya başına bir sorgu**, döngü içinde (`WHERE id = ?`) |
-
-500 dosyalık bir toplu indirme 500 ek sorgu atıyor. Sorgular indeksli
-(birincil anahtar) ve yerel SQLite'a gidiyor, dolayısıyla etkisi ölçülebilir
-ama küçük — asıl maliyet zaten çözme ve diske yazma.
-
-### Neden düzeltilmedi
-
-Değişiklik tek satırlık: `WHERE id IN (...)` ile bir kez okuyup sözlüğe
-almak. Ama 2.7 saf bir yeniden düzenleme ve sorgu sayısını değiştirmek
-teknik olarak davranış değişikliğidir (eşzamanlı bir yazma varsa okunan
-değer farklı olabilir). Bu turda taşınan kod birebir korundu.
-
-Kod `CORE/export.py::export_to_directory` içinde ve döngüdeki sorgu
-`# B-009` yorumuyla işaretli.
-
-### Yapılacak (uygulanmadı)
-
-1. `export_to_directory` çağrılmadan önce `aad_metadata`'yı tek sorguyla
-   toplayıp `{file_id: aad}` sözlüğü olarak geçir.
-2. `export_to_zip` zaten satırları hazır alıyor — iki akış aynı desende
-   buluşur ve `db` parametresi `export_to_directory`'de yalnızca denetim
-   kaydı için kalır.
-
----
-
-## B-010 — İki indirme akışı AAD'sız dosyalarda farklı davranıyor
-
-**Durum:** Açık — mevcut davranış korundu, testle sabitlendi
-**Öncelik:** Orta (tutarsız güvenlik kontrolü; hangi tarafın doğru olduğu
-belirlenmeli)
-**İlgili:** B-009 ile aynı kod, 2.7 Faz 1 adım 5
-**Bulundu:** 2026-08-13
-
-### Bulgu
-
-`aad_metadata` boş ya da içinde `hwid` yoksa iki akış farklı karar veriyor:
-
-```
-ZIP     : hwid = aad_hwid or (DEV-HWID-1234 / oturum hwid'i)  → doğrulama YAPILIR
-Dizine  : hwid = aad_hwid                                      → doğrulama YAPILMAZ
-```
-
-Sonuç: AAD'sı olmayan eski bir kayıt, **klasör indirmede "bütünlük hatası"
-verip atlanırken toplu indirmede sorunsuz çözülüyor.** Aynı dosya, aynı
-anahtar, aynı kullanıcı — farklı sonuç.
-
-Bu bir açık değil (GCM doğrulaması her iki yolda da yapılıyor; farklı olan
-yalnızca AAD'daki hwid'in oturum hwid'iyle karşılaştırılıp
-karşılaştırılmadığı), ama tutarsız ve hangisinin kasıtlı olduğu belli değil.
-
-Mevcut davranış [`tests/test_export.py`](tests/test_export.py) içinde
-`test_zip_falls_back_to_the_session_hwid` ve
-`test_directory_export_does_NOT_fall_back_by_default` ile sabitlendi.
-
-### Yapılacak (uygulanmadı)
-
-Önce karar: AAD'da hwid yoksa oturum hwid'iyle doğrulanmalı mı?
-
-- **Evet ise** — toplu indirme de `hwid_fallback` almalı. Yan etki: başka
-  cihazda şifrelenmiş eski dosyalar toplu indirmede de erişilemez olur.
-- **Hayır ise** — ZIP akışındaki geri dönüş kaldırılmalı. Yan etki:
-  hwid doğrulaması AAD'sı olmayan dosyalarda tümüyle devre dışı kalır.
-
-`CORE/export.py` her iki davranışı da destekliyor (`hwid_fallback`
-parametresi), yani düzeltme yalnızca çağrı yerlerinde tek satır.
 
 ---
 
