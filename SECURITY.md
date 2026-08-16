@@ -1,6 +1,6 @@
 # Security Policy — HYCLEUS
 
-**Applies to:** v2.1.0 · Last reviewed: 2026-08-16
+**Applies to:** v2.2.0.dev (development tree) · Last reviewed: 2026-08-16
 
 This document describes what HYCLEUS actually protects, what it does not, and
 the weaknesses we already know about. It is deliberately blunt: a security
@@ -560,8 +560,10 @@ it never writes into the live vault or database.
 **Randomness** comes from `os.urandom` and `secrets` throughout — nonces,
 salts, master keys and the Shamir polynomial coefficient.
 
-**Supported version:** only the latest release (currently v2.1.0) receives
-security fixes.
+**Supported version:** only the latest release (currently **v2.1.2**)
+receives security fixes. The version you are running is shown in
+**Help → About**; both strings come from `CORE/version.py`, so if they
+disagree with this document, the document is the one that is stale.
 
 ---
 
@@ -689,7 +691,7 @@ failure mode a second pair of eyes catches.
 
 # Güvenlik Politikası — HYCLEUS
 
-**Kapsam:** v2.1.0 · Son gözden geçirme: 2026-08-16
+**Kapsam:** v2.2.0.dev (geliştirme ağacı) · Son gözden geçirme: 2026-08-16
 
 Bu belge HYCLEUS'un neyi koruduğunu, neyi korumadığını ve halihazırda
 bildiğimiz zayıflıkları anlatır. Bilinçli olarak açık sözlüdür: yalnızca
@@ -1236,8 +1238,10 @@ dokunmuyor.
 **Rastgelelik** baştan sona `os.urandom` ve `secrets`'tan gelir — nonce'lar,
 tuzlar, master key'ler ve Shamir polinom katsayısı.
 
-**Desteklenen sürüm:** yalnızca en son sürüm (şu an v2.1.0) güvenlik
-düzeltmesi alır.
+**Desteklenen sürüm:** yalnızca en son sürüm (şu an **v2.1.2**) güvenlik
+düzeltmesi alır. Çalıştırdığınız sürüm **Yardım → Hakkında** kutusunda
+yazıyor; iki dize de `CORE/version.py`'den geliyor, dolayısıyla bu belgeyle
+çelişirlerse eskimiş olan belgedir.
 
 ---
 

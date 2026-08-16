@@ -22,9 +22,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from CORE.version import surum_etiketi
 from DB.db_manager import DBManager
 
-_APP_VERSION = "HYCLEUS v1.5"
+#: Tek kaynak: CORE/version.py. Elle yazmayın — bkz. BACKLOG B-017.
+_APP_VERSION = surum_etiketi()
 
 _QSS = """
 QDialog  { background: #FFFFFF; }

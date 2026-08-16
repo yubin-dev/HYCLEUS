@@ -8,7 +8,7 @@
 [![PySide6](https://img.shields.io/badge/PySide6-6.x-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://doc.qt.io/qtforpython/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.0-red?style=for-the-badge)](#)
+[![Version](https://img.shields.io/badge/Version-2.2.0.dev-red?style=for-the-badge)](#)
 [![Security](https://img.shields.io/badge/Encryption-AES--256--GCM-success?style=for-the-badge&logo=shield&logoColor=white)](#security-architecture)
 
 *Hardware-presence + PIN dual-factor encrypted file vault with USB HWID authentication, TOTP 2FA, and Shamir Secret Sharing.*
@@ -232,6 +232,7 @@ HYCLEUS/
 │   ├── fuzz/                 # Fuzz targets (crypto container, Shamir)
 │   └── canary_semgrep/       # Deliberately unsafe — proves rules fire
 ├── CORE/
+│   ├── version.py            # Single source of the version string
 │   ├── crypto.py             # AES-256-GCM encryption (.hcl format)
 │   ├── paths.py              # data_dir() — EXE-aware path resolution
 │   ├── scanner.py            # Windows Defender integration
@@ -510,6 +511,7 @@ HYCLEUS/
 │   └── canary_semgrep/       # Bilerek güvensiz — kuralların canlı kanıtı
 ├── HYCLEUS.spec              # PyInstaller spec
 ├── CORE/
+│   ├── version.py            # Sürüm dizesinin tek kaynağı
 │   ├── crypto.py             # AES-256-GCM şifreleme (.hcl formatı)
 │   ├── paths.py              # data_dir() — EXE-duyarlı yol çözümü
 │   ├── scanner.py            # Windows Defender entegrasyonu

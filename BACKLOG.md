@@ -16,6 +16,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | B-005 | `5463cc9` — "added_by kaydi duzeltmesi" | `files.added_by` hiçbir kod tarafından yazılmıyordu. Numara verildi, bulgu aynı commit'te düzeltildi, backlog'a hiç girmedi. |
 | B-008 | `60d6255` sonrası — B-008 düzeltmesi | Arayüzdeki imha sayacı saklama korumasını atlıyordu. İki ayrı silme uygulaması `CORE.disposal.purge_expired_file()` altında birleştirildi; ikinci bir uygulamanın geri gelmesini AST denetimi engelliyor (`tests/test_disposal.py::test_iki_akis_ayni_fonksiyonu_cagiriyor`). |
 | B-012 | `3.5` turu sonu — B-012 düzeltmesi | `decrypt_file()` başlığı kendi başına ayrıştırıyor, `verify_file()`'ın dört uzunluk kontrolünün hiçbirini yapmıyordu: kesik dosyada `IndexError`, beş baytlık dosyada `struct.error` (ikincisini fuzzing buldu). İkisi de belgelenmiş kümenin dışındaydı. Kök neden eksik `if`'ler değil İKİ KOPYAYDI; `CORE.crypto._read_header()` altında birleştirildi. Her korumanın kendi mesajı var ve mesajlar testte sabitlendi — mesaj sabitlenmeden iki koruma mutasyonla ölmüyordu. İkinci bir uygulamanın geri gelmesini AST denetimi engelliyor (`tests/test_crypto.py::test_iki_okuma_yolu_ayni_basligi_kullaniyor`). |
+| B-017 | `3.5` turu sonu — B-017 düzeltmesi | Sürüm dizesi beş yerde elle yazılıydı ve beşi farklı şey söylüyordu (etiket `v2.1.2`, SECURITY.md `v2.1.0`, README rozeti `2.0`, Hakkında `v1.6`, İletişim `v1.5`). Bildirim akışını kırıyordu: §6.3 "etkilenen sürüm" istiyor, kullanıcının gördüğü tek sürüm yanlıştı. `CORE/version.py` tek kaynak oldu; arayüz oradan okuyor, belgeler `tests/test_version.py` ile karşılaştırılıyor (belgeler kod okuyamıyor, ayrışmaları yine sessiz olurdu). İki sabit var ve ikisi de gerekli: `__version__` (çalıştırılan kod) ve `SON_YAYIN` (düzeltme alan etiket). Tarihsel "v2.1.0'a kadar…" atıfları toplu değiştirmeden korundu, ayrı test var. |
 | B-021 | `3.5` turu sonu — B-021 düzeltmesi | `reconstruct_key()`, Lagrange sonucu `[2**256, asal)` aralığına düştüğünde `to_bytes(32)` ile `OverflowError` fırlatıyordu; docstring yalnızca `ValueError` vaat ediyor ve kurtarma akışı onu yakalıyor. Kurtarma parçası elle yazılan tek kripto girdisi olduğu için erişilebilir bir yoldu. `_sss_recover()` artık yakalayıp "parçayı kontrol edin" diyen bir `ValueError`'a çeviriyor; asıl sebep `__cause__` zincirinde kalıyor. Fuzzing bulmuştu, tohum korpusundaki girdi geri alınmayı yakalamak için yerinde bırakıldı. |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
@@ -611,49 +612,6 @@ Geçiş yapılırsa gerekçe **taşınabilirlik**tir, güvenlik değil. Token
 dosyası da seri numarası kadar kopyalanabilir; HWID zaten uygulama
 seviyesi bir kontrol (SECURITY.md §4.5). "Daha güvenli oldu" denirse
 yanlış olur.
-
----
-
-## B-017 — Sürüm dizesi üç yerde üç farklı şey söylüyor
-
-**Durum:** Açık — 3.5 (denetime hazırlık) turunda fark edildi
-**Öncelik:** Düşük teknik olarak, **orta** ifşa açısından
-**Bulundu:** 2026-08-16
-
-Depoda tek bir sürüm kaynağı yok:
-
-| Yer | Değer |
-|---|---|
-| En son git etiketi | `v2.1.2` |
-| [`SECURITY.md`](SECURITY.md) başlığı ve §5 | `v2.1.0` |
-| [`UI/ContactDialog.py`](UI/ContactDialog.py) `_APP_VERSION` | `HYCLEUS v1.5` |
-| Kod içi sürüm sabitleri | Biçime özel (`_VERSION = 3` vault, `TRAILER_VERSION = 1` damga) — uygulama sürümü DEĞİL |
-
-Çalışma zamanında bir etkisi yok. Sorun bildirim akışında: SECURITY.md
-§6.3 bildirimciden "etkilenen sürüm"ü istiyor, kullanıcının sürümü
-görebildiği tek yer Hakkında kutusu ve orası `v1.5` diyor. Depo ise
-`v2.1.2` etiketinde. Yani gelen her bildirim, güvenlik politikasının
-desteklediğini söylediği sürümden geride görünecek — ve "desteklenen sürüm
-yalnızca en sonuncusu" kuralı (§5) bu bildirimi kapsam dışı gösterir.
-Politikanın kendisi de bir etiket geride: `v2.1.0` diyor, en son etiket
-`v2.1.2`.
-
-Aynı boşluk sürüm notlarını da etkiliyor: bir düzeltmenin hangi sürümde
-çıktığı yazılamıyor, çünkü sürümü söyleyen otoriter bir yer yok.
-
-### Yapılacaklar (uygulanmadı)
-
-1. Tek bir kaynak belirle — ör. `CORE/version.py` içinde
-   `__version__ = "2.2.0"`. `CORE/` zaten namespace paketi, ek yapı
-   gerekmiyor.
-2. `UI/ContactDialog.py` onu okusun; sabit dizeyi kaldır.
-3. SECURITY.md başlığı ve §5 elle güncellensin (belge, koddan
-   okuyamaz — ama bir testle karşılaştırılabilir).
-4. Sürümün üç yerde birden tutarlı olduğunu doğrulayan bir test yaz;
-   `tests/test_console.py`'deki AST denetimiyle aynı desen.
-5. v2.2 planı tamamlandığında etiketi at ve üç yeri birden o değere
-   çek — bugünkü sapmanın kaynağı, sürüm yükseltmenin tek bir yerde
-   yapılamaması.
 
 ---
 

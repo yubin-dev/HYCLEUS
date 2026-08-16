@@ -35,6 +35,7 @@ from CORE.idle_lock import (
     IdleTracker,
 )
 from CORE.usb_manager import get_usb_hwid
+from CORE.version import surum_etiketi
 from CORE.vault_manager import (
     blacklist_usb,
 )
@@ -323,11 +324,13 @@ class HycleusWindow(
         elif action == act_about:
             QMessageBox.information(
                 self, "HYCLEUS — Hakkında",
-                "HYCLEUS v1.6\n"
+                # Sürüm tek kaynaktan: CORE/version.py (BACKLOG B-017).
+                # Elle yazılan dize buraya geri getirilmemeli — bildirimci
+                # "etkilenen sürüm"ü buradan okuyor (SECURITY.md §6.3).
+                f"{surum_etiketi()}\n"
                 "Güvenli Dosya Yönetim Sistemi\n\n"
-                f"Derleme tarihi: 2026-06-09\n"
                 "Kriptografi: AES-256-GCM + Argon2id\n"
-                "Shamir Secret Sharing (2-of-2)\n\n"
+                "Shamir Secret Sharing (2-of-3)\n\n"
                 "© 2026 HYCLEUS — Tüm hakları saklıdır.",
             )
 
