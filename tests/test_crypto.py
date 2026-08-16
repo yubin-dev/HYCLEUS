@@ -199,3 +199,140 @@ def test_nonce_is_unique_across_encryptions(tmp_path: Path, key: bytes) -> None:
 
     # Aynı düz metin + aynı anahtar farklı ciphertext üretmeli (nonce gerçekten etkili)
     assert len(set(ciphertexts)) == _NONCE_SAMPLES, "Şifreleme deterministik — nonce ciphertext'e karışmıyor"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Kesik / bozuk başlık — B-012
+# ══════════════════════════════════════════════════════════════════════════════
+
+_MAGIC_B = b"HYCL"
+_V2 = bytes([2])
+_V1 = bytes([1])
+
+#: Başlığın her aşamasında kesilmiş dosyalar. `ad` hata mesajlarında görünür.
+#:
+#: "surum var" satırı FUZZING'İN BULDUĞU girdi (5 bayt): `decrypt_file` orada
+#: `struct.unpack(">I", fin.read(4))` çağırıyordu, dosya bittiği için okuma
+#: kısa dönüyor ve `struct.error` fırlıyordu. `verify_file` aynı dosyada
+#: doğru davranıyordu — iki okuma yolu ayrışmıştı.
+#: (ad, icerik, beklenen mesaj parcasi)
+#:
+#: MESAJ DA SABITLENIYOR, yalnizca istisna tipi degil. Sebebi olculdu: dort
+#: korumadan ikisi kaldirildiginda testler YINE GECIYORDU, cunku bir sonraki
+#: koruma devreye girip ayni tipte bir hata veriyordu. Yani "ValueError
+#: firladi" iddiasi korumalarin yerinde oldugunu KANITLAMIYOR. Her korumaya
+#: ayri bir mesaj verildi ve mesaj burada sabitlendi; simdi dordu de
+#: mutasyonla oluyor.
+_KESIK_DOSYALAR = [
+    ("bos",            b"",                                        "Geçersiz HYCL"),
+    ("magicten kisa",  b"HYC",                                     "Geçersiz HYCL"),
+    ("yalniz magic",   _MAGIC_B,                                   "sürüm baytı"),
+    ("surum var",      _MAGIC_B + _V2,                             "nonce eksik"),
+    ("eski surum",     _MAGIC_B + _V1,                             "nonce eksik"),
+    ("nonce yarim",    _MAGIC_B + _V2 + bytes(5),                  "nonce eksik"),
+    ("nonce tam",      _MAGIC_B + _V2 + bytes(12),                 "AAD uzunluğu"),
+    ("aad_len yarim",  _MAGIC_B + _V2 + bytes(12) + bytes(2),      "AAD uzunluğu"),
+    ("aad eksik",      _MAGIC_B + _V2 + bytes(12)
+                       + bytes([0, 0, 0, 64]) + b"ab",             "AAD bloğu eksik"),
+]
+
+_KESIK_IDS = [ad for ad, _, _ in _KESIK_DOSYALAR]
+
+
+@pytest.mark.parametrize("ad,icerik,beklenen", _KESIK_DOSYALAR, ids=_KESIK_IDS)
+@pytest.mark.parametrize(
+    "fn", [crypto.verify_file, crypto.decrypt_file], ids=["verify_file", "decrypt_file"]
+)
+def test_kesik_dosya_temiz_valueerror_veriyor(
+    tmp_path: Path, key: bytes, fn, ad: str, icerik: bytes, beklenen: str
+) -> None:
+    """
+    Kesik bir `.hcl` TEMİZ bir hata vermeli — çıplak bir çökme değil.
+
+    Çağıran taraflar (`CORE/export.py`, `UI/main_window_files.py`) yalnızca
+    `ValueError` / `AuthenticationError` / `OSError` yakalıyor. Dördüncü bir
+    istisna tipi o ağdan kaçıp kullanıcıya yığın izi olarak yansır: "bu
+    dosya bozulmuş" yerine beklenmedik bir çökme.
+
+    Güvenlik değil SAĞLAMLIK meselesi — bozulma her iki yolda da zaten
+    tespit ediliyordu, mesele nasıl raporlandığı.
+    """
+    yol = tmp_path / "kesik.hcl"
+    yol.write_bytes(icerik)
+
+    with pytest.raises(ValueError) as bilgi:
+        fn(yol, key)
+
+    # Kesik dosya "kurcalanmış" değil "bozuk" — AuthenticationError yanlış
+    # mesaj olurdu ve kullanıcıyı olmayan bir saldırıya inandırırdı.
+    assert not isinstance(bilgi.value, AuthenticationError), (
+        f"{ad}: kesik dosya 'kurcalanmis' olarak raporlandi; dogrusu 'bozuk'."
+    )
+    assert beklenen in str(bilgi.value), (
+        f"{ad}: beklenen mesaj parcasi {beklenen!r} yok, alinan: "
+        f"{str(bilgi.value)!r}. Bir sonraki koruma devreye girmis olabilir — "
+        "yani bu asamanin kendi kontrolu kaldirilmis."
+    )
+
+
+@pytest.mark.parametrize("ad,icerik,_beklenen", _KESIK_DOSYALAR, ids=_KESIK_IDS)
+def test_iki_okuma_yolu_ayni_istisnayi_veriyor(
+    tmp_path: Path, key: bytes, ad: str, icerik: bytes, _beklenen: str
+) -> None:
+    """
+    B-012'nin ÖZÜ: aynı dosya, iki okuyucu, aynı sonuç.
+
+    Bulgu "dört `if` eksik" değil, "iki kopya ayrıştı"ydı. Bu test
+    ayrışmayı ölçüyor: istisna tipi ve mesajı birebir aynı olmalı.
+    """
+    yol = tmp_path / "kesik.hcl"
+    yol.write_bytes(icerik)
+
+    def _sonuc(fn):
+        try:
+            fn(yol, key)
+        except Exception as exc:  # noqa: BLE001 — karşılaştırmak işin kendisi
+            return type(exc).__name__, str(exc)
+        return "DONDU", ""
+
+    assert _sonuc(crypto.verify_file) == _sonuc(crypto.decrypt_file), (
+        f"{ad}: verify_file ve decrypt_file farkli davraniyor — "
+        "baslik ayristirmasi yeniden ayrismis olabilir."
+    )
+
+
+def test_iki_okuma_yolu_ayni_basligi_kullaniyor() -> None:
+    """
+    İkinci bir başlık ayrıştırma uygulamasının geri gelmesini engeller.
+
+    B-012'nin kök nedeni eksik kontroller değil, İKİ AYRI UYGULAMAYDI.
+    Kontrolleri ekleyip kopyaları ayrı bırakmak aynı sapmayı zamanla geri
+    getirirdi. B-008'de kullanılan AST denetiminin aynısı.
+    """
+    import ast
+
+    kaynak = Path(crypto.__file__).read_text(encoding="utf-8")
+    agac = ast.parse(kaynak)
+
+    fonksiyonlar = {
+        d.name: d
+        for d in ast.walk(agac)
+        if isinstance(d, ast.FunctionDef) and d.name in ("verify_file", "decrypt_file")
+    }
+    assert set(fonksiyonlar) == {"verify_file", "decrypt_file"}, sorted(fonksiyonlar)
+
+    for ad, dugum in fonksiyonlar.items():
+        cagrilar = {
+            n.func.id
+            for n in ast.walk(dugum)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        }
+        assert "_read_header" in cagrilar, (
+            f"{ad}() basligi kendi basina ayristiriyor — `_read_header()` "
+            "cagirmali. Iki uygulama = iki farkli guvenlik (B-012)."
+        )
+        # Kendi magic karşılaştırmasını yapmamalı: ayrışmanın ilk adımı odur.
+        assert "_MAGIC" not in ast.dump(dugum), (
+            f"{ad}() icinde dogrudan _MAGIC karsilastirmasi var — baslik "
+            "okumasi `_read_header()` icinde kalmali."
+        )

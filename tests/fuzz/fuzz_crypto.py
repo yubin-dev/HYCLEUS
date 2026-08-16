@@ -61,32 +61,17 @@ IZINLI: tuple[type[BaseException], ...] = (ValueError, AuthenticationError, OSEr
 #: tekrarlanabilir kılıyor.
 ANAHTAR = bytes(range(32))
 
-BILINEN: tuple[BilinenIhlal, ...] = (
-    BilinenIhlal(
-        cagri="decrypt_file",
-        istisna="IndexError",
-        backlog="B-012",
-        aciklama=(
-            "Dosya tam 4 bayt (yalnızca sihirli sayı) olduğunda "
-            "`fin.read(1)[0]` boş dizide indeksliyor. verify_file aynı "
-            "durumda doğru davranıyor (`if not version_byte`), yani iki "
-            "okuma yolu ayrışmış durumda."
-        ),
-    ),
-    BilinenIhlal(
-        cagri="decrypt_file",
-        istisna="error",
-        backlog="B-012",
-        aciklama=(
-            "BU HARNESS'IN BULDUĞU YENİ ÖRNEK — B-012 ile aynı kök neden. "
-            "Dosya `HYCL` + sürüm baytıysa nonce ve AAD uzunluğu okumaları "
-            "kısa dönüyor ve `struct.unpack('>I', ...)` `struct.error` "
-            "fırlatıyor. `verify_file` bu okumaların hepsini uzunluk "
-            "kontrolüyle koruyor, `decrypt_file` hiçbirini korumuyor. "
-            "İstisna adı 'error' çünkü `struct.error.__name__` bu."
-        ),
-    ),
-)
+#: Bilinen ve düzeltilmemiş ihlal YOK.
+#:
+#: Bir zamanlar iki tane vardı ve ikisi de B-012'ydi: `decrypt_file` başlığı
+#: kendi başına ayrıştırıyor, `verify_file`'ın dört uzunluk kontrolünün
+#: hiçbirini yapmıyordu. Kesik dosyada `IndexError`, beş baytlık dosyada
+#: `struct.error` fırlatıyordu; ikincisini bu harness buldu.
+#:
+#: Düzeltildi: iki yol da `CORE.crypto._read_header()` çağırıyor. Liste
+#: boşaldı ve `tests/test_fuzz_harness.py` boş listede de anlamlı: artık
+#: HERHANGİ bir sözleşme ihlali hata sayılıyor.
+BILINEN: tuple[BilinenIhlal, ...] = ()
 
 
 #: Hedefe özel tohum korpusu — libFuzzer'ın "seed corpus"unun karşılığı.

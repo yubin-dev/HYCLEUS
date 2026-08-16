@@ -15,6 +15,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 |---|---|---|
 | B-005 | `5463cc9` — "added_by kaydi duzeltmesi" | `files.added_by` hiçbir kod tarafından yazılmıyordu. Numara verildi, bulgu aynı commit'te düzeltildi, backlog'a hiç girmedi. |
 | B-008 | `60d6255` sonrası — B-008 düzeltmesi | Arayüzdeki imha sayacı saklama korumasını atlıyordu. İki ayrı silme uygulaması `CORE.disposal.purge_expired_file()` altında birleştirildi; ikinci bir uygulamanın geri gelmesini AST denetimi engelliyor (`tests/test_disposal.py::test_iki_akis_ayni_fonksiyonu_cagiriyor`). |
+| B-012 | `3.5` turu sonu — B-012 düzeltmesi | `decrypt_file()` başlığı kendi başına ayrıştırıyor, `verify_file()`'ın dört uzunluk kontrolünün hiçbirini yapmıyordu: kesik dosyada `IndexError`, beş baytlık dosyada `struct.error` (ikincisini fuzzing buldu). İkisi de belgelenmiş kümenin dışındaydı. Kök neden eksik `if`'ler değil İKİ KOPYAYDI; `CORE.crypto._read_header()` altında birleştirildi. Her korumanın kendi mesajı var ve mesajlar testte sabitlendi — mesaj sabitlenmeden iki koruma mutasyonla ölmüyordu. İkinci bir uygulamanın geri gelmesini AST denetimi engelliyor (`tests/test_crypto.py::test_iki_okuma_yolu_ayni_basligi_kullaniyor`). |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
 > Yeni madde açarken bu tabloya da bakın; yalnızca aşağıdaki en büyük
@@ -466,85 +467,6 @@ bir "oturum açan kullanıcıyı kaydet" adımı yok.
 
 Mevcut davranış [`tests/test_folders.py`](tests/test_folders.py) içinde
 `test_create_writes_a_placeholder_user_when_missing` ile sabitlendi.
-
----
-
-## B-012 — `decrypt_file()` kesik dosyada `IndexError` fırlatıyor
-
-**Durum:** Açık — RFC 3161 turunda fark edildi, plan dışı olduğu için dokunulmadı
-
-`CORE/crypto.py` içinde iki okuma yolu var ve kesik bir dosyada FARKLI
-davranıyorlar:
-
-```python
-# verify_file() — düzgün
-version_byte = fin.read(1)
-if not version_byte:
-    raise ValueError("Dosya çok kısa, bozulmuş olabilir.")
-
-# decrypt_file() — sürüm byte'ı yoksa IndexError
-version = fin.read(1)[0]
-```
-
-Dosya tam 4 byte'sa (yalnızca magic) `fin.read(1)` boş döner ve `[0]`
-`IndexError: index out of range` fırlatır.
-
-### Etkisi
-
-Küçük ama gerçek. `decrypt_file()`'ı çağıran yerler (`CORE/export.py`,
-`UI/main_window_files.py`) `ValueError` ve `AuthenticationError`
-yakalıyor; `IndexError` bu ağdan kaçıp kullanıcıya çıplak bir çökme
-olarak yansır. Bozuk/kesik bir dosya, "bu dosya bozulmuş" mesajı yerine
-beklenmedik bir hata veriyor.
-
-Aynı senaryoda `verify_file()` — dolayısıyla haftalık bütünlük taraması —
-doğru davranıyor, yani bozulma yine de tespit ediliyor. Sorun yalnızca
-kullanıcının tetiklediği açma/indirme yolunda.
-
-### Neden bu turda düzeltilmedi
-
-Bu tur `.hcl` kabına v2 sürümünü ve zaman damgası fragmanını ekledi;
-`decrypt_file()`'ın sürüm KARŞILAŞTIRMASI değişti ama bu okuma kalıbına
-dokunulmadı. Kapsam dışı bir davranış değişikliği, formatı değiştiren bir
-commit'e karışmasın diye ayrıldı.
-
-### Fuzzing ne ekledi (2026-08-16, 3.5 turu)
-
-`tests/fuzz/fuzz_crypto.py` bu bulgunun **tek örnek olmadığını** gösterdi.
-`decrypt_file()` başlığı okurken `verify_file()`'ın yaptığı uzunluk
-kontrollerinin **hiçbirini** yapmıyor:
-
-| Okuma | `verify_file` | `decrypt_file` | Kesik dosyada |
-|---|---|---|---|
-| sürüm baytı | `if not version_byte` | yok | `IndexError` |
-| nonce (12 bayt) | `if len(nonce) != 12` | yok | kısa nonce GCM'e gidiyor |
-| AAD uzunluğu (4 bayt) | `if len(raw) != 4` | yok | **`struct.error`** |
-| AAD gövdesi | `if len(aad) != aad_len` | yok | kısa AAD sessizce kabul |
-
-`struct.error` satırı bu turda fuzz ile bulundu; girdi `HYCL` + tek sürüm
-baytı (5 bayt). `IndexError` gibi o da belgelenmiş kümenin dışında ve
-çağıranların `except ValueError` ağından kaçıyor.
-
-Dördüncü satır ayrı bir tür sorun: istisna fırlatmıyor ama kesik bir AAD
-`AuthenticationError` üretiyor — yani "dosya bozuk" yerine "birileri
-kurcalamış" deniyor. Kullanıcıya yanlış şey söyleniyor.
-
-İki ihlal `tests/fuzz/fuzz_crypto.py::BILINEN` içinde kayıtlı;
-`tests/test_fuzz_harness.py` onlara hâlâ ulaşılabildiğini her koşuda
-doğruluyor. Düzeltildiklerinde o test kırılacak ve listeden çıkarılmalarını
-hatırlatacak.
-
-### Yapılacaklar (uygulanmadı)
-
-1. `decrypt_file()` içindeki başlık okumasını `verify_file()`'daki
-   kalıba getir — yukarıdaki tablonun dört satırı da.
-2. Daha iyisi: iki fonksiyonun kopyalanmış başlık ayrıştırmasını tek bir
-   `_read_header()` yardımcısına çıkar — bugün üç yerde (`verify_file`,
-   `decrypt_file`, `CORE/timestamp.read_aad`) benzer kod var ve format
-   her değiştiğinde üçü birden güncelleniyor. Tablodaki ayrışmanın kök
-   nedeni bu; 1. maddeyi yapıp 2.'yi yapmamak aynı sapmayı geri getirir.
-3. Kesik dosya için her iki yolda da aynı istisnayı doğrulayan test ekle.
-4. Düzeltildikten sonra `fuzz_crypto.py::BILINEN` listesini boşalt.
 
 ---
 

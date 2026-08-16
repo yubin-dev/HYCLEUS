@@ -186,6 +186,70 @@ def _trailer_offset(fin: IO[bytes], file_size: int, body_start: int) -> int | No
     return start
 
 
+def _read_header(fin: IO[bytes]) -> tuple[int, bytes, bytes, int]:
+    """
+    `.hcl` başlığını okur ve doğrular: magic, sürüm, nonce, AAD.
+
+    Returns:
+        (version, nonce, aad, body_start) — `body_start`, ciphertext'in
+        başladığı ofset. Dosya imleci oraya konumlanmış olarak döner.
+
+    Raises:
+        ValueError — magic yanlış, sürüm desteklenmiyor ya da HERHANGİ bir
+        alan eksik/kısa.
+
+    Neden ortak bir fonksiyon (B-012)
+    ---------------------------------
+    Bu ayrıştırma `verify_file()` ve `decrypt_file()` içinde AYRI AYRI
+    yazılmıştı ve zamanla ayrıştı: `verify_file` dört uzunluk kontrolü
+    yapıyordu, `decrypt_file` hiçbirini. Kesik bir dosyada ikisi farklı
+    davranıyordu:
+
+        dosya                    verify_file        decrypt_file
+        ─────────────────────    ───────────────    ────────────────
+        b"HYCL"                  ValueError         IndexError
+        b"HYCL\\x02"              ValueError         struct.error
+
+    İkisi de belgelenmiş kümenin (ValueError / AuthenticationError /
+    OSError) dışında ve çağıranların `except ValueError` ağından kaçıyordu.
+    `struct.error` örneğini fuzzing buldu (`tests/fuzz/fuzz_crypto.py`).
+
+    Kök neden dört eksik `if` değil, İKİ KOPYAYDI. Kopyaları düzeltip
+    ayrı bırakmak aynı sapmayı geri getirirdi; bu yüzden tek fonksiyona
+    indirildi. İkinci bir uygulamanın geri gelmesini
+    `tests/test_crypto.py::test_iki_okuma_yolu_ayni_basligi_kullaniyor`
+    engelliyor — B-008'de kullanılan AST denetiminin aynısı.
+
+    `CORE/timestamp.py::read_aad` üçüncü bir okuyucu ama farklı bir işi
+    var (yalnızca AAD'yi istiyor, dosyayı yazmak için açıyor) ve buraya
+    çekilmedi; format değişirse ikisine de bakılmalı.
+    """
+    if fin.read(4) != _MAGIC:
+        raise ValueError("Geçersiz HYCL dosya formatı.")
+
+    version_byte = fin.read(1)
+    if not version_byte:
+        raise ValueError("Dosya çok kısa: sürüm baytı okunamadı.")
+    version = version_byte[0]
+    if version not in _SUPPORTED_VERSIONS:
+        raise ValueError(f"Desteklenmeyen versiyon: {version}")
+
+    nonce = fin.read(_NONCE_SIZE)
+    if len(nonce) != _NONCE_SIZE:
+        raise ValueError("Dosya çok kısa: nonce eksik.")
+
+    raw_aad_len = fin.read(4)
+    if len(raw_aad_len) != 4:
+        raise ValueError("Dosya çok kısa: AAD uzunluğu okunamadı.")
+    (aad_len,) = struct.unpack(">I", raw_aad_len)
+
+    aad = fin.read(aad_len)
+    if len(aad) != aad_len:
+        raise ValueError("AAD bloğu eksik, dosya bozulmuş.")
+
+    return version, nonce, aad, fin.tell()
+
+
 def _body_end(fin: IO[bytes], file_size: int, version: int, body_start: int) -> int:
     """
     Ciphertext + GCM tag bölgesinin bittiği ofset.
@@ -361,28 +425,7 @@ def verify_file(
         raise ValueError(f"Anahtar 32 byte olmalı, {len(key)} byte verildi.")
 
     with open(src, "rb") as fin:
-        if fin.read(4) != _MAGIC:
-            raise ValueError("Geçersiz HYCL dosya formatı.")
-        version_byte = fin.read(1)
-        if not version_byte:
-            raise ValueError("Dosya çok kısa, bozulmuş olabilir.")
-        version = version_byte[0]
-        if version not in _SUPPORTED_VERSIONS:
-            raise ValueError(f"Desteklenmeyen versiyon: {version}")
-
-        nonce = fin.read(_NONCE_SIZE)
-        if len(nonce) != _NONCE_SIZE:
-            raise ValueError("Dosya çok kısa, bozulmuş olabilir.")
-
-        raw_aad_len = fin.read(4)
-        if len(raw_aad_len) != 4:
-            raise ValueError("Dosya çok kısa, bozulmuş olabilir.")
-        (aad_len,) = struct.unpack(">I", raw_aad_len)
-        aad = fin.read(aad_len)
-        if len(aad) != aad_len:
-            raise ValueError("AAD bloğu eksik, dosya bozulmuş.")
-
-        body_start = fin.tell()
+        version, nonce, aad, body_start = _read_header(fin)
         file_size = fin.seek(0, 2)
         # Zaman damgası fragmanı varsa gövde ondan ÖNCE bitiyor; fragman
         # byte'ları ciphertext sanılırsa GCM doğrulaması hatalı biçimde
@@ -467,16 +510,7 @@ def decrypt_file(
         raise ValueError(f"Anahtar 32 byte olmalı, {len(key)} byte verildi.")
 
     with open(src, "rb") as fin:
-        if fin.read(4) != _MAGIC:
-            raise ValueError("Geçersiz HYCL dosya formatı.")
-        version = fin.read(1)[0]
-        if version not in _SUPPORTED_VERSIONS:
-            raise ValueError(f"Desteklenmeyen versiyon: {version}")
-        nonce = fin.read(_NONCE_SIZE)
-        (aad_len,) = struct.unpack(">I", fin.read(4))
-        aad = fin.read(aad_len)
-
-        body_start = fin.tell()
+        version, nonce, aad, body_start = _read_header(fin)
         file_size = fin.seek(0, 2)
         # Fragman varsa gövde ondan önce bitiyor — bkz. verify_file().
         body_end = _body_end(fin, file_size, version, body_start)
