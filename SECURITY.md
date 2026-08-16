@@ -569,6 +569,12 @@ security fixes.
 
 Please **do not open a public issue** for security problems.
 
+> 🔍 **HYCLEUS has never had an external security review and is asking for
+> one.** If you would rather *review* than report, the scope and the open
+> invitation are in
+> [issue #1](https://github.com/yubin-dev/HYCLEUS/issues/1) — that is the
+> right place to coordinate. Findings still go through §6.1.
+
 ### 6.1 How to reach us
 
 Use GitHub's private reporting: **Security → Report a vulnerability** on
@@ -1238,6 +1244,11 @@ düzeltmesi alır.
 ## 6. Güvenlik açığı bildirimi
 
 Güvenlik sorunları için lütfen **herkese açık issue açmayın.**
+
+> 🔍 **HYCLEUS hiç dış güvenlik incelemesinden geçmedi ve bir inceleme
+> arıyor.** Bildirmek yerine *incelemek* istiyorsanız kapsam ve açık davet
+> [issue #1](https://github.com/yubin-dev/HYCLEUS/issues/1) içinde —
+> eşgüdüm için doğru yer orası. Bulgular yine §6.1'den geçer.
 
 ### 6.1 Bize nasıl ulaşılır
 
