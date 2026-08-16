@@ -40,28 +40,75 @@ _hwid: str | None = None
 _stop_event = threading.Event()
 
 
+#: Arka planda süresi dolmuş sayacı işleyen etiketler ve denetim kaydına
+#: yazılacak kaynak adı. Kaynak adı ETİKETE göre ayrışıyor: "bu dosya neden
+#: silindi" sorusunun yanıtı hangi sayacın işlediğini içermeli
+#: (bkz. CORE/disposal.py::purge_expired_file, `source` parametresi).
+_TTL_ETIKETLERI = {
+    "Karantina": "quarantine_ttl",
+    "Imha": "imha_ttl",
+}
+
+
 def _purge_expired() -> None:
     """
-    Süresi dolmuş Karantina dosyalarını DB'den ve diskten temizler.
+    Süresi dolmuş Karantina VE İmha Odası dosyalarını temizler.
 
-    Bu, Karantina'nın 24 saatlik giriş sayacıdır — saklama süresiyle ilgisi
+    Bu iki etiketin 24 saatlik sayaçlarıdır — saklama süresiyle ilgisi
     yoktur. Ama saklama süresi İŞLEYEN bir dosya bu temizliğe yakalanırsa
     sessizce yok olurdu: kullanıcı hiçbir uyarı görmez, hiçbir onay istenmez,
     erken silme koruması hiç devreye girmez. Bu yüzden temizlik, saklama
     süresi altındaki dosyaları ATLAR (bkz. CORE/disposal.py).
+
+    İmha neden buraya EKLENDİ (B-004)
+    ---------------------------------
+    İmha sayacını işleten ikinci bir yer daha var: `UI/main_window_table.py
+    ::_tick_expiry`. O metot ilk satırında `if self._current_label != "Imha":
+    return` yapıyor — yani sayaç yalnızca kullanıcı İmha Odası sekmesinde
+    dururken işliyordu. Süresi dolmuş bir dosya, kullanıcı o sekmeye
+    girmediği sürece diskte kalıyordu ve "24 saat içinde silinecek" diyen
+    arayüz mesajı o süre boyunca doğru olmuyordu.
+
+    Arayüz sayacı KALDIRILMADI: geri sayımı saniye saniye göstermek ve
+    satırı tablodan düşürmek onun işi. İkisi de aynı `purge_expired_file()`
+    fonksiyonunu çağırıyor, yani silme mantığı tek yerde (B-008).
+
+    KRİTİK — sayacı OLMAYAN satırlara dokunulmamalı
+    -----------------------------------------------
+    Saklama süresi süpürmesi (`sweep_retention_expired`) dosyaları İmha
+    Odası'na `expires_at = NULL` ile taşıyor ve bu BİLEREK böyle: sayaç
+    kurmak, saklama süresi dolan her dosyayı 24 saat sonra kimse onaylamadan
+    yok ederdi. O gerekçenin tamamı `CORE/disposal.py` modül docstring'inde.
+
+    İmha bu sorguya eklendiği an o NULL disiplini kritik hâle geldi. Koruma
+    SQLite'ın üç değerli mantığından geliyor: `datetime(NULL)` NULL döner ve
+    `NULL <= datetime('now')` da NULL'dur, yani satır asla eşleşmez —
+    ölçüldü, varsayılmadı.
+
+    Aşağıdaki `expires_at IS NOT NULL` koşulu bu yüzden davranışı
+    DEĞİŞTİRMİYOR; niyeti okunur kılmak için açıkça yazılı duruyor. Asıl
+    kırılganlık koşulun düşmesi değil, karşılaştırmanın NULL'ı bir tarihe
+    çevirecek biçimde yeniden yazılmasıdır (`COALESCE(expires_at, …)`,
+    `IFNULL(…)` gibi) — o an süpürülmüş her dosya onaysız silinmeye başlar.
+    `tests/test_disposal.py::TestImhaSayaciArkaPlanda` bunu sayaçsız bir
+    satırla sabitliyor.
     """
     from CORE.disposal import purge_expired_file
     from DB.db_manager import DBManager
     try:
         db = DBManager()
+        yer_tutucu = ",".join("?" * len(_TTL_ETIKETLERI))
         expired = db.fetchall(
-            """
-            SELECT id, filename, filepath
+            # nosemgrep: python.lang.security.audit.formatted-sql-query
+            # Enterpolasyona giren tek şey `?` karakterleri; değerler bağlı.
+            f"""
+            SELECT id, filename, filepath, label
             FROM files
-            WHERE label = 'Karantina'
+            WHERE label IN ({yer_tutucu})
               AND expires_at IS NOT NULL
               AND datetime(expires_at) <= datetime('now')
-            """
+            """,
+            tuple(_TTL_ETIKETLERI),
         )
         if not expired:
             return
@@ -71,7 +118,10 @@ def _purge_expired() -> None:
         # birinde saklama koruması vardı (B-008).
         purged = sum(
             purge_expired_file(
-                db, row["id"], source="quarantine_ttl", filepath=row["filepath"]
+                db,
+                row["id"],
+                source=_TTL_ETIKETLERI[row["label"]],
+                filepath=row["filepath"],
             )
             for row in expired
         )
@@ -80,7 +130,7 @@ def _purge_expired() -> None:
             logger.info("%d süresi dolmuş dosya temizlendi.", purged)
 
     except Exception as exc:
-        logger.error("Karantina temizliği başarısız: %s", exc)
+        logger.error("Süresi dolmuş dosya temizliği başarısız: %s", exc)
 
 
 def _sweep_retention() -> None:

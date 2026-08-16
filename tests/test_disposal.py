@@ -620,6 +620,202 @@ class TestKarantinaTemizligiKorumasi:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# B-004 — İmha sayacı arka planda da işliyor
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestImhaSayaciArkaPlanda:
+    """
+    B-004: İmha sayacı yalnızca arayüzde o sekme AÇIKKEN işliyordu.
+
+    `UI/main_window_table.py::_tick_expiry` ilk satırında
+    `if self._current_label != "Imha": return` yapıyor. Yani süresi dolmuş
+    bir İmha Odası dosyası, kullanıcı o sekmeye girmediği sürece diskte
+    kalıyordu — ve "24 saat içinde silinecek" diyen arayüz mesajı o süre
+    boyunca doğru olmuyordu.
+    """
+
+    def test_imha_dosyasi_arka_planda_siliniyor(self, db, tmp_path, monkeypatch):
+        """DÜZELTMENİN KENDİSİ — arayüz hiç açılmadan silinmeli."""
+        from CORE import scheduler
+        from DB.db_manager import DBManager
+
+        fid, hcl = _mk_file(db, tmp_path, label="Imha", filename="imha.pdf")
+        db.execute(
+            "UPDATE files SET expires_at = ? WHERE id = ?",
+            ("2020-01-01T00:00:00Z", fid),
+        )
+
+        monkeypatch.setattr(DBManager, "__new__", lambda cls, *a, **k: db)
+        scheduler._purge_expired()
+
+        assert not hcl.exists()
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid,)) is None
+
+    def test_saklama_supurmesi_ile_gelen_dosya_arka_planda_SILINMIYOR(
+        self, db, tmp_path, monkeypatch
+    ):
+        """
+        BU DÜZELTMENİN EN KRİTİK TESTİ.
+
+        `sweep_retention_expired()` saklama süresi dolan dosyaları İmha
+        Odası'na `expires_at = NULL` ile taşıyor ve bu bilerek böyle:
+        sayaç kurmak, süresi dolan her dosyayı 24 saat sonra kimse
+        onaylamadan yok ederdi (CORE/disposal.py modül docstring'i).
+
+        İmha etiketi arka plan temizliğine eklendiği an o NULL disiplini
+        tek koruma hâline geldi. Bu test onu sabitliyor: süpürülmüş dosya
+        arka planda SİLİNMEMELİ, İmha Odası'nda süresiz beklemeli.
+        """
+        from CORE import scheduler
+        from DB.db_manager import DBManager
+
+        fid, hcl, _ = _expired_file(db, tmp_path, filename="supurulen.pdf")
+        tasinan = sweep_retention_expired(db)
+        assert fid in tasinan
+
+        satir = db.fetchone(
+            "SELECT label, expires_at FROM files WHERE id = ?", (fid,)
+        )
+        assert satir["label"] == "Imha"
+        assert satir["expires_at"] is None, "süpürme sayaç kurmuş — B-004 tehlikede"
+
+        monkeypatch.setattr(DBManager, "__new__", lambda cls, *a, **k: db)
+        scheduler._purge_expired()
+
+        assert hcl.exists(), "süpürülmüş dosya arka planda silindi — onaysız imha"
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid,)) is not None
+
+    def test_saklama_korumali_imha_dosyasi_arka_planda_atlaniyor(
+        self, db, tmp_path, monkeypatch
+    ):
+        """
+        Sayacı ELLE kurulmuş ama saklama süresi hâlâ işleyen dosya.
+
+        Kullanıcı bir dosyayı İmha Odası'na taşıyabilir (sayaç kurulur) ama
+        saklama süresi dolmamış olabilir. Karantina tarafındaki koruma
+        neyse İmha tarafında da o olmalı.
+        """
+        from CORE import scheduler
+        from DB.db_manager import DBManager
+
+        fid, hcl, _ = _active_file(db, tmp_path, filename="korumali.pdf")
+        db.execute(
+            "UPDATE files SET label = 'Imha', expires_at = ? WHERE id = ?",
+            ("2020-01-01T00:00:00Z", fid),
+        )
+
+        monkeypatch.setattr(DBManager, "__new__", lambda cls, *a, **k: db)
+        scheduler._purge_expired()
+
+        assert hcl.exists()
+        assert "retention_hold" in _actions(db, fid)
+
+    def test_suresi_dolmamis_imha_dosyasina_dokunulmuyor(
+        self, db, tmp_path, monkeypatch
+    ):
+        """Sayaç henüz dolmadıysa dosya durmalı."""
+        from CORE import scheduler
+        from DB.db_manager import DBManager
+
+        fid, hcl = _mk_file(db, tmp_path, label="Imha", filename="bekleyen.pdf")
+        db.execute(
+            "UPDATE files SET expires_at = ? WHERE id = ?",
+            ("2099-01-01T00:00:00Z", fid),
+        )
+
+        monkeypatch.setattr(DBManager, "__new__", lambda cls, *a, **k: db)
+        scheduler._purge_expired()
+
+        assert hcl.exists()
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid,)) is not None
+
+    def test_iki_etiket_ayri_denetim_kaynagi_yaziyor(
+        self, db, tmp_path, monkeypatch
+    ):
+        """
+        "Bu dosya neden silindi" sorusunun yanıtı hangi sayacın işlediğini
+        içermeli. İki etiket tek bir `source` altında toplanırsa denetim
+        kaydı Karantina TTL'i ile İmha geri sayımını ayırt edemez.
+        """
+        from CORE import scheduler
+        from DB.db_manager import DBManager
+
+        past = "2020-01-01T00:00:00Z"
+        k_id, _ = _mk_file(db, tmp_path, label="Karantina", filename="k.pdf")
+        i_id, _ = _mk_file(db, tmp_path, label="Imha", filename="i.pdf")
+        for fid in (k_id, i_id):
+            db.execute("UPDATE files SET expires_at = ? WHERE id = ?", (past, fid))
+
+        monkeypatch.setattr(DBManager, "__new__", lambda cls, *a, **k: db)
+        scheduler._purge_expired()
+
+        def _detay(fid: int) -> str:
+            satir = db.fetchone(
+                "SELECT detail FROM audit_log"
+                " WHERE target_id = ? AND action = 'expired_purge'"
+                " ORDER BY id DESC LIMIT 1",
+                (fid,),
+            )
+            return satir["detail"] if satir else ""
+
+        assert "quarantine_ttl" in _detay(k_id)
+        assert "imha_ttl" in _detay(i_id)
+
+    def test_sayaci_olmayan_imha_dosyasina_hic_dokunulmuyor(
+        self, db, tmp_path, monkeypatch
+    ):
+        """
+        ASIL KORUMANIN TESTİ — `expires_at IS NULL` satırı hiç seçilmemeli.
+
+        Süpürme testi bunu dolaylı gösteriyor; bu test doğrudan, saklama
+        profili hiç olmayan çıplak bir satırla gösteriyor. Fark önemli:
+        korumanın kaynağı saklama mantığı DEĞİL, sorgunun NULL'ı hiç
+        seçmemesi.
+
+        Korumanın nasıl kırılacağı da buradan okunuyor: sorgu NULL'ı bir
+        tarihe çevirirse (`COALESCE(expires_at, '1970-01-01')`) bu test
+        düşer. `expires_at IS NOT NULL` koşulunun kendisini düşürmek ise
+        davranışı değiştirmez — SQLite'ta `datetime(NULL) <= datetime('now')`
+        zaten NULL, yani asla doğru değil. İlk yazılışında bu testin yerinde
+        o koşulu KAYNAKTA arayan bir denetim vardı; koşulu silen mutasyon
+        hayatta kaldı ve denetimin docstring'deki adı eşleştirdiği ortaya
+        çıktı. Ölçen bir test, metin arayan bir testten iyidir.
+        """
+        from CORE import scheduler
+        from DB.db_manager import DBManager
+
+        fid, hcl = _mk_file(db, tmp_path, label="Imha", filename="sayacsiz.pdf")
+        db.execute("UPDATE files SET expires_at = NULL WHERE id = ?", (fid,))
+
+        monkeypatch.setattr(DBManager, "__new__", lambda cls, *a, **k: db)
+        scheduler._purge_expired()
+
+        assert hcl.exists(), "sayacı olmayan dosya silindi — onaysız imha"
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid,)) is not None
+        assert "expired_purge" not in _actions(db, fid)
+
+    def test_arayuz_sayaci_kaldirilmadi(self):
+        """
+        Arka plan işi arayüz sayacının YERİNE geçmiyor, YANINA ekleniyor.
+
+        Geri sayımı saniye saniye göstermek ve satırı tablodan düşürmek
+        hâlâ arayüzün işi; 10 dakikalık bir arka plan turu onu yapamaz.
+        """
+        import ast
+        from pathlib import Path as _P
+
+        kok = _P(__file__).resolve().parent.parent
+        src = (kok / "UI" / "main_window_table.py").read_text(encoding="utf-8")
+        adlar = {
+            n.name for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.FunctionDef)
+        }
+        assert "_tick_expiry" in adlar
+        assert "_purge_expired_file" in adlar
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Scheduler entegrasyonu
 # ──────────────────────────────────────────────────────────────────────────────
 

@@ -22,6 +22,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | B-007 | `①` grubu — B-007 düzeltmesi | Mahrem etiketli (`tags.is_private = 1`) bir dosya `files_by_label()` ve `search_files()` görünümlerinde yönetici olmayandan gizlenirken `files_by_folder()`'da GÖRÜNÜYORDU; klasör görünümünde arayüz tarafında da engel yoktu. Dört görünüm de artık `include_private` alıyor ve dördü de role bağlı çağrılıyor. Kenar çubuğu engeli KALDIRILMADI — iki katman birlikte duruyor. Varsayılan bilerek `True` bırakıldı (ters çevirmek, parametre geçmeyen çağrılarda sessizce veri gizlerdi); asıl korumayı çağrı yerlerinin parametreyi açıkça vermesi sağlıyor ve bunu AST denetimi sabitliyor. İki `does_NOT` sabitleme testi bilerek kırılıp beklenen davranışa çevrildi. |
 | B-009 | `①` grubu — B-009 düzeltmesi | `export_to_directory()` `aad_metadata`'yı döngü içinde dosya başına bir sorguyla okuyordu; `export_to_zip()` aynı bilgiyi zaten tek sorguda alıyordu. `aad_map()` tek `WHERE id IN (...)` ile önden okuyor, 900'lük parçalara bölüyor (SQLite'ın eski `SQLITE_MAX_VARIABLE_NUMBER` sınırı) ve tekrarlı id'leri tekilleştiriyor. Ölçüm sorgu SAYISINA bakıyor, kodun şekline değil. |
 | B-010 | `①` grubu — B-010 düzeltmesi | İki indirme akışı, DB'nin `aad_metadata` sütununda hwid bulunmadığında ayrışıyordu: ZIP oturum hwid'iyle doğrulayıp dosyayı atlıyor, toplu indirme `hwid=None` geçtiği için kontrolü hiç çalıştırmıyordu. Fark yalnızca DB sütunu ile DOSYANIN AAD'ı ayrıştığında görünür (kontrol `decrypt_file` içinde ve dosyanın kendi AAD'ına bakıyor). ZIP'in davranışı doğru kabul edildi: sütunun eksilmesi "bu dosya bu cihazda mı şifrelendi" sorusunu geçersiz kılmıyor. Toplu indirme artık `hwid_fallback` alıyor. Kabul edilen risk: DB'si eksilmiş ve başka cihazda şifrelenmiş dosyalar toplu indirmede de atlanıyor — ama ZIP'te zaten atlanıyordu. |
+| B-004 | `④` grubu — B-004 düzeltmesi | İmha Odası sayacını işleten tek yer `UI/main_window_table.py::_tick_expiry` idi ve o metot `if self._current_label != "Imha": return` ile başlıyordu — süresi dolmuş dosya, kullanıcı o sekmeye girmedikçe diskte kalıyordu. Zamanlayıcının `_purge_expired` görevi artık `Karantina` yanında `Imha` etiketini de işliyor; iki etiket ayrı denetim kaynağı yazıyor (`quarantine_ttl` / `imha_ttl`). Arayüz sayacı KALDIRILMADI, ikisi de aynı `purge_expired_file()`'ı çağırıyor (B-008). Saklama süpürmesiyle gelen `expires_at = NULL` satırlar korunuyor; korumanın kaynağı SQLite'ın üç değerli mantığı (`datetime(NULL) <= …` → NULL), ölçüldü. Bu maddeyi "son çalışma zamanı + kapı" deseni ÇÖZMEDİ: oradaki kapı global değil dosya başına. |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
 > Yeni madde açarken bu tabloya da bakın; yalnızca aşağıdaki en büyük
@@ -181,57 +182,6 @@ Zorunlu yerine uyarı: girişte "PIN'iniz kısa, güncelleyin" bildirimi. Daha
 az müdahaleci ama politika boşluğunu kapatmaz — kullanıcı süresiz erteler.
 Yalnızca geçiş dönemini yumuşatmak için, zorunlu akışın öncesinde
 kullanılmalı.
-
----
-
-## B-004 — İmha Odası sayacı yalnızca UI açıkken işliyor
-
-**Durum:** düzeltilmedi — bulgu kaydı.
-**Öncelik:** Orta. Veri kaybı değil ama **veri kalışı**: silinmesi beklenen
-dosya, kullanıcı sekmeye girene kadar diskte duruyor ve arayüzdeki "24 saat
-içinde silinecek" mesajı bu sürede doğru olmuyor. Düzeltmenin kendisi tek
-satır, ama `CORE/disposal.py`'nin `expires_at = NULL` davranışını **kritik
-hale getiriyor** — o bağımlılık okunmadan dokunulmamalı (aşağıda).
-**Bulundu:** 2026-08-13, saklama profili silme/imha akışı çalışması sırasında.
-
-### Bulgu
-
-İmha Odası'na atılan dosya `expires_at = now + imha_ttl_hours` alıyor, ama bu
-sayacı işleten iki mekanizmadan hiçbiri arka planda `Imha` etiketini
-temizlemiyor:
-
-| Mekanizma | Nerede | Hangi etiket |
-|---|---|---|
-| `_purge_expired` (APScheduler, 10 dk) | `CORE/scheduler.py` | **yalnızca `Karantina`** |
-| `_tick_expiry` (QTimer, 1 sn) | `UI/main_window.py` | `Imha` — **ama yalnızca İmha Odası sekmesi açıkken** |
-
-`_tick_expiry` ilk satırında `if self._current_label != "Imha": return` var.
-Yani süresi dolmuş bir İmha Odası dosyası, kullanıcı o sekmeye girmediği
-sürece süresiz olarak diskte kalıyor. "24 saat içinde silinecek" diyen
-kullanıcı mesajı (`main_window.py`, `_on_ctx_move_to_imha`) bu durumda
-doğru değil.
-
-### Etkisi
-
-Veri kaybı değil, veri KALIŞI: silinmesi beklenen dosya diskte duruyor.
-Kullanıcı sekmeyi açtığı anda toplu olarak siliniyor — yani silme zamanı
-kullanıcının gezinme davranışına bağlı, öngörülemez.
-
-### Saklama profilleriyle ilişkisi
-
-Saklama süresi süpürmesi (`CORE/disposal.py::sweep_retention_expired`) bu
-sayaca BİLEREK bağlanmadı: süresi dolan dosyaya `expires_at = NULL` yazıyor,
-çünkü sayaç kurmak dosyayı 24 saat sonra onaysız imha ederdi. Dolayısıyla bu
-bulgu saklama akışını etkilemiyor — süpürülen dosyalar zaten sayaçsız.
-
-### Olası çözüm (uygulanmadı)
-
-`_purge_expired` sorgusundaki `label = 'Karantina'` koşulunu
-`label IN ('Karantina', 'Imha')` yapmak sayacı arka plana taşır. DİKKAT: bu
-değişiklik yapılırsa `sweep_retention_expired`'in `expires_at = NULL`
-davranışı KRİTİK hale gelir — NULL olmayan her satır artık arka planda ve
-onaysız silinir. `CORE/disposal.py` modül docstring'i bu bağımlılığı
-açıklıyor, oradaki gerekçe okunmadan dokunulmamalı.
 
 ---
 
