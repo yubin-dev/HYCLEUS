@@ -290,7 +290,8 @@ def _sss_recover(share_a: str, share_b: str) -> bytes:
     yol açardı.
 
     Raises:
-        ValueError — pay biçimi bozuksa veya iki pay aynı indise sahipse
+        ValueError — pay biçimi bozuksa, iki pay aynı indise sahipse veya
+                     paylar birbiriyle tutarsızsa (bkz. aşağıdaki not)
     """
     idx_a, y_a = _parse_share(share_a)
     idx_b, y_b = _parse_share(share_b)
@@ -300,7 +301,27 @@ def _sss_recover(share_a: str, share_b: str) -> bytes:
             "farklı indisli iki pay gerekli."
         )
     secret_int = _lagrange_at([(idx_a, y_a), (idx_b, y_b)], 0)
-    return secret_int.to_bytes(_KEY_SIZE, "big")
+
+    # Asal 2**256 + 297; interpolasyon [0, asal) aralığında HERHANGİ bir değer
+    # üretebiliyor, oysa gerçek bir sır 32 bayta sığmak zorunda (< 2**256).
+    # Aradaki 297 değerde `to_bytes(32)` `OverflowError` fırlatırdı — bu sınıf
+    # docstring'de vaat edilmiyor ve `except ValueError` ağından kaçardı.
+    #
+    # Neden kullanıcıya dokunan bir yol: pay 3 KURTARMA PARÇASI, yani elle
+    # yazılan tek kripto girdisi. Kullanıcı zaten kasasına giremediği için
+    # buraya gelmiş oluyor; karşılaştığı şeyin yığın izi olması en kötü an.
+    #
+    # Kazara bu aralığa düşme olasılığı 297/2**256 — pratikte sıfır. Bu yüzden
+    # mesaj "yanlış girdiniz" diyor: gerçekte olan neredeyse her zaman budur.
+    # Bkz. BACKLOG B-021 (fuzzing ile bulundu).
+    try:
+        return secret_int.to_bytes(_KEY_SIZE, "big")
+    except OverflowError as exc:
+        raise ValueError(
+            "Paylar geçerli bir anahtara çözülmedi — kurtarma parçası "
+            "yanlış girilmiş ya da bu kasaya ait değil. Parçayı "
+            "harf harf kontrol edip yeniden deneyin."
+        ) from exc
 
 
 def _sss_derive_share(share_a: str, share_b: str, index: int) -> str:

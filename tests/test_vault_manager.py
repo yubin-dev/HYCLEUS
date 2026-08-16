@@ -250,3 +250,92 @@ def test_kernel32_binding_matches_platform(tmp_path: Path) -> None:
     finally:
         # tmp_path temizliği readonly dosyada takılmasın
         vault_manager._clear_readonly(target)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-021 — taşan interpolasyon sonucu
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _tasiran_paylar(kaydirma: int = 0) -> tuple[str, str]:
+    """
+    Interpolasyonu [2**256, asal) aralığına düşüren iki pay üretir.
+
+    f(x) = s + x  polinomu, s = 2**256 + kaydirma. `s` asaldan küçük
+    (asal = 2**256 + 297) ama 32 bayta SIĞMIYOR. Paylar f(1) ve f(2).
+
+    Bu girdi rastgele bulunamaz: aralık asalın 297/2**256'sı kadar. Fuzzer
+    da bulamadı — `tests/fuzz/fuzz_shamir.py` tohum korpusunda elle kuruyor.
+    """
+    s = 2**256 + kaydirma
+    return (
+        vault_manager._fmt_share(1, (s + 1) % vault_manager._SSS_PRIME),
+        vault_manager._fmt_share(2, (s + 2) % vault_manager._SSS_PRIME),
+    )
+
+
+@pytest.mark.parametrize("kaydirma", [0, 1, 148, 296])
+def test_tasan_paylar_valueerror_veriyor(kaydirma: int) -> None:
+    """
+    GERÇEK BİR HATANIN TESTİ (B-021, fuzzing ile bulundu).
+
+    Lagrange sonucu 32 bayta sığmadığında `to_bytes()` `OverflowError`
+    fırlatıyordu. `reconstruct_key()` yalnızca `ValueError` vaat ediyor ve
+    kurtarma akışı (`CORE/recover_vault.py`) ile arayüz onu yakalıyor —
+    `OverflowError` o ağdan kaçıp çıplak bir yığın izi olarak yansıyordu.
+
+    Kurtarma parçası kullanıcının ELLE YAZDIĞI tek kripto girdisi olduğu
+    için erişilebilir bir yoldu.
+    """
+    a, b = _tasiran_paylar(kaydirma)
+
+    with pytest.raises(ValueError) as bilgi:
+        vault_manager.reconstruct_key(a, b)
+
+    assert not isinstance(bilgi.value, OverflowError), "hâlâ OverflowError"
+    assert isinstance(bilgi.value.__cause__, OverflowError), (
+        "asıl sebep zincirde korunmalı — hata ayıklarken gerekiyor"
+    )
+
+
+def test_tasan_pay_mesaji_kullaniciya_yol_gosteriyor() -> None:
+    """
+    Mesaj İÇERİK olarak da doğru olmalı.
+
+    Kullanıcı buraya zaten kasasına giremediği için geliyor. "Bir şey
+    patladı" demek onu bir adım ileri götürmez; "parçayı kontrol edin"
+    götürür. Düzeltmenin değeri istisna tipinde değil, burada.
+    """
+    a, b = _tasiran_paylar()
+    with pytest.raises(ValueError) as bilgi:
+        vault_manager.reconstruct_key(a, b)
+
+    mesaj = str(bilgi.value)
+    assert "kurtarma parçası" in mesaj.lower(), mesaj
+    assert any(k in mesaj.lower() for k in ("kontrol", "yeniden dene")), mesaj
+    # İç ayrıntı sızmamalı: kullanıcı 'to_bytes' ya da 'OverflowError' görmemeli.
+    assert "to_bytes" not in mesaj and "OverflowError" not in mesaj, mesaj
+
+
+def test_gecerli_paylar_etkilenmedi() -> None:
+    """
+    Düzeltme normal yolu bozmamalı — 2-of-3 üç kombinasyonda da çalışmalı.
+
+    Bu test olmadan `to_bytes`'ı tümüyle kaldırmak da testleri geçirirdi.
+    """
+    sir = bytes(range(32))
+    p1, p2, p3 = vault_manager._sss_split(sir)
+    for x, y in ((p1, p2), (p1, p3), (p2, p3), (p3, p1)):
+        assert vault_manager.reconstruct_key(x, y) == sir
+
+
+def test_sinirin_hemen_altindaki_sir_calisiyor() -> None:
+    """
+    Sınır durumu: 2**256 - 1 tam olarak 32 bayta sığıyor, reddedilmemeli.
+
+    Kontrolün fazla geniş olup geçerli bir anahtarı reddetmediğini gösterir —
+    bu, kullanıcıyı kendi kasasından kilitleyecek türden bir hata olurdu.
+    """
+    s = 2**256 - 1
+    a = vault_manager._fmt_share(1, (s + 1) % vault_manager._SSS_PRIME)
+    b = vault_manager._fmt_share(2, (s + 2) % vault_manager._SSS_PRIME)
+    assert vault_manager.reconstruct_key(a, b) == s.to_bytes(32, "big")

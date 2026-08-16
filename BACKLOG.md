@@ -16,6 +16,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | B-005 | `5463cc9` — "added_by kaydi duzeltmesi" | `files.added_by` hiçbir kod tarafından yazılmıyordu. Numara verildi, bulgu aynı commit'te düzeltildi, backlog'a hiç girmedi. |
 | B-008 | `60d6255` sonrası — B-008 düzeltmesi | Arayüzdeki imha sayacı saklama korumasını atlıyordu. İki ayrı silme uygulaması `CORE.disposal.purge_expired_file()` altında birleştirildi; ikinci bir uygulamanın geri gelmesini AST denetimi engelliyor (`tests/test_disposal.py::test_iki_akis_ayni_fonksiyonu_cagiriyor`). |
 | B-012 | `3.5` turu sonu — B-012 düzeltmesi | `decrypt_file()` başlığı kendi başına ayrıştırıyor, `verify_file()`'ın dört uzunluk kontrolünün hiçbirini yapmıyordu: kesik dosyada `IndexError`, beş baytlık dosyada `struct.error` (ikincisini fuzzing buldu). İkisi de belgelenmiş kümenin dışındaydı. Kök neden eksik `if`'ler değil İKİ KOPYAYDI; `CORE.crypto._read_header()` altında birleştirildi. Her korumanın kendi mesajı var ve mesajlar testte sabitlendi — mesaj sabitlenmeden iki koruma mutasyonla ölmüyordu. İkinci bir uygulamanın geri gelmesini AST denetimi engelliyor (`tests/test_crypto.py::test_iki_okuma_yolu_ayni_basligi_kullaniyor`). |
+| B-021 | `3.5` turu sonu — B-021 düzeltmesi | `reconstruct_key()`, Lagrange sonucu `[2**256, asal)` aralığına düştüğünde `to_bytes(32)` ile `OverflowError` fırlatıyordu; docstring yalnızca `ValueError` vaat ediyor ve kurtarma akışı onu yakalıyor. Kurtarma parçası elle yazılan tek kripto girdisi olduğu için erişilebilir bir yoldu. `_sss_recover()` artık yakalayıp "parçayı kontrol edin" diyen bir `ValueError`'a çeviriyor; asıl sebep `__cause__` zincirinde kalıyor. Fuzzing bulmuştu, tohum korpusundaki girdi geri alınmayı yakalamak için yerinde bırakıldı. |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
 > Yeni madde açarken bu tabloya da bakın; yalnızca aşağıdaki en büyük
@@ -800,66 +801,3 @@ Yukarı akış düzeltirse: `PYTHONUTF8=1`'i üç yerden birden kaldır.
 `tests/test_static_analysis.py::test_windows_pythonutf8_olmadan_kural_dosyasi_okunamiyor`
 o gün otomatik olarak `skip`'e düşecek ve mesajında bunu söyleyecek —
 yani bu maddeyi kapatma zamanını test haber verecek.
-
----
-
-## B-021 — `reconstruct_key()` belgelenmemiş `OverflowError` fırlatıyor
-
-**Durum:** Açık — 3.5 turunda fuzzing ile bulundu
-**Öncelik:** Düşük-orta (erişilebilirlik/hata mesajı; gizlilik kaybı DEĞİL)
-**Bulundu:** 2026-08-16, `tests/fuzz/fuzz_shamir.py`
-
-### Bulgu
-
-Shamir asalı `_SSS_PRIME = 2**256 + 297`. Sır 32 bayt, yani `< 2**256`.
-Ama Lagrange interpolasyonu **herhangi bir** `[0, asal)` değeri
-üretebiliyor ve son satır bunu 32 bayta sığdırmaya çalışıyor:
-
-```python
-secret_int = _lagrange_at([(idx_a, y_a), (idx_b, y_b)], 0)
-return secret_int.to_bytes(_KEY_SIZE, "big")     # _KEY_SIZE = 32
-```
-
-Sonuç `[2**256, 2**256 + 296]` aralığına düşerse — 297 değer —
-`OverflowError: int too big to convert`.
-
-`reconstruct_key()` docstring'i yalnızca `ValueError` vaat ediyor:
-
-> Raises: ValueError — paylar geçersiz formattaysa veya aynı indisliyse
-
-### Neden önemli, neden panik değil
-
-**Önemli:** pay 3 (kurtarma parçası) **kullanıcının elle yazdığı** bir
-girdi. Kurtarma akışı (`CORE/recover_vault.py`) ve arayüz `ValueError`
-yakalıyor; `OverflowError` o ağdan kaçıp çıplak bir çökme olarak yansır.
-Kullanıcı zaten kasasına giremediği için kurtarmaya başvurmuş durumda —
-karşılaştığı şeyin "parça hatalı" değil bir yığın izi olması en kötü an.
-
-**Panik değil:** rastgele bir yanlış yazımın bu aralığa düşme olasılığı
-`297/2**256`. Yani kazara neredeyse imkânsız. Kurulabilir ama kuran kişi
-zaten iki geçerli pay üretebiliyor demektir — bir gizlilik kaybı yok, tek
-etkisi yanlış istisna tipi.
-
-Fuzzer bunu rastgele bulamadı; `fuzz_shamir.py::_tasan_pay_tohumu()`
-girdiyi elle kuruyor. "Fuzz'ladık, çıkmadı" ile "yok" arasındaki farkın
-somut bir örneği.
-
-### Yapılacak (uygulanmadı)
-
-`_sss_recover()` içinde dönüşü sarmalayın:
-
-```python
-try:
-    return secret_int.to_bytes(_KEY_SIZE, "big")
-except OverflowError as exc:
-    raise ValueError(
-        "Paylar geçerli bir anahtara çözülmedi — "
-        "büyük ihtimalle biri yanlış girildi."
-    ) from exc
-```
-
-Mesaj önemli: kullanıcıya "içeride bir şey patladı" değil "parçayı
-kontrol edin" denmeli. Düzeltme sonrası `fuzz_shamir.py::BILINEN`
-listesinden B-021 kaydını çıkarın —
-`tests/test_fuzz_harness.py::test_bilinen_ihlallere_gercekten_ulasiliyor`
-bunu zaten hatırlatacak.

@@ -53,21 +53,18 @@ with enstrumante():  # noqa: E402
 IZINLI_PAY: tuple[type[BaseException], ...] = (ValueError,)
 IZINLI_KODLAMA: tuple[type[BaseException], ...] = (RecoveryShareError, ValueError)
 
-BILINEN: tuple[BilinenIhlal, ...] = (
-    BilinenIhlal(
-        cagri="reconstruct_key",
-        istisna="OverflowError",
-        backlog="B-021",
-        aciklama=(
-            "Shamir asalı 2**256 + 297; Lagrange interpolasyonu [2**256, "
-            "asal) aralığında bir değer üretebiliyor ve `to_bytes(32)` "
-            "OverflowError fırlatıyor. Docstring yalnızca ValueError vaat "
-            "ediyor. Rastgele paylarla olasılık ~297/2**256, ama ELDE "
-            "EDİLMİŞ paylarla kurulabiliyor — kurtarma parçası kullanıcı "
-            "girdisi olduğu için erişilebilir bir yol."
-        ),
-    ),
-)
+#: Bilinen ve düzeltilmemiş ihlal YOK.
+#:
+#: Bir zamanlar B-021 vardı: `reconstruct_key()` Lagrange sonucu
+#: [2**256, asal) aralığına düştüğünde `to_bytes(32)` ile `OverflowError`
+#: fırlatıyordu. Bu harness'ın tohum korpusu bulmuştu (rastgele
+#: bulunamazdı — aralık asalın 297/2**256'sı kadar).
+#:
+#: Düzeltildi: `_sss_recover()` artık yakalayıp kullanıcıya "kurtarma
+#: parçasını kontrol edin" diyen bir `ValueError`'a çeviriyor.
+#: `_tasan_pay_tohumu()` tohum korpusunda KALIYOR — düzeltilmiş bir yolu
+#: fuzz'lamayı bırakmak, düzeltmenin geri alınmasını görünmez kılardı.
+BILINEN: tuple[BilinenIhlal, ...] = ()
 
 
 def _tasan_pay_tohumu() -> bytes:
