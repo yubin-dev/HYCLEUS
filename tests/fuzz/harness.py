@@ -204,6 +204,45 @@ def rastgele_girdiler(
         yield bytes(rng.randrange(256) for _ in range(boy))
 
 
+def bilinen_suzgeci(
+    one_input: Callable[[bytes], None],
+    bilinen: tuple[BilinenIhlal, ...],
+    *,
+    kayit: set[tuple[str, str]] | None = None,
+) -> Callable[[bytes], None]:
+    """
+    Bilinen ihlalleri yutan, yenileri geçiren bir sarmalayıcı.
+
+    Neden HEDEFİN etrafında, sürücünün İÇİNDE değil
+    -----------------------------------------------
+    İlk sürümde bu filtre yalnızca `yerel_kos` içindeydi. atheris yolu ise
+    `one_input`'u doğrudan libFuzzer'a veriyordu — ve libFuzzer yakalanmamış
+    her istisnayı çökme sayıp **duruyor**. Sonuç: kapsam güdümlü koşu ilk
+    saniyede bilinen B-021'e çarpıp ölüyor, arkasındaki hiçbir şey
+    keşfedilmiyordu. Gerçek bir koşuda görüldü (`fuzz.yml` ilk doğrulama
+    çalıştırması, iki hedef de exit 77).
+
+    Filtre artık hedefin etrafında: iki sürücü de aynı davranışı görüyor.
+
+    `kayit` verilirse, YUTULANLAR DAHİL görülen her ihlalin anahtarı oraya
+    yazılır — testler bilinen maddelere gerçekten ulaşıldığını böyle
+    doğruluyor.
+    """
+    anahtarlar = {b.anahtar for b in bilinen}
+
+    def sarmal(data: bytes) -> None:
+        try:
+            one_input(data)
+        except SozlesmeIhlali as ihlal:
+            if kayit is not None:
+                kayit.add(ihlal.anahtar)
+            if ihlal.anahtar in anahtarlar:
+                return
+            raise
+
+    return sarmal
+
+
 def yerel_kos(
     one_input: Callable[[bytes], None],
     *,
@@ -223,17 +262,14 @@ def yerel_kos(
         doğrulamak için kullanıyor: ulaşılamayan bir "bilinen ihlal"
         kaydı, harness'ın o yola hiç girmediğini gizler.
     """
-    bilinen_anahtarlar = {b.anahtar for b in bilinen}
     yeni: list[SozlesmeIhlali] = []
     gorulen: set[tuple[str, str]] = set()
+    suzgecli = bilinen_suzgeci(one_input, bilinen, kayit=gorulen)
 
     for girdi in rastgele_girdiler(tohum, adet, tohumlar=tohumlar):
         try:
-            one_input(girdi)
+            suzgecli(girdi)
         except SozlesmeIhlali as ihlal:
-            gorulen.add(ihlal.anahtar)
-            if ihlal.anahtar in bilinen_anahtarlar:
-                continue
             if any(y.anahtar == ihlal.anahtar for y in yeni):
                 continue
             yeni.append(ihlal)
@@ -279,7 +315,12 @@ def main(
                 file=sys.stderr,
             )
         else:
-            atheris.Setup([sys.argv[0], *kalan], one_input)
+            # Sarmalayıcı ŞART: libFuzzer yakalanmamış her istisnayı çökme
+            # sayıp duruyor. Filtresiz verilirse koşu ilk saniyede bilinen
+            # bir ihlale çarpıp ölür ve arkasındaki hiçbir şey keşfedilmez.
+            atheris.Setup(
+                [sys.argv[0], *kalan], bilinen_suzgeci(one_input, bilinen)
+            )
             atheris.Fuzz()
             return 0  # Fuzz() normalde dönmez
 

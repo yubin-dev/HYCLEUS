@@ -112,6 +112,74 @@ def test_kenar_durumlar_her_kiple_deneniyor() -> None:
     assert len(girdiler) == len(KENAR_DURUMLAR) * 9
 
 
+def test_bilinen_suzgeci_bilineni_yutar_yeniyi_gecirir() -> None:
+    """
+    GERÇEK BİR HATANIN TESTİ.
+
+    Filtre önce yalnızca yerel sürücünün içindeydi; atheris yolu
+    `one_input`'u doğrudan libFuzzer'a veriyordu. libFuzzer yakalanmamış her
+    istisnayı çökme sayıp DURUYOR — yani kapsam güdümlü koşu ilk saniyede
+    bilinen B-021'e çarpıp ölüyor ve arkasındaki hiçbir şeyi keşfetmiyordu.
+    İlk gerçek `fuzz.yml` çalıştırmasında görüldü (her iki hedef de exit 77).
+
+    Filtre artık hedefin ETRAFINDA, sürücünün içinde değil; iki sürücü de
+    aynı davranışı görüyor.
+    """
+    from harness import SozlesmeIhlali, bilinen_suzgeci
+
+    bilinen = (
+        BilinenIhlal("f", "OverflowError", "B-021", "x" * 50),
+    )
+
+    def hedef(data: bytes) -> None:
+        if data == b"bilinen":
+            raise SozlesmeIhlali("f", OverflowError("eski"), data)
+        if data == b"yeni":
+            raise SozlesmeIhlali("f", TypeError("yeni"), data)
+
+    kayit: set[tuple[str, str]] = set()
+    suzgecli = bilinen_suzgeci(hedef, bilinen, kayit=kayit)
+
+    suzgecli(b"bilinen")                       # yutulmalı
+    assert ("f", "OverflowError") in kayit     # ama kaydedilmeli
+
+    with pytest.raises(SozlesmeIhlali):        # yeni olan geçmeli
+        suzgecli(b"yeni")
+    assert ("f", "TypeError") in kayit
+
+
+def test_atheris_yolu_da_suzgecten_geciyor(monkeypatch) -> None:
+    """
+    `main()` atheris'e HAM `one_input`'u vermemeli.
+
+    Yukarıdaki testin tek başına yetmediği yer burası: sarmalayıcı var ama
+    atheris yolunda ÇAĞRILMIYORSA hata aynen geri gelir. Sahte bir atheris
+    modülü enjekte edip Setup()'a ne verildiğine bakıyoruz.
+    """
+    import types
+
+    from harness import SozlesmeIhlali, main
+
+    verilen: dict[str, object] = {}
+
+    sahte = types.ModuleType("atheris")
+    sahte.Setup = lambda argv, fn, **kw: verilen.update(fn=fn)  # type: ignore[attr-defined]
+    sahte.Fuzz = lambda: None                                    # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "atheris", sahte)
+    monkeypatch.delenv("HYCLEUS_FUZZ_LOCAL", raising=False)
+
+    def hedef(data: bytes) -> None:
+        raise SozlesmeIhlali("f", OverflowError("bilinen"), data)
+
+    bilinen = (BilinenIhlal("f", "OverflowError", "B-021", "y" * 50),)
+    assert main(hedef, ad="sinama", bilinen=bilinen, argv=[]) == 0
+
+    fn = verilen.get("fn")
+    assert fn is not None, "atheris.Setup çağrılmadı"
+    assert fn is not hedef, "atheris'e HAM one_input verildi — filtre atlanmış"
+    fn(b"x")  # bilinen ihlal yutulmalı, istisna çıkmamalı
+
+
 def _raise(exc: BaseException):
     def _fn():
         raise exc
