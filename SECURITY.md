@@ -1,6 +1,6 @@
 # Security Policy — HYCLEUS
 
-**Applies to:** v2.1.0 · Last reviewed: 2026-08-13
+**Applies to:** v2.1.0 · Last reviewed: 2026-08-16
 
 This document describes what HYCLEUS actually protects, what it does not, and
 the weaknesses we already know about. It is deliberately blunt: a security
@@ -569,36 +569,121 @@ security fixes.
 
 Please **do not open a public issue** for security problems.
 
+### 6.1 How to reach us
+
 Use GitHub's private reporting: **Security → Report a vulnerability** on
 [this repository](https://github.com/yubin-dev/HYCLEUS/security/advisories/new).
 It creates a private advisory visible only to the maintainer.
 
-<!-- Maintainer: add a contact email here if you want one as an alternative
-     channel. Left blank deliberately — publishing a personal address is
-     your call, not something this document should assume. -->
+> **If that link gives you a 404**, private vulnerability reporting has not
+> been switched on in the repository settings — the feature is off by default
+> and this document cannot turn it on. In that case open a **public issue that
+> contains no technical detail** ("I would like to report a security issue,
+> please enable private reporting") and wait for a private channel. Do not
+> paste the finding into it.
 
-**What helps:** affected version or commit, what an attacker gains, the
-steps to reproduce, and the environment (OS, Python version). A proof of
-concept is welcome but not required.
+<!-- Maintainer: two things.
+     1. Enable Settings → Code security → Private vulnerability reporting.
+        Until you do, the advisory link above 404s and the fallback path
+        above is what reporters will actually hit.
+     2. Add a contact email here if you want a second channel. Left blank
+        deliberately — publishing a personal address is your call, not
+        something this document should assume. -->
 
-**What to expect:** acknowledgement within 7 days, an assessment within 30
-days. HYCLEUS is maintained by one person as a non-commercial project —
-there is no bounty programme and no formal SLA. Fixes land in a release with
-credit, unless you prefer otherwise.
+### 6.2 What is in scope
 
-**Please avoid** while testing: attacking machines that are not yours,
-accessing other people's data, and public disclosure before a fix ships.
+| In scope | Out of scope |
+|---|---|
+| The code in this repository | Third-party dependencies (report upstream; tell us too if HYCLEUS is affected) |
+| Crypto container (`.hcl`), key hierarchy, Shamir shares | GitHub, PyPI or the OS keyring themselves |
+| Vault, PIN, TOTP and USB token flows | Anything in §3 ("does not protect against") or §4 ("known weaknesses") |
+| Audit chain and timestamp verification | Attacks that assume an already-compromised machine — that is §1's stated boundary |
+| Backup, restore and transparent access | Missing hardening that costs nothing to state and everything to build (e.g. "use a hardware key") |
 
-**Already known?** Everything in §3 and §4 is documented on purpose. A report
-that restates one of those will be closed as known — unless you can show it
-is worse than described here, which is genuinely useful.
+**Not a vulnerability by itself:** the SQLite database is not encrypted at
+rest (§4.11), application-level controls are bypassable by someone with disk
+access (§4.5), and plaintext exists on disk while a file is open for editing
+(§4.10). These are written down because they are true, not because they are
+unknown.
+
+### 6.3 What helps
+
+Affected version or commit, what an attacker gains, the steps to reproduce,
+and the environment (OS, Python version). A proof of concept is welcome but
+not required.
+
+Please state **which trust boundary from §1 your attacker starts outside
+of.** Most reports that turn out to be non-issues are ones where the attacker
+was already assumed to have what the attack was meant to obtain.
+
+### 6.4 What to expect
+
+| Stage | Target |
+|---|---|
+| Acknowledgement | 7 days |
+| Initial assessment (valid / known / out of scope) | 30 days |
+| Fix or a written decision not to fix | 90 days |
+
+HYCLEUS is maintained by one person as a non-commercial project — there is
+no bounty programme and no formal SLA; the table is an intention, not a
+contract. Fixes land in a release with credit, unless you prefer otherwise.
+
+### 6.5 Coordinated disclosure
+
+You may publish **90 days after your report**, whether or not a fix has
+shipped. You do not need permission and you do not need to wait longer.
+If a fix ships earlier, publish as soon as it is released.
+
+If we go quiet, that clock still runs. A maintainer who stops answering is
+not a reason for a finding to stay buried.
+
+Please tell us if you intend to publish, so the advisory and the release
+notes can go out at the same time.
+
+### 6.6 Safe harbour
+
+If you act in good faith under this policy, we will not pursue or support
+legal action against you, and we will treat your research as authorised.
+
+Good faith means: only your own machines and your own data, no denial of
+service, no destruction or exfiltration of anyone else's data, stopping as
+soon as you have demonstrated the issue, and no public disclosure before
+§6.5's window.
+
+This is a promise from this project's maintainer. It cannot bind third
+parties — if your testing touches GitHub, an ISP or someone else's
+infrastructure, their terms apply and this paragraph does not cover you.
+
+### 6.7 Already known?
+
+Everything in §3 and §4 is documented on purpose. A report that restates one
+of those will be closed as known — unless you can show it is worse than
+described here, which is genuinely useful.
+
+**Also useful, and explicitly wanted:** a place where this document is
+*wrong*. A claim in §2 or §5 that does not hold, a weakness in §4 whose
+description understates it, a boundary in §1 that the code does not actually
+enforce. Those are security findings about the security policy, and they are
+harder to spot than bugs.
+
+### 6.8 Automated analysis already in place
+
+Before reporting, note that every push runs `ruff`, `mypy`, `bandit` and
+`semgrep` (see `.github/workflows/ci.yml`), and a manually triggered
+workflow fuzzes the crypto container and the Shamir implementation with
+`atheris` (`.github/workflows/fuzz.yml`).
+
+Findings from those tools that were reviewed and left in place are recorded
+in `BACKLOG.md` with the reasoning. A report that repeats one of them is
+still welcome if you can show the triage was wrong — that is exactly the
+failure mode a second pair of eyes catches.
 
 ---
 ---
 
 # Güvenlik Politikası — HYCLEUS
 
-**Kapsam:** v2.1.0 · Son gözden geçirme: 2026-08-13
+**Kapsam:** v2.1.0 · Son gözden geçirme: 2026-08-16
 
 Bu belge HYCLEUS'un neyi koruduğunu, neyi korumadığını ve halihazırda
 bildiğimiz zayıflıkları anlatır. Bilinçli olarak açık sözlüdür: yalnızca
@@ -1148,28 +1233,109 @@ tuzlar, master key'ler ve Shamir polinom katsayısı.
 **Desteklenen sürüm:** yalnızca en son sürüm (şu an v2.1.0) güvenlik
 düzeltmesi alır.
 
+---
+
 ## 6. Güvenlik açığı bildirimi
 
 Güvenlik sorunları için lütfen **herkese açık issue açmayın.**
+
+### 6.1 Bize nasıl ulaşılır
 
 GitHub'ın özel bildirim yolunu kullanın: **Security → Report a vulnerability**
 ([bu depoda](https://github.com/yubin-dev/HYCLEUS/security/advisories/new)).
 Yalnızca geliştiricinin görebileceği özel bir danışma kaydı oluşturur.
 
-**İşe yarayanlar:** etkilenen sürüm veya commit, saldırganın ne kazandığı,
-yeniden üretme adımları ve ortam (işletim sistemi, Python sürümü). Kavram
-kanıtı memnuniyetle karşılanır ama zorunlu değildir.
+> **O bağlantı 404 veriyorsa**, depo ayarlarında özel açık bildirimi
+> açılmamış demektir — özellik varsayılan olarak kapalıdır ve bu belge onu
+> açamaz. Bu durumda **hiçbir teknik ayrıntı içermeyen** bir herkese açık
+> issue açın ("bir güvenlik sorunu bildirmek istiyorum, lütfen özel
+> bildirimi açın") ve özel bir kanal bekleyin. Bulguyu oraya yazmayın.
 
-**Beklenecekler:** 7 gün içinde alındı bildirimi, 30 gün içinde
-değerlendirme. HYCLEUS ticari olmayan, tek kişilik bir projedir — ödül
-programı ve resmî bir SLA yoktur. Düzeltmeler, aksini tercih etmediğiniz
-sürece adınıza atıfla bir sürümde yayınlanır.
+### 6.2 Kapsam
 
-**Test ederken lütfen kaçının:** size ait olmayan makinelere saldırmaktan,
-başkalarının verilerine erişmekten ve düzeltme yayınlanmadan kamuya
-açıklamaktan.
+| Kapsam içinde | Kapsam dışında |
+|---|---|
+| Bu depodaki kod | Üçüncü taraf bağımlılıklar (yukarı akışa bildirin; HYCLEUS etkileniyorsa bize de söyleyin) |
+| Kripto kabı (`.hcl`), anahtar hiyerarşisi, Shamir payları | GitHub, PyPI veya işletim sistemi anahtar kasasının kendisi |
+| Vault, PIN, TOTP ve USB token akışları | §3 ("korumadığı senaryolar") ve §4 ("bilinen zayıflıklar") içindeki her şey |
+| Denetim zinciri ve zaman damgası doğrulaması | Makinenin zaten ele geçirildiğini varsayan saldırılar — bu §1'de yazılı sınırdır |
+| Yedekleme, geri yükleme ve şeffaf erişim | Söylemesi bedava, yapması büyük olan sertleştirmeler (ör. "donanım anahtarı kullanın") |
 
-**Zaten biliniyor mu?** §3 ve §4'teki her şey bilerek belgelenmiştir. Bunlardan
-birini yineleyen bir bildirim "bilinen" olarak kapatılır — burada
-anlatılandan daha kötü olduğunu gösterebiliyorsanız o başka, o gerçekten
-değerlidir.
+**Tek başına açık sayılmayanlar:** SQLite veritabanı diskte şifresizdir
+(§4.11), uygulama seviyesi kontroller diske erişebilen biri tarafından
+aşılabilir (§4.5) ve bir dosya düzenlemeye açıkken düz metni diskte durur
+(§4.10). Bunlar bilinmedikleri için değil, doğru oldukları için yazılıdır.
+
+### 6.3 İşe yarayanlar
+
+Etkilenen sürüm veya commit, saldırganın ne kazandığı, yeniden üretme
+adımları ve ortam (işletim sistemi, Python sürümü). Kavram kanıtı
+memnuniyetle karşılanır ama zorunlu değildir.
+
+Lütfen **saldırganınızın §1'deki hangi güven sınırının dışından
+başladığını** belirtin. Geçersiz çıkan bildirimlerin çoğunda saldırgan,
+elde etmeye çalıştığı şeye zaten sahip varsayılmış oluyor.
+
+### 6.4 Beklenecekler
+
+| Aşama | Hedef |
+|---|---|
+| Alındı bildirimi | 7 gün |
+| İlk değerlendirme (geçerli / bilinen / kapsam dışı) | 30 gün |
+| Düzeltme ya da düzeltmeme kararının yazılı gerekçesi | 90 gün |
+
+HYCLEUS ticari olmayan, tek kişilik bir projedir — ödül programı ve resmî
+bir SLA yoktur; tablo bir niyettir, sözleşme değil. Düzeltmeler, aksini
+tercih etmediğiniz sürece adınıza atıfla bir sürümde yayınlanır.
+
+### 6.5 Eşgüdümlü ifşa
+
+Düzeltme çıksın ya da çıkmasın, **bildiriminizden 90 gün sonra**
+yayınlayabilirsiniz. İzin almanız gerekmez ve daha fazla beklemeniz
+gerekmez. Düzeltme daha erken çıkarsa yayınlandığı anda yazabilirsiniz.
+
+Bizden ses çıkmazsa bu sayaç yine işler. Yanıt vermeyi bırakan bir
+geliştirici, bir bulgunun gömülü kalması için gerekçe değildir.
+
+Yayınlamayı düşünüyorsanız haber verin ki danışma kaydı ile sürüm notları
+aynı anda çıkabilsin.
+
+### 6.6 Güvenli liman
+
+Bu politikaya uygun ve iyi niyetle hareket ederseniz size karşı yasal yola
+başvurmayacağız, böyle bir girişimi desteklemeyeceğiz ve araştırmanızı
+**yetkili** sayacağız.
+
+İyi niyet şu demek: yalnızca kendi makineniz ve kendi verinizle çalışmak,
+hizmet dışı bırakmaya çalışmamak, başkasının verisini yok etmemek ve dışarı
+çıkarmamak, sorunu gösterdiğiniz anda durmak ve §6.5'teki süre dolmadan
+kamuya açıklamamak.
+
+Bu, bu projenin geliştiricisinin verdiği bir sözdür. Üçüncü tarafları
+bağlayamaz — testiniz GitHub'a, bir servis sağlayıcıya ya da başkasının
+altyapısına dokunuyorsa onların şartları geçerlidir ve bu paragraf sizi
+korumaz.
+
+### 6.7 Zaten biliniyor mu?
+
+§3 ve §4'teki her şey bilerek belgelenmiştir. Bunlardan birini yineleyen bir
+bildirim "bilinen" olarak kapatılır — burada anlatılandan daha kötü olduğunu
+gösterebiliyorsanız o başka, o gerçekten değerlidir.
+
+**Ayrıca işe yarayan ve açıkça istenen:** bu belgenin *yanlış* olduğu bir
+yer. §2 veya §5'te tutmayan bir iddia, §4'te olduğundan hafif anlatılmış bir
+zayıflık, §1'de yazılı ama kodun aslında uygulamadığı bir sınır. Bunlar
+güvenlik politikasının kendisine dair güvenlik bulgularıdır ve hatalardan
+daha zor görülürler.
+
+### 6.8 Halihazırda çalışan otomatik analiz
+
+Bildirmeden önce bilin: her push'ta `ruff`, `mypy`, `bandit` ve `semgrep`
+çalışıyor (`.github/workflows/ci.yml`), ayrıca elle tetiklenen bir iş akışı
+kripto kabını ve Shamir uygulamasını `atheris` ile fuzz'lıyor
+(`.github/workflows/fuzz.yml`).
+
+Bu araçların gözden geçirilip yerinde bırakılan bulguları gerekçesiyle
+birlikte `BACKLOG.md` içinde kayıtlı. Bunlardan birini yineleyen bir bildirim,
+değerlendirmenin yanlış olduğunu gösterebiliyorsanız yine de değerlidir —
+ikinci bir çift gözün yakaladığı şey tam olarak budur.

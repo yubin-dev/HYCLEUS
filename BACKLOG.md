@@ -591,3 +591,115 @@ durumun sessizce "yedek yok" gibi görünmemesi gerekir — "hedef
 erişilemiyor" ile "yedek eski" farklı mesajlar.
 
 **Öncelik:** düşük-orta. Düzeltme değil, eksik özellik tamamlaması.
+
+---
+
+## B-016 — Çapraz platform HWID kararı ölçümü bekliyor
+
+**Durum:** Açık — **karar verilmedi, bilerek**
+**Öncelik:** Orta (mimari karar; bugün çalışan bir şeyi bozmuyor)
+**İlgili:** 3.4 prototipi — [`CORE/hwid_probe.py`](CORE/hwid_probe.py),
+[`docs/hwid-crossplatform.md`](docs/hwid-crossplatform.md)
+**Bulundu:** 2026-08-15
+
+### Neden açık madde
+
+3.4 turunda "USB donanım serisi üç işletim sisteminde tutarlı okunuyor mu"
+sorusu araştırıldı ve rapor "hayır, dosya tabanlı token'a geçilmeli" dedi.
+Bu öneri **henüz uygulanmayacak** çünkü dayandığı ölçümün bir bacağı
+eksik.
+
+### Ölçümün eksik bacağı
+
+Geliştirme makinesindeki 12 USB aygıtının hiçbirinde gerçek `iSerialNumber`
+bulunmadı. Ancak ölçüm sırasında **fiziksel bir HYCLEUS kimlik doğrulama
+USB'si takılı değildi** — sayılan aygıtlar dahili donanımdı: web kamerası,
+Bluetooth radyosu, klavye/fare alıcısı, hub denetleyicileri.
+
+Bu, iki farklı iddiayı ayırmayı gerektiriyor:
+
+| İddia | Durum |
+|---|---|
+| "USB spec'inde `iSerialNumber` opsiyoneldir ve çoğu aygıtta yok" | **Geçerli** — ölçüldü, ayrıca spec'te yazılı (USB 2.0 §9.6.1) |
+| "Üç OS farklı yığınlardan okuyor, aynı alan garanti değil" | **Geçerli** — belgelenmiş API farkı |
+| "HYCLEUS'un fiilen kullandığı USB'de seri yok" | **DOĞRULANMADI** |
+| "Serisiz USB başka makinede farklı HWID alır" | **Geçerli** — `usb_ids.json` makineye özel, koddan okunuyor |
+
+Yani öneriyi ayakta tutan gerekçe (son satır) ölçüme bağlı değil; ama
+"sorun ne kadar yaygın" sorusunun yanıtı bağlı. USB *depolama* aygıtlarının
+seri taşıma oranı, dahili çevre birimlerinden yüksek olabilir.
+
+### Yapılacak — tek bir ölçüm
+
+Kayıtlı HYCLEUS token USB'si **fiziksel olarak takılıyken**:
+
+```
+python -m CORE.hwid_probe
+```
+
+Çıktıda bakılacak: `iSerialNumber` var mı, `Win32_DiskDrive.SerialNumber`
+ile `PNPDeviceID`'nin üçüncü segmenti aynı şeyi mi söylüyor, ve
+`_get_or_create_uuid()` fallback'ine düşülüyor mu.
+
+Mümkünse aynı çubuk Linux'ta da takılıp karşılaştırılmalı; ama Windows
+ölçümü tek başına kararı büyük ölçüde belirler.
+
+### Karar ağacı (ölçümden sonra)
+
+- **Seri VAR ve temiz okunuyorsa** — geçiş aciliyeti düşer; taşınabilirlik
+  sorunu yalnızca serisiz aygıtlarda kalır, `usb_ids.json` fallback'i
+  USB'ye taşınarak nokta atışı çözülebilir.
+- **Seri YOKSA** — `docs/hwid-crossplatform.md` içindeki dosya tabanlı
+  token taslağı uygulanmalı (§"Taslak geçiş yolu", 5 adım). Geçişin
+  kritik adımı 3. madde: mevcut HWID token dosyasına gömülmeli, yoksa
+  tüm kullanıcılar kurtarma parçasına muhtaç kalır.
+
+### Dikkat
+
+Geçiş yapılırsa gerekçe **taşınabilirlik**tir, güvenlik değil. Token
+dosyası da seri numarası kadar kopyalanabilir; HWID zaten uygulama
+seviyesi bir kontrol (SECURITY.md §4.5). "Daha güvenli oldu" denirse
+yanlış olur.
+
+---
+
+## B-017 — Sürüm dizesi üç yerde üç farklı şey söylüyor
+
+**Durum:** Açık — 3.5 (denetime hazırlık) turunda fark edildi
+**Öncelik:** Düşük teknik olarak, **orta** ifşa açısından
+**Bulundu:** 2026-08-16
+
+Depoda tek bir sürüm kaynağı yok:
+
+| Yer | Değer |
+|---|---|
+| En son git etiketi | `v2.1.2` |
+| [`SECURITY.md`](SECURITY.md) başlığı ve §5 | `v2.1.0` |
+| [`UI/ContactDialog.py`](UI/ContactDialog.py) `_APP_VERSION` | `HYCLEUS v1.5` |
+| Kod içi sürüm sabitleri | Biçime özel (`_VERSION = 3` vault, `TRAILER_VERSION = 1` damga) — uygulama sürümü DEĞİL |
+
+Çalışma zamanında bir etkisi yok. Sorun bildirim akışında: SECURITY.md
+§6.3 bildirimciden "etkilenen sürüm"ü istiyor, kullanıcının sürümü
+görebildiği tek yer Hakkında kutusu ve orası `v1.5` diyor. Depo ise
+`v2.1.2` etiketinde. Yani gelen her bildirim, güvenlik politikasının
+desteklediğini söylediği sürümden geride görünecek — ve "desteklenen sürüm
+yalnızca en sonuncusu" kuralı (§5) bu bildirimi kapsam dışı gösterir.
+Politikanın kendisi de bir etiket geride: `v2.1.0` diyor, en son etiket
+`v2.1.2`.
+
+Aynı boşluk sürüm notlarını da etkiliyor: bir düzeltmenin hangi sürümde
+çıktığı yazılamıyor, çünkü sürümü söyleyen otoriter bir yer yok.
+
+### Yapılacaklar (uygulanmadı)
+
+1. Tek bir kaynak belirle — ör. `CORE/version.py` içinde
+   `__version__ = "2.2.0"`. `CORE/` zaten namespace paketi, ek yapı
+   gerekmiyor.
+2. `UI/ContactDialog.py` onu okusun; sabit dizeyi kaldır.
+3. SECURITY.md başlığı ve §5 elle güncellensin (belge, koddan
+   okuyamaz — ama bir testle karşılaştırılabilir).
+4. Sürümün üç yerde birden tutarlı olduğunu doğrulayan bir test yaz;
+   `tests/test_console.py`'deki AST denetimiyle aynı desen.
+5. v2.2 planı tamamlandığında etiketi at ve üç yeri birden o değere
+   çek — bugünkü sapmanın kaynağı, sürüm yükseltmenin tek bir yerde
+   yapılamaması.

@@ -2,6 +2,10 @@
 
 **Durum:** 3.4 prototip raporu · Kod: `CORE/hwid_probe.py` (uygulamaya bağlı DEĞİL)
 
+> ⛔ **Bu belgedeki öneri UYGULANMADI ve şimdilik uygulanmayacak.** Dayandığı
+> ölçümün bir bacağı eksik: sayım sırasında gerçek HYCLEUS token USB'si takılı
+> değildi. Açık madde: **BACKLOG.md / B-016**.
+
 ---
 
 ## Kısa yanıt
@@ -56,11 +60,17 @@ Alt çizgiler ve sondaki nokta Windows'un eklediği biçim; Linux aynı aygıt
 için biçimlendirmesiz dize verir. Ham metin karşılaştırması bu yüzden tek
 başına yetmiyor (prototipte `normalize_serial()` bunu kapatıyor).
 
-> **Sınır:** elimde USB depolama aygıtı olan bir test ortamı yoktu; yukarıdaki
-> USB aygıtları klavye, fare, kamera ve hub. USB *çubukların* serisi olma
-> oranı bunlardan yüksek olabilir. Ama "opsiyonel alan, çoğu aygıtta yok"
-> gözlemi geçerliliğini koruyor ve HYCLEUS'un kodunda zaten bir UUID
-> fallback'i olması, sahada da karşılaşıldığını gösteriyor.
+> **Sınır — bu ölçüm HYCLEUS'un kendi USB'sini ÖLÇMEDİ.** Sayım sırasında
+> fiziksel bir HYCLEUS kimlik doğrulama USB'si takılı değildi; yukarıdaki
+> aygıtlar dahili donanım: klavye, fare, kamera, Bluetooth, hub. USB
+> *depolama* çubuklarının serisi olma oranı bunlardan yüksek olabilir.
+>
+> "Opsiyonel alan, çoğu aygıtta yok" gözlemi geçerliliğini koruyor (spec'te
+> yazılı) ve HYCLEUS'un kodunda zaten bir UUID fallback'i olması sahada da
+> karşılaşıldığını gösteriyor — ama "HYCLEUS'un fiilen kullandığı USB'de
+> seri yok" iddiası **doğrulanmadı**. Eksik ölçüm açık madde olarak
+> BACKLOG.md / B-016'da duruyor; token geçişi o ölçüm yapılana kadar
+> başlatılmayacak.
 
 ---
 
