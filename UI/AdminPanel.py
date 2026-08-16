@@ -1,7 +1,10 @@
 """HYCLEUS — USB Yönetim Paneli"""
 from __future__ import annotations
 
+import logging
 import re
+
+_log = logging.getLogger("hycleus.admin_panel")
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont
@@ -237,6 +240,16 @@ class AdminPanel(QDialog):
 
         bar.addStretch()
 
+        # B-006: zincir doğrulaması üç yerden çağrılabiliyordu ama hiçbirinin
+        # düğmesi yoktu. Kurcalama kanıtı, ancak birileri kanıta
+        # BAKABİLİYORSA işe yarar. Yetki kontrolü ayrıca gerekmiyor: bu panel
+        # `role != "Yönetici"` ise hiç kurulmuyor (bkz. __init__).
+        self._btn_chain = QPushButton("Zinciri Doğrula")
+        self._btn_chain.setStyleSheet(_BTN)
+        self._btn_chain.setCursor(Qt.PointingHandCursor)
+        self._btn_chain.clicked.connect(self._on_verify_chain)
+        bar.addWidget(self._btn_chain)
+
         btn_refresh = QPushButton("Yenile")
         btn_refresh.setStyleSheet(_BTN)
         btn_refresh.setCursor(Qt.PointingHandCursor)
@@ -244,6 +257,48 @@ class AdminPanel(QDialog):
         bar.addWidget(btn_refresh)
 
         return bar
+
+    def _on_verify_chain(self) -> None:
+        """
+        Denetim zincirini ve çıpayı doğrular, sonucu gösterir.
+
+        Sonuç denetim kaydına da düşüyor: "kim ne zaman doğruladı" sorusu
+        zincirin kendi içinde yanıtlanabilmeli. Kullanıcı `users` satırından
+        okunuyor (B-011) — eskiden böyle bir satır güvenilir biçimde yoktu.
+        """
+        from CORE.audit_report import zincir_raporu
+        from CORE.session_user import kullanici_bilgisi
+
+        try:
+            db = DBManager()
+            rapor = zincir_raporu(db)
+            kim = kullanici_bilgisi(db, self._current_hwid)
+        except Exception as exc:
+            QMessageBox.critical(self, "Zincir Doğrulama", str(exc))
+            return
+
+        kim_metni = f"{kim[1]} (id={kim[0]})" if kim else f"hwid={self._current_hwid}"
+        govde = f"{rapor.ayrinti()}\n\nDoğrulayan: {kim_metni}"
+
+        kutu = QMessageBox(self)
+        kutu.setWindowTitle("Denetim Zinciri")
+        kutu.setIcon(QMessageBox.Information if rapor.saglam else QMessageBox.Critical)
+        kutu.setText(rapor.baslik())
+        kutu.setInformativeText(govde)
+        kutu.exec()
+
+        try:
+            db.log(
+                "audit_chain_verified",
+                user_id=kim[0] if kim else None,
+                detail=(
+                    f"ok={rapor.saglam} checked={rapor.zincir.checked}"
+                    f" anchors={rapor.cipa.anchors_checked}"
+                    f" first_break={rapor.ilk_kirilma_id}"
+                ),
+            )
+        except Exception as exc:  # kayıt düşmezse sonuç yine gösterildi
+            _log.warning("audit_chain_verified log failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Veri yükleme

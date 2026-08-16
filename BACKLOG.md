@@ -24,6 +24,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | B-010 | `①` grubu — B-010 düzeltmesi | İki indirme akışı, DB'nin `aad_metadata` sütununda hwid bulunmadığında ayrışıyordu: ZIP oturum hwid'iyle doğrulayıp dosyayı atlıyor, toplu indirme `hwid=None` geçtiği için kontrolü hiç çalıştırmıyordu. Fark yalnızca DB sütunu ile DOSYANIN AAD'ı ayrıştığında görünür (kontrol `decrypt_file` içinde ve dosyanın kendi AAD'ına bakıyor). ZIP'in davranışı doğru kabul edildi: sütunun eksilmesi "bu dosya bu cihazda mı şifrelendi" sorusunu geçersiz kılmıyor. Toplu indirme artık `hwid_fallback` alıyor. Kabul edilen risk: DB'si eksilmiş ve başka cihazda şifrelenmiş dosyalar toplu indirmede de atlanıyor — ama ZIP'te zaten atlanıyordu. |
 | B-004 | `④` grubu — B-004 düzeltmesi | İmha Odası sayacını işleten tek yer `UI/main_window_table.py::_tick_expiry` idi ve o metot `if self._current_label != "Imha": return` ile başlıyordu — süresi dolmuş dosya, kullanıcı o sekmeye girmedikçe diskte kalıyordu. Zamanlayıcının `_purge_expired` görevi artık `Karantina` yanında `Imha` etiketini de işliyor; iki etiket ayrı denetim kaynağı yazıyor (`quarantine_ttl` / `imha_ttl`). Arayüz sayacı KALDIRILMADI, ikisi de aynı `purge_expired_file()`'ı çağırıyor (B-008). Saklama süpürmesiyle gelen `expires_at = NULL` satırlar korunuyor; korumanın kaynağı SQLite'ın üç değerli mantığı (`datetime(NULL) <= …` → NULL), ölçüldü. Bu maddeyi "son çalışma zamanı + kapı" deseni ÇÖZMEDİ: oradaki kapı global değil dosya başına. |
 | B-015 | `④` grubu — B-015 düzeltmesi | Yedekleme özelliği vardı ama HATIRLATMASI yoktu; yedek yalnızca kullanıcının aklına geldiğinde alınıyordu. `CORE/backup_reminder.py` eklendi ve `ZamanKapisi`'nı (`backup_last_run`) kullanıyor — ④ grubunda deseni gerçekten kullanan tek madde. Damga `create_backup()` içinde yazılıyor, arayüzde değil: CLI'dan alınan yedekler de hatırlatmayı susturmalı. Uyarı ENGELLEYİCİ değil, "sonra sorma" bir eşik süresi kadar (süresiz değil) ve eşik `0` hatırlatmayı kapatıyor. "Hedef erişilemiyor" ile "hiç yedek yok" AYRI durumlar — harici disk takılı değilse yedek yok değil, görünmüyor. Negatif eşik kapatmıyor, varsayılana düşüyor. |
+| B-006 | `④` grubu — B-006 düzeltmesi | Zincir doğrulaması üç yerden çağrılabiliyordu ama arayüzde düğmesi yoktu; TXT dışa aktarımı da yalnızca dört sütun yazıyor, hash/son uç/doğrulama durumu taşımıyordu. `CORE/audit_report.py` iki doğrulamayı (`verify_audit_chain` + `verify_against_anchor`) birleştirip METİN üretiyor; AdminPanel'e "Zinciri Doğrula" düğmesi eklendi (panel zaten `role != "Yönetici"` ise hiç kurulmuyor) ve sonuç `audit_chain_verified` olarak denetim kaydına düşüyor — doğrulayan kullanıcı B-011'in `users` satırından okunuyor, yan etkisiz `kullanici_bilgisi()` ile. TXT başlığı artık zincir durumunu, son hash'i, ilk kırılma id'sini ve "bu dosya imzalı DEĞİLDİR" sınırını taşıyor. Bu madde de "son çalışma zamanı + kapı" desenini KULLANMIYOR: zamanlanmış bir iş değil, kullanıcının bastığı bir düğme. |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
 > Yeni madde açarken bu tabloya da bakın; yalnızca aşağıdaki en büyük
@@ -183,47 +184,6 @@ Zorunlu yerine uyarı: girişte "PIN'iniz kısa, güncelleyin" bildirimi. Daha
 az müdahaleci ama politika boşluğunu kapatmaz — kullanıcı süresiz erteler.
 Yalnızca geçiş dönemini yumuşatmak için, zorunlu akışın öncesinde
 kullanılmalı.
-
----
-
-## B-006 — Denetim zinciri doğrulamasının arayüzde karşılığı yok
-
-**Durum:** Açık — mekanizma çalışıyor, kullanıcıya görünmüyor
-**Öncelik:** Orta (özellik erişilemez durumda; güvenlik zafiyeti **değil**)
-**İlgili:** Denetim kaydı hash zinciri (`CORE/audit_chain.py`, SECURITY.md §4.6)
-**Bulundu:** 2026-08-13, zincir uygulaması sırasında
-
-### Bulgu
-
-Zincir doğrulaması üç yerden çağrılabiliyor: `db.verify_audit_chain()`,
-`verify_against_anchor()`, `verify_anchor_file()`. Hiçbirinin arayüzde
-düğmesi yok. Kullanıcının zinciri kontrol edebildiği tek an açılış: uyuşmazlık
-varsa `main.py` bir uyarı gösteriyor. "Şimdi kontrol et" diyebileceği bir yer
-yok, halbuki [`UI/AuditLogDialog.py`](UI/AuditLogDialog.py) bunun doğal yeri.
-
-Kurcalama kanıtı, ancak birileri kanıta BAKABİLİYORSA işe yarar.
-
-### İkinci bulgu — TXT dışa aktarımı zincirden habersiz
-
-`AuditLogDialog._export_txt()` yalnızca dört sütun yazıyor (zaman, işlem,
-kullanıcı, HWID). Hash yok, zincirin son ucu yok, doğrulama durumu yok.
-Halbuki bu dışa aktarım, kullanıcının denetim kaydını makine dışına
-taşıdığı tek yol — yani §4.6'nın "çıpayı başka bir güven alanına taşıyın"
-tavsiyesinin pratikte karşılığı olabilecek şey. Şu hâliyle dışa aktarılan
-dosyayla veritabanının tutarlı olup olmadığı sonradan gösterilemez.
-
-### Yapılacaklar (uygulanmadı)
-
-1. `AuditLogDialog`'a "Zinciri Doğrula" düğmesi; sonucu
-   `ChainVerification.summary()` ile göster (metin zaten kullanıcıya
-   gösterilecek biçimde yazıldı, Türkçe ve kırılma noktasını içeriyor).
-2. Kırık zincirde satırları görsel olarak işaretle — `_is_failure()`'ın
-   kırmızı satır deseni hazır.
-3. Dışa aktarıma zincir başlığı ekle: `chain_start_id`, son hash, doğrulama
-   sonucu ve varsa çıpa karşılaştırması.
-4. Çıpa dosyasının yolunu (ve `HYCLEUS_AUDIT_ANCHOR` ile
-   değiştirilebildiğini) ayarlar ekranında göster — USB'ye yönlendirme şu an
-   yalnızca ortam değişkeniyle mümkün ve hiçbir yerde yazmıyor.
 
 ---
 

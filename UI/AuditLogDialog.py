@@ -304,13 +304,32 @@ class AuditLogDialog(QDialog):
         def fmt_row(vals: list[str]) -> str:
             return "  ".join(v.ljust(w)[:w] for v, w in zip(vals, col_w))
 
-        lines: list[str] = [
-            "HYCLEUS — Denetim Günlüğü",
-            f"Dışa aktarım: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC",
-            sep,
-            fmt_row(header_parts),
-            sep,
-        ]
+        # B-006: dışa aktarım eskiden yalnızca dört sütun yazıyordu — hash
+        # yok, zincirin son ucu yok, doğrulama durumu yok. Halbuki bu dosya,
+        # denetim kaydının makine dışına çıkan tek biçimi; içinde zincir
+        # durumu olmadan dosyayla veritabanının tutarlılığı sonradan
+        # gösterilemiyordu. Başlık metni CORE'da üretiliyor, çünkü aynı
+        # metin "Zinciri Doğrula" düğmesinde de kullanılıyor.
+        try:
+            from CORE.audit_report import txt_basligi, zincir_raporu
+
+            lines: list[str] = txt_basligi(
+                zincir_raporu(DBManager()),
+                kayit_sayisi=self._table.rowCount(),
+            )
+        except Exception as exc:
+            # Zincir okunamazsa dışa aktarım YİNE de yapılmalı — ama bunu
+            # sessizce "sağlam" gibi göstermek yanlış olurdu.
+            lines = [
+                "HYCLEUS — Denetim Günlüğü",
+                f"Dışa aktarım: "
+                f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC",
+                sep,
+                f"Zincir durumu : DOĞRULANAMADI ({exc})",
+                sep,
+            ]
+
+        lines += [fmt_row(header_parts), sep]
 
         for row in range(self._table.rowCount()):
             vals = [

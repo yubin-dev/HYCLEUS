@@ -103,6 +103,25 @@ def db_role(session_role: str | None) -> str:
     return _ROL_ESLEMESI.get(session_role or "", "user")
 
 
+def kullanici_bilgisi(db: Any, hwid: str) -> tuple[int, str] | None:
+    """
+    HWID'ye bağlı `users` satırını SALT OKUNUR arar: `(id, username)`.
+
+    `sync_session_user()`'dan farkı: satır yoksa oluşturmuyor ve denetim
+    kaydı düşmüyor. "Bu işlemi kim yaptı" sorusunu yanıtlamak için —
+    o soru bir yan etki üretmemeli. Girişte satır zaten yazıldığı için
+    burada bulunmaması beklenen bir durum değil, ama None dönmek
+    çağıranın bir yer tutucu göstermesine izin veriyor.
+    """
+    if not hwid:
+        return None
+    row = db.fetchone(
+        "SELECT id, username FROM users WHERE hwid = ? ORDER BY id LIMIT 1",
+        (hwid,),
+    )
+    return (int(row["id"]), row["username"]) if row is not None else None
+
+
 def sync_session_user(
     db: Any, *, hwid: str, role: str | None = None
 ) -> int:
