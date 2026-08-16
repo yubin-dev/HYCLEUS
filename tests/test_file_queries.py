@@ -194,32 +194,140 @@ def test_search_shows_private_files_for_admins(db, mahrem_kurulum):
     assert len(search_files(db, "pdf", include_private=True)) == 2
 
 
-def test_folder_view_does_NOT_filter_private_files(db, mahrem_kurulum):
+def test_folder_view_hides_private_files_when_asked(db, mahrem_kurulum):
     """
-    BİLİNEN BOŞLUK — mevcut davranış, bilerek korundu.
+    B-007 DÜZELTMESİ — bu testin adı ve iddiası BİLEREK tersine çevrildi.
 
-    Klasör görünümünde mahrem filtresi yok ve arayüz tarafında da bir engel
-    yok: yönetici olmayan bir kullanıcı klasöre girip mahrem etiketli
-    dosyaları görebiliyor. Aynı dosyalar etiket görünümünde gizleniyor.
+    Eski hâli `test_folder_view_does_NOT_filter_private_files` idi ve
+    boşluğu SABİTLİYORDU: klasör görünümünde mahrem filtresi yoktu ve
+    arayüz tarafında da engel yoktu, yani yönetici olmayan bir kullanıcı
+    klasöre girip mahrem dosyaları gerçekten görüyordu.
 
-    Bu test bir onay değil, bir SABİTLEME. Boşluk kapatıldığında burası
-    kırılacak ve düzeltme bilinçli bir karar olarak görünecek.
-    Bkz. BACKLOG.md ve CORE/file_queries.py docstring'i.
+    Sabitleme testi bir onay değil bir işaretti; düzeltme geldiğinde
+    kırılsın diye yazılmıştı. Kırıldı ve burası onun yerini aldı.
     """
-    rows = files_by_folder(db, mahrem_kurulum["klasor"])
+    rows = files_by_folder(db, mahrem_kurulum["klasor"], include_private=False)
+    assert _names(rows) == ["acik.pdf"]
+
+
+def test_folder_view_shows_private_files_for_admins(db, mahrem_kurulum):
+    """Yönetici tarafında hiçbir şey değişmemeli."""
+    rows = files_by_folder(db, mahrem_kurulum["klasor"], include_private=True)
     assert set(_names(rows)) == {"gizli.pdf", "acik.pdf"}
 
 
-def test_tag_view_does_NOT_filter_private_files(db, mahrem_kurulum):
+def test_tag_view_hides_private_files_when_asked(db, mahrem_kurulum):
     """
-    Etiket görünümünde de filtre yok — ama bu pratikte kapalı.
+    B-007 DÜZELTMESİ — eski adı `test_tag_view_does_NOT_filter_private_files`.
 
-    Mahrem etiketler yönetici olmayana kenar çubuğunda gösterilmiyor ve
-    tıklanması ayrıca engelleniyor, yani bu sorguya ulaşmanın yolu yok.
-    Yine de sorgunun kendisinde engel OLMADIĞI sabitleniyor.
+    Mahrem ETİKETİN KENDİSİ sorgulandığında sonuç boş dönüyor: dosya, tam
+    olarak o etiket yüzünden mahrem sayılıyor. Filtre "bu dosya mahrem mi"
+    sorusunu yanıtlıyor, "hangi etiketten geldi" sorusunu değil.
+
+    Bu görünüme ulaşmanın arayüzde zaten yolu yoktu (mahrem etiketler
+    kenar çubuğunda çizilmiyor). O engel KALDIRILMADI — artık iki katman
+    birlikte duruyor.
     """
-    rows = files_by_tag(db, mahrem_kurulum["mahrem_tag"])
+    rows = files_by_tag(db, mahrem_kurulum["mahrem_tag"], include_private=False)
+    assert rows == []
+
+
+def test_tag_view_shows_private_files_for_admins(db, mahrem_kurulum):
+    rows = files_by_tag(db, mahrem_kurulum["mahrem_tag"], include_private=True)
     assert _names(rows) == ["gizli.pdf"]
+
+
+def test_tag_view_normal_etiketteki_mahrem_dosyayi_da_gizliyor(db):
+    """
+    Asıl senaryo: NORMAL bir etikete tıklandığında mahrem dosya sızmamalı.
+
+    Bir dosya hem "Proje" (normal) hem "Mahrem" etiketi taşıyorsa,
+    "Proje" etiketine tıklayan yönetici olmayan kullanıcı onu GÖRMEMELİ.
+    Bir önceki test tek başına bunu kanıtlamıyor — orada sorgulanan
+    etiketin kendisi mahremdi.
+    """
+    fid = _add_file(db, "karma.pdf")
+    normal = _add_tag(db, "Proje", private=False)
+    _assign(db, fid, normal)
+    _assign(db, fid, _add_tag(db, "Mahrem", private=True))
+
+    assert files_by_tag(db, normal, include_private=False) == []
+    assert _names(files_by_tag(db, normal, include_private=True)) == ["karma.pdf"]
+
+
+def test_dort_gorunumun_dordu_de_ayni_dosyayi_gizliyor(db, mahrem_kurulum):
+    """
+    B-007'NİN ÖZÜ: tutarlılık.
+
+    Bulgu "klasör görünümü filtrelemiyor" değildi aslında — bulgu, AYNI
+    dosyanın bir görünümde gizlenip başkasında görünmesiydi. Dördünü tek
+    testte yan yana koymak, ileride biri ayrışırsa bunu tek bir kırılmayla
+    gösterir.
+    """
+    klasor = mahrem_kurulum["klasor"]
+    normal_tag = mahrem_kurulum["normal_tag"]
+
+    gorunumler = {
+        "label": _names(files_by_label(db, "Genel", include_private=False)),
+        "search": _names(search_files(db, "pdf", include_private=False)),
+        "folder": _names(files_by_folder(db, klasor, include_private=False)),
+        "tag": _names(files_by_tag(db, normal_tag, include_private=False)),
+    }
+    for ad, isimler in gorunumler.items():
+        assert "gizli.pdf" not in isimler, f"{ad} görünümü mahrem dosyayı sızdırıyor"
+        assert "acik.pdf" in isimler, f"{ad} görünümü normal dosyayı da gizliyor"
+
+
+@pytest.mark.parametrize("gorunum", ["folder", "tag"])
+def test_yeni_parametrelerin_varsayilani_da_true(db, mahrem_kurulum, gorunum):
+    """
+    Varsayılan GÖSTERMEK olarak kaldı — bilerek.
+
+    Ters çevirmek daha güvenli görünürdü ama sessiz bir davranış
+    değişikliği olurdu: parametre geçmeyen her çağrı aniden veri gizlemeye
+    başlardı ve fark edilme yolu kullanıcının dosyasını kaybetmesi olurdu.
+    Güvenliği veren şey varsayılan değil, çağrı yerlerinin parametreyi
+    AÇIKÇA vermesi — bunu bir sonraki test denetliyor.
+    """
+    if gorunum == "folder":
+        satirlar = files_by_folder(db, mahrem_kurulum["klasor"])
+    else:
+        satirlar = files_by_tag(db, mahrem_kurulum["mahrem_tag"])
+    assert "gizli.pdf" in _names(satirlar)
+
+
+def test_dort_cagri_yeri_de_include_private_geciyor():
+    """
+    ASIL KORUMA — arayüz dört sorguyu da role bağlamalı.
+
+    Varsayılan `True` olduğu için, bir çağrı yerinden `include_private`
+    düşerse hiçbir şey patlamaz: mahrem dosyalar sessizce görünür olur.
+    B-007'nin ilk hâli tam olarak buydu. Çalışma zamanı testi bunu
+    yakalayamaz (Qt penceresi gerekir), o yüzden kaynak ağacı denetleniyor.
+    """
+    import ast
+    from pathlib import Path
+
+    hedefler = {"files_by_label", "files_by_tag", "files_by_folder", "search_files"}
+    ui = Path(__file__).resolve().parent.parent / "UI"
+
+    bulunan: dict[str, int] = {}
+    eksik: list[str] = []
+    for yol in ui.rglob("*.py"):
+        agac = ast.parse(yol.read_text(encoding="utf-8"))
+        for dugum in ast.walk(agac):
+            if not (isinstance(dugum, ast.Call) and isinstance(dugum.func, ast.Name)):
+                continue
+            if dugum.func.id not in hedefler:
+                continue
+            bulunan[dugum.func.id] = bulunan.get(dugum.func.id, 0) + 1
+            if "include_private" not in {k.arg for k in dugum.keywords}:
+                eksik.append(f"{yol.name}:{dugum.lineno} {dugum.func.id}")
+
+    assert not eksik, f"include_private geçmeyen çağrı: {eksik}"
+    assert set(bulunan) == hedefler, (
+        f"arayüzde çağrılmayan görünüm var: {hedefler - set(bulunan)}"
+    )
 
 
 def test_private_filter_excludes_a_file_carrying_both_tag_kinds(db):

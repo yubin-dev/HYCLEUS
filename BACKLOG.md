@@ -19,6 +19,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | B-017 | `3.5` turu sonu — B-017 düzeltmesi | Sürüm dizesi beş yerde elle yazılıydı ve beşi farklı şey söylüyordu (etiket `v2.1.2`, SECURITY.md `v2.1.0`, README rozeti `2.0`, Hakkında `v1.6`, İletişim `v1.5`). Bildirim akışını kırıyordu: §6.3 "etkilenen sürüm" istiyor, kullanıcının gördüğü tek sürüm yanlıştı. `CORE/version.py` tek kaynak oldu; arayüz oradan okuyor, belgeler `tests/test_version.py` ile karşılaştırılıyor (belgeler kod okuyamıyor, ayrışmaları yine sessiz olurdu). İki sabit var ve ikisi de gerekli: `__version__` (çalıştırılan kod) ve `SON_YAYIN` (düzeltme alan etiket). Tarihsel "v2.1.0'a kadar…" atıfları toplu değiştirmeden korundu, ayrı test var. |
 | B-021 | `3.5` turu sonu — B-021 düzeltmesi | `reconstruct_key()`, Lagrange sonucu `[2**256, asal)` aralığına düştüğünde `to_bytes(32)` ile `OverflowError` fırlatıyordu; docstring yalnızca `ValueError` vaat ediyor ve kurtarma akışı onu yakalıyor. Kurtarma parçası elle yazılan tek kripto girdisi olduğu için erişilebilir bir yoldu. `_sss_recover()` artık yakalayıp "parçayı kontrol edin" diyen bir `ValueError`'a çeviriyor; asıl sebep `__cause__` zincirinde kalıyor. Fuzzing bulmuştu, tohum korpusundaki girdi geri alınmayı yakalamak için yerinde bırakıldı. |
 | B-011 | `①` grubu — B-011 düzeltmesi | `create_folder()`, `owner_id` `users` tablosunda yoksa uydurma bir satır yazıyordu ("yonetici", boş parola hash'i, `admin` rolü) ve aynı kaçamağın İKİNCİ kopyası `UI/main_window_table.py`'de duruyordu. Kök neden orada değildi: `main.py` `HycleusWindow`'a `user_id` hiç geçmiyordu, yani oturum kim olursa olsun sahiplik varsayılan **1**'e yazılıyordu. `CORE/session_user.py::sync_session_user()` girişte oturumu gerçek bir `users.id`'ye bağlıyor; satır yoksa açılan kayıt artık insan taklit etmiyor (`vault:<hwid>`, gerçek rol, ayrıştırılamaz parola sentinel'i) ve denetim kaydına düşüyor. Kaçamak iki yerden de kaldırıldı; `user_id` argümanının sessizce düşmesini AST denetimleri engelliyor (`tests/test_session_user.py`). |
+| B-007 | `①` grubu — B-007 düzeltmesi | Mahrem etiketli (`tags.is_private = 1`) bir dosya `files_by_label()` ve `search_files()` görünümlerinde yönetici olmayandan gizlenirken `files_by_folder()`'da GÖRÜNÜYORDU; klasör görünümünde arayüz tarafında da engel yoktu. Dört görünüm de artık `include_private` alıyor ve dördü de role bağlı çağrılıyor. Kenar çubuğu engeli KALDIRILMADI — iki katman birlikte duruyor. Varsayılan bilerek `True` bırakıldı (ters çevirmek, parametre geçmeyen çağrılarda sessizce veri gizlerdi); asıl korumayı çağrı yerlerinin parametreyi açıkça vermesi sağlıyor ve bunu AST denetimi sabitliyor. İki `does_NOT` sabitleme testi bilerek kırılıp beklenen davranışa çevrildi. |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
 > Yeni madde açarken bu tabloya da bakın; yalnızca aşağıdaki en büyük
@@ -270,74 +271,6 @@ dosyayla veritabanının tutarlı olup olmadığı sonradan gösterilemez.
 4. Çıpa dosyasının yolunu (ve `HYCLEUS_AUDIT_ANCHOR` ile
    değiştirilebildiğini) ayarlar ekranında göster — USB'ye yönlendirme şu an
    yalnızca ortam değişkeniyle mümkün ve hiçbir yerde yazmıyor.
-
----
-
-## B-007 — Klasör görünümü mahrem etiket filtresini uygulamıyor
-
-**Durum:** Açık — mevcut davranış korundu, testle sabitlendi
-**Öncelik:** **Orta-yüksek.** Gizlilik boşluğu: mahrem olarak işaretlenmiş
-bir dosya, yönetici olmayan bir kullanıcıya bir görünümde gizlenirken
-başka bir görünümde gösteriliyor. Veri kaybı ya da kripto zafiyeti değil,
-ama "mahrem etiket" özelliğinin vaadi tam olarak bu.
-**İlgili:** 2.7 Faz 1 adım 3 (`CORE/file_queries.py`)
-**Bulundu:** 2026-08-13, dört liste sorgusu CORE'a taşınırken
-
-### Bulgu
-
-Mahrem etiket (`tags.is_private = 1`) taşıyan dosyalar yönetici olmayan
-kullanıcılardan gizleniyor — ama bu filtre dört liste görünümünün yalnızca
-ikisinde var:
-
-| Görünüm | SQL filtresi | Arayüz engeli | Sonuç |
-|---|---|---|---|
-| `files_by_label()` | ✅ var | — | gizli |
-| `search_files()` | ✅ var | — | gizli |
-| `files_by_tag()` | ❌ yok | ✅ mahrem etiket kenar çubuğunda gösterilmiyor, tıklanamıyor | pratikte kapalı |
-| `files_by_folder()` | ❌ yok | ❌ **yok** | **görünür** |
-
-Yani yönetici olmayan bir kullanıcı bir klasöre girdiğinde, o klasördeki
-mahrem etiketli dosyaları görüyor. Aynı dosyalar "Genel" etiket
-görünümünde ve aramada gizleniyor.
-
-Etiket görünümündeki eksik filtre şu an sömürülebilir değil: mahrem
-etiketler yönetici olmayana kenar çubuğunda hiç çizilmiyor
-([`UI/main_window.py`](UI/main_window.py) `_refresh_tag_sidebar`) ve
-tıklanması `_on_tag_click` içinde ayrıca engelleniyor. Ama savunma tek
-katman — kenar çubuğu mantığı değişirse sorgu bir engel sunmaz.
-
-### Neden 2.7'de düzeltilmedi
-
-2.7 saf bir yeniden düzenleme; sözü verilen şey davranışın DEĞİŞMEMESİ.
-Filtreyi dört görünüme birden uygulamak refactor'ü davranış değişikliğine
-çevirirdi ve gerçek bir düzeltme olsa bile 2900 satırlık bir taşıma
-commit'inin içinde gizlenmiş olurdu. Bulgu, düzeltilmesi gereken yerde
-görünür kalsın diye buraya yazıldı.
-
-Mevcut (hatalı) davranış [`tests/test_file_queries.py`](tests/test_file_queries.py)
-içinde `test_folder_view_does_NOT_filter_private_files` ve
-`test_tag_view_does_NOT_filter_private_files` ile **sabitlendi**. Bu testler
-bir onay değil, bir işaret: düzeltme yapıldığında ikisi de kırılacak ve
-güncellenmeleri gerekecek — yani düzeltme bilinçli bir karar olarak
-görünecek.
-
-### Yapılacaklar (uygulanmadı)
-
-1. `files_by_folder()` ve `files_by_tag()` fonksiyonlarına da
-   `include_private` parametresi ekle; `CORE/file_queries.py` içinde
-   `_EXCLUDE_PRIVATE` zaten hazır, tek satırlık ekleme.
-2. Çağrı yerlerini (`_load_folder_files`, `_load_tag_files`) diğer ikisiyle
-   aynı biçimde `include_private=self._role == "Yönetici"` ile bağla.
-3. `test_file_queries.py`'deki iki sabitleme testini yeni davranışa göre
-   güncelle (adlarındaki `does_NOT` ifadeleri de değişmeli).
-4. Kenar çubuğu engelini KALDIRMA — iki katman birlikte dursun.
-
-### Not — rol adı katman sınırında kalıyor
-
-`include_private` bilerek bir bool: `"Yönetici"` rol adı bir arayüz sabiti
-ve `CORE/file_queries.py` onu bilmiyor. Rol → yetki eşlemesini CORE'a
-taşımak ayrı bir iş (vault rolü ile `users.role` sütunu farklı şeyler ve
-şu an ikisi birbirine karışmış durumda).
 
 ---
 

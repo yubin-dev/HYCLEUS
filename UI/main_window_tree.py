@@ -204,7 +204,11 @@ class TreeMixin:
     def _load_folder_files(self, folder_id: int) -> None:
         self._table.setRowCount(0)
         try:
-            rows = files_by_folder(DBManager(), folder_id)
+            # B-007: diğer üç görünümle aynı biçimde role bağlı
+            rows = files_by_folder(
+                DBManager(), folder_id,
+                include_private=self._role == "Yönetici",
+            )
         except Exception as exc:
             QMessageBox.warning(self, "Veritabanı", str(exc))
             return
@@ -433,7 +437,11 @@ class TreeMixin:
     def _load_tag_files(self, tag_id: int) -> None:
         self._table.setRowCount(0)
         try:
-            rows = files_by_tag(DBManager(), tag_id)
+            # B-007: kenar çubuğu engeli KALDIRILMADI — iki katman birlikte
+            rows = files_by_tag(
+                DBManager(), tag_id,
+                include_private=self._role == "Yönetici",
+            )
         except Exception as exc:
             QMessageBox.warning(self, "Veritabanı", str(exc))
             return

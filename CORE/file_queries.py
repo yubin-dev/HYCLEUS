@@ -22,33 +22,41 @@ Dönen sütun kümesi dördünde de aynı: `_FILE_COLUMNS`. Arayüzün
 sabittir — sütun eklemek serbest, ÇIKARMAK arayüzü kırar.
 
 
-KORUNAN TUTARSIZLIK — mahrem etiket filtresi
---------------------------------------------
+GİDERİLEN TUTARSIZLIK — mahrem etiket filtresi (B-007)
+------------------------------------------------------
 Mahrem etiket (`tags.is_private = 1`) taşıyan dosyalar yönetici olmayan
-kullanıcılardan gizleniyor. Ama bu filtre dört görünümün yalnızca İKİSİNDE
-uygulanıyor:
+kullanıcılardan gizleniyor. Bu filtre artık **dört görünümde de** var:
 
-    files_by_label()   → filtre VAR      (include_private parametresi)
-    search_files()     → filtre VAR      (include_private parametresi)
-    files_by_tag()     → filtre YOK
-    files_by_folder()  → filtre YOK  ← asıl boşluk
+    files_by_label()   → include_private
+    search_files()     → include_private
+    files_by_tag()     → include_private   ← B-007'de eklendi
+    files_by_folder()  → include_private   ← B-007'de eklendi, asıl boşluk
 
-Etiket görünümü pratikte kapalı: mahrem etiketler yönetici olmayana
-kenar çubuğunda hiç gösterilmiyor ve tıklanması ayrıca engelleniyor
-(UI/main_window.py, `_refresh_tag_sidebar` ve `_on_tag_click`). Yani oraya
-ulaşmanın yolu yok.
+Eskiden yalnızca ilk ikisinde vardı. Etiket görünümü pratikte kapalıydı
+(mahrem etiketler yönetici olmayana kenar çubuğunda hiç çizilmiyor ve
+tıklanması ayrıca engelleniyor), ama **klasör görünümünde hiçbir engel
+yoktu**: yönetici olmayan bir kullanıcı klasöre girdiğinde o klasördeki
+mahrem dosyaları görüyordu — aynı dosyalar aramada gizlenirken.
 
-**Klasör görünümünde böyle bir engel yok.** Yönetici olmayan bir kullanıcı
-bir klasöre girdiğinde, o klasördeki mahrem etiketli dosyaları GÖRÜR —
-aynı dosyalar etiket görünümünde gizlenirken.
+Arayüz engelleri KALDIRILMADI. İki katman birlikte duruyor: kenar
+çubuğu mahrem etiketi çizmiyor, sorgu da satırı döndürmüyor. Kenar
+çubuğu mantığı bir gün değişirse sorgu artık ikinci bir engel sunuyor —
+eskiden sunmuyordu.
 
-Bu davranış BİLEREK olduğu gibi taşındı. 2.7 saf bir yeniden düzenleme:
-buradaki iş, mevcut davranışı test edilebilir hâle getirmek, düzeltmek
-değil. Filtreyi dört görünüme birden uygulamak refactor'ü davranış
-değişikliğine çevirirdi ve gerçek bir düzeltme olsaydı bile bu commit'te
-gizlenmiş olurdu. Bulgu BACKLOG.md'ye yazıldı ve mevcut hâli
-tests/test_file_queries.py içinde sabitlendi — yani düzeltildiğinde o test
-bilinçli olarak güncellenecek.
+Varsayılan `include_private=True` olarak KALDI. Ters çevirmek daha
+"güvenli" görünürdü ama sessiz bir davranış değişikliği olurdu: parametre
+geçmeyen her çağrı aniden veri gizlemeye başlardı ve bunun fark edilme
+yolu, kullanıcının dosyasını kaybetmesi olurdu. Çağrı yerlerinin dördü de
+parametreyi açıkça veriyor; bunu `tests/test_file_queries.py` içindeki
+AST denetimi koruyor.
+
+
+Rol adı katman sınırında kalıyor
+--------------------------------
+`include_private` bilerek bir bool: `"Yönetici"` bir arayüz sabiti ve
+CORE onu bilmiyor (bkz. tests/test_layering.py). Rol → yetki eşlemesini
+CORE'a taşımak ayrı bir iş; vault rolü ile `users.role` sütunu farklı
+şeyler.
 """
 from __future__ import annotations
 
@@ -104,34 +112,48 @@ def files_by_label(
     )
 
 
-def files_by_tag(db: Any, tag_id: int) -> list[sqlite3.Row]:
+def files_by_tag(
+    db: Any, tag_id: int, *, include_private: bool = True
+) -> list[sqlite3.Row]:
     """
     Bir etikete atanmış dosyalar.
 
-    Mahrem filtresi UYGULANMAZ — mevcut davranış birebir korunuyor. Pratikte
-    kapalı olmasının nedeni arayüzün mahrem etiketleri yönetici olmayana hiç
-    göstermemesi; sorgunun kendisi bir engel içermiyor. Bkz. modül
-    docstring'i, "KORUNAN TUTARSIZLIK".
+    Args:
+        include_private: False ise mahrem etiket taşıyan dosyalar
+                         listelenmez (B-007).
+
+    NOT: `include_private=False` iken MAHREM ETİKETİN KENDİSİ sorgulansa
+    bile sonuç boş döner — dosya, sorgulanan etiket yüzünden mahrem
+    sayılıyor. Bu doğru davranış: filtre "bu dosya mahrem mi", "hangi
+    etiketten geldi" değil.
     """
+    gizle = "" if include_private else _EXCLUDE_PRIVATE
     return db.fetchall(
         f"SELECT {_FILE_COLUMNS} FROM files f"
         f" INNER JOIN file_tags ft ON ft.file_id = f.id"
-        f" WHERE ft.tag_id = ? {_ORDER}",
+        f" WHERE ft.tag_id = ? {gizle} {_ORDER}",
         (tag_id,),
     )
 
 
-def files_by_folder(db: Any, folder_id: int) -> list[sqlite3.Row]:
+def files_by_folder(
+    db: Any, folder_id: int, *, include_private: bool = True
+) -> list[sqlite3.Row]:
     """
     Bir klasördeki dosyalar.
 
-    Mahrem filtresi UYGULANMAZ ve burada arayüz tarafında da bir engel yok —
-    yönetici olmayan bir kullanıcı klasöre girip mahrem etiketli dosyaları
-    görebiliyor. Bilinen boşluk, bilerek olduğu gibi taşındı; bkz. modül
-    docstring'i ve BACKLOG.md.
+    Args:
+        include_private: False ise mahrem etiket taşıyan dosyalar
+                         listelenmez (B-007).
+
+    B-007'nin asıl boşluğu buradaydı: bu görünümde arayüz tarafında da
+    hiçbir engel yoktu, yani mahrem dosyalar yönetici olmayana gerçekten
+    görünüyordu.
     """
+    gizle = "" if include_private else _EXCLUDE_PRIVATE
     return db.fetchall(
-        f"SELECT {_FILE_COLUMNS} FROM files f WHERE f.folder_id = ? {_ORDER}",
+        f"SELECT {_FILE_COLUMNS} FROM files f"
+        f" WHERE f.folder_id = ? {gizle} {_ORDER}",
         (folder_id,),
     )
 
