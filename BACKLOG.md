@@ -703,3 +703,139 @@ Aynı boşluk sürüm notlarını da etkiliyor: bir düzeltmenin hangi sürümde
 5. v2.2 planı tamamlandığında etiketi at ve üç yeri birden o değere
    çek — bugünkü sapmanın kaynağı, sürüm yükseltmenin tek bir yerde
    yapılamaması.
+
+---
+
+## B-018 — bandit'in susturulan denetimleri temizlenmedi
+
+**Durum:** Açık — CI yeşil, kurallar bilinçli olarak gevşek
+**Öncelik:** Düşük (teknik borç), **B-607 kısmı orta**
+**İlgili:** 3.5 (denetime hazırlık), B-002 ile birebir aynı desen
+**Bulundu:** 2026-08-16, bandit'in ilk taramasında
+
+### Bulgu
+
+bandit devreye alınırken mevcut kodu FAIL ettirmeyecek şekilde
+yapılandırıldı ([`pyproject.toml`](pyproject.toml) `[tool.bandit]`). İlk
+taramada 44 bulgu çıktı; hepsi LOW/MEDIUM, hiçbiri HIGH değil.
+
+| Denetim | Adet | Değerlendirme |
+|---|---:|---|
+| `B110` try/except/pass | 15 | "En iyi çaba" yolları. Bilinçli ama gerçekten geniş — `except Exception: pass` her hatayı yutuyor. |
+| `B608` f-string ile SQL | 13 | **On üçü de incelendi**, hiçbirinde kullanıcı girdisi enterpolasyona girmiyor. Değerler her yerde `?` ile bağlı. |
+| `B603` subprocess (shell=False) | 5 | Hepsi liste biçimi çağrı. |
+| `B404` subprocess import | 4 | Bilgi amaçlı, bulgu değil. |
+| `B607` kısmi çalıştırılabilir yolu | 3 | **Gerçek, düşük.** Aşağıya bakın. |
+| `B101`/`B105`/`B311`/`B606` | 1'er | Satırda `# nosec <ID>` ile gerekçeli susturuldu; bu dört denetim depo genelinde AÇIK kaldı. |
+
+### B-607 — tek gerçek bulgu
+
+Üç çağrı çalıştırılabiliri tam yolla vermiyor:
+
+| Yer | Komut |
+|---|---|
+| [`CORE/usb_manager.py`](CORE/usb_manager.py) | `wmic` |
+| [`UI/main_window_open.py`](UI/main_window_open.py) | `open` (macOS) |
+| [`UI/main_window_open.py`](UI/main_window_open.py) | `xdg-open` (Linux) |
+
+Kısmi yol, `PATH` üzerinden arama demek. Saldırganın `PATH`'te önce gelen
+bir dizine yazabildiği bir senaryoda kendi `wmic.exe`'si çalışır. Bu,
+makineye zaten yazma erişimi gerektiriyor — yani SECURITY.md §1'in
+sınırının içinde ve tek başına bir açık değil. Ama ucuz bir sertleştirme:
+`wmic` için `%SystemRoot%\System32\wbem\wmic.exe` tam yolu yazılabilir.
+
+`open` ve `xdg-open` Windows dışı yollar; HYCLEUS'un hedef platformu değil
+(o dalların kendisi geliştirme ortamı için duruyor).
+
+### Yapılacaklar (sırayla, ayrı ayrı ele alınabilir)
+
+1. `B607` — `wmic` çağrısına tam yol ver, `skips` listesinden `B607`'yi
+   çıkar. En yüksek değer/maliyet oranı burada.
+2. `B608` — susturmak yerine on üç satıra tek tek `# nosec B608` yaz ve
+   denetimi depo genelinde aç. Böylece YENİ bir f-string SQL yakalanır;
+   bugün yakalanmıyor.
+3. `B110` — `except Exception: pass` bloklarını daralt (beklenen istisna
+   tipini yaz) ya da en azından `_log.debug()` ekle. Sessizce yutulan bir
+   hata, olmayan bir hatadan ayırt edilemez.
+4. `B404`/`B603` — kalıcı istisna sayılabilir; `subprocess` kullanımı
+   bilinçli ve liste biçiminde.
+
+### Not
+
+`pyproject.toml`'daki gerekçe bloğunda ADETLER yazılı. Bir denetimin sayısı
+değişirse yeni bir şey girmiş demektir — sayılar bilerek orada duruyor,
+`tests/test_static_analysis.py::test_bandit_skips_listesi_belgeli` de her
+skip'in gerekçesinin var olduğunu denetliyor.
+
+---
+
+## B-019 — CI özet betiği `defusedxml` kullanmıyor
+
+**Durum:** Açık — bilinçli karar, gerekçesi kodda yazılı
+**Öncelik:** Düşük
+**Bulundu:** 2026-08-16, semgrep'in ilk taramasında
+
+[`.github/scripts/test_summary.py`](.github/scripts/test_summary.py) JUnit
+XML'ini `xml.etree.ElementTree` ile okuyor. semgrep iki yerde
+`use-defused-xml` veriyor.
+
+Bulgu teknik olarak geçerli: ElementTree "billion laughs" iç varlık
+genişlemesine açık (dış varlık çözümlemesi zaten desteklenmiyor).
+
+**Neden düzeltilmedi:** girdi, aynı CI işinde bir önceki adımda pytest'in
+ürettiği `test-results.xml`. Düşmanca XML yazabilen biri zaten CI çalışma
+alanında kod çalıştırabiliyor demektir — SECURITY.md §1'in sınırının
+içinde. Yalnızca bunun için yeni bir CI bağımlılığı eklemek, güvenlik
+odaklı bir projede bağımlılık yüzeyini kazanç olmadan büyütürdü.
+
+### Yapılacak (uygulanmadı)
+
+Yine de yapılacaksa iki satır: `requirements-dev.txt`'e `defusedxml`,
+betikte `from defusedxml.ElementTree import parse`. Karar, bağımlılık
+sayısını mı yoksa bulgu sayısını mı sıfırda tutmak istediğimize bağlı.
+Bugünkü tercih birincisi ve satırda `# nosemgrep` ile gerekçeli.
+
+---
+
+## B-020 — semgrep kural dosyasını yerel kod sayfasıyla okuyor
+
+**Durum:** Açık — yukarı akış (upstream) sorunu, geçici çözüm devrede
+**Öncelik:** Düşük (geliştirici deneyimi), ama TUZAK
+**Bulundu:** 2026-08-16
+
+semgrep 1.173 `.semgrep/hycleus.yml`'yi `Path.read_text()` ile, yani
+`locale.getencoding()` ile okuyor. Kural dosyası UTF-8 ve Türkçe karakter
+içeriyor; Windows'ta cp1254/cp1252 locale altında çağrı çıplak bir
+`UnicodeDecodeError` geri iziyle çöküyor:
+
+```
+UnicodeDecodeError: 'charmap' codec can't decode byte 0x9e in position 506
+```
+
+Bu B-013 ile **aynı sınıftan** bir hata — yalnızca bu sefer bizim kodumuzda
+değil, aracın kendisinde.
+
+### Geçici çözüm (devrede)
+
+semgrep'i çağıran her yer `PYTHONUTF8=1` geçiyor:
+
+| Yer | Nasıl |
+|---|---|
+| CI | `security` işinin `env:` bloğu |
+| Testler | `tests/test_static_analysis.py::_utf8_env()` |
+| Elle | `requirements-security.txt` başındaki komut satırı |
+
+### Tuzak
+
+`--quiet` bayrağı çöküş geri izini de bastırıyor. Yani hatalı ortamda
+komut sessizce exit 2 veriyor ve "bulgu yok" gibi görünüyor. Bu tuzağa bir
+kez düşüldü: kanarya testi ilk yazıldığında `--quiet` ile çalışıyordu ve
+çöküşü göremeyip "sorun düzelmiş" diye ATLADI. Test artık `--quiet`
+kullanmıyor; o satırın üstünde neden olduğu yazılı.
+
+### Yapılacak
+
+Yukarı akış düzeltirse: `PYTHONUTF8=1`'i üç yerden birden kaldır.
+`tests/test_static_analysis.py::test_windows_pythonutf8_olmadan_kural_dosyasi_okunamiyor`
+o gün otomatik olarak `skip`'e düşecek ve mesajında bunu söyleyecek —
+yani bu maddeyi kapatma zamanını test haber verecek.

@@ -443,7 +443,10 @@ class TreeMixin:
         name, ok = QInputDialog.getText(self, "Yeni Etiket", "Etiket adı:")
         if not ok or not name.strip():
             return
-        color = random.choice(_TAG_COLORS)
+        # Etiket rengi görsel bir tercih; hiçbir güvenlik kararına girmiyor.
+        # SECURITY.md §5'in "tüm rastgelelik os.urandom/secrets" iddiası
+        # anahtar, nonce, tuz ve Shamir katsayısı içindir — renk seçimi değil.
+        color = random.choice(_TAG_COLORS)  # nosec B311
         try:
             DBManager().execute(
                 "INSERT OR IGNORE INTO tags (name, color) VALUES (?, ?)",

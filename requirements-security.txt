@@ -1,0 +1,14 @@
+# Statik güvenlik analizi bağımlılıkları — yalnızca CI'ın `security` işi ve
+# elle çalıştırma için.
+#
+#   pip install -r requirements-security.txt
+#   PYTHONUTF8=1 semgrep scan --config=.semgrep/hycleus.yml CORE DB UI main.py
+#
+# requirements-dev.txt'ten AYRI tutuluyor: semgrep tekerleği ~57 MB ve test
+# matrisinin Windows ayağında hiçbir işe yaramıyor (statik analiz sonucu
+# platformdan bağımsız).
+-r requirements-dev.txt
+
+# Alt sınır, kuralların ve kanaryaların üzerinde doğrulandığı sürüm.
+# Daha eskisinin çalışmayacağı iddia edilmiyor — denenmedi.
+semgrep>=1.173

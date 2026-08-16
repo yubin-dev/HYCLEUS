@@ -1,0 +1,114 @@
+# HYCLEUS — projeye özel semgrep kuralları
+#
+# Bu dosya kayıt defteri paketlerinin (p/python, p/secrets, p/security-audit)
+# YERİNE değil, YANINA çalışır. Oradaki kurallar genel Python güvenliğine
+# bakıyor; buradakiler HYCLEUS'un SECURITY.md'de YAZILI olarak verdiği sözleri
+# denetliyor. Bir kural eklemeden önce sorulacak soru şu:
+#
+#     "Bu, belgede iddia ettiğimiz bir şeyi mi koruyor?"
+#
+# Cevap hayırsa kural buraya değil, kayıt defteri paketlerine ait.
+#
+# Ayrıca bunlar AĞ GEREKTİRMEZ. Kayıt defteri paketleri semgrep.dev'den
+# indiriliyor; o adres erişilemezse aşağıdaki kurallar yine çalışır.
+#
+# Her kuralın tests/canary_semgrep/ altında bir kanaryası var ve
+# tests/test_static_analysis.py her kuralın kanaryasında GERÇEKTEN
+# tetiklendiğini doğruluyor. Tetiklenmeyen bir kural, geçen bir tarama
+# üretir — sessizce.
+
+rules:
+  # ── R1 ──────────────────────────────────────────────────────────────────────
+  - id: hycleus-weak-random-in-core
+    languages: [python]
+    severity: ERROR
+    paths:
+      include:
+        - "CORE/"
+        - "DB/"
+    patterns:
+      - pattern-either:
+          - pattern: random.$F(...)
+          - pattern: from random import $F
+      - pattern-not: random.SystemRandom(...)
+    message: >-
+      CORE/ ve DB/ içinde `random` modülü kullanılamaz. SECURITY.md §5
+      "tüm rastgelelik os.urandom ve secrets'tan gelir" diyor — nonce'lar,
+      tuzlar, master key'ler ve Shamir polinom katsayısı dahil. Mersenne
+      Twister durumu 624 çıktıdan geri hesaplanabilir. `secrets` kullanın
+      (`secrets.token_bytes`, `secrets.randbelow`, `secrets.choice`).
+      Güvenlikle ilgisi olmayan bir kullanımsa satıra gerekçe yazıp
+      `# nosemgrep: hycleus-weak-random-in-core` ekleyin.
+
+  # ── R2 ──────────────────────────────────────────────────────────────────────
+  - id: hycleus-aes-ecb-mode
+    languages: [python]
+    severity: ERROR
+    pattern-either:
+      - pattern: modes.ECB(...)
+      - pattern: cryptography.hazmat.primitives.ciphers.modes.ECB(...)
+      - pattern: AES.new($K, AES.MODE_ECB, ...)
+    message: >-
+      ECB modu blok desenlerini sızdırır ve kimlik doğrulama sağlamaz.
+      HYCLEUS'un kabı AES-256-GCM (SECURITY.md §5) ve bütünlük garantisi
+      GCM tag'ine dayanıyor; ECB o garantiyi sessizce ortadan kaldırır.
+
+  # ── R3 ──────────────────────────────────────────────────────────────────────
+  - id: hycleus-gcm-literal-nonce
+    languages: [python]
+    severity: ERROR
+    pattern-either:
+      - pattern: AESGCM(...).encrypt("...", ...)
+      - pattern: AESGCM(...).decrypt("...", ...)
+      - patterns:
+          - pattern-inside: |
+              $A = AESGCM(...)
+              ...
+          - pattern-either:
+              - pattern: $A.encrypt("...", ...)
+              - pattern: $A.decrypt("...", ...)
+      - pattern: modes.GCM("...", ...)
+    message: >-
+      GCM nonce'u sabit bir literal olamaz. Aynı anahtarla nonce tekrarı
+      GCM'de yalnızca gizliliği değil, KİMLİK DOĞRULAMAYI da yıkar: iki
+      mesajdan authentication key kurtarılabilir ve saldırgan geçerli tag
+      üretebilir. HYCLEUS her dosyaya `os.urandom(12)` ile yeni nonce
+      veriyor (SECURITY.md §5) — şeffaf erişimde geri şifreleme de dahil.
+
+  # ── R4 ──────────────────────────────────────────────────────────────────────
+  - id: hycleus-static-kdf-salt
+    languages: [python]
+    severity: ERROR
+    pattern-either:
+      - pattern: hashlib.pbkdf2_hmac($H, $P, "...", ...)
+      - pattern: hashlib.scrypt($P, salt="...", ...)
+      - pattern: PBKDF2HMAC(..., salt="...", ...)
+      - pattern: Scrypt(..., salt="...", ...)
+      - pattern: $H.hash($P, salt="...")
+      - pattern: hash_secret(..., "...", ...)
+    message: >-
+      KDF tuzu sabit bir literal olamaz. Sabit tuz, önceden hesaplanmış
+      tabloları (rainbow table) tekrar kullanılabilir kılar ve aynı PIN'e
+      sahip iki kullanıcının hash'ini eşitler. HYCLEUS vault'u Argon2id'yi
+      kayıt başına `os.urandom` tuzuyla çağırıyor (SECURITY.md §5).
+
+  # ── R5 ──────────────────────────────────────────────────────────────────────
+  - id: hycleus-hardcoded-key-material
+    languages: [python]
+    severity: ERROR
+    patterns:
+      - pattern: $NAME = "..."
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i).*(master_key|secret_key|_nonce|nonce_|^nonce$|_salt|salt_|^salt$|_iv$|^iv$|aes_key|enc_key|private_key).*
+      - metavariable-pattern:
+          metavariable: $NAME
+          language: generic
+          patterns:
+            - pattern-not-regex: (?i).*(prefix|suffix|username|_name|label|setting|column|table|field|header|magic|format)
+    message: >-
+      Anahtar/nonce/tuz benzeri bir isme sabit bir literal atanıyor. Bu
+      değerler çalışma zamanında `os.urandom` veya `secrets` ile
+      üretilmeli; kaynak koda gömülen bir değer depoyu okuyan herkeste
+      var demektir. Test verisiyse `tests/` altına taşıyın — semgrep orayı
+      taramıyor.

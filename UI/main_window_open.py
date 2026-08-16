@@ -68,7 +68,12 @@ def open_with_default_app(path: Path) -> None:
     ve test ortamları için duruyor.
     """
     if sys.platform == "win32":
-        os.startfile(str(path))  # type: ignore[attr-defined]  # noqa: S606
+        # B606 (kabuksuz süreç başlatma): kabuk zaten yok — os.startfile
+        # Windows'un kendi dosya ilişkilendirmesini çağırır, komut satırı
+        # birleştirmesi yapmaz. Aşağıdaki susturma bilerek ID'siz: bandit
+        # 1.9'da ID verilirse bulgu susuyor ama yanında "no failed test"
+        # uyarısı basılıyor (B606 eklentisinin raporlama kimliği farklı).
+        os.startfile(str(path))  # type: ignore[attr-defined]  # noqa: S606  # nosec
     elif sys.platform == "darwin":
         subprocess.Popen(["open", str(path)])
     else:

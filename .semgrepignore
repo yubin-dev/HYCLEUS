@@ -1,0 +1,26 @@
+# HYCLEUS — semgrep hedef filtresi
+#
+# DİKKAT: bu dosya semgrep'in varsayılan yoksayma listesinin YANINA değil,
+# YERİNE geçer. Varsayılan liste `tests/` dizinini de eliyordu; burada
+# BİLEREK elenmiyor, çünkü `tests/canary_semgrep/` altındaki kanarya
+# dosyalarının taranabilmesi gerekiyor (bkz. o dizindeki README).
+#
+# Asıl tarama zaten hedefleri açıkça veriyor:
+#     semgrep scan --config=... CORE DB UI main.py
+# yani `tests/` oraya hiç girmiyor. Kanaryalar ayrı bir çağrıyla,
+# tests/test_static_analysis.py içinden taranıyor.
+
+.git/
+.venv/
+venv/
+build/
+dist/
+__pycache__/
+*.pyc
+
+# Kullanıcı verisi ve üretilen dosyalar — kod değil
+data/
+vaults/
+*.hcl
+*.hclv
+test-results.xml

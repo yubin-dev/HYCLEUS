@@ -338,7 +338,8 @@ class LoginDialog(QDialog):
             self._init_card(640, 760)
             self._build_setup_ui()
         else:
-            assert secret is not None
+            # Tip daraltma; güvenlik kontrolü değil (mypy None'ı burada eliyor).
+            assert secret is not None  # nosec B101
             self._secret = secret
             self._init_card(640, 720)
             self._build_main_ui()

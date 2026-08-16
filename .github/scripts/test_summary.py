@@ -25,6 +25,14 @@ Kullanım:
 from __future__ import annotations
 
 import sys
+
+# ElementTree "billion laughs" iç varlık genişlemesine açıktır (dış varlık
+# çözümlemesi zaten desteklenmiyor). Burada girdi, AYNI CI işinde bir önceki
+# adımda pytest'in ürettiği test-results.xml — düşmanca XML yazabilen biri
+# zaten CI çalışma alanında kod çalıştırabiliyor demektir, yani SECURITY.md
+# §1'in sınırının içinde. `defusedxml` bağımlılığı bu yüzden eklenmedi;
+# karar BACKLOG.md / B-019'da kayıtlı.
+# nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,7 +89,8 @@ def parse(path: Path) -> tuple[Totals, list[str]]:
     pytest kök öğe olarak <testsuites> yazıyor ama tek bir <testsuite> de
     geçerli JUnit — ikisi de destekleniyor.
     """
-    root = ET.parse(path).getroot()
+    # nosemgrep: python.lang.security.use-defused-xml-parse.use-defused-xml-parse
+    root = ET.parse(path).getroot()  # girdi: pytest'in kendi çıktısı — bkz. import
     suites = (
         [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
     )

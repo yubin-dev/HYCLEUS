@@ -31,7 +31,20 @@ from UI.main_window import HycleusWindow
 
 
 def _dev_key(hwid: str) -> bytes:
-    """DEV_MODE için HWID'den deterministik 32-byte anahtar türetir."""
+    """
+    DEV_MODE için HWID'den deterministik 32-byte anahtar türetir.
+
+    Sabit tuz BİLİNÇLİ ve kaldırılamaz: bu türetmenin tek işi aynı HWID'den
+    her seferinde aynı anahtarı üretmek. Rastgele tuz onu imkânsız kılardı —
+    tuzun kendisini bir yere yazmak gerekirdi ve o yer zaten anahtarın
+    kendisini yazabileceğimiz yer olurdu.
+
+    Bu, güvenlik açığı değil, BELGELENMİŞ bir zayıflık: SECURITY.md §4.3
+    "DEV_MODE dosya anahtarını yalnızca HWID'den türetir" diyor. DEV_MODE
+    üretimde kapalıdır; açıkken kasa PIN ve TOTP olmadan da açılır, yani
+    tuz bu tabloda en zayıf halka bile değil.
+    """
+    # nosemgrep: hycleus-static-kdf-salt
     return hashlib.pbkdf2_hmac(
         "sha256",
         hwid.encode(),

@@ -5,3 +5,15 @@
 pytest>=9.1
 ruff>=0.16
 mypy>=2.3
+
+# Statik güvenlik analizi (bkz. SECURITY.md §6.8)
+#
+# `[toml]` ekstrası ZORUNLU: yapılandırma pyproject.toml içinde ve bandit
+# TOML okumak için `tomli`ye ihtiyaç duyuyor. Çalıştırma:
+#     bandit -c pyproject.toml -r CORE DB UI main.py
+bandit[toml]>=1.9
+
+# semgrep BURADA DEĞİL — requirements-security.txt içinde.
+# Sebep: tekerleği ~57 MB ve test matrisinin iki ayağında da indirilmesi
+# gerekmiyor. Statik analiz sonucu platformdan bağımsız; ayrı bir işte
+# (ci.yml / `security`) yalnızca Linux'ta çalışıyor.

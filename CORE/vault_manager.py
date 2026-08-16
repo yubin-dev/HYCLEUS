@@ -606,7 +606,8 @@ def authenticate_usb(hwid: str) -> None:
         _reject(str(exc))
 
     # ── Katman 3: Token ID eşleşiyor mu? ─────────────────────────────────────
-    vault_token_hex = ""  # NoReturn _reject garantisi; başlangıç değeri tip sinyali için
+    # Sabit parola değil; bandit adında "token" geçtiği için yakalıyor.
+    vault_token_hex = ""  # NoReturn _reject garantisi, tip sinyali  # nosec B105
     try:
         vault_token_hex = _read_vault_token_id(hwid).hex()
     except VaultTamperedError as exc:

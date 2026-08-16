@@ -1,8 +1,8 @@
-# HYCLEUS — lint / tip denetimi yapılandırması
+# HYCLEUS — lint / tip denetimi / statik güvenlik analizi yapılandırması
 #
 # Bu dosya paketleme için değil, yalnızca araç ayarları içindir.
 # Runtime bağımlılıkları requirements.txt, CI bağımlılıkları requirements-dev.txt.
-# pytest ayarları pytest.ini içindedir.
+# pytest ayarları pytest.ini, semgrep kuralları .semgrep/ içindedir.
 
 # ── ruff ──────────────────────────────────────────────────────────────────────
 [tool.ruff]
@@ -58,3 +58,37 @@ warn_unused_ignores = false
 
 # UI/ hariç: PySide6 ağırlıklı, resmi stub'ı yok — ayrı bir işte ele alınacak.
 exclude = ["^UI/"]
+
+# ── bandit ────────────────────────────────────────────────────────────────────
+# Çalıştırma:  bandit -c pyproject.toml -r CORE DB UI main.py
+# `-c pyproject.toml` ZORUNLU — bandit bu dosyayı kendiliğinden bulmaz.
+# TOML okuyabilmesi için `bandit[toml]` kurulu olmalı (requirements-dev.txt).
+#
+# Gevşek başlangıç, ruff'takiyle aynı gerekçe: amaç CI'ı yeşile almak, mevcut
+# kodu yeniden yazmak değil. Sıkılaştırma ayrı bir iş — bkz. BACKLOG.md / B-018.
+[tool.bandit]
+# tests/ hariç: fuzz harness'ları ve kripto testleri bilerek bozuk girdi üretir;
+# bandit orada anlamlı bir şey söylemiyor.
+exclude_dirs = ["tests", "build", "dist", ".venv", "__pycache__"]
+
+# Aşağıdaki denetimler 2026-08-16 taramasında toplu olarak tetiklendi ve tek
+# tek incelendi. Her biri için gerekçe yazılı; ADET bilgisi bilerek burada:
+# sayı değişirse yeni bir şey girmiş demektir.
+#
+#   B110 · 15× · try/except/pass — hepsi "en iyi çaba" yolları (konsol
+#          yeniden yapılandırma, WMI sondası, keyring erişimi). Bilinçli
+#          desen ama gerçekten geniş; teker teker daraltılmalı → B-018.
+#   B608 · 13× · f-string ile SQL — ON ÜÇÜ DE incelendi, hiçbirinde
+#          kullanıcı girdisi enterpolasyona girmiyor: sabit sütun listeleri
+#          (_FILE_COLUMNS, _ORDER, _EXCLUDE_PRIVATE), sabit tablo demeti
+#          (backup.RESTORABLE_TABLES) ve allowlist'ten geçmiş sütun adları
+#          (retention.update_profile). Değerler her yerde `?` ile bağlı.
+#   B603 ·  5× · subprocess, shell=False — hepsi liste biçimi çağrı.
+#   B404 ·  4× · "subprocess import ettin" — bilgi amaçlı, bulgu değil.
+#   B607 ·  3× · kısmi yol (`wmic`, `open`, `xdg-open`) — GERÇEK ama düşük:
+#          Windows'ta PATH ele geçirilmişse. Tek başına ele alınmalı → B-018.
+#
+# Tek tek görülenler burada DEĞİL, kaynak satırında `# nosec <ID>` ile
+# gerekçeli olarak susturuldu (B101, B105, B311, B606) — böylece o dört
+# denetim depo genelinde AÇIK kalıyor.
+skips = ["B110", "B404", "B603", "B607", "B608"]
