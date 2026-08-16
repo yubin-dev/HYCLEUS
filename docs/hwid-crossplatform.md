@@ -79,6 +79,12 @@ başına yetmiyor (prototipte `normalize_serial()` bunu kapatıyor).
 > | `Win32_DiskDrive.SerialNumber` | **aynı dize** — bu aygıtta alan belirsizliği yok |
 > | `usb_manager.get_usb_hwid()` | seriyi döndürüyor; `_sanitize_hwid()` hiçbir karakteri düşürmüyor |
 > | `data/usb_ids.json` | **dosya yok** — UUID fallback'i hiç kullanılmamış |
+> | Aynı çubuk **başka bir portta** | **HWID birebir aynı** — ölçüldü, çıkarım değil |
+>
+> Son satır bu belgenin "üretilen kimlik port yoluna bağlı" uyarısını
+> geçersiz kılmıyor: o uyarı **serisiz** aygıtlar için geçerli ve geçerli
+> kalıyor. Serisi olan aygıtta instance ID zaten serinin kendisi, içinde
+> port bilgisi yok — taşınacak bir bağımlılık da yok.
 >
 > Aynı makinedeki 14 USB düğümünden yalnızca bu 1'inde seri var. Yani
 > "opsiyonel alan, çoğu aygıtta yok" gözlemi **doğru ama yanlış popülasyon

@@ -546,14 +546,16 @@ erişilemiyor" ile "yedek eski" farklı mesajlar.
 
 ---
 
-## B-016 — Çapraz platform HWID kararı (Windows ölçüldü, karar bekliyor)
+## B-016 — Çapraz platform HWID kararı (Windows kapandı, Linux ayağı kaldı)
 
-**Durum:** Açık — **karar verilmedi**, ama artık ölçüm eksikliğinden değil
-**Öncelik:** Düşük — ölçüm aciliyeti düşürdü (aşağıya bakın)
+**Durum:** Açık — Windows tarafında sorulacak şey kalmadı; **yalnızca Linux
+ölçümü bekliyor**
+**Öncelik:** Düşük — ölçümler aciliyeti düşürdü (aşağıya bakın)
 **İlgili:** 3.4 prototipi — [`CORE/hwid_probe.py`](CORE/hwid_probe.py),
 [`docs/hwid-crossplatform.md`](docs/hwid-crossplatform.md), B-022
 **Bulundu:** 2026-08-15
-**Ölçüldü:** 2026-08-16 — **gerçek USB token fiziksel olarak takılı halde**
+**Ölçüldü:** 2026-08-16 — gerçek USB token fiziksel olarak takılı halde,
+**iki ayrı portta**
 
 ### Neden açık madde
 
@@ -612,14 +614,44 @@ değiştirmek değil.
 dayanıyor. Seri taşımayan ucuz bir çubukla kaydolmuş bir kullanıcı hâlâ
 `usb_ids.json` yoluna düşer ve o kullanıcı için taşınabilirlik kırık.
 
-### Kalan ölçümler (ucuz, ikisi de birkaç dakika)
+### Port bağımsızlığı — artık çıkarım değil, ölçüm (2026-08-16)
 
-1. **Aynı çubuk başka bir USB portunda** — HWID değişmiyor mu. Beklenti
-   değişmemesi: instance ID'de `&` yok, yani Windows aygıtın bildirdiği
-   seriyi kullanıyor (Microsoft "Device instance IDs"), port yolunu değil.
-   Belgelenmiş kuraldan **çıkarım**, ölçüm değil.
-2. **Aynı çubuk Linux'ta** — `ID_SERIAL_SHORT` aynı dizeyi mi veriyor.
-   Çapraz platform iddiasının tek gerçek testi bu.
+Aynı çubuk **başka bir fiziksel porta** takılıp `get_usb_hwid()` tekrar
+okundu. Sonuç: **HWID birebir aynı** — iki okuma karakter karakter eşleşti,
+uzunluk 20. `usb_ids.json` yine oluşmadı.
+
+(Karşılaştırma bellekte yapıldı; ne değer ne de özeti buraya yazıldı. Seri
+uzayı pratikte `4C53` + 16 hane, yani kısa bir özet öneki bile kaba kuvvete
+açık bir ipucu olurdu — `hwid` `_derive_signing_key()`'in HKDF girdisi.)
+
+Yeni porttaki konum (ileride tekrar ölçmek isteyen için taban çizgisi):
+
+```
+DEVPKEY_Device_LocationInfo  = Port_#0009.Hub_#0004
+DEVPKEY_Device_Parent        = USB\ROOT_HUB30\7&dacba&0&0
+```
+
+Bu, verinin yapısıyla da tutarlı ve sebebi görünür durumda:
+
+- USB yığını düğümünün instance ID'si **serinin kendisi** — içinde port ya
+  da hub bilgisi yok, dolayısıyla taşınacak bir port bağımlılığı yok.
+- USBSTOR düğümündeki `&0` soneki bir **örnek sayacı**, port numarası
+  değil.
+
+Yani "seri port yoluna bağlı değil" artık belgelenmiş kuraldan çıkarım
+değil, bu aygıtta ölçülmüş bir gerçek.
+
+> **Ölçümün sınırı:** portun gerçekten değiştiği kullanıcının beyanına
+> dayanıyor. İlk ölçümde `LocationInfo` kaydedilmemişti, bu yüzden iki
+> konum programatik olarak karşılaştırılamadı. Yukarıdaki taban çizgisi
+> tam da bunun için yazıldı — bir sonraki port testi karşılaştırılabilir
+> olacak.
+
+### Kalan tek ölçüm
+
+**Aynı çubuk Linux'ta** — `ID_SERIAL_SHORT` aynı dizeyi mi veriyor.
+Çapraz platform iddiasının tek gerçek testi bu; Windows tarafında
+sorulacak bir şey kalmadı.
 
 ### Dikkat
 
