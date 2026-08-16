@@ -2,9 +2,11 @@
 
 **Durum:** 3.4 prototip raporu · Kod: `CORE/hwid_probe.py` (uygulamaya bağlı DEĞİL)
 
-> ⛔ **Bu belgedeki öneri UYGULANMADI ve şimdilik uygulanmayacak.** Dayandığı
-> ölçümün bir bacağı eksik: sayım sırasında gerçek HYCLEUS token USB'si takılı
-> değildi. Açık madde: **BACKLOG.md / B-016**.
+> ⛔ **Bu belgedeki öneri UYGULANMADI ve uygulanmayacak — eksik bacak
+> 2026-08-16'da ölçüldü ve öneriyi zayıflattı.** Gerçek HYCLEUS token USB'si
+> takılı halde yapılan ölçümde **aygıtın serisi çıktı** ve temiz okundu; UUID
+> fallback'ine hiç düşülmüyor. Aşağıdaki §"Sınır" bloğu ve sonuçlar bu bulguya
+> göre okunmalı. Ayrıntı ve güncel karar: **BACKLOG.md / B-016**.
 
 ---
 
@@ -42,8 +44,12 @@ USB\VID_048D&PID_5702\8&F2CB6FA&0&16
 aygıtta şöyle görünür:
 
 ```
-USB\VID_0781&PID_5567\4C530001120523104381
+USB\VID_0781&PID_5567\4C53XXXXXXXXXXXXXXXX
 ```
+
+(Bu biçimin gerçekten böyle olduğu 2026-08-16'da doğrulandı — aşağıdaki
+sınır bloğuna bakın. Seri maskeli, çünkü HWID kasa imza anahtarının HKDF
+girdisi.)
 
 **On iki aygıtın on ikisinde de üretilmiş kimlik var, gerçek seri yok.**
 Üretilen kimlik `<hex>&<hex>&<port>` biçiminde ve **hub/port yoluna
@@ -60,17 +66,33 @@ Alt çizgiler ve sondaki nokta Windows'un eklediği biçim; Linux aynı aygıt
 için biçimlendirmesiz dize verir. Ham metin karşılaştırması bu yüzden tek
 başına yetmiyor (prototipte `normalize_serial()` bunu kapatıyor).
 
-> **Sınır — bu ölçüm HYCLEUS'un kendi USB'sini ÖLÇMEDİ.** Sayım sırasında
-> fiziksel bir HYCLEUS kimlik doğrulama USB'si takılı değildi; yukarıdaki
-> aygıtlar dahili donanım: klavye, fare, kamera, Bluetooth, hub. USB
-> *depolama* çubuklarının serisi olma oranı bunlardan yüksek olabilir.
+> **Sınır — yukarıdaki sayım HYCLEUS'un kendi USB'sini ÖLÇMEMİŞTİ.** O
+> sırada fiziksel bir HYCLEUS kimlik doğrulama USB'si takılı değildi;
+> sayılan aygıtlar dahili donanımdı: klavye, fare, kamera, Bluetooth, hub.
 >
-> "Opsiyonel alan, çoğu aygıtta yok" gözlemi geçerliliğini koruyor (spec'te
-> yazılı) ve HYCLEUS'un kodunda zaten bir UUID fallback'i olması sahada da
-> karşılaşıldığını gösteriyor — ama "HYCLEUS'un fiilen kullandığı USB'de
-> seri yok" iddiası **doğrulanmadı**. Eksik ölçüm açık madde olarak
-> BACKLOG.md / B-016'da duruyor; token geçişi o ölçüm yapılana kadar
-> başlatılmayacak.
+> **2026-08-16 — eksik ölçüm yapıldı, sonuç bu belgenin sonucunu daraltıyor.**
+> Kayıtlı token (SanDisk Cruzer Blade, `VID_0781`/`PID_5567`) takılı halde:
+>
+> | Okuma | Sonuç |
+> |---|---|
+> | USB yığını düğümü `USB\VID_0781&PID_5567\<instance>` | **tanımlayıcı serisi VAR** — `<instance>` içinde `&` yok |
+> | `Win32_DiskDrive.SerialNumber` | **aynı dize** — bu aygıtta alan belirsizliği yok |
+> | `usb_manager.get_usb_hwid()` | seriyi döndürüyor; `_sanitize_hwid()` hiçbir karakteri düşürmüyor |
+> | `data/usb_ids.json` | **dosya yok** — UUID fallback'i hiç kullanılmamış |
+>
+> Aynı makinedeki 14 USB düğümünden yalnızca bu 1'inde seri var. Yani
+> "opsiyonel alan, çoğu aygıtta yok" gözlemi **doğru ama yanlış popülasyon
+> için**: dahili çevre birimleri serisiz, USB *depolama* aygıtı serili.
+> "HYCLEUS'un fiilen kullandığı USB'de seri yok" iddiası ise **yanlış
+> çıktı**.
+>
+> Serinin değeri burada yazılmıyor: `hwid`, `_derive_signing_key()` içinde
+> HKDF girdisi ve kasa AAD'ı, yani gizli-bitişik. Biçimi
+> `4C53` + 16 onaltılık hane.
+>
+> Ölçüm ayrıca prototipin kendisinde bir hata ortaya çıkardı — bu aygıta
+> "seri yok" dedi (**B-022**). Prototipin çıktısına değil, yukarıdaki ham
+> WMI okumalarına güvenin.
 
 ---
 

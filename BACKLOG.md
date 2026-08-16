@@ -546,65 +546,87 @@ erişilemiyor" ile "yedek eski" farklı mesajlar.
 
 ---
 
-## B-016 — Çapraz platform HWID kararı ölçümü bekliyor
+## B-016 — Çapraz platform HWID kararı (Windows ölçüldü, karar bekliyor)
 
-**Durum:** Açık — **karar verilmedi, bilerek**
-**Öncelik:** Orta (mimari karar; bugün çalışan bir şeyi bozmuyor)
+**Durum:** Açık — **karar verilmedi**, ama artık ölçüm eksikliğinden değil
+**Öncelik:** Düşük — ölçüm aciliyeti düşürdü (aşağıya bakın)
 **İlgili:** 3.4 prototipi — [`CORE/hwid_probe.py`](CORE/hwid_probe.py),
-[`docs/hwid-crossplatform.md`](docs/hwid-crossplatform.md)
+[`docs/hwid-crossplatform.md`](docs/hwid-crossplatform.md), B-022
 **Bulundu:** 2026-08-15
+**Ölçüldü:** 2026-08-16 — **gerçek USB token fiziksel olarak takılı halde**
 
 ### Neden açık madde
 
 3.4 turunda "USB donanım serisi üç işletim sisteminde tutarlı okunuyor mu"
 sorusu araştırıldı ve rapor "hayır, dosya tabanlı token'a geçilmeli" dedi.
-Bu öneri **henüz uygulanmayacak** çünkü dayandığı ölçümün bir bacağı
-eksik.
+O rapor, HYCLEUS'un fiilen kullandığı USB takılı **değilken** yazılmıştı.
 
-### Ölçümün eksik bacağı
+### Ölçüm sonucu — gerçek USB ile doğrulandı
 
-Geliştirme makinesindeki 12 USB aygıtının hiçbirinde gerçek `iSerialNumber`
-bulunmadı. Ancak ölçüm sırasında **fiziksel bir HYCLEUS kimlik doğrulama
-USB'si takılı değildi** — sayılan aygıtlar dahili donanımdı: web kamerası,
-Bluetooth radyosu, klavye/fare alıcısı, hub denetleyicileri.
+Aygıt: SanDisk Cruzer Blade, `VID_0781` / `PID_5567`, 14,6 GB.
 
-Bu, iki farklı iddiayı ayırmayı gerektiriyor:
+Seri numarası **var ve temiz okunuyor.** Değeri buraya yazılmıyor: `hwid`
+`_derive_signing_key()` içinde HKDF girdisi ve kasa dosyasının AAD'ı
+(`CORE/vault_manager.py`), yani gizli-bitişik bir değer. Biçimi:
 
-| İddia | Durum |
+```
+20 karakter, [0-9A-F], SanDisk ön eki '4C53' + 16 hane   →  4C53XXXXXXXXXXXXXXXX
+```
+
+Okunan alanlar:
+
+| Kaynak | Değer |
 |---|---|
-| "USB spec'inde `iSerialNumber` opsiyoneldir ve çoğu aygıtta yok" | **Geçerli** — ölçüldü, ayrıca spec'te yazılı (USB 2.0 §9.6.1) |
-| "Üç OS farklı yığınlardan okuyor, aynı alan garanti değil" | **Geçerli** — belgelenmiş API farkı |
-| "HYCLEUS'un fiilen kullandığı USB'de seri yok" | **DOĞRULANMADI** |
-| "Serisiz USB başka makinede farklı HWID alır" | **Geçerli** — `usb_ids.json` makineye özel, koddan okunuyor |
+| `USB\VID_0781&PID_5567\<instance>` (USB yığını) | `<seri>` — üçüncü segmentte `&` yok, yani **tanımlayıcı serisi** |
+| `USBSTOR\DISK&VEN_SANDISK&…\<instance>` (depolama yığını) | `<seri>&0` — aynı seri, USBSTOR'un eklediği `&0` örnek soneki |
+| `Win32_DiskDrive.SerialNumber` | `<seri>` — **birebir aynı** |
+| `usb_manager.get_usb_hwid()` | `<seri>` — `_sanitize_hwid()` hiçbir karakteri düşürmüyor |
+| `data/usb_ids.json` | **dosya yok** — UUID fallback'ine hiç düşülmemiş |
 
-Yani öneriyi ayakta tutan gerekçe (son satır) ölçüme bağlı değil; ama
-"sorun ne kadar yaygın" sorusunun yanıtı bağlı. USB *depolama* aygıtlarının
-seri taşıma oranı, dahili çevre birimlerinden yüksek olabilir.
+3.4'ün korktuğu **alan belirsizliği bu aygıtta yok**: depolama yığını ile
+USB tanımlayıcısı aynı dizeyi söylüyor. Linux'un `ID_SERIAL_SHORT`'u da
+iSerialNumber'dan doldurduğu için aynı dizeyi vermesi bekleniyor — ama
+bu **ölçülmedi**, çıkarım.
 
-### Yapılacak — tek bir ölçüm
+Aynı makinedeki 14 USB düğümünden (kök hublar hariç) **yalnızca 1'inde**
+tanımlayıcı serisi var: o da bu token. Diğer 13'ü serisiz. Yani 3.4'ün
+"çoğu aygıtta seri yok" bulgusu **doğruydu** ama yanlış popülasyonu
+ölçüyordu: dahili çevre birimleri serisiz, USB *depolama* aygıtı serili.
 
-Kayıtlı HYCLEUS token USB'si **fiziksel olarak takılıyken**:
+### Buradan çıkan karar
 
-```
-python -m CORE.hwid_probe
-```
+| İddia | Ölçümden sonra |
+|---|---|
+| "USB spec'inde `iSerialNumber` opsiyoneldir, çoğu aygıtta yok" | **Geçerli** — 14 düğümün 13'ü |
+| "Üç OS farklı yığınlardan okuyor, aynı alan garanti değil" | **Geçerli** ama bu aygıtta iki Windows yığını uyuşuyor |
+| "HYCLEUS'un fiilen kullandığı USB'de seri yok" | **YANLIŞ** — seri var, temiz okunuyor, fallback'e düşülmüyor |
+| "Serisiz USB başka makinede farklı HWID alır" | **Geçerli** — ama bu token serisiz değil, dolayısıyla etkilenmiyor |
 
-Çıktıda bakılacak: `iSerialNumber` var mı, `Win32_DiskDrive.SerialNumber`
-ile `PNPDeviceID`'nin üçüncü segmenti aynı şeyi mi söylüyor, ve
-`_get_or_create_uuid()` fallback'ine düşülüyor mu.
+Karar ağacının "**Seri VAR ve temiz okunuyorsa**" dalındayız: dosya tabanlı
+token'a geçiş **aciliyetini yitirdi**. Taşınabilirlik sorunu yalnızca
+serisiz aygıtlarda kalıyor ve orada nokta atışı çözüm `usb_ids.json`
+eşlemesini makine yerine USB'nin kendisine taşımak — tüm mimariyi
+değiştirmek değil.
 
-Mümkünse aynı çubuk Linux'ta da takılıp karşılaştırılmalı; ama Windows
-ölçümü tek başına kararı büyük ölçüde belirler.
+**Bu madde yine de kapanmıyor**, çünkü karar tek bir aygıtın ölçümüne
+dayanıyor. Seri taşımayan ucuz bir çubukla kaydolmuş bir kullanıcı hâlâ
+`usb_ids.json` yoluna düşer ve o kullanıcı için taşınabilirlik kırık.
 
-### Karar ağacı (ölçümden sonra)
+### Kalan ölçümler (ucuz, ikisi de birkaç dakika)
 
-- **Seri VAR ve temiz okunuyorsa** — geçiş aciliyeti düşer; taşınabilirlik
-  sorunu yalnızca serisiz aygıtlarda kalır, `usb_ids.json` fallback'i
-  USB'ye taşınarak nokta atışı çözülebilir.
-- **Seri YOKSA** — `docs/hwid-crossplatform.md` içindeki dosya tabanlı
-  token taslağı uygulanmalı (§"Taslak geçiş yolu", 5 adım). Geçişin
-  kritik adımı 3. madde: mevcut HWID token dosyasına gömülmeli, yoksa
-  tüm kullanıcılar kurtarma parçasına muhtaç kalır.
+1. **Aynı çubuk başka bir USB portunda** — HWID değişmiyor mu. Beklenti
+   değişmemesi: instance ID'de `&` yok, yani Windows aygıtın bildirdiği
+   seriyi kullanıyor (Microsoft "Device instance IDs"), port yolunu değil.
+   Belgelenmiş kuraldan **çıkarım**, ölçüm değil.
+2. **Aynı çubuk Linux'ta** — `ID_SERIAL_SHORT` aynı dizeyi mi veriyor.
+   Çapraz platform iddiasının tek gerçek testi bu.
+
+### Dikkat
+
+Geçiş yapılırsa gerekçe **taşınabilirlik**tir, güvenlik değil. Token
+dosyası da seri numarası kadar kopyalanabilir; HWID zaten uygulama
+seviyesi bir kontrol (SECURITY.md §4.5). "Daha güvenli oldu" denirse
+yanlış olur.
 
 ### Dikkat
 
@@ -759,3 +781,88 @@ Yukarı akış düzeltirse: `PYTHONUTF8=1`'i üç yerden birden kaldır.
 `tests/test_static_analysis.py::test_windows_pythonutf8_olmadan_kural_dosyasi_okunamiyor`
 o gün otomatik olarak `skip`'e düşecek ve mesajında bunu söyleyecek —
 yani bu maddeyi kapatma zamanını test haber verecek.
+
+---
+
+## B-022 — `hwid_probe` serili aygıtı "serisiz" diye raporluyor
+
+**Durum:** Açık — prototipte, üretim kodunu etkilemiyor
+**Öncelik:** Düşük (yalnızca 3.4 prototipi; `usb_manager` doğru okuyor)
+**İlgili:** [`CORE/hwid_probe.py`](CORE/hwid_probe.py), B-016
+**Bulundu:** 2026-08-16, B-016 ölçümü sırasında — prototipin çıktısı ham
+WMI verisiyle çelişince
+
+### Bulgu
+
+Gerçek USB token takılıyken `python -m CORE.hwid_probe` şunu dedi:
+
+```
+windows  ????:????  tanımlayıcı_seri=(yok)  üretilmiş=EVET
+UYARI: 1 aygıtta taşınabilir kimlik YOK.
+```
+
+Aygıtın serisi **var** (bkz. B-016). Prototip yanlış rapor verdi. İki
+bağımsız kusur üst üste bindi:
+
+**1. Yanlış düğümü okuyor.** `read_windows()` `Win32_DiskDrive`'ın
+`PNPDeviceID`'sini alıyor, o da **depolama** yığını düğümü:
+
+```
+USBSTOR\DISK&VEN_SANDISK&PROD_CRUZER_BLADE&REV_1.00\<seri>&0
+```
+
+`parse_windows_pnp_id()` ise `USB\VID_xxxx&PID_yyyy\<instance>` biçimine
+göre yazılmış. USBSTOR düğümünde VID/PID **yok** — çıktıdaki `????:????`
+bunun belirtisi ve zaten görülüyordu, ama okumaya değil biçime yorulmuştu.
+
+**2. "Üretilmiş kimlik" sezgisi yanlış pozitif veriyor.**
+
+```python
+_GENERATED_INSTANCE_RE = re.compile(r"^[0-9a-fA-F]+&")
+```
+
+Kural şuydu: üretilmiş kimlikler `8&F2CB6FA&0&9` gibi görünür, gerçek
+seriler `&` içermez. USBSTOR düğümü ise seriye `&0` örnek soneki
+**ekliyor** — ve SanDisk serileri baştan sona onaltılık karakterlerden
+oluşuyor. Sonuç: `<seri>&0` desene tam uyuyor.
+
+Bu nadir bir kenar durum değil, SanDisk için **sistematik**. Ölçüm:
+
+| Girdi | `parse_windows_pnp_id` | Doğru mu |
+|---|---|---|
+| `USBSTOR\DISK&VEN_SANDISK&…\<seri>&0` | `(None, None, '<seri>&0', True)` | **hayır** |
+| `USB\VID_0781&PID_5567\<seri>` | `('0781', '5567', '<seri>', False)` | evet |
+
+Yani ayrıştırıcı doğru, **beslendiği veri** yanlış.
+
+### Neden önemli
+
+Prototipin tek işi bir mimari soruya kanıt üretmekti ve **ters yönde
+kanıt üretti**: taşınabilir kimliği olan bir aygıta "yok" dedi. B-016
+kararı bu çıktıya bakarak verilseydi, gereksiz bir mimari geçiş
+başlatılırdı. Sessizce yanlış cevap veren bir ölçüm aracı, hiç
+olmayandan kötü.
+
+### Üretim kodu etkilenmiyor
+
+`usb_manager.get_usb_hwid()` `PNPDeviceID`'ye hiç bakmıyor; doğrudan
+`Win32_DiskDrive.SerialNumber` okuyor ve o alan doğru değeri veriyor.
+Prototip uygulamaya bağlı değil (modül docstring'inin ilk satırı).
+
+### Yapılacak
+
+1. `read_windows()` USB yığını düğümünü de okusun (`Win32_PnPEntity`,
+   `PNPDeviceID LIKE 'USB\VID_%'`) ve seriye göre USBSTOR düğümüyle
+   eşleştirsin. VID/PID ancak oradan gelir.
+2. USBSTOR örnek sonekini (`&<rakam>`) sezgiye sokmadan önce ayıkla.
+3. Regresyon testi: yukarıdaki iki gerçek `PNPDeviceID` dizesi tabloya
+   girsin — ikisinin de doğru sınıflandırıldığı sabitlensin.
+
+### Yanında duran ikinci kusur
+
+`normalize_serial()` sonunda `.lstrip("0")` var. Amaç Windows'un
+biçimlendirmesini temizlemekti ama bu, **sıfırla başlayan seriyi
+bozuyor**: `0123ABC` → `123ABC`. Farklı iki aygıt aynı kimliğe
+çakışabilir. Bugün zararsız (fonksiyonu yalnızca prototipin `stable_id`'si
+çağırıyor, üretimde kullanılmıyor), ama 1. maddeyi yaparken düzeltilmeli
+— yoksa düzeltilmiş okuyucu bu sefer doğru seriyi kırpar.

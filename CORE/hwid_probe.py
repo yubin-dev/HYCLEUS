@@ -27,6 +27,25 @@ köprüsü VPD 0x80 (Unit Serial Number) sayfası sunuyorsa Windows onu
 tercih edebiliyor ve iki alan aynı aygıtta farklı olabiliyor.
 
 
+⚠ SONRADAN DÜZELTME — bu modül SERİLİ AYGITI "SERİSİZ" DİYE RAPORLUYOR
+----------------------------------------------------------------------
+2026-08-16'da gerçek HYCLEUS token USB'si takılı halde ölçüm yapıldı ve
+aygıtın serisi ÇIKTI (bkz. BACKLOG.md / B-016). Bu modül ise ona
+`üretilmiş=EVET, tanımlayıcı_seri=(yok)` dedi — yani YANLIŞ.
+
+Sebep `read_windows()`'un `Win32_DiskDrive.PNPDeviceID`'yi okuması: o,
+USB yığını düğümü değil DEPOLAMA yığını düğümü ve seriye `&0` örnek
+soneki ekliyor. Onaltılık görünen bir seri (`4C5303…`) + `&0`,
+aşağıdaki `_GENERATED_INSTANCE_RE` desenine tam uyuyor. Ayrıntı ve
+yapılacaklar: BACKLOG.md / B-022.
+
+Aşağıdaki "ölçülen kanıt" bölümü DOĞRU ama dar: sayılan 12 aygıt dahili
+çevre birimiydi. USB depolama aygıtları seri taşıyor.
+
+`usb_manager.get_usb_hwid()` bu hatadan etkilenmiyor — o `PNPDeviceID`'ye
+hiç bakmıyor, doğrudan `SerialNumber` alanını okuyor.
+
+
 ÖLÇÜLEN KANIT — iSerialNumber çoğu zaman YOK
 ---------------------------------------------
 USB spec'inde `iSerialNumber` OPSİYONEL. Bu, teorik bir uyarı değil:
