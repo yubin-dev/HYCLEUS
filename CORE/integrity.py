@@ -53,16 +53,27 @@ from pathlib import Path
 from typing import Any
 
 from CORE.crypto import AuthenticationError, verify_file
+from CORE.scheduled_checks import TS_FORMAT, ZamanKapisi
 
 _log = logging.getLogger("hycleus.integrity")
 
-_TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+#: Zaman damgası biçimi. Tek kaynak `CORE/scheduled_checks.py`; buradaki
+#: ad geriye dönük uyumluluk için duruyor.
+_TS_FORMAT = TS_FORMAT
 
 #: Son başarılı taramanın zamanı — haftalık kapıyı bu belirler.
 LAST_SWEEP_SETTING = "integrity_last_sweep"
 
 #: Taramalar arası asgari süre.
 SWEEP_INTERVAL_DAYS = 7
+
+#: Haftalık kapı. Desenin tamamı ve neden interval/cron tetikleyicisinin
+#: yetmediği `CORE/scheduled_checks.py` docstring'inde.
+_SWEEP_KAPISI = ZamanKapisi(
+    LAST_SWEEP_SETTING,
+    timedelta(days=SWEEP_INTERVAL_DAYS),
+    "bütünlük taraması",
+)
 
 #: Yanlış anahtar şüphesi için gereken en az dosya sayısı. Bunun altında
 #: "hepsi bozuk" gerçekten hepsinin bozuk olması demek olabilir; üç dosyada
@@ -405,22 +416,18 @@ def sweep_integrity(
 
 def last_sweep_at(db: Any) -> datetime | None:
     """Son tamamlanmış taramanın zamanı; hiç çalışmadıysa None."""
-    raw = db.get_setting(LAST_SWEEP_SETTING, "")
-    if not raw:
-        return None
-    try:
-        return datetime.strptime(raw, _TS_FORMAT).replace(tzinfo=timezone.utc)
-    except ValueError:
-        _log.warning("%s ayrıştırılamadı: %r", LAST_SWEEP_SETTING, raw)
-        return None
+    return _SWEEP_KAPISI.son_calisma(db)
 
 
 def sweep_due(db: Any) -> bool:
-    """Son taramanın üzerinden SWEEP_INTERVAL_DAYS geçtiyse True."""
-    son = last_sweep_at(db)
-    if son is None:
-        return True
-    return _utcnow() - son >= timedelta(days=SWEEP_INTERVAL_DAYS)
+    """
+    Son taramanın üzerinden SWEEP_INTERVAL_DAYS geçtiyse True.
+
+    Saat `_utcnow()` üzerinden AÇIKÇA geçiriliyor: bu modülün testleri onu
+    monkeypatch'liyor ve kapı kendi saatini dayatsaydı o yama sessizce
+    etkisiz kalırdı.
+    """
+    return _SWEEP_KAPISI.vakti_geldi_mi(db, simdi=_utcnow())
 
 
 def maybe_run_weekly_sweep(
@@ -460,5 +467,5 @@ def maybe_run_weekly_sweep(
     )
 
     if not report.aborted and not report.suspected_wrong_key:
-        db.set_setting(LAST_SWEEP_SETTING, report.finished_at)
+        _SWEEP_KAPISI.isaretle(db, zaman=report.finished_at)
     return report
