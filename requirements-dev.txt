@@ -17,3 +17,13 @@ bandit[toml]>=1.9
 # Sebep: tekerleği ~57 MB ve test matrisinin iki ayağında da indirilmesi
 # gerekmiyor. Statik analiz sonucu platformdan bağımsız; ayrı bir işte
 # (ci.yml / `security`) yalnızca Linux'ta çalışıyor.
+
+# CI özet betiğinin JUnit XML ayrıştırıcısı (B-019).
+#
+# `.github/scripts/test_summary.py` bunu KOŞULLU import ediyor: kurulu
+# değilse stdlib ElementTree'ye düşüyor ve çalışmayı sürdürüyor. Betiğin
+# görevi CI'ın ne durumda olduğunu söylemek; bir bağımlılık eksikliği
+# yüzünden hiç konuşmaması, raporladığı sorundan kötü olurdu.
+#
+# Saf Python, kendi bağımlılığı yok, ~30 KB.
+defusedxml>=0.7.1

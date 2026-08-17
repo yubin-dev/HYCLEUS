@@ -336,3 +336,66 @@ def test_windows_pythonutf8_olmadan_kural_dosyasi_okunamiyor() -> None:
     assert "UnicodeDecodeError" not in (duzeltilmis.stdout + duzeltilmis.stderr), (
         "PYTHONUTF8=1 çöküşü engellemiyor — gerekçe yanlış, yeniden bakılmalı."
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-018 — B607 (kısmi çalıştırılabilir yolu) depo genelinde AÇIK
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_b607_artik_susturulmuyor() -> None:
+    """
+    B-018'in tek gerçek bulgusu kapandı; denetim açık kalmalı.
+
+    Kazanç düzeltmenin kendisi değil, denetimin AÇIK kalması: yeni bir
+    kısmi yol çağrısı artık CI'da yakalanıyor. `skips` listesine geri
+    eklenirse bu test söyler.
+    """
+    cfg = tomllib.loads((KOK / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "B607" not in cfg["tool"]["bandit"]["skips"]
+
+
+def test_wmic_tam_yolla_cagriliyor() -> None:
+    """
+    `wmic` PATH üzerinden aranmamalı.
+
+    Kısmi yol, saldırganın PATH'te önce gelen bir dizine yazabildiği
+    senaryoda kendi `wmic.exe`'sinin çalışması demek. Makineye zaten
+    yazma erişimi gerektiriyor (SECURITY.md §1'in sınırı) ama
+    sertleştirmesi ucuz.
+    """
+    from CORE.usb_manager import _wmic_yolu
+
+    yol = _wmic_yolu()
+    assert yol.lower().endswith(r"wbem\wmic.exe")
+    assert "System32" in yol or "system32" in yol.lower()
+
+
+def test_wmic_yolu_systemroot_yoksa_da_calisiyor(monkeypatch) -> None:
+    """`SystemRoot` okunamazsa varsayılana düşmeli, patlamamalı."""
+    import os as _os
+
+    from CORE.usb_manager import _wmic_yolu
+
+    monkeypatch.delitem(_os.environ, "SystemRoot", raising=False)
+    assert _wmic_yolu().lower().endswith(r"wbem\wmic.exe")
+
+
+def test_usb_manager_kismi_wmic_yolu_kullanmiyor() -> None:
+    """
+    Çağrı yerinin GERÇEKTEN tam yolu kullandığı — sabit metin değil, AST.
+
+    `_wmic_yolu()` eklenip çağrı yeri eski hâlinde bırakılsaydı bandit
+    yine bulgu verirdi, ama bu testin var olması niyeti sabitliyor.
+    """
+    import ast
+
+    src = (KOK / "CORE" / "usb_manager.py").read_text(encoding="utf-8")
+    for dugum in ast.walk(ast.parse(src)):
+        if not (isinstance(dugum, ast.List) and dugum.elts):
+            continue
+        ilk = dugum.elts[0]
+        if isinstance(ilk, ast.Constant) and ilk.value == "wmic":
+            raise AssertionError(
+                "subprocess çağrısı hâlâ kısmi 'wmic' yolunu kullanıyor"
+            )

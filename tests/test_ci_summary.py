@@ -270,3 +270,91 @@ def test_bayrak_konumdan_bagimsiz(tmp_path: Path, capsys) -> None:
     rapor = _write(tmp_path, _KIRIK)
     assert summary.main(["x", "--annotations", str(rapor), "t"]) == 0
     assert "::error" in capsys.readouterr().out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-019 — defusedxml
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_defusedxml_kullaniliyor() -> None:
+    """
+    Ayrıştırıcı gerçekten `defusedxml` mi.
+
+    `XML_KORUMALI` bayrağı yalnızca import'un hangi dala girdiğini
+    söylüyor; bu test onun DOĞRU dal olduğunu da denetliyor — geliştirme
+    ve CI ortamlarında defusedxml kurulu (requirements-dev.txt).
+    """
+    assert summary.XML_KORUMALI is True, (
+        "defusedxml kurulu değil — requirements-dev.txt'ten düşmüş olabilir"
+    )
+    assert summary._xml_parse.__module__.startswith("defusedxml")
+
+
+def test_billion_laughs_reddediliyor(tmp_path: Path, capsys) -> None:
+    """
+    B-019'UN ASIL KAZANCI — iç varlık genişlemesi.
+
+    Stdlib ElementTree bu belgeyi genişletmeye çalışır; defusedxml onu
+    ayrıştırmadan reddediyor.
+    """
+    kotu = tmp_path / "kotu.xml"
+    kotu.write_text(
+        """<?xml version="1.0"?>
+<!DOCTYPE lolz [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+]>
+<testsuites><testsuite tests="1" name="&lol3;"/></testsuites>
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(summary.XML_HATALARI):
+        summary.parse(kotu)
+
+
+def test_dusmanca_xml_betigi_dusurmuyor(tmp_path: Path, capsys) -> None:
+    """
+    KORUMA EKLENİRKEN RAPORLAMA BOZULMAMALI.
+
+    defusedxml saldırıyı `ParseError` ile DEĞİL kendi istisnasıyla
+    reddediyor. `XML_HATALARI` demeti onu içermeseydi betik temiz bir
+    mesaj yerine izlemeyle düşerdi — yani güvenlik düzeltmesi, betiğin
+    tek işini (CI'ın durumunu söylemek) bozardı.
+    """
+    kotu = tmp_path / "kotu.xml"
+    kotu.write_text(
+        '<?xml version="1.0"?>\n'
+        '<!DOCTYPE t [<!ENTITY a "aa"><!ENTITY b "&a;&a;&a;">]>\n'
+        '<testsuites><testsuite tests="1" name="&b;"/></testsuites>\n',
+        encoding="utf-8",
+    )
+    kod = summary.main(["x", str(kotu)])
+    cikti = capsys.readouterr().out
+
+    assert kod == 0, "betik derlemeyi düşürmemeli"
+    assert "ayrıştırılamadı" in cikti
+
+
+def test_stdlib_dalinda_da_calisiyor(tmp_path: Path, monkeypatch, capsys) -> None:
+    """
+    `defusedxml` YOKSA betik yine çalışmalı.
+
+    Koşullu import'un gerekçesi buydu: betik CI dışında da elle
+    çalıştırılıyor ve bir bağımlılık eksikliği yüzünden hiç konuşmaması,
+    raporladığı sorundan kötü olurdu.
+    """
+    from xml.etree.ElementTree import parse as stdlib_parse
+
+    monkeypatch.setattr(summary, "_xml_parse", stdlib_parse)
+    monkeypatch.setattr(summary, "XML_HATALARI", (summary.ParseError,))
+
+    rapor = tmp_path / "r.xml"
+    rapor.write_text(
+        '<testsuites><testsuite tests="3" failures="0" errors="0"'
+        ' skipped="1" time="1.5"/></testsuites>',
+        encoding="utf-8",
+    )
+    assert summary.main(["x", str(rapor)]) == 0
+    assert "3" in capsys.readouterr().out

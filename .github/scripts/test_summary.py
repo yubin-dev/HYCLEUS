@@ -26,16 +26,48 @@ from __future__ import annotations
 
 import sys
 
-# ElementTree "billion laughs" iç varlık genişlemesine açıktır (dış varlık
-# çözümlemesi zaten desteklenmiyor). Burada girdi, AYNI CI işinde bir önceki
-# adımda pytest'in ürettiği test-results.xml — düşmanca XML yazabilen biri
-# zaten CI çalışma alanında kod çalıştırabiliyor demektir, yani SECURITY.md
-# §1'in sınırının içinde. `defusedxml` bağımlılığı bu yüzden eklenmedi;
-# karar BACKLOG.md / B-019'da kayıtlı.
-# nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+
+# XML ayrıştırıcı — `defusedxml` varsa O kullanılıyor (B-019).
+#
+# ElementTree "billion laughs" iç varlık genişlemesine açık (dış varlık
+# çözümlemesi zaten desteklenmiyor). Buradaki girdi AYNI CI işinde bir
+# önceki adımda pytest'in ürettiği `test-results.xml`, yani düşmanca XML
+# yazabilen biri zaten CI çalışma alanında kod çalıştırabiliyor demek —
+# SECURITY.md §1'in sınırının içinde. Bulgu bu yüzden bir süre bilinçli
+# olarak açık bırakılmıştı.
+#
+# Neden şimdi eklendi: maliyeti iki satır ve `defusedxml` saf Python,
+# bağımlılıksız, ~30 KB. "Bağımlılık yüzeyini büyütme" gerekçesi bu ölçekte
+# bulgu sayısını sıfırda tutmaktan daha ağır basmıyordu.
+#
+# İTHALAT KOŞULLU, bilerek: bu betik CI dışında da elle çalıştırılıyor
+# (`--annotations` kipi dahil) ve `defusedxml` kurulu olmayan bir ortamda
+# ÇALIŞMAYI SÜRDÜRMESİ gerekiyor. Sert bir import, test özetini bir
+# bağımlılık eksikliği yüzünden hiç basmamak demek olurdu — özet en çok da
+# işler kötü giderken lazım.
+
+# `ParseError` her iki durumda da aynı sınıf: defusedxml ElementTree'yi
+# sarmalıyor, değiştirmiyor.
+# nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
+from xml.etree.ElementTree import ParseError
+
+try:
+    from defusedxml.ElementTree import parse as _xml_parse
+    from defusedxml.common import DefusedXmlException
+
+    XML_KORUMALI = True
+    #: Bozuk VEYA düşmanca XML. defusedxml saldırıyı ayrı bir istisnayla
+    #: reddediyor; onu yakalamazsak betik temiz bir mesaj yerine izlemeyle
+    #: düşerdi — yani korumayı eklerken raporlamayı bozardık.
+    XML_HATALARI: tuple[type[Exception], ...] = (ParseError, DefusedXmlException)
+except ImportError:  # pragma: no cover — CI'da defusedxml kurulu
+    # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
+    from xml.etree.ElementTree import parse as _xml_parse
+
+    XML_KORUMALI = False
+    XML_HATALARI = (ParseError,)
 
 # Bu betik `.github/scripts/` altindan calisiyor, yani sys.path[0] depo koku
 # degil. Kok elle ekleniyor — CORE/recover_vault.py ile ayni desen.
@@ -89,8 +121,7 @@ def parse(path: Path) -> tuple[Totals, list[str]]:
     pytest kök öğe olarak <testsuites> yazıyor ama tek bir <testsuite> de
     geçerli JUnit — ikisi de destekleniyor.
     """
-    # nosemgrep: python.lang.security.use-defused-xml-parse.use-defused-xml-parse
-    root = ET.parse(path).getroot()  # girdi: pytest'in kendi çıktısı — bkz. import
+    root = _xml_parse(path).getroot()
     suites = (
         [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
     )
@@ -209,7 +240,7 @@ def main(argv: list[str]) -> int:
 
     try:
         totals, failed = parse(path)
-    except ET.ParseError as exc:
+    except XML_HATALARI as exc:
         if annotations:
             print(f"::error title=Rapor bozuk::{path} ayrıştırılamadı: {exc}")
         else:

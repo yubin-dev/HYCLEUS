@@ -17,6 +17,25 @@ _DEV_HWID = "DEV-HWID-1234"
 # Dosya adı ve DB değeri olarak güvenli karakterler
 _SAFE_HWID_RE = re.compile(r"[^a-zA-Z0-9_\-]")
 
+
+def _wmic_yolu() -> str:
+    """
+    `wmic.exe`'nin TAM yolu (B-018 / bandit B607).
+
+    Kısmi yol (`"wmic"`) `PATH` üzerinden arama demek. Saldırganın `PATH`'te
+    önce gelen bir dizine yazabildiği bir senaryoda kendi `wmic.exe`'si
+    çalışır. Bu, makineye zaten yazma erişimi gerektiriyor — yani
+    SECURITY.md §1'in sınırının içinde ve tek başına bir açık değil. Ama
+    sertleştirmesi ucuz ve `PATH`'e hiç bakmamak her zaman daha iyi.
+
+    `SystemRoot` okunamıyorsa (kuramsal; Windows'ta her zaman tanımlı)
+    `C:\\Windows` varsayılıyor. Dönen yolun VAR OLDUĞU kontrol edilmiyor:
+    yoksa `subprocess` zaten `FileNotFoundError` fırlatır ve çağıran onu
+    zaten yakalıyor — iki kat kontrol, iki kat sapma yolu demek olurdu.
+    """
+    kok = os.environ.get("SystemRoot") or r"C:\Windows"
+    return str(Path(kok) / "System32" / "wbem" / "wmic.exe")
+
 # Boş/geçersiz seri numaraları için kalıcı UUID haritası
 from CORE.paths import data_dir as _data_dir
 _USB_IDS_FILE = _data_dir() / "usb_ids.json"
@@ -95,7 +114,8 @@ def get_usb_hwid() -> str | None:
     try:
         import subprocess
         out = subprocess.check_output(
-            ["wmic", "diskdrive", "get", "InterfaceType,SerialNumber,Model", "/format:csv"],
+            [_wmic_yolu(), "diskdrive", "get",
+             "InterfaceType,SerialNumber,Model", "/format:csv"],
             text=True, timeout=10,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )

@@ -85,10 +85,18 @@ exclude_dirs = ["tests", "build", "dist", ".venv", "__pycache__"]
 #          (retention.update_profile). Değerler her yerde `?` ile bağlı.
 #   B603 ·  5× · subprocess, shell=False — hepsi liste biçimi çağrı.
 #   B404 ·  4× · "subprocess import ettin" — bilgi amaçlı, bulgu değil.
-#   B607 ·  3× · kısmi yol (`wmic`, `open`, `xdg-open`) — GERÇEK ama düşük:
-#          Windows'ta PATH ele geçirilmişse. Tek başına ele alınmalı → B-018.
+#
+# B607 (kısmi çalıştırılabilir yolu) 2026-08-17'de bu listeden ÇIKARILDI ve
+# depo genelinde açıldı — B-018'in tek gerçek bulgusuydu, üç çağrısı vardı:
+#   · `wmic` TAM YOLA çevrildi: %SystemRoot%\System32\wbem\wmic.exe
+#     (CORE/usb_manager.py::_wmic_yolu).
+#   · `open` / `xdg-open` satırda `# nosec B607` ile gerekçeli susturuldu.
+#     İkisi de Windows dışı ve konumları dağıtıma göre değişiyor
+#     (/usr/bin, /usr/local/bin); tam yol yazmak çalışan bir çağrıyı
+#     VARSAYIMA dayanarak kırardı.
+# Kazanç: YENİ bir kısmi yol çağrısı artık CI'da yakalanıyor.
 #
 # Tek tek görülenler burada DEĞİL, kaynak satırında `# nosec <ID>` ile
-# gerekçeli olarak susturuldu (B101, B105, B311, B606) — böylece o dört
-# denetim depo genelinde AÇIK kalıyor.
-skips = ["B110", "B404", "B603", "B607", "B608"]
+# gerekçeli olarak susturuldu (B101, B105, B311, B606, B607) — böylece o
+# denetimler depo genelinde AÇIK kalıyor.
+skips = ["B110", "B404", "B603", "B608"]

@@ -74,10 +74,22 @@ def open_with_default_app(path: Path) -> None:
         # 1.9'da ID verilirse bulgu susuyor ama yanında "no failed test"
         # uyarısı basılıyor (B606 eklentisinin raporlama kimliği farklı).
         os.startfile(str(path))  # type: ignore[attr-defined]  # noqa: S606  # nosec
+    # B607 (kısmi çalıştırılabilir yolu) aşağıdaki iki satırda GEREKÇELİ
+    # susturuldu; denetim depo genelinde AÇIK kaldı (B-018). `wmic` tam yola
+    # çevrildi çünkü Windows'ta `System32\wbem\wmic.exe` sabit. Bunlar öyle
+    # değil: `xdg-open` dağıtıma göre /usr/bin ya da /usr/local/bin altında,
+    # macOS `open`'ı da PATH üzerinden çözülmesi beklenen bir araç. Tam yol
+    # yazmak, çalışan bir çağrıyı VARSAYIMA dayanarak kırmak olurdu.
+    #
+    # Risk kabul edilebilir: ikisi de Windows dışı yollar (HYCLEUS'un hedef
+    # platformu değil) ve PATH ele geçirilmişse saldırganın makinede zaten
+    # yazma erişimi var — SECURITY.md §1'in sınırının içinde.
     elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(path)])
+        # macOS `open` PATH üzerinden çözülmesi beklenen bir araç
+        subprocess.Popen(["open", str(path)])  # nosec B607
     else:
-        subprocess.Popen(["xdg-open", str(path)])
+        # `xdg-open` dağıtıma göre /usr/bin ya da /usr/local/bin altında
+        subprocess.Popen(["xdg-open", str(path)])  # nosec B607
 
 
 class OpenMixin:

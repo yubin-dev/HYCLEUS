@@ -26,6 +26,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | B-015 | `④` grubu — B-015 düzeltmesi | Yedekleme özelliği vardı ama HATIRLATMASI yoktu; yedek yalnızca kullanıcının aklına geldiğinde alınıyordu. `CORE/backup_reminder.py` eklendi ve `ZamanKapisi`'nı (`backup_last_run`) kullanıyor — ④ grubunda deseni gerçekten kullanan tek madde. Damga `create_backup()` içinde yazılıyor, arayüzde değil: CLI'dan alınan yedekler de hatırlatmayı susturmalı. Uyarı ENGELLEYİCİ değil, "sonra sorma" bir eşik süresi kadar (süresiz değil) ve eşik `0` hatırlatmayı kapatıyor. "Hedef erişilemiyor" ile "hiç yedek yok" AYRI durumlar — harici disk takılı değilse yedek yok değil, görünmüyor. Negatif eşik kapatmıyor, varsayılana düşüyor. |
 | B-006 | `④` grubu — B-006 düzeltmesi | Zincir doğrulaması üç yerden çağrılabiliyordu ama arayüzde düğmesi yoktu; TXT dışa aktarımı da yalnızca dört sütun yazıyor, hash/son uç/doğrulama durumu taşımıyordu. `CORE/audit_report.py` iki doğrulamayı (`verify_audit_chain` + `verify_against_anchor`) birleştirip METİN üretiyor; AdminPanel'e "Zinciri Doğrula" düğmesi eklendi (panel zaten `role != "Yönetici"` ise hiç kurulmuyor) ve sonuç `audit_chain_verified` olarak denetim kaydına düşüyor — doğrulayan kullanıcı B-011'in `users` satırından okunuyor, yan etkisiz `kullanici_bilgisi()` ile. TXT başlığı artık zincir durumunu, son hash'i, ilk kırılma id'sini ve "bu dosya imzalı DEĞİLDİR" sınırını taşıyor. Bu madde de "son çalışma zamanı + kapı" desenini KULLANMIYOR: zamanlanmış bir iş değil, kullanıcının bastığı bir düğme. |
 | B-022 | `③` grubu — B-022 düzeltmesi | `hwid_probe.read_windows()` yalnızca `Win32_DiskDrive.PNPDeviceID`'yi okuyordu; o USBSTOR (depolama) düğümü ve seriye `&<n>` örnek soneki ekliyor. Onaltılık bir seri artı `&0`, "üretilmiş kimlik" desenine tam uyduğu için prototip SERİLİ token'a "serisiz" diyordu — SanDisk'te sistematik, ve B-016 kararını ters yöne itecek bir ölçüm hatası. Artık `Win32_PnPEntity` üzerinden USB düğümü de okunuyor ve seriyle eşleştiriliyor; VID/PID de oradan geliyor (eski `????:????` çıktısı bunun belirtisiydi). Eşleştirme saf bir fonksiyona (`build_windows_identity`) ayrıldı, artık WMI'siz test edilebiliyor. Yanında `normalize_serial()`'ın `.lstrip("0")`'ı kaldırıldı: `0123ABC` ile `123ABC`'yi aynı kimliğe indiriyordu — kimlik üreten bir fonksiyonda ÇAKIŞMA, kapatmaya çalıştığı (ve hiç ölçülmemiş) dolgu farkından ağır basar. İki sabitleme testi bilerek kırıldı. |
+| B-019 | `②` grubu — B-019 düzeltmesi | `.github/scripts/test_summary.py` JUnit XML'ini `xml.etree.ElementTree` ile okuyordu ("billion laughs" iç varlık genişlemesine açık). Girdi kendi CI'ımızın ürettiği dosya olduğu için bulgu bir süre bilinçli açık bırakılmıştı; kapatma kararının gerekçesi maliyetin iki satır olması ve `defusedxml`'in saf Python / bağımlılıksız / ~30 KB olması. İthalat KOŞULLU: paket yoksa stdlib'e düşüyor, çünkü betik CI dışında da elle çalıştırılıyor ve bir bağımlılık eksikliği yüzünden hiç konuşmaması raporladığı sorundan kötü olurdu. `XML_HATALARI` demeti `DefusedXmlException`'ı da yakalıyor — yoksa düşmanca XML'de betik temiz mesaj yerine izlemeyle düşerdi, yani koruma eklenirken raporlama bozulurdu. |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
 > Yeni madde açarken bu tabloya da bakın; yalnızca aşağıdaki en büyük
@@ -357,8 +358,15 @@ yanlış olur.
 
 ## B-018 — bandit'in susturulan denetimleri temizlenmedi
 
-**Durum:** Açık — CI yeşil, kurallar bilinçli olarak gevşek
-**Öncelik:** Düşük (teknik borç), **B-607 kısmı orta**
+**Durum:** **KISMİ** — B607 kapandı (2026-08-17), B608/B110 açık
+**Kapanan kısım:** `B607` düzeltildi ve denetim depo genelinde AÇILDI:
+`wmic` tam yola çevrildi (`CORE/usb_manager.py::_wmic_yolu`), `open` ve
+`xdg-open` satırda gerekçeli `# nosec B607` aldı. Kazanç düzeltmenin
+kendisi değil, denetimin açık kalması — YENİ bir kısmi yol çağrısı artık
+CI'da yakalanıyor.
+**Kalan:** `B608` (13 satır) ve `B110` (15 blok) — ikisi de incelendi ve
+susturulmuş durumda; bilinçli olarak bu turda ele alınmadı.
+**Öncelik:** Düşük (teknik borç) — tek "gerçek" bulgu olan B607 kapandı
 **İlgili:** 3.5 (denetime hazırlık), B-002 ile birebir aynı desen
 **Bulundu:** 2026-08-16, bandit'in ilk taramasında
 
@@ -429,39 +437,16 @@ edilemedi. Çözüm: `-f json`. Gerekçe testin docstring'inde, yerel
 
 ---
 
-## B-019 — CI özet betiği `defusedxml` kullanmıyor
-
-**Durum:** Açık — bilinçli karar, gerekçesi kodda yazılı
-**Öncelik:** Düşük
-**Bulundu:** 2026-08-16, semgrep'in ilk taramasında
-
-[`.github/scripts/test_summary.py`](.github/scripts/test_summary.py) JUnit
-XML'ini `xml.etree.ElementTree` ile okuyor. semgrep iki yerde
-`use-defused-xml` veriyor.
-
-Bulgu teknik olarak geçerli: ElementTree "billion laughs" iç varlık
-genişlemesine açık (dış varlık çözümlemesi zaten desteklenmiyor).
-
-**Neden düzeltilmedi:** girdi, aynı CI işinde bir önceki adımda pytest'in
-ürettiği `test-results.xml`. Düşmanca XML yazabilen biri zaten CI çalışma
-alanında kod çalıştırabiliyor demektir — SECURITY.md §1'in sınırının
-içinde. Yalnızca bunun için yeni bir CI bağımlılığı eklemek, güvenlik
-odaklı bir projede bağımlılık yüzeyini kazanç olmadan büyütürdü.
-
-### Yapılacak (uygulanmadı)
-
-Yine de yapılacaksa iki satır: `requirements-dev.txt`'e `defusedxml`,
-betikte `from defusedxml.ElementTree import parse`. Karar, bağımlılık
-sayısını mı yoksa bulgu sayısını mı sıfırda tutmak istediğimize bağlı.
-Bugünkü tercih birincisi ve satırda `# nosemgrep` ile gerekçeli.
-
----
-
 ## B-020 — semgrep kural dosyasını yerel kod sayfasıyla okuyor
 
 **Durum:** Açık — yukarı akış (upstream) sorunu, geçici çözüm devrede
 **Öncelik:** Düşük (geliştirici deneyimi), ama TUZAK
 **Bulundu:** 2026-08-16
+**Son kontrol:** 2026-08-17 — semgrep **1.173.0** (PyPI'daki en son sürüm)
+hâlâ çöküyor. `PYTHONUTF8=0` ile doğrudan yeniden üretildi:
+`UnicodeDecodeError: 'charmap' codec can't decode byte 0x9e in position 506`.
+Geçici çözüm yerinde kalıyor; kanarya testi de skip'e düşmedi, yani
+kendi haber verme mekanizması çalışır durumda.
 
 semgrep 1.173 `.semgrep/hycleus.yml`'yi `Path.read_text()` ile, yani
 `locale.getencoding()` ile okuyor. Kural dosyası UTF-8 ve Türkçe karakter
