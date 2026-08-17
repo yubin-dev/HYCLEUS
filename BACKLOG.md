@@ -89,38 +89,49 @@ Test paketi bu davranıştan etkilenmiyor: [`tests/test_crypto.py`](tests/test_c
 
 ## B-002 — Lint / tip denetimi sıkılaştırması
 
-**Durum:** Açık — CI yeşil, kurallar bilinçli olarak gevşek
+**Durum:** **KISMİ** — ruff tarafı büyük ölçüde kapandı (2026-08-17),
+mypy tarafı açık
 **Öncelik:** Düşük (teknik borç, çalışma zamanı etkisi yok)
-**İlgili:** 1.3 (CI kurulumu) ile birlikte açıldı
+**İlgili:** 1.3 (CI kurulumu) ile birlikte açıldı; B-018 birebir aynı desen
 **Bulundu:** 2026-08-13, CI kurulumu sırasında
 
-### Bulgu
+### Kapanan kısım — ruff
 
-CI'ı ayağa kaldırırken ruff ve mypy mevcut kodu FAIL ettirmeyecek şekilde
-yapılandırıldı ([`pyproject.toml`](pyproject.toml)). Susturulan gerçek ihlaller:
+Genel `ignore` listesi **boşaltıldı**. Dört kural temizlenip depo genelinde
+açıldı:
 
-| Kural | Adet | Açıklama |
+| Kural | Adet | Nasıl |
 |---|---:|---|
-| `E402` | 33 | Modül-seviyesi import en üstte değil — `sys.path` bootstrap'ı bilinçli |
-| `F401` | 8 | Kullanılmayan import (çoğu `UI/` altında) |
-| `F541` | 3 | Yer tutucusuz f-string |
-| `F841` | 1 | Kullanılmayan yerel değişken |
-| `E741` | 1 | Belirsiz değişken adı (`l` / `I` / `O`) |
+| `F401` kullanılmayan import | 13 | `ruff --fix`; her biri re-export olmadığı doğrulandıktan sonra |
+| `F541` boş f-string | 2 | `ruff --fix` |
+| `F841` kullanılmayan yerel | 3 | elle; biri B-011 düzeltmesinden kalan artıktı |
+| `E741` belirsiz ad `l` | 1 | `etiket` olarak yeniden adlandırıldı |
 
-mypy tarafında gevşetilenler: `ignore_missing_imports = true`,
-`check_untyped_defs = false`, `strict` kapalı, `UI/` tamamen hariç.
+Belgelenmiş sayılar (33/8/3/1/1) **güncel değildi**; gerçek sayım
+2026-08-17'de yapıldı.
 
-### Yapılacaklar (sırayla, ayrı ayrı ele alınabilir)
+`E402` hâlâ susturuluyor ama artık **depo genelinde değil** — yalnızca
+ihlal eden dosyalarda (`per-file-ignores`). Yeni bir dosyada E402 çıkarsa
+CI söyler; ölçülerek doğrulandı.
 
-1. `F401` / `F541` / `F841` / `E741` temizliği — `ruff check --fix` çoğunu
-   otomatik hallediyor; `ignore` listesinden çıkar.
-2. `E402` kalıcı istisna mı karar ver. `sys.path` bootstrap'ı bir paket
-   girişine (`__main__` / konsol scripti) taşınırsa kural açılabilir.
-3. mypy: önce `check_untyped_defs = true`, sonra `CORE/` için
-   `disallow_untyped_defs = true`. `CORE/` zaten büyük ölçüde tipli —
-   en düşük maliyetli adım burası.
-4. `UI/` için PySide6 stub durumuna bakıp `exclude` listesinden çıkarmayı
-   değerlendir.
+**Belgelenen gerekçe YANLIŞTI ve düzeltildi.** Eski yorum E402'yi "sys.path
+bootstrap'ı" ile açıklıyor ve `setup_usb.py`/`usb_manager.py`/
+`vault_manager.py`'yi gösteriyordu. Ölçüm: UI/ ve `main.py`'de `sys.path`
+bootstrap'ı **hiç yok**. Gerçek sebep importların arasına serpilmiş
+`logging` ifadeleri.
+
+### Kalan — iki iş
+
+1. **E402'nin kendisi.** `_log = logging.getLogger(...)` satırlarını
+   importların altına almak mekanik ve güvenli (11 dosya). Ama
+   `main.py`'deki `logging.basicConfig(...)` öyle DEĞİL: import sırasında
+   log yazan bir modül varsa taşımak çıktıyı sessizce değiştirir. Karışık
+   bir işi "mekanik temizlik" diye yapmamak için ikisi de bırakıldı.
+2. **mypy.** Gevşetilenler duruyor: `ignore_missing_imports = true`,
+   `check_untyped_defs = false`, `strict` kapalı, `UI/` tamamen hariç.
+   Sıra: önce `check_untyped_defs = true`, sonra `CORE/` için
+   `disallow_untyped_defs = true` (CORE zaten büyük ölçüde tipli — en
+   düşük maliyetli adım burası), en sonra `UI/` için PySide6 stub durumu.
 
 ### Not
 

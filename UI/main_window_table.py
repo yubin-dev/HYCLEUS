@@ -70,7 +70,7 @@ from CORE.expiry import banner_for, countdown_for, ttl_hours
 from CORE.file_records import record_encrypted_file
 from CORE.folders import create_folder
 from CORE.scanner import ScanResult, scan_file
-from CORE.usb_manager import DEV_MODE as _DEV_MODE, get_usb_hwid
+from CORE.usb_manager import get_usb_hwid
 from DB.db_manager import DBManager
 
 from UI.main_window_palette import (

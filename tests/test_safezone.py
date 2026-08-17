@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from CORE import safezone
 from CORE.audit_chain import verify_audit_chain
 from CORE.safezone import (
     SAFEZONE_DIRNAME,

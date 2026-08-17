@@ -16,17 +16,42 @@ extend-exclude = ["build", "dist", ".venv"]
 # Sıkılaştırma ayrı bir iş — bkz. BACKLOG.md / B-002.
 select = ["E4", "E7", "E9", "F"]
 
-# Aşağıdakiler bugün mevcut kodda ihlal ediliyor; her biri ayrı ayrı
-# temizlenene kadar susturuldu (sayılar 2026-08-13 taramasından).
-ignore = [
-    "E402",  # 33× modül-seviyesi import en üstte değil — sys.path bootstrap'ı
-             #     bilinçli olarak importlardan önce çalışıyor (setup_usb.py,
-             #     usb_manager.py, vault_manager.py). Kalıcı istisna olabilir.
-    "F401",  #  8× kullanılmayan import (çoğu UI/ altında)
-    "F541",  #  3× yer tutucusuz f-string
-    "F841",  #  1× kullanılmayan yerel değişken
-    "E741",  #  1× belirsiz değişken adı (l/I/O)
-]
+# 2026-08-17 (B-002) — dört kural TEMİZLENDİ ve depo genelinde açıldı:
+#
+#   F401 · 13× kullanılmayan import   → `ruff --fix`, hepsi doğrulandı
+#   F541 ·  2× boş f-string           → `ruff --fix`
+#   F841 ·  3× kullanılmayan yerel    → elle (biri B-011'den kalan artıktı)
+#   E741 ·  1× belirsiz ad `l`        → `etiket` olarak yeniden adlandırıldı
+#
+# F401'lerin hiçbiri yeniden dışa aktarım (re-export) DEĞİLDİ; her biri
+# ayrı ayrı denetlendi (`_ROLE_BADGE` ve `read_vault_role` gerçek
+# kullanıcıları tarafından doğrudan import ediliyor). Bu yüzden otomatik
+# düzeltme güvenliydi.
+#
+# Kazanç: bu dört kural artık YENİ ihlalleri yakalıyor.
+ignore = []
+
+# E402 (modül-seviyesi import en üstte değil) hâlâ susturuluyor ama artık
+# DEPO GENELİNDE DEĞİL — yalnızca gerçekten ihlal eden dosyalarda. Yeni bir
+# dosyada E402 çıkarsa CI söyler.
+#
+# GEREKÇE DÜZELTİLDİ: eski yorum bunu "sys.path bootstrap'ı" ile açıklıyor
+# ve `setup_usb.py`/`usb_manager.py`/`vault_manager.py`'yi gösteriyordu.
+# Ölçtüm, YANLIŞTI: UI/ ve main.py'de `sys.path` bootstrap'ı hiç yok.
+# Gerçek sebep, importların arasına serpilmiş `logging` ifadeleri —
+# `_log = logging.getLogger(...)` (UI/) ve `logging.basicConfig(...)`
+# (main.py).
+#
+# Neden bu turda taşınmadılar: `_log` satırlarını importların altına almak
+# mekanik ve güvenli (11 dosya), ama `main.py`'deki `basicConfig` öyle
+# değil — import sırasında log yazan bir modül varsa taşımak çıktıyı
+# sessizce değiştirir. Karışık bir işi "mekanik temizlik" diye yapmamak
+# için ikisi de bırakıldı; ayrıntı BACKLOG.md / B-002.
+[tool.ruff.lint.per-file-ignores]
+"main.py" = ["E402"]
+"UI/*.py" = ["E402"]
+"CORE/usb_manager.py" = ["E402"]
+"CORE/vault_manager.py" = ["E402"]
 
 # ── mypy ──────────────────────────────────────────────────────────────────────
 [tool.mypy]

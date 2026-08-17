@@ -371,7 +371,7 @@ class LockMixin:
             )
         else:
             self._usb_badge.setText(
-                f'<span style="color:#DC2626; font-size:14px;">●</span>'
-                f' <span style="color:#6B7280; font-size:12px;">USB Yok</span>'
+                '<span style="color:#DC2626; font-size:14px;">●</span>'
+                ' <span style="color:#6B7280; font-size:12px;">USB Yok</span>'
             )
 

@@ -6,7 +6,7 @@ import re
 
 _log = logging.getLogger("hycleus.admin_panel")
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QComboBox,

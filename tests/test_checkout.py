@@ -256,7 +256,7 @@ def test_an_unchanged_file_is_not_re_encrypted(reg, hcl, key) -> None:
     (3.1b) her seferinde yeniden yapılması gerekirdi.
     """
     onceki = hcl.read_bytes()
-    entry = check_out(reg, file_id=1, hcl_path=hcl, key=key, aad_hwid=_HWID)
+    check_out(reg, file_id=1, hcl_path=hcl, key=key, aad_hwid=_HWID)
 
     sonuc = check_in(reg, 1, key, user_id=_USER, hwid=_HWID)
     assert sonuc.rewritten is False
@@ -456,7 +456,7 @@ def test_shredding_overwrites_before_unlinking(reg, hcl, key, monkeypatch) -> No
 
     monkeypatch.setattr(Path, "unlink", _unlink)
 
-    entry = check_out(reg, file_id=1, hcl_path=hcl, key=key, aad_hwid=_HWID)
+    check_out(reg, file_id=1, hcl_path=hcl, key=key, aad_hwid=_HWID)
     check_in(reg, 1, key, user_id=_USER, hwid=_HWID)
 
     assert olaylar == ["overwrite", "unlink"]

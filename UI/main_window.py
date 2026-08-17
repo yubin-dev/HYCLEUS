@@ -45,7 +45,7 @@ from UI.main_window_files import FileActionsMixin
 from UI.main_window_layout import LayoutMixin
 from UI.main_window_lock import LockMixin, _LockOverlay
 from UI.main_window_open import BackupMixin, OpenMixin
-from UI.main_window_palette import _DARK, _ROLE_BADGE, _SIDEBAR_NAV
+from UI.main_window_palette import _DARK, _SIDEBAR_NAV
 from UI.main_window_table import TableMixin, _ProcessSignals
 from UI.main_window_theme import ThemeMixin
 from UI.main_window_tree import TreeMixin
@@ -349,7 +349,7 @@ class HycleusWindow(
         self._active_btn    = btn
         self._current_label = db_label
 
-        display = next((d for _, d, l in _SIDEBAR_NAV if l == db_label), db_label)
+        display = next((d for _, d, etiket in _SIDEBAR_NAV if etiket == db_label), db_label)
         self._page_title.setText(display)
 
         self._search_bar.blockSignals(True)

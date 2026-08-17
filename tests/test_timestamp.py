@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 from asn1crypto import cms, tsp
-from tsa_fixtures import FakeTSA, build_response, build_token, default_authority
+from tsa_fixtures import FakeTSA, build_response
 
 from CORE import crypto, timestamp
 from CORE.crypto import (

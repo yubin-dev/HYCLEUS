@@ -87,7 +87,6 @@ class FileActionsMixin:
             return
         label:    str       = name_item.data(Qt.UserRole + 2) or ""
         file_id:  int | None = name_item.data(Qt.UserRole)
-        sha256:   str | None = name_item.data(Qt.UserRole + 1)
         filepath: str | None = name_item.data(Qt.UserRole + 3)
 
         T = self._T

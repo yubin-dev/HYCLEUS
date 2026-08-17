@@ -399,3 +399,49 @@ def test_usb_manager_kismi_wmic_yolu_kullanmiyor() -> None:
             raise AssertionError(
                 "subprocess çağrısı hâlâ kısmi 'wmic' yolunu kullanıyor"
             )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-002 — ruff sıkılaştırması
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_ruff_genel_ignore_listesi_bos() -> None:
+    """
+    F401/F541/F841/E741 temizlendi ve depo genelinde AÇILDI.
+
+    Kazanç düzeltmelerin kendisi değil (dördü de kozmetikti), denetimin
+    açık kalması: YENİ bir kullanılmayan import ya da ölü yerel değişken
+    artık CI'da yakalanıyor. Listeye bir kural geri eklenirse bu test
+    söyler.
+    """
+    cfg = tomllib.loads((KOK / "pyproject.toml").read_text(encoding="utf-8"))
+    assert cfg["tool"]["ruff"]["lint"]["ignore"] == []
+
+
+def test_e402_depo_genelinde_susturulmuyor() -> None:
+    """
+    E402 hâlâ susturuluyor ama YALNIZCA ihlal eden dosyalarda.
+
+    Genel `ignore` listesinde durursa yeni bir dosyadaki E402 sessizce
+    geçerdi — B-002'nin ilk hâli buydu.
+    """
+    cfg = tomllib.loads((KOK / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "E402" not in cfg["tool"]["ruff"]["lint"]["ignore"]
+
+    kapsam = cfg["tool"]["ruff"]["lint"]["per-file-ignores"]
+    assert any("E402" in kurallar for kurallar in kapsam.values())
+    # Joker bir giriş kapsamı yeniden depo geneline çevirirdi.
+    assert "*" not in kapsam and "*.py" not in kapsam
+
+
+def test_ruff_temiz() -> None:
+    """
+    Depo ruff'tan temiz geçmeli.
+
+    `ignore = []` yazıp ihlalleri bırakmak, yapılandırmayı sıkılaştırmış
+    gibi görünüp CI'ı kırmak olurdu. Bu test ikisinin birlikte doğru
+    olduğunu ölçüyor.
+    """
+    sonuc = _calistir(["ruff", "check", "."], env=_utf8_env())
+    assert sonuc.returncode == 0, sonuc.stdout + sonuc.stderr

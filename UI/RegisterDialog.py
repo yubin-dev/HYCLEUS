@@ -8,9 +8,7 @@ Akış:
 """
 from __future__ import annotations
 
-from pathlib import Path
 
-import pyotp
 from argon2 import PasswordHasher
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (

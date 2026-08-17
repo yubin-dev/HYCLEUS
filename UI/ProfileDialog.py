@@ -3,8 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pyotp
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,

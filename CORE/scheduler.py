@@ -2,7 +2,6 @@ import logging
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
-from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 

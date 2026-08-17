@@ -6,7 +6,6 @@ import logging
 import os
 import sys
 from io import BytesIO
-from pathlib import Path
 
 _log = logging.getLogger("hycleus.login")
 
@@ -41,7 +40,6 @@ from CORE.vault_manager import (
     _read_vault_path,
     create_vault,
     open_vault,
-    read_vault_role,
 )
 from DB.db_manager import DBManager
 
