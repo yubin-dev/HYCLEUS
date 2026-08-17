@@ -121,6 +121,12 @@ def parse(path: Path) -> tuple[Totals, list[str]]:
     pytest kök öğe olarak <testsuites> yazıyor ama tek bir <testsuite> de
     geçerli JUnit — ikisi de destekleniyor.
     """
+    # YANLIŞ POZİTİF, ve gerekçesi B-019 öncesinden FARKLI: `_xml_parse`
+    # artık `defusedxml.ElementTree.parse` (yukarıdaki koşullu import).
+    # semgrep takma adın arkasını göremediği için yine `xml.etree` sanıyor.
+    # Eskiden bu susturma "riski kabul ediyoruz" demekti; şimdi "araç
+    # düzeltmeyi göremiyor" diyor.
+    # nosemgrep: python.lang.security.use-defused-xml-parse.use-defused-xml-parse
     root = _xml_parse(path).getroot()
     suites = (
         [root] if root.tag == "testsuite" else list(root.iter("testsuite"))

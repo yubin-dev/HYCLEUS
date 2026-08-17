@@ -2,7 +2,26 @@
 # elle çalıştırma için.
 #
 #   pip install -r requirements-security.txt
-#   PYTHONUTF8=1 semgrep scan --config=.semgrep/hycleus.yml CORE DB UI main.py
+#
+# CI'ın `security` işi ÜÇ adım koşuyor. Yerelde de üçünü birden koşun —
+# yalnızca 1. adımı koşmak yanıltıcı: kayıt defteri paketleri yerel
+# kuralların aramadığı şeyleri arıyor ve ayrı bir kapı.
+#
+#   # 1) yerel kurallar (SECURITY.md'nin yazılı vaatleri)
+#   PYTHONUTF8=1 semgrep scan --config=.semgrep/hycleus.yml \
+#       --error --quiet CORE DB UI main.py .github
+#
+#   # 2) kayıt defteri paketleri (genel Python güvenliği; AĞ gerektirir)
+#   PYTHONUTF8=1 semgrep scan --config=p/python --config=p/secrets \
+#       --config=p/security-audit --error --quiet CORE DB UI main.py .github
+#
+#   # 3) kural kanaryaları
+#   PYTHONUTF8=1 pytest tests/test_static_analysis.py
+#
+# 2. adımı atlamak bir kez gerçekten CI'ı kırdı: `defusedxml` geçişinde
+# takma ad (`_xml_parse`) yüzünden çıkan yanlış pozitif yalnızca orada
+# görünüyordu. Ayrıca `.github` dizini TARAMAYA DAHİL — CI betikleri de
+# koddur.
 #
 # requirements-dev.txt'ten AYRI tutuluyor: semgrep tekerleği ~57 MB ve test
 # matrisinin Windows ayağında hiçbir işe yaramıyor (statik analiz sonucu
