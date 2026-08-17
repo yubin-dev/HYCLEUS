@@ -28,6 +28,9 @@ from CORE.hwid_probe import (
     parse_windows_pnp_id,
     read_macos,
     summarise,
+    read_windows,
+    build_windows_identity,
+    usbstor_instance,
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -109,6 +112,217 @@ def test_a_malformed_id_does_not_crash() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 1b. B-022 — iki yığın, iki düğüm
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Aşağıdaki iki dize 2026-08-16'da gerçek HYCLEUS token USB'si takılıyken
+# ölçüldü. Seri maskeli: `hwid`, kasa imza anahtarının HKDF girdisi
+# (CORE/vault_manager.py::_derive_signing_key), yani depoya yazılmamalı.
+# Maskeleme testin ölçtüğü şeyi değiştirmiyor — önemli olan BİÇİM.
+
+#: Depolama yığını düğümü. Dikkat: seriye `&0` soneki eklenmiş.
+_USBSTOR_PNP = (
+    r"USBSTOR\DISK&VEN_SANDISK&PROD_CRUZER_BLADE&REV_1.00"
+    r"\4C53AAAABBBBCCCCDDDD&0"
+)
+
+#: Aynı aygıtın USB yığını düğümü. Üçüncü segment SERİNİN KENDİSİ.
+_USB_PNP = r"USB\VID_0781&PID_5567\4C53AAAABBBBCCCCDDDD"
+
+_SERI = "4C53AAAABBBBCCCCDDDD"
+
+
+def test_usbstor_soneki_ayikaniyor() -> None:
+    """`<seri>&0` → `<seri>`. B-022'nin kök nedeni bu sonekti."""
+    assert usbstor_instance(f"{_SERI}&0") == _SERI
+    assert usbstor_instance(f"{_SERI}&12") == _SERI
+    assert usbstor_instance(_SERI) == _SERI
+
+
+def test_usbstor_soneki_uretilmis_kimligi_bozmuyor() -> None:
+    """
+    Üretilmiş kimlikler de `&<n>` ile bitebiliyor; ayıklama onları
+    "gerçek seri"ye çevirmemeli — geriye hâlâ `&` kalıyor.
+    """
+    uretilmis = usbstor_instance("7&1441131D&0")
+    assert "&" in uretilmis
+
+
+def test_REGRESYON_serili_aygita_serisiz_denmiyor() -> None:
+    """
+    B-022 REGRESYON TESTİ #1 — hatanın ta kendisi.
+
+    Prototip, serisi OLAN token'a `üretilmiş=EVET, tanımlayıcı_seri=(yok)`
+    diyordu. Sebep: `Win32_DiskDrive.PNPDeviceID` USBSTOR düğümü ve seriye
+    `&0` ekliyor; onaltılık bir seri artı `&0`, "üretilmiş kimlik"
+    desenine (`^[0-9a-fA-F]+&`) tam uyuyor. SanDisk için SİSTEMATİK.
+
+    Bu, ters yönde kanıt üreten bir ölçüm aracıydı: B-016 kararı buna
+    bakarak verilseydi gereksiz bir mimari geçiş başlatılırdı.
+    """
+    kimlik = build_windows_identity(
+        _USBSTOR_PNP, _SERI, {_SERI: ("0781", "5567")}
+    )
+    assert kimlik.generated is False
+    assert kimlik.descriptor_serial == _SERI
+    assert kimlik.stable_id == _SERI
+    assert (kimlik.vendor_id, kimlik.product_id) == ("0781", "5567")
+
+
+def test_REGRESYON_vid_pid_usb_dugumunden_geliyor() -> None:
+    """
+    B-022 REGRESYON TESTİ #2 — `????:????` çıktısının sebebi.
+
+    USBSTOR düğümünde VID/PID YOK. Eski kod yalnızca oraya baktığı için
+    ikisi de None kalıyordu ve çıktıda `????:????` görünüyordu. Bu, kök
+    nedenin görünen belirtisiydi ama biçime yorulmuştu.
+
+    Buradaki iddia: USB düğümü eşleşmezse VID/PID uydurulmamalı ve seri
+    "var" sayılmamalı.
+    """
+    # USBSTOR tek başına ayrıştırıldığında VID/PID vermiyor.
+    vid, pid, _i, _g = parse_windows_pnp_id(_USBSTOR_PNP)
+    assert (vid, pid) == (None, None)
+
+    # USB düğümü haritada yoksa iddia edilmiyor.
+    eslesmeyen = build_windows_identity(_USBSTOR_PNP, _SERI, {})
+    assert eslesmeyen.vendor_id is None
+    assert eslesmeyen.descriptor_serial is None
+    assert eslesmeyen.generated is True
+    assert eslesmeyen.stable_id is None
+
+    # Ama depolama serisi yine de raporlanıyor — bilgi kaybı yok.
+    assert eslesmeyen.storage_serial == _SERI
+
+
+def test_gercekten_serisiz_aygit_hala_serisiz_raporlaniyor() -> None:
+    """
+    Düzeltme YALNIZCA yanlış pozitifi kaldırmalı.
+
+    Bu test olmadan "her şeye seri var de" mutasyonu da geçerdi.
+    """
+    serisiz_usbstor = (
+        r"USBSTOR\DISK&VEN_GENERIC&PROD_FLASH&REV_1.00\7&1441131D&0"
+    )
+    kimlik = build_windows_identity(serisiz_usbstor, None, {})
+    assert kimlik.generated is True
+    assert kimlik.stable_id is None
+
+
+class _SahteAygit:
+    def __init__(self, **alanlar):
+        self.__dict__.update(alanlar)
+
+
+class _SahteWMI:
+    """`wmi.WMI()` yerine geçen asgari sahte — gerçek donanım gerekmesin."""
+
+    def __init__(self, diskler, varliklar):
+        self._diskler = diskler
+        self._varliklar = varliklar
+
+    def WMI(self):  # noqa: N802 — wmi paketinin API'si
+        return self
+
+    def Win32_DiskDrive(self):  # noqa: N802
+        return self._diskler
+
+    def Win32_PnPEntity(self):  # noqa: N802
+        return self._varliklar
+
+
+def test_read_windows_iki_okuyucuyu_birlestiriyor(monkeypatch) -> None:
+    """
+    UÇTAN UCA — `_windows_usb_nodes()` ile `build_windows_identity()`
+    arasındaki bağlantı.
+
+    Saf fonksiyon ayrı ayrı sınanıyor ama ikisini birbirine bağlayan kod
+    (hangi düğümler haritaya giriyor, eşleştirme gerçekten oluyor mu)
+    yalnızca burada kapsanıyor. Gerçek donanım gerekmiyor: `wmi` modülü
+    sahtesiyle değiştiriliyor.
+    """
+    import sys
+
+    sahte = _SahteWMI(
+        diskler=[
+            _SahteAygit(
+                InterfaceType="USB", PNPDeviceID=_USBSTOR_PNP, SerialNumber=_SERI
+            ),
+            # USB olmayan disk atlanmalı.
+            _SahteAygit(
+                InterfaceType="SCSI", PNPDeviceID=r"SCSI\DISK&VEN_NVME\x",
+                SerialNumber="NVME1",
+            ),
+        ],
+        varliklar=[
+            _SahteAygit(PNPDeviceID=_USB_PNP),
+            # Kök hub haritaya GİRMEMELİ.
+            _SahteAygit(PNPDeviceID=r"USB\ROOT_HUB30\5&18297C0C&0&0"),
+            # Serisiz aygıt haritaya GİRMEMELİ.
+            _SahteAygit(PNPDeviceID=_GERCEK_WINDOWS_PNP[0]),
+        ],
+    )
+    monkeypatch.setitem(sys.modules, "wmi", sahte)
+
+    sonuc = read_windows()
+
+    assert len(sonuc) == 1, "USB olmayan disk de raporlanmış"
+    (kimlik,) = sonuc
+    assert kimlik.stable_id == _SERI
+    assert kimlik.generated is False
+    assert (kimlik.vendor_id, kimlik.product_id) == ("0781", "5567")
+
+
+def test_uretilmis_dugumler_haritaya_girmiyor(monkeypatch) -> None:
+    """
+    ÇAKIŞMA KORUMASI — `generated` filtresi olmadan yanlış eşleşme olur.
+
+    Serisiz bir USB diskin USBSTOR örnek kimliği `7&1441131D&0`; `&0`
+    ayıklanınca geriye `7&1441131D` kalıyor. Aynı makinede örnek kimliği
+    tam olarak `7&1441131D` olan ÜRETİLMİŞ bir USB düğümü varsa, filtre
+    olmadan ikisi eşleşir ve prototip üretilmiş bir kimliği "tanımlayıcı
+    serisi" diye raporlar — B-022'nin aynası, ters yönden.
+
+    Bu senaryo mutasyon testinde ortaya çıktı: `generated` filtresini
+    kaldıran mutasyon hayatta kalmıştı, çünkü hiçbir test çakışmayı
+    kurmuyordu.
+    """
+    import sys
+
+    carpisan = "7&1441131D"
+    sahte = _SahteWMI(
+        diskler=[
+            _SahteAygit(
+                InterfaceType="USB",
+                PNPDeviceID=(
+                    r"USBSTOR\DISK&VEN_GENERIC&PROD_FLASH&REV_1.00"
+                    rf"\{carpisan}&0"
+                ),
+                SerialNumber=None,
+            )
+        ],
+        varliklar=[_SahteAygit(PNPDeviceID=rf"USB\VID_1234&PID_5678\{carpisan}")],
+    )
+    monkeypatch.setitem(sys.modules, "wmi", sahte)
+
+    (kimlik,) = read_windows()
+    assert kimlik.generated is True, "üretilmiş kimlik seri sanıldı"
+    assert kimlik.stable_id is None
+
+
+def test_usb_dugum_haritasi_iki_yigini_baglıyor() -> None:
+    """
+    Eşleştirmenin sözleşmesi: USBSTOR örnek kimliği (`&<n>` atılmış hâli)
+    USB düğümünün örnek kimliğine EŞİT olmalı. İki gerçek dize üzerinde.
+    """
+    _v, _p, usb_instance, generated = parse_windows_pnp_id(_USB_PNP)
+    _v2, _p2, stor_instance, _g2 = parse_windows_pnp_id(_USBSTOR_PNP)
+
+    assert generated is False
+    assert usbstor_instance(stor_instance) == usb_instance
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 2. macOS ioreg ayrıştırması
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -170,16 +384,49 @@ def test_windows_formatting_is_stripped() -> None:
     assert normalize_serial("6479_A7FF_F000_0285.") == "6479A7FFF0000285"
 
 
-def test_case_and_padding_are_normalised() -> None:
+def test_case_is_normalised() -> None:
     assert normalize_serial("4c530001120523104381") == normalize_serial(
         "4C530001120523104381")
-    assert normalize_serial("0004C53") == "4C53"
+
+
+def test_bastaki_sifirlar_KIRPILMIYOR() -> None:
+    """
+    DAVRANIŞ DEĞİŞİKLİĞİ (B-022) — bu testin iddiası BİLEREK tersine çevrildi.
+
+    Eski hâli `assert normalize_serial("0004C53") == "4C53"` idi, yani
+    `.lstrip("0")` davranışını SABİTLİYORDU. O kırpma bir çakışma
+    üretiyordu: iki FARKLI aygıtın serisi aynı kimliğe iniyordu.
+
+    Kimlik üreten bir fonksiyonda çakışma, kapatmaya çalıştığı dolgu
+    farkından ağır basar — üstelik o dolgu farkının gerçekten var olduğu
+    hiç ölçülmemişti.
+    """
+    assert normalize_serial("0004C53") == "0004C53"
+    assert normalize_serial("0123ABC") != normalize_serial("123ABC")
+
+
+def test_sifirla_baslayan_iki_seri_cakismiyor() -> None:
+    """
+    Kırpmanın somut zararı: eskiden bu üçü de "4C53" oluyordu.
+
+    `stable_id` bu değeri platformlar arası KİMLİK olarak kullanıyor,
+    yani çakışma "iki farklı USB aynı token sayılır" demekti.
+    """
+    seriler = ["04C53", "004C53", "0004C53", "4C53"]
+    assert len({normalize_serial(s) for s in seriler}) == len(seriler)
 
 
 def test_normalisation_does_not_invent_an_id() -> None:
-    """Tamamen sıfır bir seri, "0" olarak kalmalı — boş dizeye dönmemeli."""
-    assert normalize_serial("0000") == "0"
+    """
+    Alfanümerik hiçbir karakter kalmazsa "0" dönüyor — boş dize değil.
+
+    Tamamen sıfırlardan oluşan bir seri artık OLDUĞU GİBİ kalıyor
+    ("0000" → "0000"); eskiden kırpılıp "0"a iniyordu. İkisi farklı
+    aygıtların bildirdiği farklı dizeler ve öyle kalmalı.
+    """
     assert normalize_serial("----") == "0"
+    assert normalize_serial("") == "0"
+    assert normalize_serial("0000") == "0000"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

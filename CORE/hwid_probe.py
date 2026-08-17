@@ -27,27 +27,40 @@ köprüsü VPD 0x80 (Unit Serial Number) sayfası sunuyorsa Windows onu
 tercih edebiliyor ve iki alan aynı aygıtta farklı olabiliyor.
 
 
-⚠ SONRADAN DÜZELTME — bu modül SERİLİ AYGITI "SERİSİZ" DİYE RAPORLUYOR
-----------------------------------------------------------------------
+DÜZELTİLDİ (B-022) — eskiden serili aygıta "serisiz" diyordu
+-------------------------------------------------------------
 2026-08-16'da gerçek HYCLEUS token USB'si takılı halde ölçüm yapıldı ve
 aygıtın serisi ÇIKTI (bkz. BACKLOG.md / B-016). Bu modül ise ona
-`üretilmiş=EVET, tanımlayıcı_seri=(yok)` dedi — yani YANLIŞ.
+`üretilmiş=EVET, tanımlayıcı_seri=(yok)` demişti — yani ters yönde kanıt
+üretiyordu.
 
-Sebep `read_windows()`'un `Win32_DiskDrive.PNPDeviceID`'yi okuması: o,
-USB yığını düğümü değil DEPOLAMA yığını düğümü ve seriye `&0` örnek
-soneki ekliyor. Onaltılık görünen bir seri (`4C5303…`) + `&0`,
-aşağıdaki `_GENERATED_INSTANCE_RE` desenine tam uyuyor. Ayrıntı ve
-yapılacaklar: BACKLOG.md / B-022.
+Sebep `read_windows()`'un YALNIZCA `Win32_DiskDrive.PNPDeviceID`'yi
+okumasıydı: o, USB yığını düğümü değil DEPOLAMA yığını düğümü ve seriye
+`&0` örnek soneki ekliyor. Onaltılık görünen bir seri (`4C5303…`) artı
+`&0`, `_GENERATED_INSTANCE_RE` desenine tam uyuyordu — SanDisk gibi
+tümüyle onaltılık seri kullanan üreticilerde SİSTEMATİK bir yanlış
+pozitif.
 
-Aşağıdaki "ölçülen kanıt" bölümü DOĞRU ama dar: sayılan 12 aygıt dahili
-çevre birimiydi. USB depolama aygıtları seri taşıyor.
+Artık iki yığın birden okunuyor ve seriyle eşleştiriliyor:
 
-`usb_manager.get_usb_hwid()` bu hatadan etkilenmiyor — o `PNPDeviceID`'ye
-hiç bakmıyor, doğrudan `SerialNumber` alanını okuyor.
+    Win32_DiskDrive   → depolama serisi + USBSTOR düğümü
+    Win32_PnPEntity   → USB düğümü: VID, PID ve TANIMLAYICI serisi
+
+"Üçüncü segmentte `&` yok → gerçek seri" kuralı yalnızca USB düğümünde
+geçerli (Microsoft "Device instance IDs"); USBSTOR düğümünde değil. VID/PID
+de yalnızca orada bulunuyor — eski kodun `????:????` basması bunun
+belirtisiydi ama biçime yorulmuştu.
+
+`usb_manager.get_usb_hwid()` bu hatadan hiç etkilenmemişti — o
+`PNPDeviceID`'ye bakmıyor, doğrudan `SerialNumber` alanını okuyor.
 
 
 ÖLÇÜLEN KANIT — iSerialNumber çoğu zaman YOK
 ---------------------------------------------
+(Aşağıdaki sayım DOĞRU ama dar: sayılan 12 aygıt dahili çevre birimiydi.
+USB *depolama* aygıtları seri taşıyor — 2026-08-16 ölçümünde aynı
+makinedeki 14 USB düğümünden yalnızca token'da seri vardı.)
+
 USB spec'inde `iSerialNumber` OPSİYONEL. Bu, teorik bir uyarı değil:
 geliştirme makinesinde (Windows 11) `Win32_PnPEntity` ile listelenen
 **12 USB aygıtının 12'sinde de** tanımlayıcı serisi yok. Hepsinin
@@ -85,7 +98,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 _log = logging.getLogger("hycleus.hwid_probe")
 
@@ -97,6 +110,12 @@ _GENERATED_INSTANCE_RE = re.compile(r"^[0-9a-fA-F]+&")
 #: Windows'un depolama serilerinde gördüğümüz biçimlendirme: gruplar arası
 #: alt çizgi ve sonda nokta. Ölçüm: NVMe diskinde '6479_A7FF_F000_0285.'
 _WINDOWS_FORMATTING_RE = re.compile(r"[^0-9A-Za-z]")
+
+#: USBSTOR düğümünün örnek kimliğine eklediği sonek: `<seri>&0`. Sondaki
+#: rakam aygıtın LUN/örnek sayacı, serinin parçası DEĞİL. Ayıklanmadan
+#: `_GENERATED_INSTANCE_RE`'ye verilirse onaltılık her seri "üretilmiş"
+#: sanılır (B-022).
+_USBSTOR_SUFFIX_RE = re.compile(r"&\d+$")
 
 
 @dataclass(frozen=True)
@@ -138,11 +157,36 @@ def normalize_serial(raw: str) -> str:
     ve macOS aynı aygıt için biçimlendirmesiz dize veriyor. Karşılaştırma
     yapılacaksa ikisinin de aynı biçime indirgenmesi gerekiyor.
 
+    BAŞTAKİ SIFIRLAR KIRPILMIYOR (B-022)
+    ------------------------------------
+    Bu fonksiyon eskiden sonda `.lstrip("0")` uyguluyordu. Amaç dolgu
+    farklarını kapatmaktı ama sonuç ÇAKIŞMAYDI: `0123ABC` ile `123ABC`
+    aynı değere iniyordu, yani iki FARKLI aygıt aynı kimliği alabiliyordu.
+    Kimlik üreten bir fonksiyonda çakışma, kapatmaya çalıştığı biçim
+    farkından çok daha ağır bir hata.
+
+    Kırpmanın kapattığı varsayılan sorun ayrıca ÖLÇÜLMEMİŞTİ: elimizdeki
+    hiçbir platform çiftinde aynı serinin farklı sıfır dolgusuyla geldiği
+    görülmedi. Ölçülmemiş bir sorunu, ölçülebilir bir çakışma pahasına
+    çözmek yanlış takas.
+
     DİKKAT: bu normalleştirme biçim farkını kapatıyor, ALAN farkını
     kapatmıyor. İki platform farklı ALANLARI okuyorsa normalleştirme
     sonucu yine farklı olur.
     """
-    return _WINDOWS_FORMATTING_RE.sub("", raw).upper().lstrip("0") or "0"
+    return _WINDOWS_FORMATTING_RE.sub("", raw).upper() or "0"
+
+
+def usbstor_instance(instance: str) -> str:
+    """
+    USBSTOR örnek kimliğinden Windows'un eklediği `&<n>` sonekini ayıklar.
+
+    `4C530301470118102554&0` → `4C530301470118102554`
+
+    Sonek ayıklanmadan `_GENERATED_INSTANCE_RE`'ye verilirse onaltılık
+    görünen HER seri "üretilmiş kimlik" sanılır — B-022'nin kök nedeni.
+    """
+    return _USBSTOR_SUFFIX_RE.sub("", instance)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -173,14 +217,98 @@ def parse_windows_pnp_id(pnp_id: str) -> tuple[str | None, str | None, str, bool
     return vid, pid, instance, bool(_GENERATED_INSTANCE_RE.match(instance))
 
 
+def build_windows_identity(
+    disk_pnp_id: str,
+    storage_serial: str | None,
+    usb_nodes: dict[str, tuple[str | None, str | None]],
+) -> UsbIdentity:
+    """
+    Bir USB diskin iki yığındaki kaydını BİRLEŞTİRİR — WMI'siz, saf.
+
+    Args:
+        disk_pnp_id:    `Win32_DiskDrive.PNPDeviceID` (USBSTOR düğümü).
+        storage_serial: `Win32_DiskDrive.SerialNumber`.
+        usb_nodes:      USB yığını düğümleri, `{örnek_kimliği: (vid, pid)}`.
+                        Yalnızca GERÇEK serisi olan düğümler (üçüncü
+                        segmentinde `&` bulunmayanlar) burada.
+
+    Eşleştirme USBSTOR örnek kimliğinden `&<n>` soneki atılarak yapılıyor;
+    kalan dize, serisi olan bir aygıtta USB düğümünün örnek kimliğinin ta
+    kendisi.
+
+    Ayrı ve saf bir fonksiyon olması bilinçli: B-022'nin kök nedeni tam
+    olarak burada yaşıyordu ve WMI olmadan test edilemiyordu. Artık iki
+    gerçek `PNPDeviceID` dizesiyle sınanabiliyor.
+    """
+    _v, _p, ham_instance, _g = parse_windows_pnp_id(disk_pnp_id)
+    instance = usbstor_instance(ham_instance)
+
+    if instance in usb_nodes:
+        vid, pid = usb_nodes[instance]
+        return UsbIdentity(
+            platform="windows",
+            source="Win32_DiskDrive + Win32_PnPEntity (USB düğümü)",
+            vendor_id=vid, product_id=pid,
+            descriptor_serial=instance,
+            storage_serial=str(storage_serial).strip() if storage_serial else None,
+            generated=False,
+            raw=disk_pnp_id,
+        )
+
+    # USB düğümü bulunamadı → tanımlayıcı serisi YOK sayılıyor. İki
+    # olasılık var: aygıt gerçekten serisiz (Windows kimlik üretmiş) ya da
+    # düğüm okunamadı. İkisini ayırt EDEMİYORUZ, o yüzden `stable_id`
+    # None dönsün diye `generated=True` veriliyor — "bilmiyoruz"u
+    # "biliyoruz" gibi göstermek, B-022'nin ters yönden tekrarı olurdu.
+    return UsbIdentity(
+        platform="windows",
+        source="Win32_DiskDrive (USB düğümü eşleşmedi)",
+        vendor_id=None, product_id=None,
+        descriptor_serial=None,
+        storage_serial=str(storage_serial).strip() if storage_serial else None,
+        generated=True,
+        raw=disk_pnp_id,
+    )
+
+
+def _windows_usb_nodes(wmi_modulu: Any) -> dict[str, tuple[str | None, str | None]]:
+    """
+    USB yığınındaki, GERÇEK serisi olan düğümler: `{seri: (vid, pid)}`.
+
+    "Üçüncü segmentte `&` yok → gerçek seri" kuralı yalnızca burada
+    geçerli (Microsoft "Device instance IDs").
+
+    `generated` filtresi ÇAKIŞMAYI önlüyor ve gereklidir: serisiz bir
+    diskin USBSTOR kimliği `7&1441131D&0`, `&0` ayıklanınca `7&1441131D`
+    oluyor. Örnek kimliği tam olarak bu olan üretilmiş bir USB düğümü
+    haritaya girerse ikisi eşleşir ve üretilmiş bir kimlik "tanımlayıcı
+    serisi" diye raporlanır — B-022'nin ters yönden aynası. Bu senaryo
+    mutasyon testinde ortaya çıktı ve `tests/test_hwid_probe.py::
+    test_uretilmis_dugumler_haritaya_girmiyor` ile sabitlendi.
+
+    Kök hub atlaması (`USB\\ROOT_HUB...`) ise fazladan bir emniyet: kök
+    hub kimlikleri zaten üretilmiş olduğu için yukarıdaki filtreye
+    takılıyorlar. Davranışı değiştirmiyor, niyeti okunur kılıyor.
+    """
+    dugumler: dict[str, tuple[str | None, str | None]] = {}
+    for ent in wmi_modulu.WMI().Win32_PnPEntity():
+        pnp = getattr(ent, "PNPDeviceID", "") or ""
+        if not pnp.startswith("USB\\") or pnp.startswith("USB\\ROOT_HUB"):
+            continue
+        vid, pid, instance, generated = parse_windows_pnp_id(pnp)
+        if generated or not instance:
+            continue
+        dugumler[instance] = (vid, pid)
+    return dugumler
+
+
 def read_windows() -> list[UsbIdentity]:
     """
     Windows'ta USB depolama kimliklerini okur — İKİ yığından birden.
 
     `usb_manager.get_usb_hwid()` yalnızca depolama yığınına bakıyor. Burada
-    ayrıca PNPDeviceID ayrıştırılıyor, çünkü tanımlayıcı serisinin VAR OLUP
-    OLMADIĞI ancak oradan anlaşılıyor — depolama serisi boş değilse bile
-    üretilmiş olabilir.
+    ayrıca USB yığını düğümü okunuyor, çünkü tanımlayıcı serisinin VAR OLUP
+    OLMADIĞI ve VID/PID ancak oradan anlaşılıyor (B-022).
     """
     try:
         import wmi  # type: ignore[import]
@@ -190,20 +318,14 @@ def read_windows() -> list[UsbIdentity]:
 
     sonuc: list[UsbIdentity] = []
     try:
+        usb_dugumleri = _windows_usb_nodes(wmi)
         for disk in wmi.WMI().Win32_DiskDrive():
             if getattr(disk, "InterfaceType", "") != "USB":
                 continue
-            pnp = getattr(disk, "PNPDeviceID", "") or ""
-            vid, pid, instance, generated = parse_windows_pnp_id(pnp)
-            depolama = getattr(disk, "SerialNumber", None)
-            sonuc.append(UsbIdentity(
-                platform="windows",
-                source="Win32_DiskDrive + PNPDeviceID",
-                vendor_id=vid, product_id=pid,
-                descriptor_serial=None if generated else (instance or None),
-                storage_serial=str(depolama).strip() if depolama else None,
-                generated=generated,
-                raw=pnp,
+            sonuc.append(build_windows_identity(
+                getattr(disk, "PNPDeviceID", "") or "",
+                getattr(disk, "SerialNumber", None),
+                usb_dugumleri,
             ))
     except Exception as exc:  # pragma: no cover — ortama bağlı
         _log.warning("WMI okunamadı: %s", exc)

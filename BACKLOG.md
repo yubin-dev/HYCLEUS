@@ -25,6 +25,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | B-004 | `④` grubu — B-004 düzeltmesi | İmha Odası sayacını işleten tek yer `UI/main_window_table.py::_tick_expiry` idi ve o metot `if self._current_label != "Imha": return` ile başlıyordu — süresi dolmuş dosya, kullanıcı o sekmeye girmedikçe diskte kalıyordu. Zamanlayıcının `_purge_expired` görevi artık `Karantina` yanında `Imha` etiketini de işliyor; iki etiket ayrı denetim kaynağı yazıyor (`quarantine_ttl` / `imha_ttl`). Arayüz sayacı KALDIRILMADI, ikisi de aynı `purge_expired_file()`'ı çağırıyor (B-008). Saklama süpürmesiyle gelen `expires_at = NULL` satırlar korunuyor; korumanın kaynağı SQLite'ın üç değerli mantığı (`datetime(NULL) <= …` → NULL), ölçüldü. Bu maddeyi "son çalışma zamanı + kapı" deseni ÇÖZMEDİ: oradaki kapı global değil dosya başına. |
 | B-015 | `④` grubu — B-015 düzeltmesi | Yedekleme özelliği vardı ama HATIRLATMASI yoktu; yedek yalnızca kullanıcının aklına geldiğinde alınıyordu. `CORE/backup_reminder.py` eklendi ve `ZamanKapisi`'nı (`backup_last_run`) kullanıyor — ④ grubunda deseni gerçekten kullanan tek madde. Damga `create_backup()` içinde yazılıyor, arayüzde değil: CLI'dan alınan yedekler de hatırlatmayı susturmalı. Uyarı ENGELLEYİCİ değil, "sonra sorma" bir eşik süresi kadar (süresiz değil) ve eşik `0` hatırlatmayı kapatıyor. "Hedef erişilemiyor" ile "hiç yedek yok" AYRI durumlar — harici disk takılı değilse yedek yok değil, görünmüyor. Negatif eşik kapatmıyor, varsayılana düşüyor. |
 | B-006 | `④` grubu — B-006 düzeltmesi | Zincir doğrulaması üç yerden çağrılabiliyordu ama arayüzde düğmesi yoktu; TXT dışa aktarımı da yalnızca dört sütun yazıyor, hash/son uç/doğrulama durumu taşımıyordu. `CORE/audit_report.py` iki doğrulamayı (`verify_audit_chain` + `verify_against_anchor`) birleştirip METİN üretiyor; AdminPanel'e "Zinciri Doğrula" düğmesi eklendi (panel zaten `role != "Yönetici"` ise hiç kurulmuyor) ve sonuç `audit_chain_verified` olarak denetim kaydına düşüyor — doğrulayan kullanıcı B-011'in `users` satırından okunuyor, yan etkisiz `kullanici_bilgisi()` ile. TXT başlığı artık zincir durumunu, son hash'i, ilk kırılma id'sini ve "bu dosya imzalı DEĞİLDİR" sınırını taşıyor. Bu madde de "son çalışma zamanı + kapı" desenini KULLANMIYOR: zamanlanmış bir iş değil, kullanıcının bastığı bir düğme. |
+| B-022 | `③` grubu — B-022 düzeltmesi | `hwid_probe.read_windows()` yalnızca `Win32_DiskDrive.PNPDeviceID`'yi okuyordu; o USBSTOR (depolama) düğümü ve seriye `&<n>` örnek soneki ekliyor. Onaltılık bir seri artı `&0`, "üretilmiş kimlik" desenine tam uyduğu için prototip SERİLİ token'a "serisiz" diyordu — SanDisk'te sistematik, ve B-016 kararını ters yöne itecek bir ölçüm hatası. Artık `Win32_PnPEntity` üzerinden USB düğümü de okunuyor ve seriyle eşleştiriliyor; VID/PID de oradan geliyor (eski `????:????` çıktısı bunun belirtisiydi). Eşleştirme saf bir fonksiyona (`build_windows_identity`) ayrıldı, artık WMI'siz test edilebiliyor. Yanında `normalize_serial()`'ın `.lstrip("0")`'ı kaldırıldı: `0123ABC` ile `123ABC`'yi aynı kimliğe indiriyordu — kimlik üreten bir fonksiyonda ÇAKIŞMA, kapatmaya çalıştığı (ve hiç ölçülmemiş) dolgu farkından ağır basar. İki sabitleme testi bilerek kırıldı. |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
 > Yeni madde açarken bu tabloya da bakın; yalnızca aşağıdaki en büyük
@@ -327,7 +328,12 @@ değil, bu aygıtta ölçülmüş bir gerçek.
 > tam da bunun için yazıldı — bir sonraki port testi karşılaştırılabilir
 > olacak.
 
-### Kalan tek ölçüm
+### Kalan tek ölçüm — FİZİKSEL TEST ORTAMI GEREKTİRİYOR
+
+> **Kod tarafı bitti (2026-08-17).** Ölçüm aracındaki hata düzeltildi
+> (B-022 kapandı): prototip artık USB yığını düğümünü okuyor ve serili
+> aygıta "serisiz" demiyor. Bu madde artık bir KOD işi değil, bir
+> DONANIM işi bekliyor.
 
 **Aynı çubuk Linux'ta** — `ID_SERIAL_SHORT` aynı dizeyi mi veriyor.
 Çapraz platform iddiasının tek gerçek testi bu; Windows tarafında
@@ -493,88 +499,3 @@ Yukarı akış düzeltirse: `PYTHONUTF8=1`'i üç yerden birden kaldır.
 `tests/test_static_analysis.py::test_windows_pythonutf8_olmadan_kural_dosyasi_okunamiyor`
 o gün otomatik olarak `skip`'e düşecek ve mesajında bunu söyleyecek —
 yani bu maddeyi kapatma zamanını test haber verecek.
-
----
-
-## B-022 — `hwid_probe` serili aygıtı "serisiz" diye raporluyor
-
-**Durum:** Açık — prototipte, üretim kodunu etkilemiyor
-**Öncelik:** Düşük (yalnızca 3.4 prototipi; `usb_manager` doğru okuyor)
-**İlgili:** [`CORE/hwid_probe.py`](CORE/hwid_probe.py), B-016
-**Bulundu:** 2026-08-16, B-016 ölçümü sırasında — prototipin çıktısı ham
-WMI verisiyle çelişince
-
-### Bulgu
-
-Gerçek USB token takılıyken `python -m CORE.hwid_probe` şunu dedi:
-
-```
-windows  ????:????  tanımlayıcı_seri=(yok)  üretilmiş=EVET
-UYARI: 1 aygıtta taşınabilir kimlik YOK.
-```
-
-Aygıtın serisi **var** (bkz. B-016). Prototip yanlış rapor verdi. İki
-bağımsız kusur üst üste bindi:
-
-**1. Yanlış düğümü okuyor.** `read_windows()` `Win32_DiskDrive`'ın
-`PNPDeviceID`'sini alıyor, o da **depolama** yığını düğümü:
-
-```
-USBSTOR\DISK&VEN_SANDISK&PROD_CRUZER_BLADE&REV_1.00\<seri>&0
-```
-
-`parse_windows_pnp_id()` ise `USB\VID_xxxx&PID_yyyy\<instance>` biçimine
-göre yazılmış. USBSTOR düğümünde VID/PID **yok** — çıktıdaki `????:????`
-bunun belirtisi ve zaten görülüyordu, ama okumaya değil biçime yorulmuştu.
-
-**2. "Üretilmiş kimlik" sezgisi yanlış pozitif veriyor.**
-
-```python
-_GENERATED_INSTANCE_RE = re.compile(r"^[0-9a-fA-F]+&")
-```
-
-Kural şuydu: üretilmiş kimlikler `8&F2CB6FA&0&9` gibi görünür, gerçek
-seriler `&` içermez. USBSTOR düğümü ise seriye `&0` örnek soneki
-**ekliyor** — ve SanDisk serileri baştan sona onaltılık karakterlerden
-oluşuyor. Sonuç: `<seri>&0` desene tam uyuyor.
-
-Bu nadir bir kenar durum değil, SanDisk için **sistematik**. Ölçüm:
-
-| Girdi | `parse_windows_pnp_id` | Doğru mu |
-|---|---|---|
-| `USBSTOR\DISK&VEN_SANDISK&…\<seri>&0` | `(None, None, '<seri>&0', True)` | **hayır** |
-| `USB\VID_0781&PID_5567\<seri>` | `('0781', '5567', '<seri>', False)` | evet |
-
-Yani ayrıştırıcı doğru, **beslendiği veri** yanlış.
-
-### Neden önemli
-
-Prototipin tek işi bir mimari soruya kanıt üretmekti ve **ters yönde
-kanıt üretti**: taşınabilir kimliği olan bir aygıta "yok" dedi. B-016
-kararı bu çıktıya bakarak verilseydi, gereksiz bir mimari geçiş
-başlatılırdı. Sessizce yanlış cevap veren bir ölçüm aracı, hiç
-olmayandan kötü.
-
-### Üretim kodu etkilenmiyor
-
-`usb_manager.get_usb_hwid()` `PNPDeviceID`'ye hiç bakmıyor; doğrudan
-`Win32_DiskDrive.SerialNumber` okuyor ve o alan doğru değeri veriyor.
-Prototip uygulamaya bağlı değil (modül docstring'inin ilk satırı).
-
-### Yapılacak
-
-1. `read_windows()` USB yığını düğümünü de okusun (`Win32_PnPEntity`,
-   `PNPDeviceID LIKE 'USB\VID_%'`) ve seriye göre USBSTOR düğümüyle
-   eşleştirsin. VID/PID ancak oradan gelir.
-2. USBSTOR örnek sonekini (`&<rakam>`) sezgiye sokmadan önce ayıkla.
-3. Regresyon testi: yukarıdaki iki gerçek `PNPDeviceID` dizesi tabloya
-   girsin — ikisinin de doğru sınıflandırıldığı sabitlensin.
-
-### Yanında duran ikinci kusur
-
-`normalize_serial()` sonunda `.lstrip("0")` var. Amaç Windows'un
-biçimlendirmesini temizlemekti ama bu, **sıfırla başlayan seriyi
-bozuyor**: `0123ABC` → `123ABC`. Farklı iki aygıt aynı kimliğe
-çakışabilir. Bugün zararsız (fonksiyonu yalnızca prototipin `stable_id`'si
-çağırıyor, üretimde kullanılmıyor), ama 1. maddeyi yaparken düzeltilmeli
-— yoksa düzeltilmiş okuyucu bu sefer doğru seriyi kırpar.
