@@ -495,3 +495,49 @@ Yukarı akış düzeltirse: `PYTHONUTF8=1`'i üç yerden birden kaldır.
 `tests/test_static_analysis.py::test_windows_pythonutf8_olmadan_kural_dosyasi_okunamiyor`
 o gün otomatik olarak `skip`'e düşecek ve mesajında bunu söyleyecek —
 yani bu maddeyi kapatma zamanını test haber verecek.
+
+---
+
+## B-023 — ClamAV arka ucu gerçek bir Linux kurulumunda hiç çalıştırılmadı
+
+**Durum:** Açık — kod yazıldı ve test edildi, ÖLÇÜLMEDİ
+**Öncelik:** Orta (Linux'ta tarama ya çalışıyor ya da sessizce mock)
+**Bulundu:** 2026-08-17 — ClamAV entegrasyonu eklenirken, kendi kapsamı olarak
+
+`CORE/scanner_backends.py::ClamAVBackend` `clamdscan`/`clamscan` çağırıyor
+ve tüm testleri `run_tool` dikişini monkeypatch'leyerek çalışıyor. Yani
+şu ana kadar doğrulanan şey **bizim eşlemelerimiz**: çıkış kodu tablosu,
+`--fdpass` yerleşimi, imza adı ayrıştırma, daemon kapalıyken düşüş.
+
+Hiç doğrulanmayan şey, ClamAV'ın GERÇEKTEN böyle davrandığı. Sahte
+çalıştırıcı bizim varsayımımızı tekrar ediyor; varsayım yanlışsa test de
+onunla birlikte yanlış. Bu B-016 ile aynı sınıftan bir eksik — kod tarafı
+bitti, fiziksel/gerçek ortam ölçümü bekliyor.
+
+### Ölçülmesi gerekenler (EICAR ile, sırayla)
+
+| # | Ölçüm | Neden |
+|---|---|---|
+| 1 | `clamscan` temiz dosyada `rc=0`, EICAR'da `rc=1` | Eşlemenin temeli. Defender'da `2` tehdit; ters karıştırılırsa her tarama hatası "zararlı" olur |
+| 2 | Bulgu satırının tam biçimi (`<yol>: <imza> FOUND`) | `parse_threat()` sondaki `": "` üzerinden bölüyor |
+| 3 | `clamdscan --fdpass` kasa dizinindeki dosyayı gerçekten okuyabiliyor mu | `clamd` ayrı kullanıcı olarak çalışıyor; bayrak işe yaramazsa her tarama "Access denied" |
+| 4 | Daemon KAPALIYKEN `clamdscan`'in stderr metni | Düşüş kararı `_CLAMD_ULASILAMIYOR` işaretlerine bakıyor. Metin farklıysa düşüş hiç tetiklenmez ve tarama sessizce mock'a iner |
+| 5 | `clamscan` soğuk başlangıç süresi | `SCAN_TIMEOUT = 120` tahmin; imza veritabanı büyükse yetmeyebilir |
+
+### Nasıl bakılır (kurulum gerekmeden)
+
+```
+python -m CORE.scanner              # hangi motor seçildi, araçlar nerede
+python -m CORE.scanner <dosya>      # tek dosya tara, kararı yazdır
+```
+
+`4` numaralı ölçüm en sinsisi: yanlış tarafa düşerse hata **sessiz**.
+Kullanıcı dosyayı yükler, tarama sütunu boş kalır, hiçbir şey bağırmaz —
+bu modülün en başta düzeltmek için yazıldığı durumun aynısı.
+
+### Kapsam notu
+
+`ClamAVBackend` Windows dışındaki HER platformda etkin, yani macOS'ta
+`clamscan` kuruluysa çalışır (komut satırı arayüzü aynı). macOS de
+ölçülmedi; bugünkü davranış (her zaman mock) bundan kötü olduğu için
+kapı bilerek açık bırakıldı.

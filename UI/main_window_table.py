@@ -193,8 +193,8 @@ class _ScanWorker(QObject):
             result = scan_file(self._path, file_id=self._file_id)
         except Exception:
             _log.exception("worker_error  file=%s", self._path.name)
-            from CORE.scanner import _mock, _sha256
-            result = _mock(_sha256(self._path))
+            from CORE.scanner_backends import mock_result, sha256_of
+            result = mock_result(sha256_of(self._path))
         self.finished.emit(self._row, result)
 
 

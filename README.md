@@ -40,7 +40,7 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | **Encrypted Backup** | Copy the vault to external media; database metadata is encrypted, never plaintext. Backups verify **without the key** and restore refuses to run on a corrupt one (`backup_cli.py --verify`) |
 | **Brute-force Defence** | Login rate limit — 5 failures → 30s, escalating to 300s; counter persisted in DB |
 | **Access Control** | RBAC: Administrator / Standard / Read-only roles |
-| **Malware Scan** | Windows Defender (MpCmdRun.exe) on every uploaded file |
+| **Malware Scan** | Every uploaded file — Windows Defender (`MpCmdRun.exe`) on Windows, ClamAV (`clamdscan`/`clamscan`) elsewhere |
 | **File Labels** | General · Critical · Quarantine · Destruction Room |
 | **Destruction TTL** | Configurable auto-delete timer (1 / 6 / 12 / 24 / 48 h) |
 | **Bulk Operations** | Multi-select, bulk tag, bulk move, bulk download with progress |
@@ -177,7 +177,7 @@ When launched for the first time, the setup wizard guides you through:
 Drag and drop any file or folder onto the main window. Each file is:
 1. Encrypted with AES-256-GCM → saved as `.hcl` in the vault
 2. Registered in the SQLite database with SHA-256 integrity hashes
-3. Scanned by Windows Defender in a background thread
+3. Scanned by the platform's antivirus engine in a background thread
 
 A progress banner shows **"X / N processed"** during batch uploads. A notification appears when all files complete.
 
@@ -187,7 +187,7 @@ A progress banner shows **"X / N processed"** during batch uploads. A notificati
 |-------|-------------|
 | **General** | Standard encrypted files |
 | **Critical** | High-priority; hidden from Read-only users |
-| **Quarantine** | Flagged for review; Defender scan status visible |
+| **Quarantine** | Flagged for review; antivirus scan status visible |
 | **Destruction Room** | Scheduled for permanent deletion (configurable TTL) |
 
 #### Multi-Selection & Bulk Actions
@@ -235,7 +235,8 @@ HYCLEUS/
 │   ├── version.py            # Single source of the version string
 │   ├── crypto.py             # AES-256-GCM encryption (.hcl format)
 │   ├── paths.py              # data_dir() — EXE-aware path resolution
-│   ├── scanner.py            # Windows Defender integration
+│   ├── scanner.py            # Antivirus scan flow (engine-independent)
+│   ├── scanner_backends.py   # Defender / ClamAV backends
 │   ├── scheduler.py          # APScheduler — expired file cleanup
 │   ├── setup_usb.py          # CLI USB registration tool
 │   ├── backup.py             # Encrypted backup + verifiable restore
@@ -318,7 +319,7 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | **Şifreli Yedekleme** | Kasayı harici medyaya kopyalayın; veritabanı metadata'sı şifreli gider, düz metin asla. Yedekler **anahtarsız** doğrulanabilir ve bozuk bir yedek geri yüklenmez (`backup_cli.py --verify`) |
 | **Kaba Kuvvet Savunması** | Giriş sınırlaması — 5 hatada 30 sn, 300 sn'ye kadar artan; sayaç DB'de kalıcı |
 | **Erişim Kontrolü** | RBAC: Yönetici / Standart / Salt Okunur rolleri |
-| **Zararlı Tarama** | Her yüklenen dosyaya Windows Defender (MpCmdRun.exe) taraması |
+| **Zararlı Tarama** | Her yüklenen dosyaya: Windows'ta Windows Defender (`MpCmdRun.exe`), diğer platformlarda ClamAV (`clamdscan`/`clamscan`) |
 | **Dosya Etiketleri** | Genel · Kritik · Karantina · İmha Odası |
 | **İmha TTL** | Yapılandırılabilir otomatik silme süresi (1 / 6 / 12 / 24 / 48 saat) |
 | **Toplu İşlemler** | Çoklu seçim, toplu etiket, toplu taşıma, progress'li toplu indirme |
@@ -455,7 +456,7 @@ pyinstaller HYCLEUS.spec
 Herhangi bir dosyayı veya klasörü ana pencereye sürükleyip bırakın. Her dosya:
 1. AES-256-GCM ile şifrelenir → `.hcl` formatında kasaya kaydedilir
 2. SHA-256 bütünlük hash'leriyle SQLite veritabanına işlenir
-3. Arka plan thread'inde Windows Defender ile taranır
+3. Arka plan thread'inde platformun antivirüs motoruyla taranır
 
 Toplu yükleme sırasında **"X / N işlendi"** banner'ı görünür. Tüm dosyalar tamamlandığında bildirim çıkar.
 
@@ -465,7 +466,7 @@ Toplu yükleme sırasında **"X / N işlendi"** banner'ı görünür. Tüm dosya
 |--------|----------|
 | **Genel** | Standart şifreli dosyalar |
 | **Kritik** | Yüksek öncelikli; Salt Okunur kullanıcılardan gizlenir |
-| **Karantina** | İnceleme için işaretlenmiş; Defender tarama durumu görünür |
+| **Karantina** | İnceleme için işaretlenmiş; antivirüs tarama durumu görünür |
 | **İmha Odası** | Kalıcı silme için zamanlanmış (yapılandırılabilir TTL) |
 
 #### Çoklu Seçim ve Toplu İşlemler
@@ -514,7 +515,8 @@ HYCLEUS/
 │   ├── version.py            # Sürüm dizesinin tek kaynağı
 │   ├── crypto.py             # AES-256-GCM şifreleme (.hcl formatı)
 │   ├── paths.py              # data_dir() — EXE-duyarlı yol çözümü
-│   ├── scanner.py            # Windows Defender entegrasyonu
+│   ├── scanner.py            # Antivirüs tarama akışı (motordan bağımsız)
+│   ├── scanner_backends.py   # Defender / ClamAV arka uçları
 │   ├── scheduler.py          # APScheduler — süresi dolmuş dosya temizliği
 │   ├── setup_usb.py          # CLI USB kayıt aracı
 │   ├── backup.py             # Şifreli yedekleme + doğrulanabilir geri yükleme

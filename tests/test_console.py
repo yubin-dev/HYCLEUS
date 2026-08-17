@@ -194,7 +194,13 @@ def test_the_known_call_sites_use_the_helper(yol: str) -> None:
 
 #: Denetlenen komut satırı giriş noktaları. `CORE/*_cli.py` deseni otomatik
 #: taranıyor; aşağıdakiler o desene uymayan ama CLI olan dosyalar.
-_EK_CLI_DOSYALARI = ("CORE/setup_usb.py", "CORE/recover_vault.py")
+#:
+#: `CORE/scanner.py` 2026-08-17'de eklendi ve denetimin neden geniş tutulduğunu
+#: doğruladı: `python -m CORE.scanner` tanılama çıktısı ilk yazıldığında
+#: yardımcıyı çağırmıyordu ve cp1254 konsolunda "Seçilen" yerine "Se�ilen"
+#: yazıyordu. Desene (`*_cli.py`) uymadığı için denetim onu kendiliğinden
+#: görmemişti — liste elle genişletildi.
+_EK_CLI_DOSYALARI = ("CORE/setup_usb.py", "CORE/recover_vault.py", "CORE/scanner.py")
 
 
 def _cli_dosyalari() -> list[Path]:
