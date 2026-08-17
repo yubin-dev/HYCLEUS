@@ -6,16 +6,30 @@ Otoritesi'ne (TSA) imzalatır ve dönen token'ı dosyanın sonuna, ayrı bir
 fragman olarak yazar. Kanıtladığı şey tek cümleyle: *"bu içerik, TSA'nın
 imzaladığı tarihte zaten vardı."*
 
-Bu adımın KAPSAMI
------------------
-Yalnızca (a) kap formatı ve (b) damgalama akışı. Token'ın imzasının
-ÇEVRİMDIŞI DOĞRULANMASI, Merkle ağacı ve arayüz düğmesi SONRAKİ adımlar —
-burada bilinçli olarak yok. Bugün token alınıyor, biçimsel tutarlılığı
-(status, imprint, nonce, algoritma) kontrol ediliyor ve saklanıyor;
-imzasının TSA'nın sertifikasıyla eşleştiği HENÜZ doğrulanmıyor.
+Bu modülün KAPSAMI
+------------------
+(a) kap formatı, (b) tekil damgalama, (c) TOPLU damgalama (Merkle).
+Token'ın imzasının ÇEVRİMDIŞI DOĞRULANMASI ayrı bir modülde:
+`CORE/timestamp_verify.py`. Burada yapılan kontroller BİÇİMSEL (status,
+imprint, nonce, algoritma) — imzanın TSA sertifikasıyla eşleştiği orada
+denetleniyor.
 
 Bu sınır, yanlış bir güven duygusu yaratmasın diye açıkça yazılıyor:
-şu anki hâliyle fragman, TSA'nın verdiğini SAKLIYOR, doğrulamıyor.
+bu modül TSA'nın verdiğini SAKLIYOR, imzasını doğrulamıyor.
+
+
+İKİ DAMGALAMA KİPİ
+------------------
+    timestamp_file()   → 1 dosya, 1 TSA çağrısı, fragman v1
+    timestamp_batch()  → N dosya (+ çıpa), 1 TSA çağrısı, fragman v2
+
+Toplu kipte token KÖKÜ damgalıyor; her dosya kendi yaprağından köke giden
+yolu saklıyor. 100 dosya için 100 çağrı ve ~500 KB token yerine 1 çağrı,
+~5 KB token ve dosya başına ~224 byte yol. Ağacın güvenlik seçimleri
+(alan ayrımı, tek düğüm yükseltmesi) `CORE/merkle.py` docstring'inde.
+
+Tekil kip KALDIRILMADI: tek bir dosyayı damgalamak için ağaç kurmak
+gereksiz bir dolaylılık ve v1 fragmanı okuyan mevcut dosyalar var.
 
 
 Neden düz metnin özeti damgalanıyor, ciphertext'in değil
@@ -59,17 +73,31 @@ yaklaşım: ayırıcı karakter yok, her alanın önünde uzunluğu var, alan SI
 gömmek base64 (%33 şişme) ve anahtar sırası garantisi gerektirirdi.
 
     [4B ] TRAILER_MAGIC   = b'HTST'
-    [1B ] trailer_version = 0x01
+    [1B ] trailer_version = 0x01 | 0x02
     [4B ] len + hash_algorithm   (utf-8, "sha256")
-    [4B ] len + hashed_hex       (utf-8, 64 karakter, damgalanan özet)
+    [4B ] len + hashed_hex       (utf-8, 64 karakter, BU DOSYANIN özeti)
     [4B ] len + tsa_url          (utf-8, damgayı veren TSA)
     [4B ] len + token_der        (RFC 3161 TimeStampToken, DER)
+  ── yalnızca v2 ──────────────────────────────────────────────────────
+    [4B ] len + merkle_root      (32 ham byte — TOKEN BUNU damgalıyor)
+    [4B ] len + leaf_index       (4 byte big-endian uint32)
+    [4B ] len + merkle_proof     (her adım: [1B yön][32B kardeş])
+  ─────────────────────────────────────────────────────────────────────
     [4B ] toplam uzunluk (big-endian uint32 — bu fragmanın TAMAMI)
     [4B ] TRAILER_MAGIC   = b'HTST'
+
+v2 alanları SONA eklendi ve v1'in alan sırası aynen korundu. Sonuç:
+Merkle'sız bir fragman bugün de byte-byte eski hâliyle üretiliyor ve eski
+dosyalar okunmaya devam ediyor.
 
 `hashed_hex` fragmanda AYRICA tutuluyor, token'ın içinden de okunabilecek
 olmasına rağmen: fragmanın AAD ile eşleşip eşleşmediğini ASN.1 ayrıştırmadan
 kontrol edebilmek için. Tutarsızlık olursa token yine de yetkilidir.
+
+**v2'de `hashed_hex` ile token'ın imprint'i EŞLEŞMEZ** — ve bu doğru
+davranıştır. Token kökü damgalıyor; dosyanın özeti köke yolla bağlanıyor.
+Doğrulama bu yüzden iki adım: (1) yaprak + yol → kök mü, (2) kök imzalı mı.
+Bu ayrımı gözden kaçıran bir okuyucu v2 fragmanını "tutarsız" sanır.
 
 Sondaki uzunluk + magic, fragmanın dosya sonundan geriye doğru
 bulunabilmesini sağlıyor; gerekçesi `CORE/crypto.py::_trailer_offset`.
@@ -120,12 +148,33 @@ from CORE.crypto import (
     VERSION_TIMESTAMPED,
     verify_file,
 )
+from CORE.merkle import (
+    HASH_SIZE,
+    MerkleError,
+    MerkleProof,
+    build_leaves,
+    build_tree,
+    leaf_hash,
+    verify_proof,
+)
 
 _log = logging.getLogger("hycleus.timestamp")
 
 #: Fragman şeması sürümü — kap sürümünden (0x02) BAĞIMSIZ. Fragmanın iç
 #: düzeni değişirse bu artar, kap formatı değişmek zorunda kalmaz.
+#:
+#: v1 = tek dosya, token doğrudan dosyanın özetini damgalıyor
+#: v2 = toplu damga, token KÖKÜ damgalıyor + dosyanın Merkle yolu
+#:
+#: Yazarken v2 yalnızca Merkle alanları varsa kullanılıyor; tekil
+#: damgalama hâlâ byte-byte v1 üretiyor. Okurken İKİSİ DE destekleniyor.
 TRAILER_VERSION = 1
+TRAILER_VERSION_MERKLE = 2
+
+#: Okunabilen fragman sürümleri. Yeni bir sürüm eklenirken buraya da
+#: girmezse `decode_trailer` onu reddeder — sessizce yanlış okumaktansa
+#: açık hata.
+SUPPORTED_TRAILER_VERSIONS = frozenset({TRAILER_VERSION, TRAILER_VERSION_MERKLE})
 
 #: Damgalamada kullanılan özet algoritması. AAD'deki original_sha256 ile
 #: aynı olmak ZORUNDA — hazır özeti kullanmanın önkoşulu bu.
@@ -164,12 +213,60 @@ class TimestampError(Exception):
 
 @dataclass(frozen=True)
 class TimestampInfo:
-    """Bir dosyanın zaman damgası fragmanının çözülmüş hâli."""
+    """
+    Bir dosyanın zaman damgası fragmanının çözülmüş hâli.
+
+    Merkle alanları (v2) opsiyonel. Üçü ya BİRLİKTE dolu ya birlikte boş —
+    ikisi dolu biri boş bir fragman anlamsız olurdu ve `__post_init__`
+    bunu reddediyor.
+
+    v1 ile v2 arasındaki ANLAM FARKI, bu sınıfın en önemli özelliği:
+
+        v1 → `token_der` DOĞRUDAN `hashed_hex`'i damgalıyor
+        v2 → `token_der` `merkle_root`'u damgalıyor; `hashed_hex` bu
+             dosyanın kendi özeti ve köke `merkle_proof` ile bağlanıyor
+
+    Yani v2'de token'ın imprint'i ile `hashed_hex` EŞLEŞMEZ ve bu doğru
+    davranıştır. Doğrulama iki adım: yol köke çıkıyor mu, kök imzalı mı.
+    """
 
     hash_algorithm: str
     hashed_hex: str
     tsa_url: str
     token_der: bytes
+    #: Toplu damgada ağacın kökü (32 ham byte). Tekil damgada None.
+    merkle_root: bytes | None = None
+    #: Bu dosyanın yaprak indisi. Ağacı yeniden kurmak için DEĞİL —
+    #: yalnızca teşhis ve kayıt için; doğrulama yolu yürüyor.
+    leaf_index: int | None = None
+    #: Yaprağı köke bağlayan yol.
+    merkle_proof: MerkleProof | None = None
+
+    def __post_init__(self) -> None:
+        dolu = [
+            self.merkle_root is not None,
+            self.leaf_index is not None,
+            self.merkle_proof is not None,
+        ]
+        if any(dolu) and not all(dolu):
+            raise TimestampError(
+                "Merkle alanları ya birlikte dolu ya birlikte boş olmalı; "
+                f"root={dolu[0]} index={dolu[1]} proof={dolu[2]}"
+            )
+        if self.merkle_root is not None and len(self.merkle_root) != HASH_SIZE:
+            raise TimestampError(
+                f"Merkle kökü {HASH_SIZE} byte olmalı, "
+                f"{len(self.merkle_root)} verildi."
+            )
+
+    @property
+    def batched(self) -> bool:
+        """Toplu (Merkle) damga mı."""
+        return self.merkle_root is not None
+
+    @property
+    def trailer_version(self) -> int:
+        return TRAILER_VERSION_MERKLE if self.batched else TRAILER_VERSION
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -203,14 +300,71 @@ def encode_trailer(info: TimestampInfo) -> bytes:
     """
     body = (
         TRAILER_MAGIC
-        + bytes([TRAILER_VERSION])
+        + bytes([info.trailer_version])
         + _put(info.hash_algorithm.encode("utf-8"))
         + _put(info.hashed_hex.encode("utf-8"))
         + _put(info.tsa_url.encode("utf-8"))
         + _put(info.token_der)
     )
+    kok, indis, yol = info.merkle_root, info.leaf_index, info.merkle_proof
+    if kok is not None and indis is not None and yol is not None:
+        # v2 ek alanları SONA ekleniyor: v1'in alan sırası aynen korunuyor,
+        # dolayısıyla Merkle'sız bir fragman byte-byte eskisiyle aynı çıkıyor.
+        #
+        # Üçünü tek tek kontrol etmek `assert` yerine tercih edildi:
+        # `assert` `-O` ile çalıştırıldığında düşer ve tip daraltması da
+        # onunla birlikte kaybolur. `__post_init__` zaten "ya hep ya hiç"
+        # garantisi veriyor, buradaki kontrol yalnızca onu görünür kılıyor.
+        body += (
+            _put(kok)
+            + _put(struct.pack(">I", indis))
+            + _put(encode_proof(yol))
+        )
     total = len(body) + 8  # + toplam uzunluk alanı (4) + kapanış magic (4)
     return body + struct.pack(">I", total) + TRAILER_MAGIC
+
+
+def encode_proof(proof: MerkleProof) -> bytes:
+    """
+    Merkle yolunu ikili bloba çevirir: her adım `[1B yön][32B kardeş]`.
+
+    Yön byte'ı 0x01 = kardeş SAĞDA, 0x00 = solda. Ayrı bir sayaç alanı
+    YOK: blob uzunluğu 33'e tam bölünüyor ve adım sayısını veriyor.
+    Sayaç eklemek, uzunlukla çelişebilecek ikinci bir gerçek kaynağı
+    yaratırdı.
+    """
+    return b"".join(
+        bytes([1 if sagda else 0]) + kardes
+        for kardes, sagda in zip(proof.siblings, proof.right_flags)
+    )
+
+
+def decode_proof(blob: bytes, *, leaf_index: int) -> MerkleProof:
+    """Ham blobu `MerkleProof`a çevirir."""
+    adim = 1 + HASH_SIZE
+    if len(blob) % adim:
+        raise TimestampError(
+            f"Merkle yolu bozuk: {len(blob)} byte {adim}'e bölünmüyor."
+        )
+    kardesler: list[bytes] = []
+    yonler: list[bool] = []
+    for i in range(0, len(blob), adim):
+        yon = blob[i]
+        if yon not in (0, 1):
+            raise TimestampError(
+                f"Merkle yolunda geçersiz yön byte'ı: 0x{yon:02x} "
+                "(yalnızca 0x00/0x01 geçerli)"
+            )
+        yonler.append(yon == 1)
+        kardesler.append(blob[i + 1 : i + adim])
+    try:
+        return MerkleProof(
+            leaf_index=leaf_index,
+            siblings=tuple(kardesler),
+            right_flags=tuple(yonler),
+        )
+    except MerkleError as exc:
+        raise TimestampError(f"Merkle yolu geçersiz: {exc}") from exc
 
 
 def decode_trailer(raw: bytes) -> TimestampInfo:
@@ -226,16 +380,30 @@ def decode_trailer(raw: bytes) -> TimestampInfo:
         raise TimestampError("Fragman TRAILER_MAGIC ile bitmiyor.")
 
     version = raw[4]
-    if version != TRAILER_VERSION:
+    if version not in SUPPORTED_TRAILER_VERSIONS:
         raise TimestampError(
             f"Desteklenmeyen fragman sürümü: {version} "
-            f"(bu sürüm {TRAILER_VERSION} okuyor)"
+            f"(bu sürüm {sorted(SUPPORTED_TRAILER_VERSIONS)} okuyor)"
         )
 
     alg, pos = _take(raw, 5)
     hashed, pos = _take(raw, pos)
     url, pos = _take(raw, pos)
     token, pos = _take(raw, pos)
+
+    kok: bytes | None = None
+    indis: int | None = None
+    yol: MerkleProof | None = None
+    if version == TRAILER_VERSION_MERKLE:
+        kok, pos = _take(raw, pos)
+        ham_indis, pos = _take(raw, pos)
+        blob, pos = _take(raw, pos)
+        if len(ham_indis) != 4:
+            raise TimestampError(
+                f"Yaprak indisi 4 byte olmalı, {len(ham_indis)} verildi."
+            )
+        (indis,) = struct.unpack(">I", ham_indis)
+        yol = decode_proof(blob, leaf_index=indis)
 
     # Alanlardan sonra yalnızca [4B uzunluk][4B magic] kalmalı. Fazlası,
     # fragmanın bu sürümün beklediğinden farklı yazıldığı anlamına gelir.
@@ -249,6 +417,9 @@ def decode_trailer(raw: bytes) -> TimestampInfo:
         hashed_hex=hashed.decode("utf-8"),
         tsa_url=url.decode("utf-8"),
         token_der=token,
+        merkle_root=kok,
+        leaf_index=indis,
+        merkle_proof=yol,
     )
 
 
@@ -639,7 +810,276 @@ def timestamp_file(
     return info
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. Toplu damgalama — Merkle ağacı
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Tek TSA çağrısı, N dosya + (opsiyonel) günlük denetim çıpası. Gerekçe ve
+# ağacın güvenlik seçimleri CORE/merkle.py docstring'inde.
+
+
+#: Denetim çıpası yaprağının önüne konan etiket. Dosya yapraklarıyla
+#: KARIŞMAMASI için: ikisi de 32 byte ham özet ve etiket olmasa bir çıpa
+#: hash'i bir dosya özetiymiş gibi sunulabilirdi.
+ANCHOR_LEAF_LABEL = b"hycleus-audit-anchor:"
+
+
+@dataclass(frozen=True)
+class BatchResult:
+    """Bir toplu damgalama turunun sonucu."""
+
+    root: bytes
+    token_der: bytes
+    tsa_url: str
+    #: Damgalanan dosyalar, verilen sırayla.
+    paths: tuple[Path, ...]
+    #: Çıpa yaprağı dahil edildiyse hash'i.
+    anchor_hash: str | None = None
+    #: Ağaçtaki toplam yaprak sayısı (dosyalar + varsa çıpa).
+    leaf_count: int = 0
+
+    @property
+    def saved_calls(self) -> int:
+        """Tekil damgalamaya göre kaç TSA çağrısından tasarruf edildi."""
+        return max(0, self.leaf_count - 1)
+
+    def summary(self) -> str:
+        cipa = " + çıpa" if self.anchor_hash else ""
+        return (
+            f"{len(self.paths)} dosya{cipa} tek damgada birleşti "
+            f"(kök {self.root.hex()[:16]}…, {self.saved_calls} TSA çağrısı "
+            f"tasarruf)"
+        )
+
+
+def current_anchor_hash(path: Path | None = None) -> str | None:
+    """
+    Denetim çıpası dosyasındaki EN SON `last_hash` — hiç çıpa yoksa None.
+
+    Toplu damgalamaya geçirilecek değer bu. Çıpa dosyası
+    `CORE/audit_chain.py`'nin yazdığı JSONL; burada yalnızca son satırın
+    `last_hash` alanı okunuyor.
+
+    Neden `audit_chain` içinde DEĞİL: o modül zaman damgasını bilmiyor ve
+    bilmemeli. Bağımlılık bu yönde — damgalama denetim zincirini biliyor,
+    tersi değil. Ters yön, zincire yazan her yolu TSA'ya bağlardı.
+
+    İçe aktarma FONKSİYON İÇİNDE: `audit_chain` modül düzeyinde
+    içe aktarılsaydı iki modül birbirine sıkı bağlanır ve damgalama
+    testleri denetim zincirinin kurulumunu gerektirirdi.
+    """
+    from CORE.audit_chain import read_anchors
+
+    kayitlar = read_anchors(path)
+    if not kayitlar:
+        return None
+    son = kayitlar[-1].get("last_hash")
+    return str(son) if son else None
+
+
+def anchor_leaf_payload(anchor_hash: str) -> bytes:
+    """
+    Denetim çıpası hash'ini yaprak yüküne çevirir.
+
+    `SHA256(b"hycleus-audit-anchor:" ‖ hash_metni)`.
+
+    YÜK TAŞIYAN KISIM SHA-256 SARMALAMASI, etiket değil — ölçüldü.
+    Çıpanın ham byte'ları (`bytes.fromhex(anchor_hash)`) doğrudan yaprak
+    yükü yapılsaydı, bir çıpa yaprağı ile bir dosya yaprağı BİREBİR aynı
+    biçimde görünürdü: ikisi de 32 baytlık ham özet. O zaman elinde çıpa
+    hash'i olan biri onu "şu dosyanın özeti" diye sunabilirdi — kripto
+    kırmadan, yalnızca TİP KARIŞIKLIĞIYLA. Sarmalama bunu kapatıyor:
+    çıpa yükü, hiçbir dosyanın `original_sha256`'sı olmayan türetilmiş
+    bir değer.
+
+    Etiketin kendisi bunun ÜSTÜNE eklenen belge niteliğinde bir ayrım;
+    kaldıran bir mutasyon hiçbir testi bozmuyor (sarmalama zaten
+    ayırıyor). Yine de duruyor: türetmenin amacını koddan okunur kılıyor
+    ve ileride ikinci bir "özel yaprak" türü eklenirse ayrımın yeri hazır
+    olur.
+    """
+    return hashlib.sha256(
+        ANCHOR_LEAF_LABEL + anchor_hash.encode("utf-8")
+    ).digest()
+
+
+def _file_digest(path: Path, *, key: bytes | None, hwid: str | None) -> str:
+    """Bir `.hcl` dosyasının damgalanacak düz metin özetini okur."""
+    meta = verify_file(path, key, hwid=hwid) if key is not None else read_aad(path)
+    hashed_hex = meta.get("original_sha256")
+    if not hashed_hex:
+        raise TimestampError(
+            f"{path.name}: AAD'de original_sha256 yok — bu dosya, özet alanı "
+            "eklenmeden önce şifrelenmiş. Damgalamak için yeniden şifrelenmeli."
+        )
+    try:
+        ham = bytes.fromhex(hashed_hex)
+    except ValueError as exc:
+        raise TimestampError(
+            f"{path.name}: AAD'deki original_sha256 geçerli hex değil: "
+            f"{hashed_hex!r}"
+        ) from exc
+    if len(ham) != HASH_SIZE:
+        raise TimestampError(
+            f"{path.name}: AAD'deki original_sha256 {len(ham)} byte — "
+            "SHA-256 değil."
+        )
+    return hashed_hex
+
+
+def timestamp_batch(
+    paths: list[Path | str],
+    *,
+    url: str = DEFAULT_TSA_URL,
+    key: bytes | None = None,
+    hwid: str | None = None,
+    anchor_hash: str | None = None,
+    timeout: int = TSA_TIMEOUT,
+    transport: Callable[[str, bytes, int], bytes] | None = None,
+) -> BatchResult:
+    """
+    Birden çok dosyayı TEK TSA çağrısıyla damgalar.
+
+    Akış:
+        her dosyanın AAD özetini oku → yaprakları kur → (varsa çıpa
+        yaprağını ekle) → ağacı kur → KÖKÜ damgala → her dosyaya kendi
+        yolunu içeren v2 fragmanı yaz
+
+    Args:
+        paths: Damgalanacak `.hcl` dosyaları. SIRA ANLAMLIDIR: yaprak
+            indisleri buradan geliyor.
+        anchor_hash: `CORE.audit_chain`'in günlük çıpasının `last_hash`
+            değeri. Verilirse ağaca ETİKETLİ bir yaprak olarak giriyor ve
+            iki özellik tek damgada birleşiyor — kullanıcı bir tek
+            token'la hem dosyalarının hem denetim kaydının o tarihte var
+            olduğunu gösterebiliyor.
+        key: Verilirse her dosya damgalanmadan önce `verify_file()` ile
+            doğrulanır (tekil akıştaki anlamın aynısı).
+
+    Returns:
+        BatchResult.
+
+    Raises:
+        TimestampError — liste boş, bir dosya zaten damgalı, AAD'de özet
+            yok, TSA reddetti ya da fragman yazılamadı.
+
+    KISMİ YAZMA UYARISI
+    -------------------
+    Fragmanlar dosya dosya yazılıyor ve her biri kendi içinde atomik
+    (`attach_trailer` → `os.replace`). Ama TUR ATOMİK DEĞİL: 40 dosyanın
+    37'si yazıldıktan sonra disk dolarsa ilk 37'si damgalı, son 3'ü
+    damgasız kalır. Bu bir tutarsızlık DEĞİL — yazılan 37 fragmanın her
+    biri tek başına geçerli ve doğrulanabilir; kalan 3 dosya yeni bir
+    turda damgalanabilir. Turu geri almak, geçerli damgaları silmek
+    olurdu.
+
+    Yazılamayan dosyalar `TimestampError` içinde adlarıyla bildiriliyor.
+    """
+    yollar = [Path(p) for p in paths]
+    if not yollar:
+        raise TimestampError(
+            "Toplu damgalama için en az bir dosya gerekiyor — boş bir "
+            "ağacın kökü tanımsız olurdu."
+        )
+
+    zaten = [p.name for p in yollar if read_trailer(p) is not None]
+    if zaten:
+        raise TimestampError(
+            "Şu dosyalar zaten damgalı: " + ", ".join(zaten) + ". "
+            "Yeniden damgalamak eski damgayı geçersiz kılardı; önce mevcut "
+            "fragmanlarını bilinçli olarak kaldırın."
+        )
+
+    tekrar = {p for p in yollar if yollar.count(p) > 1}
+    if tekrar:
+        # Aynı dosya iki yaprağa girerse ikinci fragman yazımı birinciyi
+        # ezer ve dosya yanlış indisli bir yol taşır.
+        raise TimestampError(
+            "Aynı dosya listede birden çok kez: "
+            + ", ".join(sorted(p.name for p in tekrar))
+        )
+
+    ozetler = [_file_digest(p, key=key, hwid=hwid) for p in yollar]
+    yukler = [bytes.fromhex(h) for h in ozetler]
+    if anchor_hash:
+        yukler.append(anchor_leaf_payload(anchor_hash))
+
+    yapraklar = build_leaves(yukler)
+    agac = build_tree(yapraklar)
+    kok = agac.root
+
+    request_der, nonce = build_request(kok)
+    send = transport or _http_post
+    try:
+        response_der = send(url, request_der, timeout)
+    except TimestampError:
+        raise
+    except Exception as exc:
+        raise TimestampError(f"TSA'ya ulaşılamadı ({url}): {exc}") from exc
+
+    token_der = parse_response(response_der, digest=kok, nonce=nonce)
+
+    yazilamayan: list[str] = []
+    for i, (yol, ozet) in enumerate(zip(yollar, ozetler)):
+        bilgi = TimestampInfo(
+            hash_algorithm=HASH_ALGORITHM,
+            hashed_hex=ozet,
+            tsa_url=url,
+            token_der=token_der,
+            merkle_root=kok,
+            leaf_index=i,
+            merkle_proof=agac.proof(i),
+        )
+        try:
+            attach_trailer(yol, bilgi)
+        except Exception as exc:  # bir dosya turu durdurmasın
+            _log.error("%s: fragman yazılamadı: %s", yol.name, exc)
+            yazilamayan.append(f"{yol.name} ({exc})")
+
+    if yazilamayan:
+        raise TimestampError(
+            "Damga alındı ama şu dosyalara yazılamadı: "
+            + ", ".join(yazilamayan)
+            + ". Diğer dosyaların damgaları GEÇERLİ ve dosyalarında duruyor."
+        )
+
+    sonuc = BatchResult(
+        root=kok,
+        token_der=token_der,
+        tsa_url=url,
+        paths=tuple(yollar),
+        anchor_hash=anchor_hash,
+        leaf_count=len(yapraklar),
+    )
+    _log.info("Toplu damga: %s", sonuc.summary())
+    return sonuc
+
+
+def verify_merkle_path(info: TimestampInfo) -> bool:
+    """
+    Fragmandaki yolun, fragmandaki köke çıkıp çıkmadığı.
+
+    Yalnızca AĞAÇ tarafını ölçüyor — kökün TSA tarafından imzalandığı ayrı
+    bir soru ve `CORE.timestamp_verify.verify_timestamp()`'ın işi. İkisini
+    tek fonksiyona toplamak, "yol tutuyor" ile "damga geçerli" arasındaki
+    farkı gizlerdi.
+
+    Tekil (v1) damgada True döner: doğrulanacak bir yol yok ve yokluğu bir
+    hata değil.
+    """
+    kok, yol = info.merkle_root, info.merkle_proof
+    if kok is None or yol is None:
+        return True  # v1 — doğrulanacak yol yok
+    try:
+        yaprak = leaf_hash(bytes.fromhex(info.hashed_hex))
+    except ValueError:
+        return False
+    return verify_proof(yaprak, yol, kok)
+
+
 __all__ = [
+    "ANCHOR_LEAF_LABEL",
+    "BatchResult",
     "DEFAULT_TSA_URL",
     "HASH_ALGORITHM",
     "TSA_TIMEOUT",
@@ -652,8 +1092,16 @@ __all__ = [
     "decode_trailer",
     "encode_trailer",
     "parse_response",
+    "SUPPORTED_TRAILER_VERSIONS",
+    "TRAILER_VERSION_MERKLE",
+    "anchor_leaf_payload",
+    "current_anchor_hash",
+    "decode_proof",
+    "encode_proof",
     "read_aad",
     "read_trailer",
+    "timestamp_batch",
     "timestamp_file",
     "tsa_url",
+    "verify_merkle_path",
 ]

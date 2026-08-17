@@ -98,7 +98,13 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.types import CertificatePublicKeyTypes
 
-from CORE.timestamp import TimestampError, TimestampInfo, read_aad, read_trailer
+from CORE.timestamp import (
+    TimestampError,
+    TimestampInfo,
+    read_aad,
+    read_trailer,
+    verify_merkle_path,
+)
 
 _log = logging.getLogger("hycleus.timestamp_verify")
 
@@ -580,6 +586,35 @@ def verify_timestamp(
             tsa_url=info.tsa_url,
         )
 
+    # ── Toplu damga (v2): token KÖKÜ imzalıyor, dosya köke YOLLA bağlanıyor ──
+    #
+    # Sıra önemli: yol ÖNCE doğrulanıyor. Token geçerli olsa bile yol
+    # tutmuyorsa bu dosya o ağacın içinde değildir; "damga geçerli" demek
+    # yanıltıcı olurdu. Tersi de geçerli — yol tutup token sahte olabilir,
+    # o yüzden ikisi de zorunlu.
+    kontroller: list[str] = []
+    if info.batched:
+        if not verify_merkle_path(info):
+            return TimestampVerification(
+                valid=False,
+                reason=(
+                    "Merkle yolu köke çıkmıyor — bu dosyanın özeti "
+                    "damgalanan ağacın içinde değil. Yol ya da kök "
+                    "değiştirilmiş olabilir."
+                ),
+                failed_check="merkle_path",
+                hashed_hex=info.hashed_hex,
+                tsa_url=info.tsa_url,
+            )
+        kontroller.append("merkle_path")
+        # Token'dan beklenen imprint artık dosyanın özeti DEĞİL, kök.
+        # `verify_merkle_path` True döndüyse kök zaten None olamaz; mypy'a
+        # bunu göstermek için açık kontrol — `assert` yerine, çünkü -O ile
+        # çalıştırıldığında assert'ler düşer.
+        if info.merkle_root is None:  # pragma: no cover — batched garanti ediyor
+            raise TimestampError("Merkle kökü yok — fragman tutarsız.")
+        beklenen = info.merkle_root
+
     sonuc = verify_token(
         info.token_der,
         expected_digest=beklenen,
@@ -587,7 +622,16 @@ def verify_timestamp(
         at_time=at_time,
     )
     # TSA adresi fragmandan geliyor; token'ın içinde yok.
-    return TimestampVerification(**{**sonuc.__dict__, "tsa_url": info.tsa_url})
+    #
+    # `hashed_hex` de fragmandan geliyor: `verify_token()` oraya token'ın
+    # imprint'ini yazıyor ve v2'de o KÖKTÜR, dosyanın özeti değil. Kökü
+    # "dosyanın özeti" diye raporlamak, doğrulama çıktısını okuyan birini
+    # yanıltırdı.
+    ekler: dict[str, Any] = {"tsa_url": info.tsa_url}
+    if info.batched:
+        ekler["hashed_hex"] = info.hashed_hex
+        ekler["checks"] = kontroller + list(sonuc.checks)
+    return TimestampVerification(**{**sonuc.__dict__, **ekler})
 
 
 __all__ = [
