@@ -9,7 +9,7 @@ import os
 import re
 import sys
 import uuid
-from pathlib import Path
+from pathlib import PureWindowsPath
 
 DEV_MODE: bool = os.getenv("DEV_MODE", "").lower() in ("1", "true", "yes")
 _DEV_HWID = "DEV-HWID-1234"
@@ -32,9 +32,17 @@ def _wmic_yolu() -> str:
     `C:\\Windows` varsayılıyor. Dönen yolun VAR OLDUĞU kontrol edilmiyor:
     yoksa `subprocess` zaten `FileNotFoundError` fırlatır ve çağıran onu
     zaten yakalıyor — iki kat kontrol, iki kat sapma yolu demek olurdu.
+
+    `PureWindowsPath` KULLANILIYOR, `Path` değil. `Path` çalıştığı
+    platformun ayracını seçiyor: Linux'ta sonuç
+    `C:\\Windows/System32/wbem/wmic.exe` gibi karışık bir dize oluyor.
+    Bu fonksiyon yalnızca Windows'ta ÇAĞRILIYOR ama her platformda
+    IMPORT ediliyor ve test ediliyor; çıktısının platformdan bağımsız
+    olması gerekiyor. (İlk hâli `Path` kullanıyordu ve CI'ın Ubuntu ayağı
+    tam olarak bu yüzden kırıldı.)
     """
     kok = os.environ.get("SystemRoot") or r"C:\Windows"
-    return str(Path(kok) / "System32" / "wbem" / "wmic.exe")
+    return str(PureWindowsPath(kok) / "System32" / "wbem" / "wmic.exe")
 
 # Boş/geçersiz seri numaraları için kalıcı UUID haritası
 from CORE.paths import data_dir as _data_dir
