@@ -90,6 +90,23 @@ _SELFTEST_UCUNCU_TARAF: tuple[str, ...] = (
     "reportlab.platypus",
 )
 
+#: Platforma ÖZGÜ modüller. Yalnızca eşleşen platformda denenirler.
+#:
+#: Windows grubu B-024'ün ikinci yarısını kapatıyor. Linux spec'i
+#: `excludes=['wmi', 'pythoncom', …]` taşıyor — çünkü o paketler Linux'ta
+#: kurulamıyor. O satırın Windows spec'ine kopyalanması HWID okumasını
+#: SESSİZCE bozardı: `CORE/usb_manager.get_usb_hwid()` her iki yöntemi de
+#: `except Exception: pass` ile sarıyor, yani eksik `wmi` bir hata değil
+#: "USB bulunamadı" olarak görünür ve uygulama açılmayı reddeder.
+#:
+#: Statik bir denetim (tests/test_packaging.py::test_windows_spec_wmi_
+#: excludelamiyor) spec'in metnine bakıyor; buradaki denetim PAKETİN
+#: KENDİSİNE bakıyor. İkisi farklı soruları cevaplıyor: "spec doğru mu"
+#: ve "üretilen dosyada gerçekten var mı".
+_SELFTEST_PLATFORM: dict[str, tuple[str, ...]] = {
+    "win32": ("wmi", "pythoncom", "win32api", "win32con"),
+}
+
 
 def _selftest() -> int:
     """Paketlenmiş yapının bütünlüğünü GUI açmadan raporlar.
@@ -111,14 +128,21 @@ def _selftest() -> int:
     print(f"AppImage  : {'evet' if running_in_appimage() else 'hayır'}")
     print(f"data dizini: {data_dir()}")
 
+    platform_modulleri = _SELFTEST_PLATFORM.get(sys.platform, ())
+    if platform_modulleri:
+        print(f"Platform modülleri: {sys.platform} → {', '.join(platform_modulleri)}")
+    else:
+        print(f"Platform modülleri: {sys.platform} → (yok)")
+
+    denenecek = _SELFTEST_MODULLERI + _SELFTEST_UCUNCU_TARAF + platform_modulleri
     hatalar: list[str] = []
-    for ad in _SELFTEST_MODULLERI + _SELFTEST_UCUNCU_TARAF:
+    for ad in denenecek:
         try:
             importlib.import_module(ad)
         except Exception as exc:
             hatalar.append(f"{ad}: {type(exc).__name__}: {exc}")
 
-    toplam = len(_SELFTEST_MODULLERI) + len(_SELFTEST_UCUNCU_TARAF)
+    toplam = len(denenecek)
     print(f"Modüller  : {toplam - len(hatalar)}/{toplam} yüklendi")
 
     # Bilgi satırları — başarısızlık sayılmıyorlar.

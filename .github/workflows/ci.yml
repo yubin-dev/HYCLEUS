@@ -244,3 +244,65 @@ jobs:
           name: HYCLEUS-AppImage
           path: dist/*.AppImage
           if-no-files-found: error
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Windows EXE — dağıtım yapısı
+  #
+  # `appimage` işinin birebir karşılığı; gerekçeler de aynı: paketleme CI'ın
+  # en GEÇ haber veren parçası, ve `test` matrisine girseydi Ubuntu ayağında
+  # da koşup orada anlamsız olurdu.
+  #
+  # Bu iş B-024'ün kapısı. O bulgunun iki yarısı da bu kurulumun yokluğunda
+  # oluşmuştu ve ikisi de SESSİZDİ:
+  #   · spec `data/` istiyordu, dizin .gitignore'daydı — yapı yalnızca o
+  #     dizini zaten üretmiş makinelerde çalışıyordu, yani herkesinkinde.
+  #   · paket on modülü eksik taşıyordu, uygulama yine de açılıyordu.
+  # Ölçüm yöntemi ikisi için de aynı: temiz bir checkout'ta derle,
+  # --selftest çalıştır (bkz. packaging/windows/smoke-test.ps1).
+  #
+  # `data/` BİLEREK oluşturulmuyor. -TemizAgac anahtarı dizin varsa yapıyı
+  # durduruyor: bu iş, "taze klonda derlenir mi" sorusunu ölçmek için var.
+  # ────────────────────────────────────────────────────────────────────────────
+  exe:
+    name: EXE yapısı (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      # requirements.txt `wmi; sys_platform == "win32"` işaretçisi taşıyor,
+      # yani wmi + pywin32 yalnızca burada kuruluyor. Duman testi ikisinin
+      # de PAKETE girdiğini ayrıca doğruluyor.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      - name: EXE üret (temiz ağaç)
+        run: .\packaging\windows\build-exe.ps1 -TemizAgac
+
+      - name: Duman testi
+        run: .\packaging\windows\smoke-test.ps1
+
+      # AppImage işindeki gerekçe: yapıyı indirilebilir bırakmak "EXE
+      # üretildi" iddiasını denetlenebilir kılıyor.
+      - name: EXE'yi yükle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HYCLEUS-EXE
+          path: dist/HYCLEUS.exe
+          if-no-files-found: error

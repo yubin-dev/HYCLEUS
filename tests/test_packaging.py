@@ -28,6 +28,7 @@ import pytest
 
 KOK = Path(__file__).resolve().parent.parent
 PAKET = KOK / "packaging" / "linux"
+PAKET_WIN = KOK / "packaging" / "windows"
 
 WINDOWS_SPEC = KOK / "HYCLEUS.spec"
 LINUX_SPEC   = KOK / "HYCLEUS-linux.spec"
@@ -157,6 +158,32 @@ def test_selftest_listesinde_olmayan_modul_yok():
     listede = set(_sabit(KOK / "main.py", "_SELFTEST_MODULLERI"))
     fazla = listede - _depodaki_moduller()
     assert not fazla, f"Artık var olmayan modüller listede: {sorted(fazla)}"
+
+
+def test_platform_listesi_windowsta_wmi_grubunu_iceriyor():
+    """
+    B-024'ün ikinci yarısının kapısı. Linux spec'i `wmi`/`pywin32`'yi
+    `excludes` ile eliyor (Linux'ta kurulamıyorlar); o satırın Windows
+    spec'ine kopyalanması HWID okumasını SESSİZCE bozardı —
+    `get_usb_hwid()` her iki yöntemi de `except Exception: pass` ile
+    sarıyor, yani eksik `wmi` bir hata değil "USB bulunamadı" olarak
+    görünür ve uygulama açılmayı reddeder.
+
+    Bu grup listeden silinirse CI'ın `exe` işi paketi doğrulamayı bırakır
+    ve kapı sessizce açılır — testin var olma sebebi bu.
+    """
+    platform = _sabit(KOK / "main.py", "_SELFTEST_PLATFORM")
+    assert isinstance(platform, dict)
+    assert {"wmi", "pythoncom", "win32api", "win32con"} <= set(platform["win32"])
+
+
+def test_platform_listesi_linuxa_windows_modulu_koymuyor():
+    """`wmi` Linux'ta kurulamaz; orada denenirse AppImage duman testi kırılır."""
+    platform = _sabit(KOK / "main.py", "_SELFTEST_PLATFORM")
+    for anahtar, moduller in platform.items():
+        if anahtar != "win32":
+            assert not ({"wmi", "pythoncom", "win32api"} & set(moduller)), \
+                f"{anahtar} altında Windows modülü var: {moduller}"
 
 
 def test_ucuncu_taraf_listesi_fonksiyon_ici_importlari_kapsiyor():
@@ -332,6 +359,22 @@ def test_appimage_varliklari_yerinde():
         assert (PAKET / ad).is_file(), f"packaging/linux/{ad} yok"
 
 
+def test_windows_paketleme_varliklari_yerinde():
+    for ad in ("build-exe.ps1", "smoke-test.ps1"):
+        assert (PAKET_WIN / ad).is_file(), f"packaging/windows/{ad} yok"
+
+
+def test_iki_platformun_da_yapi_ve_duman_testi_var():
+    """
+    Simetri denetimi. Bir platformun duman testi olmadan kalması, B-024'ün
+    ortaya çıktığı durumun aynısı: yapı üretiliyor ama kimse açıp bakmıyor.
+    """
+    assert (PAKET / "build-appimage.sh").is_file()
+    assert (PAKET / "smoke-test.sh").is_file()
+    assert (PAKET_WIN / "build-exe.ps1").is_file()
+    assert (PAKET_WIN / "smoke-test.ps1").is_file()
+
+
 def test_desktop_dosyasi_gecerli_ve_simge_adi_eslesiyor():
     """
     appimagetool, `Icon=` değeriyle AppDir kökündeki simgenin uzantısız
@@ -397,16 +440,40 @@ def test_kabuk_betikleri_shebang_tasiyor(ad: str):
 CI = KOK / ".github" / "workflows" / "ci.yml"
 
 
-def test_ci_appimage_isi_var_olan_betikleri_cagiriyor():
+def test_ci_yapi_isleri_var_olan_betikleri_cagiriyor():
     """
     Betikler yeniden adlandırılırsa CI ancak o push'ta, yapı adımında
     kırılır. Bu test onu commit anında söylüyor.
     """
     metin = CI.read_text(encoding="utf-8")
-    for betik in ("packaging/linux/build-appimage.sh",
-                  "packaging/linux/smoke-test.sh"):
-        assert betik in metin, f"ci.yml {betik} çağırmıyor"
+    for betik, cagri in (
+        ("packaging/linux/build-appimage.sh", "packaging/linux/build-appimage.sh"),
+        ("packaging/linux/smoke-test.sh", "packaging/linux/smoke-test.sh"),
+        ("packaging/windows/build-exe.ps1", r"packaging\windows\build-exe.ps1"),
+        ("packaging/windows/smoke-test.ps1", r"packaging\windows\smoke-test.ps1"),
+    ):
+        assert cagri in metin, f"ci.yml {betik} çağırmıyor"
         assert (KOK / betik).is_file(), f"ci.yml var olmayan {betik} çağırıyor"
+
+
+def test_ci_exe_isi_temiz_agac_olcuyor():
+    """
+    `-TemizAgac` olmadan iş, `data/` dizinini zaten üretmiş bir ortamda da
+    yeşil geçerdi — B-024'ün birinci yarısı tam olarak buydu ve tam da bu
+    yüzden kimsenin makinesinde görünmüyordu.
+    """
+    assert "-TemizAgac" in CI.read_text(encoding="utf-8")
+
+
+def test_ci_yapi_isleri_test_matrisinin_disinda():
+    """
+    İki yapı işi de AYRI job. Matrise girselerdi her biri yanlış platformda
+    da koşardı (AppImage Windows'ta, EXE Ubuntu'da) ve orada anlamsızdı.
+    """
+    metin = CI.read_text(encoding="utf-8")
+    assert "os: [ubuntu-latest, windows-latest]" in metin
+    for isim in ("  appimage:", "  exe:"):
+        assert isim in metin, f"ci.yml'de {isim.strip()} işi yok"
 
 
 def test_ci_appimage_isi_yapi_bagimliliklarini_kuruyor():

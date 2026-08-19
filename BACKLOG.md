@@ -618,14 +618,23 @@ EXE, `upx=True` yerinde.
 CI'ın `appimage` işi de her push'ta onu çalıştırıyor. Yukarıdaki 10 modül
 zaten bu komutla bulundu — kod okunarak değil.
 
-Windows tarafı bu ağa BAĞLI DEĞİL: EXE'yi üreten CI işi yok, yapı elle
-alınıyor. Bu yüzden README'nin yapı bölümü artık her yapıda `--selftest`
-çalıştırmayı söylüyor — kalan koruma bu.
+2026-08-19 GÜNCELLEME — kapı kapandı. `ci.yml` → `exe` işi eklendi:
+windows-latest üzerinde TEMİZ bir checkout'ta derliyor (`-TemizAgac`,
+`data/` varsa duruyor) ve `packaging/windows/smoke-test.ps1` ile
+`--selftest` koşturuyor. Artık iki platformun da yapısı her push'ta
+üretilip açılıyor.
 
-KALAN AÇIK NOKTA (yeni madde açmaya değmez, burada duruyor): Windows EXE'si
-için CI işi yok. AppImage her push'ta üretilip duman testinden geçiyor,
-Windows yapısı geçmiyor. Bir gün EXE'yi de CI'da üretmek gerekirse bu
-maddedeki ölçüm yöntemi (`--selftest`, 53/53) hazır.
+Kapının GERÇEKTEN kapandığı iki kasıtlı bozma ile ölçüldü:
+
+| Bozma | Sonuç | İş |
+|---|---|---|
+| `_uygulama_modulleri()` hiddenimports'tan çıkarıldı | 46/57 | KIRMIZI |
+| Linux'un `excludes` satırı Windows spec'ine kopyalandı | 53/57 | KIRMIZI |
+
+İkincisi bir tasarım kararını doğruladı: duman testi modül sayısını SABİT
+bir sayıyla karşılaştırmıyor, "yüklenen == denenen" diye bakıyor. `wmi`
+grubu elenmiş bozuk bir yapı tam olarak **53** gösteriyor — yani
+`== 53` yazan bir denetim o yapıyı YEŞİL geçirirdi.
 
 ### Yan ölçüm — `console=False` ile `--selftest`
 

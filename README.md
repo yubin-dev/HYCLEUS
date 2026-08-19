@@ -149,10 +149,15 @@ pip install -r requirements-build.txt
 
 **Windows — single-file EXE**
 
-```bash
-pyinstaller HYCLEUS.spec
+```powershell
+.\packaging\windowsuild-exe.ps1
+.\packaging\windows\smoke-test.ps1
 # Output: dist\HYCLEUS.exe  (single file, no console)
 ```
+
+`build-exe.ps1` wraps `pyinstaller HYCLEUS.spec` with the two checks whose
+absence produced B-024: the clean-tree precondition (`-TemizAgac`) and the
+"was an EXE actually produced" postcondition.
 
 **Linux — AppImage**
 
@@ -174,12 +179,16 @@ to the binary — see `CORE/paths.py`.
 ```bash
 HYCLEUS --version     # version string only
 HYCLEUS --selftest    # imports every module, reports what is missing
-# Expected: "Modüller : 53/53 yüklendi" and "SELFTEST OK"
+# Expected: "SELFTEST OK" with loaded == attempted
+#           (57 on Windows — 53 plus the wmi/pywin32 group)
 ```
 
-Run `--selftest` on every build you intend to ship. It is what caught
-B-024: ten modules were missing from the packaged app while the app itself
-started up and looked fine.
+**This is automated.** Both builds are produced on every push and both are
+smoke-tested — `appimage` on ubuntu-latest, `exe` on windows-latest — and a
+missing module fails the job. Run it by hand only when building outside CI.
+
+`--selftest` is what caught B-024: ten modules were missing from the
+packaged app while the app itself started up and looked fine.
 
 ---
 
@@ -260,9 +269,10 @@ HYCLEUS/
 ├── HYCLEUS.spec              # PyInstaller spec — Windows EXE
 ├── HYCLEUS-linux.spec        # PyInstaller spec — Linux (AppImage)
 ├── packaging/linux/          # AppRun, .desktop, icon, build + smoke test
+├── packaging/windows/        # EXE build + smoke test (PowerShell)
 ├── .semgrep/hycleus.yml      # Project-specific semgrep rules
 ├── .github/workflows/
-│   ├── ci.yml                # Tests, ruff, mypy, bandit, semgrep, AppImage
+│   ├── ci.yml                # Tests, ruff, mypy, bandit, semgrep, AppImage, EXE
 │   └── fuzz.yml              # atheris fuzzing — manually triggered
 ├── tests/
 │   ├── fuzz/                 # Fuzz targets (crypto container, Shamir)
@@ -464,10 +474,15 @@ pip install -r requirements-build.txt
 
 **Windows — tek dosya EXE**
 
-```bash
-pyinstaller HYCLEUS.spec
+```powershell
+.\packaging\windowsuild-exe.ps1
+.\packaging\windows\smoke-test.ps1
 # Çıktı: dist\HYCLEUS.exe  (tek dosya, konsol yok)
 ```
+
+`build-exe.ps1`, `pyinstaller HYCLEUS.spec` çağrısını B-024'ün yokluğunda
+oluştuğu iki denetimle sarıyor: temiz ağaç ön koşulu (`-TemizAgac`) ve
+"EXE gerçekten üretildi mi" son koşulu.
 
 **Linux — AppImage**
 
@@ -489,12 +504,17 @@ yanında değil `$XDG_DATA_HOME/HYCLEUS` altında duruyor (varsayılan
 ```bash
 HYCLEUS --version     # yalnızca sürüm dizesi
 HYCLEUS --selftest    # her modülü içe aktarır, eksikleri raporlar
-# Beklenen: "Modüller : 53/53 yüklendi" ve "SELFTEST OK"
+# Beklenen: "SELFTEST OK" ve yüklenen == denenen
+#           (Windows'ta 57 — 53 artı wmi/pywin32 grubu)
 ```
 
-Dağıtacağınız her yapıda `--selftest` çalıştırın. B-024'ü bulan buydu:
-paketlenmiş uygulamada on modül eksikti ve uygulama yine de açılıp normal
-görünüyordu.
+**Bu artık otomatik.** İki yapı da her push'ta üretiliyor ve ikisi de duman
+testinden geçiyor — `appimage` ubuntu-latest'te, `exe` windows-latest'te — ve
+eksik bir modül işi kırıyor. Elle çalıştırmak yalnızca CI dışında yapı
+alırken gerekli.
+
+B-024'ü bulan `--selftest` idi: paketlenmiş uygulamada on modül eksikti ve
+uygulama yine de açılıp normal görünüyordu.
 
 ---
 
@@ -574,7 +594,7 @@ HYCLEUS/
 ├── pyproject.toml            # ruff / mypy / bandit yapılandırması
 ├── .semgrep/hycleus.yml      # Projeye özel semgrep kuralları
 ├── .github/workflows/
-│   ├── ci.yml                # Testler, ruff, mypy, bandit, semgrep, AppImage
+│   ├── ci.yml                # Testler, ruff, mypy, bandit, semgrep, AppImage, EXE
 │   └── fuzz.yml              # atheris fuzzing — elle tetiklenir
 ├── tests/
 │   ├── fuzz/                 # Fuzz hedefleri (kripto kabı, Shamir)
@@ -582,6 +602,7 @@ HYCLEUS/
 ├── HYCLEUS.spec              # PyInstaller spec — Windows EXE
 ├── HYCLEUS-linux.spec        # PyInstaller spec — Linux (AppImage)
 ├── packaging/linux/          # AppRun, .desktop, simge, yapı + duman testi
+├── packaging/windows/        # EXE yapısı + duman testi (PowerShell)
 ├── requirements-build.txt    # PyInstaller (yalnızca paketleme)
 ├── CORE/
 │   ├── version.py            # Sürüm dizesinin tek kaynağı
