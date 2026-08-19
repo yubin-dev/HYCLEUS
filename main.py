@@ -19,6 +19,7 @@ from CORE.audit_chain import (
     verify_against_anchor,
     write_anchor,
 )
+from CORE.console import ensure_utf8_console
 from CORE.safezone import purge_on_exit, purge_orphans
 from CORE.scheduler import start_scheduler, stop_scheduler
 from CORE.secret_migration import MigrationError, run_migrations
@@ -29,6 +30,142 @@ from CORE.vault_manager import has_recovery_share
 from DB.db_manager import DBManager, HWIDMissingError
 from UI.login_dialog import LoginDialog
 from UI.main_window import HycleusWindow
+
+
+# ── GUI'siz komutlar ──────────────────────────────────────────────────────────
+#
+# Bu iki bayrak paketlenmiş yapıyı sınamak için var. Bir GUI uygulamasının
+# "çalışıyor mu" sorusu başsız bir koşucuda cevaplanamaz: main() USB
+# bulamayınca QMessageBox açıyor ve o kutu tıklanmayı bekleyerek asılı
+# kalıyor. --selftest o duvarın ÖNÜNDE duruyor.
+#
+# Asıl ölçtüğü şey PyInstaller'ın gizli import'ları: reportlab, qrcode ve
+# keyring FONKSİYON İÇİNDE import ediliyor (CORE/inventory.py,
+# CORE/recovery_share.py, CORE/secret_store.py). Donmuş bir yapıda eksik
+# kalırlarsa hata ancak kullanıcı PDF almaya ya da kurtarma karekodunu
+# görmeye çalıştığında — yani en kötü anda — ortaya çıkar.
+
+#: Donmuş yapıda içe aktarılabilirliği denetlenen uygulama modülleri.
+#: `tests/test_packaging.py` bu listenin CORE/ ve DB/ ile eşleştiğini
+#: denetliyor — elle tutulan bir liste sessizce eskir.
+_SELFTEST_MODULLERI: tuple[str, ...] = (
+    "CORE.audit_chain", "CORE.audit_report", "CORE.backup", "CORE.backup_cli",
+    "CORE.backup_reminder", "CORE.checkout", "CORE.console", "CORE.crypto",
+    "CORE.disposal", "CORE.duplicates", "CORE.expiry", "CORE.export",
+    "CORE.file_queries", "CORE.file_records", "CORE.folders", "CORE.hwid_probe",
+    "CORE.idle_lock", "CORE.integrity", "CORE.inventory", "CORE.merkle",
+    "CORE.paths", "CORE.pin_policy", "CORE.rate_limit", "CORE.recover_vault",
+    "CORE.recovery_share", "CORE.retention", "CORE.safezone", "CORE.scanner",
+    "CORE.scanner_backends", "CORE.scheduled_checks", "CORE.scheduler",
+    "CORE.secret_migration", "CORE.secret_store", "CORE.secure_erase",
+    "CORE.session_user", "CORE.setup_usb", "CORE.timestamp",
+    "CORE.timestamp_verify", "CORE.usb_manager", "CORE.vault_manager",
+    "CORE.verify_timestamp_cli", "CORE.version",
+    "DB.db_manager",
+)
+
+#: Üçüncü taraf modüller. Ağırlık, yalnızca FONKSİYON İÇİNDE import edilen
+#: ve bu yüzden PyInstaller'ın statik analizinin gözden kaçırabileceği
+#: kümede — reportlab, qrcode, keyring.
+#:
+#: `cryptography.hazmat.primitives.ciphers` modül seviyesinde import
+#: ediliyor, yani PyInstaller onu zaten görüyor. Yine de listede: import
+#: etmek yerli (Rust) uzantının GERÇEKTEN yüklendiğini ölçüyor ve donmuş
+#: yapıda kırılabilecek tek şey saf Python modülleri değil.
+#:
+#: Burada olmayan ve OLMAMASI gereken: `...ciphers.aead`. İlk yazımda
+#: listedeydi ve donmuş yapıda "eksik" raporlandı — ama HYCLEUS AESGCM'i
+#: değil düşük seviyeli `Cipher/algorithms/modes` arayüzünü kullanıyor
+#: (CORE/crypto.py). Yani eksik olan paketleme değil, listenin kendisiydi.
+_SELFTEST_UCUNCU_TARAF: tuple[str, ...] = (
+    "apscheduler.schedulers.background",
+    "argon2",
+    "asn1crypto.tsp",
+    "cryptography.hazmat.primitives.ciphers",
+    "keyring",
+    "pyotp",
+    "qrcode",
+    "qrcode.image.svg",
+    "reportlab.lib.pagesizes",
+    "reportlab.platypus",
+)
+
+
+def _selftest() -> int:
+    """Paketlenmiş yapının bütünlüğünü GUI açmadan raporlar.
+
+    Çıkış kodu 0 = her modül yüklendi. Ortam bilgisi (data dizini, AV
+    motoru, anahtar kasası) BİLGİ amaçlı yazılıyor ve sonucu etkilemiyor:
+    başsız bir koşucuda anahtar kasası zaten yok ve bu bir paketleme
+    hatası değil.
+    """
+    import importlib
+    import platform
+
+    from CORE.paths import data_dir, running_in_appimage
+    from CORE.version import __version__
+
+    print(f"HYCLEUS   : {__version__}")
+    print(f"Python    : {platform.python_version()}  ({sys.platform})")
+    print(f"Donmuş    : {'evet' if hasattr(sys, 'frozen') else 'hayır'}")
+    print(f"AppImage  : {'evet' if running_in_appimage() else 'hayır'}")
+    print(f"data dizini: {data_dir()}")
+
+    hatalar: list[str] = []
+    for ad in _SELFTEST_MODULLERI + _SELFTEST_UCUNCU_TARAF:
+        try:
+            importlib.import_module(ad)
+        except Exception as exc:
+            hatalar.append(f"{ad}: {type(exc).__name__}: {exc}")
+
+    toplam = len(_SELFTEST_MODULLERI) + len(_SELFTEST_UCUNCU_TARAF)
+    print(f"Modüller  : {toplam - len(hatalar)}/{toplam} yüklendi")
+
+    # Bilgi satırları — başarısızlık sayılmıyorlar.
+    try:
+        from CORE.scanner_backends import select_backend
+        motor = select_backend()
+        print(f"AV motoru : {motor.ad}  (kullanılabilir: "
+              f"{'evet' if motor.available() else 'hayır'})")
+    except Exception as exc:
+        print(f"AV motoru : okunamadı ({exc})")
+
+    try:
+        from CORE.secret_store import backend_name
+        print(f"Anahtar kasası: {backend_name()}")
+    except Exception as exc:
+        print(f"Anahtar kasası: erişilemiyor ({type(exc).__name__})")
+
+    if hatalar:
+        print("\nYÜKLENEMEYEN MODÜLLER:")
+        for satir in hatalar:
+            print(f"  · {satir}")
+        return 1
+
+    print("\nSELFTEST OK")
+    return 0
+
+
+def _erken_komut(args: list[str]) -> int | None:
+    """GUI'siz bayrakları işler. `None` = normal açılışa devam."""
+    if not ({"--version", "--selftest"} & set(args)):
+        return None
+
+    # Modül seviyesindeki basicConfig DEBUG'a ayarlı ve keyring'in arka uç
+    # taraması onlarca satır basıyor. Bu iki komutun çıktısı MAKİNE
+    # TARAFINDAN okunuyor (packaging/linux/smoke-test.sh); araya karışan
+    # günlük satırları onu kırılgan yapar.
+    logging.getLogger().setLevel(logging.WARNING)
+
+    if "--version" in args:
+        ensure_utf8_console()
+        from CORE.version import __version__
+        print(__version__)
+        return 0
+    if "--selftest" in args:
+        ensure_utf8_console()
+        return _selftest()
+    return None
 
 
 def _dev_key(hwid: str) -> bytes:
@@ -55,6 +192,12 @@ def _dev_key(hwid: str) -> bytes:
 
 
 def main() -> None:
+    # QApplication'dan ÖNCE: --version/--selftest başsız çalışmalı, Qt'nin
+    # ekran sunucusu araması bile olmadan.
+    kod = _erken_komut(sys.argv[1:])
+    if kod is not None:
+        sys.exit(kod)
+
     app = QApplication(sys.argv)
 
     hwid = get_usb_hwid()

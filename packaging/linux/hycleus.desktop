@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=HYCLEUS
+GenericName=Secure File Vault
+GenericName[tr]=Güvenli Dosya Kasası
+Comment=Hardware-bound encrypted file vault
+Comment[tr]=Donanıma bağlı şifreli dosya kasası
+# AppRun bu adı kullanmıyor; AppImage runtime'ı Exec'i yine de istiyor ve
+# masaüstü entegrasyonu (appimaged / Gear Lever) buradan okuyor.
+Exec=HYCLEUS
+# Icon değeri AppDir kökündeki hycleus.png'nin UZANTISIZ adıyla birebir
+# aynı olmak zorunda — appimagetool eşleşmezse yapıyı reddediyor.
+Icon=hycleus
+Terminal=false
+Categories=Utility;Security;
+Keywords=vault;encryption;security;
+Keywords[tr]=kasa;şifreleme;güvenlik;
+StartupWMClass=HYCLEUS

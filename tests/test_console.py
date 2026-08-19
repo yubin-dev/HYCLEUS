@@ -200,7 +200,13 @@ def test_the_known_call_sites_use_the_helper(yol: str) -> None:
 #: yardımcıyı çağırmıyordu ve cp1254 konsolunda "Seçilen" yerine "Se�ilen"
 #: yazıyordu. Desene (`*_cli.py`) uymadığı için denetim onu kendiliğinden
 #: görmemişti — liste elle genişletildi.
-_EK_CLI_DOSYALARI = ("CORE/setup_usb.py", "CORE/recover_vault.py", "CORE/scanner.py")
+#:
+#: `main.py` bir GUI giriş noktası ama --version/--selftest ile GUI'siz de
+#: çalışıyor ve Türkçe basıyor (paketlenmiş yapının duman testi onu
+#: okuyor). Bu yüzden kural ona da uygulanıyor.
+_EK_CLI_DOSYALARI = (
+    "CORE/setup_usb.py", "CORE/recover_vault.py", "CORE/scanner.py", "main.py",
+)
 
 
 def _cli_dosyalari() -> list[Path]:

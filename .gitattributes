@@ -1,2 +1,14 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Kabuk betikleri ve AppRun HER ZAMAN LF.
+#
+# `text=auto` deponun İÇİNDE LF tutuyor ama Windows'ta çalışma ağacına
+# CRLF olarak açıyor (core.autocrlf). Bu depo Windows'ta geliştiriliyor ve
+# Linux'ta paketleniyor; CRLF taşıyan bir betiğin ilk satırı
+# `#!/usr/bin/env bash\r` olur ve çekirdek `bash\r` diye bir yorumlayıcı
+# arayıp "bad interpreter" ile düşer. Hata mesajı görünmez bir karakteri
+# işaret ettiği için tanınması zor.
+*.sh        text eol=lf
+AppRun      text eol=lf
+*.desktop   text eol=lf

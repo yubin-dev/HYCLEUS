@@ -141,11 +141,43 @@ python main.py
 
 > **Production use:** Never run with `DEV_MODE=true`. A real registered USB token is required.
 
-#### 4. Build standalone EXE
+#### 4. Build a distributable
+
+```bash
+pip install -r requirements-build.txt
+```
+
+**Windows — single-file EXE**
 
 ```bash
 pyinstaller HYCLEUS.spec
 # Output: dist\HYCLEUS.exe  (single file, no console)
+```
+
+> ⚠️ `HYCLEUS.spec` currently fails on a clean checkout and under-collects
+> dependencies — see BACKLOG.md / **B-024**. Both problems are already fixed
+> on the Linux side.
+
+**Linux — AppImage**
+
+```bash
+./packaging/linux/build-appimage.sh --test
+# Output: dist/HYCLEUS-<version>-x86_64.AppImage
+```
+
+PyInstaller does **not** cross-compile: each platform's build must run on
+that platform. The AppImage is produced on every push by the `appimage` job
+in `.github/workflows/ci.yml` and uploaded as an artifact.
+
+Inside an AppImage the mount is read-only, so the vault lives under
+`$XDG_DATA_HOME/HYCLEUS` (default `~/.local/share/HYCLEUS`) instead of next
+to the binary — see `CORE/paths.py`.
+
+**Verifying a build without a GUI**
+
+```bash
+HYCLEUS --version     # version string only
+HYCLEUS --selftest    # imports every module, reports what is missing
 ```
 
 ---
@@ -222,11 +254,14 @@ HYCLEUS/
 ├── requirements.txt
 ├── requirements-dev.txt      # pytest, ruff, mypy, bandit
 ├── requirements-security.txt # semgrep (separate — 57 MB wheel)
+├── requirements-build.txt    # PyInstaller (packaging only)
 ├── pyproject.toml            # ruff / mypy / bandit config
-├── HYCLEUS.spec              # PyInstaller spec
+├── HYCLEUS.spec              # PyInstaller spec — Windows EXE
+├── HYCLEUS-linux.spec        # PyInstaller spec — Linux (AppImage)
+├── packaging/linux/          # AppRun, .desktop, icon, build + smoke test
 ├── .semgrep/hycleus.yml      # Project-specific semgrep rules
 ├── .github/workflows/
-│   ├── ci.yml                # Tests, ruff, mypy, bandit, semgrep
+│   ├── ci.yml                # Tests, ruff, mypy, bandit, semgrep, AppImage
 │   └── fuzz.yml              # atheris fuzzing — manually triggered
 ├── tests/
 │   ├── fuzz/                 # Fuzz targets (crypto container, Shamir)
@@ -420,11 +455,43 @@ python main.py
 
 > **Üretim kullanımı:** `DEV_MODE=true` ile asla çalıştırmayın. Gerçek kayıtlı USB token zorunludur.
 
-#### 4. Bağımsız EXE derleme
+#### 4. Dağıtılabilir yapı üretme
+
+```bash
+pip install -r requirements-build.txt
+```
+
+**Windows — tek dosya EXE**
 
 ```bash
 pyinstaller HYCLEUS.spec
 # Çıktı: dist\HYCLEUS.exe  (tek dosya, konsol yok)
+```
+
+> ⚠️ `HYCLEUS.spec` şu an temiz bir klonda çalışmıyor ve bağımlılıkları
+> eksik topluyor — bkz. BACKLOG.md / **B-024**. İkisi de Linux tarafında
+> düzeltilmiş durumda.
+
+**Linux — AppImage**
+
+```bash
+./packaging/linux/build-appimage.sh --test
+# Çıktı: dist/HYCLEUS-<sürüm>-x86_64.AppImage
+```
+
+PyInstaller **çapraz derleme yapmaz**: her platformun yapısı o platformda
+üretilmek zorunda. AppImage her push'ta `.github/workflows/ci.yml`
+içindeki `appimage` işi tarafından üretiliyor ve artifact olarak yükleniyor.
+
+AppImage içinde bağlama noktası salt okunur olduğu için kasa, ikilinin
+yanında değil `$XDG_DATA_HOME/HYCLEUS` altında duruyor (varsayılan
+`~/.local/share/HYCLEUS`) — bkz. `CORE/paths.py`.
+
+**Yapıyı GUI açmadan doğrulama**
+
+```bash
+HYCLEUS --version     # yalnızca sürüm dizesi
+HYCLEUS --selftest    # her modülü içe aktarır, eksikleri raporlar
 ```
 
 ---
@@ -505,12 +572,15 @@ HYCLEUS/
 ├── pyproject.toml            # ruff / mypy / bandit yapılandırması
 ├── .semgrep/hycleus.yml      # Projeye özel semgrep kuralları
 ├── .github/workflows/
-│   ├── ci.yml                # Testler, ruff, mypy, bandit, semgrep
+│   ├── ci.yml                # Testler, ruff, mypy, bandit, semgrep, AppImage
 │   └── fuzz.yml              # atheris fuzzing — elle tetiklenir
 ├── tests/
 │   ├── fuzz/                 # Fuzz hedefleri (kripto kabı, Shamir)
 │   └── canary_semgrep/       # Bilerek güvensiz — kuralların canlı kanıtı
-├── HYCLEUS.spec              # PyInstaller spec
+├── HYCLEUS.spec              # PyInstaller spec — Windows EXE
+├── HYCLEUS-linux.spec        # PyInstaller spec — Linux (AppImage)
+├── packaging/linux/          # AppRun, .desktop, simge, yapı + duman testi
+├── requirements-build.txt    # PyInstaller (yalnızca paketleme)
 ├── CORE/
 │   ├── version.py            # Sürüm dizesinin tek kaynağı
 │   ├── crypto.py             # AES-256-GCM şifreleme (.hcl formatı)

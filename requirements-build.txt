@@ -1,0 +1,20 @@
+# HYCLEUS — dağıtılabilir yapı üretmek için gereken araçlar.
+#
+# Neden ayrı dosya: runtime bağımlılıkları requirements.txt, CI/test
+# bağımlılıkları requirements-dev.txt, statik analiz requirements-security.txt.
+# PyInstaller bunların hiçbirine ait değil — testler onsuz koşuyor ve
+# uygulama onsuz çalışıyor; yalnızca PAKETLEME adımı istiyor.
+#
+# Çalıştırma:
+#     pip install -r requirements.txt -r requirements-build.txt
+#     pyinstaller --noconfirm HYCLEUS.spec          # Windows
+#     ./packaging/linux/build-appimage.sh           # Linux (AppImage)
+#
+# PyInstaller ÇAPRAZ DERLEME YAPMAZ: her platformun yapısı o platformda
+# üretilmek zorunda. Windows EXE'si geliştirme makinesinde, AppImage ise
+# CI'ın Ubuntu koşucusunda üretiliyor (.github/workflows/ci.yml → appimage).
+#
+# Sürüm alt sınırı: 6.11, Python 3.13+ desteğinin oturduğu sürüm. Üst sınır
+# BİLEREK yok — PyInstaller'ın bootloader'ı ve hook'ları yeni Python/Qt
+# sürümlerini takip ediyor ve sabitlemek yapıyı sessizce eskitirdi.
+pyinstaller>=6.11

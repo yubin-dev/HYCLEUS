@@ -1,0 +1,22 @@
+#!/bin/sh
+# HYCLEUS — AppImage giriş noktası.
+#
+# AppImage runtime'ı squashfs'i salt okunur bağlar ve bu betiği çalıştırır.
+# Buradaki tek iş, PyInstaller'ın ürettiği klasörü bulup yürütmek.
+#
+# `readlink -f` ZORUNLU: kullanıcı AppImage'i bir sembolik bağ üzerinden
+# çağırabiliyor ($PATH'e konan bir bağ olağan kurulum yolu) ve o durumda
+# `dirname $0` bağın bulunduğu dizini verir, bağlama noktasını değil.
+set -eu
+
+HERE="$(dirname "$(readlink -f "$0")")"
+
+# Qt'nin eklenti yolunu PyInstaller'ın çalışma zamanı kancası kuruyor;
+# burada elle QT_PLUGIN_PATH vermek onu EZER ve bağlama noktasının dışındaki
+# sistem Qt'sine kaçma ihtimali doğar. Bilerek dokunulmuyor.
+
+# XDG_DATA_HOME dışarıdan geliyorsa olduğu gibi bırakılıyor: kasa verisinin
+# nereye yazılacağını CORE/paths.py belirliyor ve `APPIMAGE` değişkenine
+# bakıyor. O değişkeni runtime tanımlıyor, bu betik değil.
+
+exec "${HERE}/usr/bin/HYCLEUS" "$@"

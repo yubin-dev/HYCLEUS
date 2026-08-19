@@ -172,3 +172,75 @@ jobs:
       #    hiçbir şey aramıyor" ayırt edilemez.
       - name: Kural kanaryaları (pytest)
         run: pytest tests/test_static_analysis.py -v
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # AppImage — Linux dağıtım yapısı
+  #
+  # Neden ayrı iş ve neden CI'da:
+  #   · PyInstaller ÇAPRAZ DERLEME YAPMAZ. Linux ikilisi Linux'ta üretilmek
+  #     zorunda; depo Windows'ta geliştiriliyor, yani bu yapının tek
+  #     çalıştırılabildiği yer burası.
+  #   · `test` matrisinin içine konsaydı Windows ayağında da koşacak ve
+  #     orada anlamsız olacaktı.
+  #   · Paketleme CI'ın en GEÇ haber veren parçası: bir spec hatası bütün
+  #     testler yeşilken ancak dağıtılan yapıyı biri açtığında görünür.
+  #     Her push'ta üretmek o gecikmeyi sıfıra indiriyor.
+  #
+  # Duman testi GUI AÇMIYOR: main() USB bulamayınca modal bir kutu açar ve
+  # başsız koşucuda asılı kalırdı. Bunun yerine --version/--selftest
+  # kullanılıyor (bkz. main.py, packaging/linux/smoke-test.sh).
+  # ────────────────────────────────────────────────────────────────────────────
+  appimage:
+    name: AppImage yapısı (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      # PySide6 tekerleği kendi Qt kütüphanelerini taşıyor ama onların
+      # bağlandığı SİSTEM kütüphaneleri koşucuda yok. Hem PyInstaller'ın
+      # analizi hem de --selftest PySide6'yı içe aktarıyor; bunlar olmadan
+      # ikisi de "libEGL.so.1: cannot open shared object file" ile düşer.
+      #
+      # FUSE KURULMUYOR: appimagetool `--appimage-extract-and-run` ile,
+      # duman testi de `--appimage-extract` ile çalışıyor. Ubuntu 24.04'te
+      # libfuse2 yok ve onu kurmak, testin gerçek kullanıcı ortamına
+      # benzerliğini artırmadan bir bağımlılık daha eklerdi.
+      - name: Sistem kütüphaneleri (Qt)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 \
+            libdbus-1-3 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 \
+            libxcb-shape0 libxcb-xkb1 libxcb-randr0 libxcb-render-util0
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      - name: AppImage üret
+        run: bash packaging/linux/build-appimage.sh
+
+      - name: Duman testi
+        run: bash packaging/linux/smoke-test.sh dist/HYCLEUS-*.AppImage
+
+      # Yapıyı indirilebilir bırakmak, "AppImage üretildi" iddiasını
+      # denetlenebilir kılıyor: kimse CI günlüğüne güvenmek zorunda değil.
+      - name: AppImage'ı yükle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HYCLEUS-AppImage
+          path: dist/*.AppImage
+          if-no-files-found: error

@@ -541,3 +541,77 @@ bu modülün en başta düzeltmek için yazıldığı durumun aynısı.
 `clamscan` kuruluysa çalışır (komut satırı arayüzü aynı). macOS de
 ölçülmedi; bugünkü davranış (her zaman mock) bundan kötü olduğu için
 kapı bilerek açık bırakıldı.
+
+---
+
+## B-024 — Windows `.spec` dosyası iki yerden bozuk
+
+**Durum:** Açık — Linux ayağı düzeltildi, Windows'a DOKUNULMADI
+**Öncelik:** Yüksek (dağıtılan yapı eksik çalışıyor, hata sessiz)
+**Bulundu:** 2026-08-17 — AppImage ayağı kurulurken, `HYCLEUS.spec` referans
+alınıp aynısı Linux için yazıldığında. İkisi de ÖLÇÜLDÜ, tahmin değil.
+
+Kapsam kararı: bu tur yalnızca Linux paketlemesini kurmakla ilgiliydi.
+`HYCLEUS-linux.spec` her iki sorunu da baştan içermeyecek şekilde yazıldı;
+`HYCLEUS.spec` bilerek olduğu gibi bırakıldı.
+
+### Bulgu 1 — temiz bir ağaçta yapı HİÇ başlamıyor
+
+```
+$ pyinstaller --noconfirm HYCLEUS.spec
+ERROR: Unable to find 'C:\...\HYCLEUS\data' when adding binary and data files.
+```
+
+Spec `datas=[('data', 'data'), …]` istiyor ama `data/` `.gitignore`'da.
+Yani yapı yalnızca o dizini zaten üretmiş bir makinede çalışıyor; taze
+bir klonda ilk adımda düşüyor.
+
+Satır ayrıca GEREKSİZ: `CORE/paths.py::data_dir()` donmuş modda EXE'nin
+YANINDAKİ `data/`'yı döndürüyor, pakete kopyalanan hiç okunmuyor.
+
+### Bulgu 2 — paket eksik bağımlılıkla çıkıyor, uygulama yine de açılıyor
+
+Spec `CORE`/`DB`/`UI`'yı **veri** olarak kopyalıyor. Bu, `.py` dosyalarını
+pakete koyar ama PyInstaller'ın onları ANALİZ etmesini sağlamaz — dolayısıyla
+`main.py`'nin import etmediği her modül kendi bağımlılıkları olmadan gidiyor.
+
+Aynı desenle üretilen bir yapıda ölçülen sonuç: **53 modülün 11'i yüklenemedi.**
+
+| Eksik | Nereden | Kullanıcıya etkisi |
+|---|---|---|
+| `getpass` | `backup_cli`, `recover_vault`, `setup_usb` | CLI araçları çalışmıyor |
+| `asn1crypto` | `timestamp`, `timestamp_verify` | RFC 3161 damgası ve doğrulaması yok |
+| `reportlab` | `inventory` | KVKK envanter PDF'i alınamıyor |
+| `qrcode.image.svg` | `recovery_share` | Kurtarma karekodu üretilemiyor |
+
+Hatanın biçimi en kötüsü: **uygulama açılıyor ve normal görünüyor.** Eksiklik
+ancak kullanıcı o özelliğe dokunduğunda — muhtemelen kurtarma anında —
+ortaya çıkıyor.
+
+### Düzeltme (Linux tarafında uygulanan, Windows'a taşınabilir)
+
+`datas` yerine `hiddenimports`: modül adları `os.listdir` ile dizinden
+üretiliyor, PyInstaller bağımlılık grafiğini yürüyor ve eksik dördü
+kendiliğinden geliyor. `reportlab` için `collect_all` gerekli (gömülü
+Type-1 yazı tipleri veri dosyası), `qrcode` için `collect_submodules`
+(görüntü arka ucu çalışma anında seçiliyor).
+
+Ölçülen sonuç: **53/53**. Bkz. `HYCLEUS-linux.spec`.
+
+### Neden bir daha sessizce olmayacak
+
+`main.py --selftest` paketlenmiş yapıda her modülü içe aktarıp raporluyor,
+CI'ın `appimage` işi de her push'ta onu çalıştırıyor. Yukarıdaki 11 modül
+zaten bu komutla bulundu — kod okunarak değil.
+
+Windows tarafı bu ağa BAĞLI DEĞİL: EXE'yi üreten CI işi yok, yapı elle
+alınıyor. B-024 kapatılırken `--selftest`'in Windows yapısında da
+koşturulması düşünülmeli.
+
+### Yan ölçüm — `console=False` ile `--selftest`
+
+Yukarıdaki 11 modüllük ölçüm, `console=False` ile üretilmiş bir Windows
+EXE'sinde yapıldı ve çıktı BORUYA sorunsuz yazıldı. Yani `--selftest`
+pencereli bir yapıda da kullanılabiliyor; ayrı bir konsollu yapı gerekmiyor.
+Ölçülmeyen tek durum, çıktının yönlendirilmediği (doğrudan çift tıklanmış)
+çalıştırma — orada zaten okuyacak kimse yok.
