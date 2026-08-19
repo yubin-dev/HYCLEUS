@@ -25,7 +25,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | B-004 | `④` grubu — B-004 düzeltmesi | İmha Odası sayacını işleten tek yer `UI/main_window_table.py::_tick_expiry` idi ve o metot `if self._current_label != "Imha": return` ile başlıyordu — süresi dolmuş dosya, kullanıcı o sekmeye girmedikçe diskte kalıyordu. Zamanlayıcının `_purge_expired` görevi artık `Karantina` yanında `Imha` etiketini de işliyor; iki etiket ayrı denetim kaynağı yazıyor (`quarantine_ttl` / `imha_ttl`). Arayüz sayacı KALDIRILMADI, ikisi de aynı `purge_expired_file()`'ı çağırıyor (B-008). Saklama süpürmesiyle gelen `expires_at = NULL` satırlar korunuyor; korumanın kaynağı SQLite'ın üç değerli mantığı (`datetime(NULL) <= …` → NULL), ölçüldü. Bu maddeyi "son çalışma zamanı + kapı" deseni ÇÖZMEDİ: oradaki kapı global değil dosya başına. |
 | B-015 | `④` grubu — B-015 düzeltmesi | Yedekleme özelliği vardı ama HATIRLATMASI yoktu; yedek yalnızca kullanıcının aklına geldiğinde alınıyordu. `CORE/backup_reminder.py` eklendi ve `ZamanKapisi`'nı (`backup_last_run`) kullanıyor — ④ grubunda deseni gerçekten kullanan tek madde. Damga `create_backup()` içinde yazılıyor, arayüzde değil: CLI'dan alınan yedekler de hatırlatmayı susturmalı. Uyarı ENGELLEYİCİ değil, "sonra sorma" bir eşik süresi kadar (süresiz değil) ve eşik `0` hatırlatmayı kapatıyor. "Hedef erişilemiyor" ile "hiç yedek yok" AYRI durumlar — harici disk takılı değilse yedek yok değil, görünmüyor. Negatif eşik kapatmıyor, varsayılana düşüyor. |
 | B-006 | `④` grubu — B-006 düzeltmesi | Zincir doğrulaması üç yerden çağrılabiliyordu ama arayüzde düğmesi yoktu; TXT dışa aktarımı da yalnızca dört sütun yazıyor, hash/son uç/doğrulama durumu taşımıyordu. `CORE/audit_report.py` iki doğrulamayı (`verify_audit_chain` + `verify_against_anchor`) birleştirip METİN üretiyor; AdminPanel'e "Zinciri Doğrula" düğmesi eklendi (panel zaten `role != "Yönetici"` ise hiç kurulmuyor) ve sonuç `audit_chain_verified` olarak denetim kaydına düşüyor — doğrulayan kullanıcı B-011'in `users` satırından okunuyor, yan etkisiz `kullanici_bilgisi()` ile. TXT başlığı artık zincir durumunu, son hash'i, ilk kırılma id'sini ve "bu dosya imzalı DEĞİLDİR" sınırını taşıyor. Bu madde de "son çalışma zamanı + kapı" desenini KULLANMIYOR: zamanlanmış bir iş değil, kullanıcının bastığı bir düğme. |
-| B-022 | `③` grubu — B-022 düzeltmesi | `hwid_probe.read_windows()` yalnızca `Win32_DiskDrive.PNPDeviceID`'yi okuyordu; o USBSTOR (depolama) düğümü ve seriye `&<n>` örnek soneki ekliyor. Onaltılık bir seri artı `&0`, "üretilmiş kimlik" desenine tam uyduğu için prototip SERİLİ token'a "serisiz" diyordu — SanDisk'te sistematik, ve B-016 kararını ters yöne itecek bir ölçüm hatası. Artık `Win32_PnPEntity` üzerinden USB düğümü de okunuyor ve seriyle eşleştiriliyor; VID/PID de oradan geliyor (eski `????:????` çıktısı bunun belirtisiydi). Eşleştirme saf bir fonksiyona (`build_windows_identity`) ayrıldı, artık WMI'siz test edilebiliyor. Yanında `normalize_serial()`'ın `.lstrip("0")`'ı kaldırıldı: `0123ABC` ile `123ABC`'yi aynı kimliğe indiriyordu — kimlik üreten bir fonksiyonda ÇAKIŞMA, kapatmaya çalıştığı (ve hiç ölçülmemiş) dolgu farkından ağır basar. İki sabitleme testi bilerek kırıldı. |
+| B-022 | `③` grubu — B-022 düzeltmesi | `hwid_probe.read_windows()` yalnızca `Win32_DiskDrive.PNPDeviceID`'yi okuyordu; o USBSTOR (depolama) düğümü ve seriye `&<n>` örnek soneki ekliyor. Onaltılık bir seri artı `&0`, "üretilmiş kimlik" desenine tam uyduğu için prototip SERİLİ token'a "serisiz" diyordu — SanDisk'te sistematik, ve B-016 kararını ters yöne itecek bir ölçüm hatası. Artık `Win32_PnPEntity` üzerinden USB düğümü de okunuyor ve seriyle eşleştiriliyor; VID/PID de oradan geliyor (eski `????:????` çıktısı bunun belirtisiydi). Eşleştirme saf bir fonksiyona (`build_windows_identity`) ayrıldı, artık WMI'siz test edilebiliyor. Yanında `normalize_serial()`'ın `.lstrip("0")`'ı kaldırıldı: `0123ABC` ile `123ABC`'yi aynı kimliğe indiriyordu — kimlik üreten bir fonksiyonda ÇAKIŞMA, kapatmaya çalıştığı (ve hiç ölçülmemiş) dolgu farkından ağır basar. İki sabitleme testi bilerek kırıldı. **2026-08-19:** gerçek bir aygıtla doğrulandı — prototip tanımlayıcı serisini okuyor, `generated=False`, VID/PID çözülüyor (eski `????:????` yok). Ölçüm SanDisk'le DEĞİL, o sırada takılı olan `30DE:6544` aygıtıyla yapıldı; mekanizma doğrulandı, özgün yanlış negatifi üreten aygıtta tekrar ölçüm hâlâ yapılmadı (bkz. B-016). |
 | B-019 | `②` grubu — B-019 düzeltmesi | `.github/scripts/test_summary.py` JUnit XML'ini `xml.etree.ElementTree` ile okuyordu ("billion laughs" iç varlık genişlemesine açık). Girdi kendi CI'ımızın ürettiği dosya olduğu için bulgu bir süre bilinçli açık bırakılmıştı; kapatma kararının gerekçesi maliyetin iki satır olması ve `defusedxml`'in saf Python / bağımlılıksız / ~30 KB olması. İthalat KOŞULLU: paket yoksa stdlib'e düşüyor, çünkü betik CI dışında da elle çalıştırılıyor ve bir bağımlılık eksikliği yüzünden hiç konuşmaması raporladığı sorundan kötü olurdu. `XML_HATALARI` demeti `DefusedXmlException`'ı da yakalıyor — yoksa düşmanca XML'de betik temiz mesaj yerine izlemeyle düşerdi, yani koruma eklenirken raporlama bozulurdu. |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
@@ -339,6 +339,58 @@ değil, bu aygıtta ölçülmüş bir gerçek.
 > konum programatik olarak karşılaştırılamadı. Yukarıdaki taban çizgisi
 > tam da bunun için yazıldı — bir sonraki port testi karşılaştırılabilir
 > olacak.
+
+### 2026-08-19 ölçümü — BAŞKA BİR AYGIT, ve yeni bir bulgu
+
+Düzeltilmiş prototiple tekrar ölçüm istendi ("aynı USB'nin aynı serisini
+doğru okuduğunu doğrula"). **Takılı aygıt yukarıdakiyle aynı değil.**
+Karşılaştırma, seri değerine hiç bakmadan yapıldı:
+
+| | 2026-08-16 (SanDisk) | 2026-08-19 (takılı olan) |
+|---|---|---|
+| VID:PID | `0781:5567` | `30DE:6544` |
+| tanımlayıcı serisi | 20 karakter, `[0-9A-F]` | 24 karakter, harf+rakam |
+| `Win32_DiskDrive.SerialNumber` | seriyle **birebir aynı** | **2 karakter, yazdırılamayan** |
+| `get_usb_hwid()` | seri (20 karakter) | **36 karakter — UUID** |
+| `usb_ids.json` | dosya yok | kayıt **var** |
+
+Dört alan da ayrışıyor; bu, aynı çubuğun farklı okunması değil, farklı bir
+çubuk. Dolayısıyla "aynı USB'nin aynı serisi" sorusu bu turda
+CEVAPLANAMADI — SanDisk takılı değildi.
+
+Bu makinede o an bağlı **tek** USB depolama aygıtı bu; `read_windows()` de
+`get_usb_hwid()` de aynı aygıtı görüyor.
+
+#### B-022 düzeltmesi bu aygıtta ÇALIŞIYOR
+
+Prototip tanımlayıcı serisini okuyor (`generated=False`, `stable_id`
+üretiliyor) ve VID/PID'yi çözüyor — eski hatanın belirtisi olan
+`????:????` çıktısı yok. Yani mekanizma doğrulandı; ama özgün yanlış
+negatifi üreten aygıtta değil, başka bir aygıtta.
+
+#### Yeni bulgu — bu maddenin öngördüğü dal artık ÖLÇÜLDÜ
+
+Bu madde "seri taşımayan bir çubukla kaydolmuş kullanıcı hâlâ
+`usb_ids.json` yoluna düşer" diyordu ve bunu bir ihtimal olarak
+yazıyordu. Takılı aygıtta o dal GERÇEKLEŞTİ, üstelik beklenenden kötü
+bir biçimde: aygıtın tanımlayıcı serisi **var** (24 karakter), ama
+`get_usb_hwid()` ona hiç bakmıyor — yalnızca `Win32_DiskDrive`'ı
+okuyor ve orası bu aygıtta bozuk değer veriyor.
+
+Kimliğin dosyadan türediği ölçüldü: `usb_ids.json` geçici olarak
+kaldırılıp `get_usb_hwid()` yeniden çağrıldığında **farklı bir değer**
+döndü. (Dosya hemen geri yüklendi, token'ın kimliği ölçümden önceki
+hâline döndürüldü ve doğrulandı.)
+
+Ayrıntı ve sonuçları B-025'te.
+
+#### Port bağımsızlığı ölçümü etkilendi mi
+
+Hayır. O ölçüm SanDisk ile yapıldı ve `usb_ids.json` o sırada hiç
+oluşmamıştı — yani UUID yoluna düşmemişti, gerçekten seriyi ölçüyordu.
+Bugünkü aygıt için aynı şey söylenemez ve onunla port testi yapmanın
+anlamı da yok: UUID zaten dosyadan geliyor, portla değişmeyeceği
+önceden belli.
 
 ### Kalan tek ölçüm — FİZİKSEL TEST ORTAMI GEREKTİRİYOR
 
@@ -662,3 +714,119 @@ karşılaştırılıyor — "fonksiyon tanımlı mı" yetmiyordu; gövdesi boş
 döndürülen bir üretici tanım denetiminden geçmişti.
 
 15 mutasyonun 15'i ölüyor.
+
+---
+
+## B-025 — `get_usb_hwid()` USB düğümünü hiç okumuyor; kimlik donanımdan değil DOSYADAN türüyor
+
+**Durum:** Açık
+**Öncelik:** YÜKSEK — "donanıma bağlı kasa" iddiasının doğrudan konusu
+**Bulundu:** 2026-08-19 — B-022 sonrası prototip ölçümü sırasında, ÖLÇÜLDÜ
+
+### Bulgu
+
+`CORE/usb_manager.get_usb_hwid()` seriyi yalnızca **depolama yığınından**
+okuyor: `Win32_DiskDrive.SerialNumber`, olmazsa `wmic diskdrive`. İkisi de
+aynı yığın. Değer bozuksa `_sanitize_hwid()` onu atıyor ve
+`_get_or_create_uuid()` `data/usb_ids.json`'a bir UUID yazıyor.
+
+B-022 prototipe **ikinci bir kaynak** kazandırdı — `Win32_PnPEntity`
+üzerinden USB düğümü, yani `iSerialNumber`'ın kendisi. Ama o kazanım
+`hwid_probe.py`'de kaldı; `usb_manager.py` hâlâ tek yığına bakıyor.
+
+2026-08-19'da takılı olan aygıtta bu fark belirleyici:
+
+| Kaynak | Okunan |
+|---|---|
+| USB düğümü (`Win32_PnPEntity`) — prototipin okuduğu | 24 karakter, harf+rakam, temiz |
+| Depolama yığını (`Win32_DiskDrive`) — HYCLEUS'un okuduğu | **2 karakter, yazdırılamayan** |
+| `get_usb_hwid()` sonucu | 36 karakter — **UUID**, dosyadan |
+
+Yani **kullanılabilir bir donanım serisi var ve HYCLEUS onu görmüyor.**
+
+### Kimliğin dosyadan türediği ölçüldü
+
+`usb_ids.json` geçici olarak kaldırılıp `get_usb_hwid()` yeniden
+çağrıldı: **farklı bir değer döndü.** Dosya hemen geri yüklendi ve
+token'ın kimliğinin ölçüm öncesine döndüğü doğrulandı.
+
+### Neden yüksek öncelikli
+
+`hwid`, `_derive_signing_key()`'in HKDF girdisi, kasa dosyasının AAD'ı,
+kasa dosyasının ADI (`vaults/<hwid>.hclv`) ve keyring kaydının kullanıcı
+adı (`share_2:<hwid>`). Bu aygıt sınıfında o değer bir JSON dosyasından
+geliyor:
+
+1. **Kilitlenme.** `data/usb_ids.json` silinir/bozulursa HWID değişir;
+   kasa dosyası ve keyring kaydı bulunamaz. Kullanıcı kurtarma parçası
+   olmadan kasasına erişemez. Dosya `.gitignore`'da ve yedekleme akışının
+   kapsamında olup olmadığı AYRICA kontrol edilmeli.
+2. **Donanıma bağlılık yok.** Kimlik USB'de değil diskte. `data/`'yı
+   kopyalayan biri, o USB olmadan aynı HWID'yi elde eder — SECURITY.md'nin
+   "kayıtlı USB cihazının fiziksel olarak mevcut olması zorunludur"
+   cümlesi bu aygıt sınıfı için tam olarak doğru değil.
+3. **Çakışma yüzeyi.** Eşlemenin ANAHTARI ham seri. Bu aygıtta o anahtar
+   2 karakter. Aynı bozuk değeri bildiren ikinci bir aygıt **aynı UUID'yi**
+   alır, yani iki farklı fiziksel token tek kimliğe düşer. Anahtar uzayının
+   ne kadar dar olduğu ölçülmedi; ölçülmesi gereken ilk şey bu.
+
+### Yapılacaklar
+
+1. `get_usb_hwid()` USB düğümü yolunu da denesin — `hwid_probe`'daki
+   `build_windows_identity()` zaten saf ve test edilebilir bir fonksiyon,
+   yeniden yazmaya gerek yok. Sıra: tanımlayıcı serisi → depolama serisi →
+   UUID.
+2. UUID yoluna DÜŞÜLDÜĞÜNDE kullanıcı bilgilendirilsin. Bugün tamamen
+   sessiz; "donanıma bağlı" olmayan bir kasa, kullanıcının bilmesi gereken
+   bir şey.
+3. Eşleme anahtarı olarak ham seri yerine VID+PID+seri üçlüsü kullanılsın —
+   çakışma yüzeyini daraltır. Mevcut kayıtların taşınması gerekir.
+4. Bu değişiklik MEVCUT KULLANICILARIN HWID'İNİ DEĞİŞTİRİR. Geçiş yolu
+   olmadan yapılamaz: bugün UUID ile kayıtlı bir kasa, yarın seriyle
+   açılmaya çalışılırsa açılmaz. B-003'teki (PIN taşıma) gibi bir
+   migration gerekiyor.
+
+### Kapsam notu
+
+Bu madde B-016'nın devamı ama aynı şey değil. B-016 "hangi alanı
+okumalıyız, platformlar arası uyuşuyor mu" sorusuydu. Bu madde
+"okuduğumuz alan bozuk olduğunda ne oluyor" sorusu ve cevabı ölçüldü:
+sessizce dosya tabanlı bir kimliğe geçiliyor.
+
+---
+
+## B-026 — Testler gerçek `data/usb_ids.json` dosyasına yazıyor
+
+**Durum:** Açık
+**Öncelik:** Orta (geliştirici ortamını kirletiyor; veri kaybı riski düşük)
+**Bulundu:** 2026-08-19 — B-025 ölçümü sırasında, ÖLÇÜLDÜ
+
+`tests/conftest.py` üç şeyi autouse fixture ile izole ediyor: keyring,
+`totp_secret.json` ve denetim çıpası. Gerekçeleri de yazılı — "testlerin
+kullanıcının gerçek kaydına dokunmaması".
+
+`data/usb_ids.json` o listede YOK.
+
+Ölçüm: `data/` silindi, dört test dosyası çalıştırıldı
+(`test_backup_cli`, `test_recover_cli`, `test_main_window_smoke`,
+`test_packaging`), 193 test geçti ve `data/usb_ids.json` **yeniden
+oluşmuştu** — yeni bir UUID tahsis edilmişti.
+
+### Etki
+
+Bugünkü hâliyle sınırlı: eşleme anahtar bazlı ve ekleme yapıyor, yani
+mevcut bir kaydın ÜZERİNE yazmıyor. Yani testler bir kullanıcının HWID'ini
+değiştirmiyor — yalnızca dosya yoksa oluşturuyor.
+
+Ama B-025 düzeltilirken bu dosyanın şeması değişecek (anahtar olarak
+VID+PID+seri). O sırada izole olmayan bir test, geliştiricinin gerçek
+eşlemesine yanlış şemada satır yazabilir.
+
+### Yapılacak
+
+`conftest.py`'ye `isolate_usb_ids` autouse fixture'ı — diğer üçüyle aynı
+desen, `CORE.usb_manager._USB_IDS_FILE`'ı `tmp_path`'e taşıyacak.
+
+Dikkat: `_USB_IDS_FILE` modül seviyesinde hesaplanıyor, yani
+`monkeypatch.setattr(usb_manager, "_USB_IDS_FILE", …)` gerekiyor;
+`data_dir()`'i patch'lemek yetmez.
