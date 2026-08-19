@@ -26,7 +26,12 @@ Uc gerekce, ucu de recover_vault.py'dekiyle ayni aileden:
      bir diyalog kutusu okuyamaz.
   3. Cikti metin. Bir denetim dosyasina yapistirilabilir.
 
-Arayuz dugmesi bunun yerine gecmiyor, ustune geliyor - ve o sonraki adim.
+Arayuz dugmesi (adim 3.1, "Damgayi Dogrula") bunun YERINE gecmiyor,
+ustune geliyor. Ayni `verify_timestamp()` fonksiyonunu cagiriyor; fark
+yalnizca sonucun anlatilisinda. Buradaki cikti teknik kalmali - kitlesi
+denetci ve hukukcu. Sade Turkce karsiligi CORE/timestamp_report.py'de ve
+oradaki tablo, bu modulun urettigi HER `failed_check` degerini karsilamak
+zorunda (tests/test_timestamp_report.py denetliyor).
 
 GUVEN SINIRI
 ------------

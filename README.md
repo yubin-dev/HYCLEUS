@@ -49,7 +49,7 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | **Tags** | Color-coded tags, private (admin-only) tags, bulk assignment |
 | **Audit Log** | Every action recorded with user, timestamp, and detail; entries form a SHA-256 hash chain anchored outside the database |
 | **Integrity Sweep** | Weekly background verification of every `.hcl` GCM tag — verification only, plaintext is never assembled |
-| **Trusted Timestamp** | Optional RFC 3161 timestamp over the plaintext hash; verified **fully offline** from the certificate chain inside the token (`--verify-timestamp`) |
+| **Trusted Timestamp** | Optional RFC 3161 timestamp over the plaintext hash; verified **fully offline** from the certificate chain inside the token — from the CLI (`--verify-timestamp`) or from the file context menu (**Damgayı Doğrula**) |
 | **Dark / Light UI** | Full theme support, readable in both modes |
 
 ---
@@ -291,6 +291,7 @@ HYCLEUS/
 │   ├── hwid_probe.py         # PROTOTYPE: cross-platform USB id (not wired in)
 │   ├── timestamp.py          # RFC 3161 trusted timestamps (.hcl trailer)
 │   ├── timestamp_verify.py   # Offline timestamp verification (no network)
+│   ├── timestamp_report.py   # Verification result → plain language (UI)
 │   ├── verify_timestamp_cli.py  # CLI: --verify-timestamp <file>
 │   ├── usb_manager.py        # USB HWID detection (WMI)
 │   └── vault_manager.py      # Shamir SSS + key reconstruction
@@ -374,7 +375,7 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | **Etiket Sistemi** | Renkli etiketler, gizli (sadece Yönetici) etiketler, toplu atama |
 | **Denetim Kaydı** | Her işlem kullanıcı, zaman ve detayla kayıt altına alınır; kayıtlar veritabanı dışına çıpalanan bir SHA-256 hash zinciri oluşturur |
 | **Bütünlük Taraması** | Haftalık arka plan taraması her `.hcl` dosyasının GCM tag'ini doğrular — yalnızca doğrulama, düz metin hiç birleştirilmez |
-| **Güvenilir Zaman Damgası** | Düz metin özeti üzerinde opsiyonel RFC 3161 damgası; token'ın içindeki sertifika zinciriyle **tamamen çevrimdışı** doğrulanır (`--verify-timestamp`) |
+| **Güvenilir Zaman Damgası** | Düz metin özeti üzerinde opsiyonel RFC 3161 damgası; token'ın içindeki sertifika zinciriyle **tamamen çevrimdışı** doğrulanır — komut satırından (`--verify-timestamp`) ya da dosya sağ tık menüsünden (**Damgayı Doğrula**) |
 | **Karanlık / Açık Tema** | Tam tema desteği, her iki modda da okunabilir |
 
 ---
@@ -618,6 +619,7 @@ HYCLEUS/
 │   ├── hwid_probe.py         # PROTOTİP: çapraz platform USB kimliği (bağlı değil)
 │   ├── timestamp.py          # RFC 3161 zaman damgası (.hcl fragmanı)
 │   ├── timestamp_verify.py   # Çevrimdışı damga doğrulama (ağ gerekmez)
+│   ├── timestamp_report.py   # Doğrulama sonucu → sade Türkçe (arayüz)
 │   ├── verify_timestamp_cli.py  # CLI: --verify-timestamp <dosya>
 │   ├── usb_manager.py        # USB HWID tespiti (WMI)
 │   └── vault_manager.py      # Shamir SSS + anahtar birleştirme

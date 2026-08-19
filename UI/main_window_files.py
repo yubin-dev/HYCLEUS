@@ -140,6 +140,12 @@ class FileActionsMixin:
             act_reject  = menu.addAction("Reddet  →  İmha Odası'na taşı")
             act_imha    = menu.addAction("🔥  İmha Odasına At")
 
+        # Her etikette görünüyor — İmha Odası'ndakiler dahil. Doğrulama
+        # dosyayı DEĞİŞTİRMİYOR ve bir dosyanın "şu tarihte vardı"
+        # kanıtına en çok ihtiyaç duyulan an, silinmek üzere olduğu andır.
+        menu.addSeparator()
+        act_verify_ts = menu.addAction("🕓  Damgayı Doğrula")
+
         action = menu.exec(self._table.viewport().mapToGlobal(pos))
 
         if action is None:
@@ -164,6 +170,71 @@ class FileActionsMixin:
             self._on_ctx_move_label(row, file_id, "Imha")
         elif action == act_imha:
             self._on_ctx_move_to_imha(row, file_id)
+        elif action == act_verify_ts:
+            self._on_ctx_verify_timestamp(file_id, filepath)
+
+    def _on_ctx_verify_timestamp(
+        self, file_id: int | None, filepath: str | None
+    ) -> None:
+        """
+        Dosyanın RFC 3161 zaman damgasını çevrimdışı doğrular (adım 3.1).
+
+        Komut satırındaki `--verify-timestamp` ile AYNI fonksiyonu
+        çağırıyor; fark yalnızca sonucun anlatılışında
+        (`CORE/timestamp_report.py`). İkinci bir doğrulama uygulaması
+        DEĞİL — bu depoda "aynı iş için iki uygulama" beş kez kusur
+        üretti.
+
+        Ne ANAHTAR ne AĞ gerekiyor: damgalanan özet AAD'de duruyor ve AAD
+        şifresiz. Bu yüzden dosya kilitliyken de, kasa oturumu düşmüşken
+        de çalışıyor.
+
+        İş parçacığı yok — ölçüldü, 3,3 ms ve süre dosya boyutundan
+        bağımsız (bkz. `UI/TimestampDialog.py` modül docstring'i).
+        """
+        if not filepath:
+            QMessageBox.warning(self, "Damga Doğrulama", "Dosya yolu bulunamadı.")
+            return
+        path = Path(filepath)
+        if not path.exists():
+            QMessageBox.warning(
+                self, "Damga Doğrulama", f"Dosya bulunamadı:\n{filepath}"
+            )
+            return
+
+        from CORE.timestamp_verify import verify_timestamp
+        from UI.TimestampDialog import TimestampDialog
+
+        try:
+            sonuc = verify_timestamp(path)
+        except Exception as exc:
+            # `verify_timestamp()` beklenen hataları sonuca çeviriyor;
+            # buraya yalnızca okuma hatası gibi ÖNGÖRÜLMEYEN bir şey
+            # düşer. Yakalanmazsa arayüz çökerdi.
+            _log.error("verify_timestamp_error  file_id=%s  exc=%s", file_id, exc)
+            QMessageBox.critical(
+                self, "Damga Doğrulama",
+                f"Damga doğrulanamadı — dosya okunurken hata oluştu.\n\n{exc}",
+            )
+            return
+
+        # Denetim kaydı: doğrulama bir KANIT sorgusudur ve kimin ne zaman
+        # sorduğu, sonucun kendisi kadar kayda değer.
+        try:
+            DBManager().log(
+                "timestamp_verified",
+                target_type="file",
+                target_id=file_id,
+                detail=(
+                    f"hwid={self._hwid} valid={sonuc.valid} "
+                    f"anchor_trusted={sonuc.anchor_trusted} "
+                    f"check={sonuc.failed_check or '-'}"
+                ),
+            )
+        except Exception as exc:  # pragma: no cover — kayıt, sonucu engellemez
+            _log.warning("timestamp_verify_log_failed  exc=%s", exc)
+
+        TimestampDialog(sonuc, path.name, parent=self).exec()
 
     def _on_ctx_download(self, file_id: int | None, filepath: str | None) -> None:
         if not filepath:

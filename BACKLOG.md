@@ -1251,3 +1251,122 @@ işaretledi: Türkçe **"salt"** (yalnızca) sözcüğü kriptografik `salt` ile
 tanıyor, yani ESKİ kasalar da düzeliyor — migration gerekmedi. Ama bu
 yalnızca ROL dizesi için geçerli; kasadaki başka alanların benzer bir
 normalizasyon sorunu olup olmadığı BAKILMADI.
+
+---
+
+## B-034 — Salt okunur rol damgayı doğrulayamıyor
+
+**Durum:** Açık — DÜZELTİLMEDİ, kapsam dışı bırakıldı
+**Öncelik:** Düşük-Orta (yetki KAYBI; güvenlik açığı değil)
+**Bulundu:** 2026-08-20 — 3.1 "Damgayı Doğrula" turu
+
+`UI/main_window_files.py::_on_context_menu` ilk satırında salt okunur
+rolde tüm sağ tık menüsünü kapatıyor:
+
+```python
+if is_readonly_role(self._role):
+    return
+```
+
+Bu tur eklenen **Damgayı Doğrula** maddesi o menünün içinde, dolayısıyla
+salt okunur kullanıcı damga doğrulayamıyor.
+
+### Neden bir sorun
+
+Doğrulama saf bir OKUMA: dosyayı değiştirmiyor, anahtar istemiyor, ağa
+çıkmıyor, veritabanına yalnızca denetim kaydı yazıyor. "Yazamaz" rolünün
+bir okumayı engellemesi kavramsal olarak yanlış. Salt okunur rol tipik
+olarak denetçiye verilir — damga doğrulamasının BİRİNCİL kitlesi.
+
+### Neden bu turda düzeltilmedi
+
+Menüyü bu rol için açmak, yıkıcı maddelerin (İndir, İmha, Taşı) sızmadığını
+AYRICA kanıtlamayı gerektirir. Bu deponun beş kez yakaladığı kusur sınıfı
+tam olarak budur — B-007'de dört görünümden ikisi mahrem filtresizdi ve
+sebebi yeni bir görünüm eklenirken filtrenin unutulmasıydı. Rol kapısını
+tek maddelik bir istisnayla delmek, aynı hatanın yeni bir yüzeyini açar.
+
+Mevcut davranış `tests/test_timestamp_ui.py::test_SALT_OKUNUR_rol_menuyu_
+hic_acmiyor` ile SABİTLENDİ: değişirse test düşer, yani değişiklik
+bilinçli olmak zorunda.
+
+### Öneri
+
+Salt okunur rol için AYRI bir menü kurulsun — "yıkıcı olanları çıkar"
+değil, "okuma maddelerini ekle" yönünde. Yön önemli: çıkarma listesi
+yeni bir madde eklendiğinde sessizce eksik kalır, ekleme listesi kalmaz.
+Yanına AST denetimi: salt okunur dalında `addAction` çağrılan maddelerin
+kümesi beyaz listeye bağlı olsun.
+
+Alternatif (daha ucuz): doğrulama menüden bağımsız bir yerden de
+çağrılabilsin — dosya çift tıklandığında açılan ayrıntı görünümü ya da
+AdminPanel. Ama AdminPanel yalnızca yöneticiye açık, yani salt okunur
+rolü için çözüm DEĞİL.
+
+---
+
+## B-035 — Hiçbir kullanıcı akışı damga ATMIYOR; doğrulama boşa çalışıyor
+
+**Durum:** Açık — DÜZELTİLMEDİ, önce rapor
+**Öncelik:** **Yüksek** (özellik zinciri tamamlanmamış)
+**Bulundu:** 2026-08-20 — 3.1 turu, doğrulama düğmesi bağlanırken
+
+`CORE/timestamp.py` iki damgalama fonksiyonu sunuyor:
+
+```
+timestamp_file()   → 1 dosya, 1 TSA çağrısı, fragman v1
+timestamp_batch()  → N dosya (+ çıpa), 1 TSA çağrısı, fragman v2
+```
+
+**İkisinin de testler dışında hiçbir çağıranı yok.** Ölçüldü:
+
+```
+$ grep -rn "timestamp_file\|timestamp_batch" --include=*.py . | grep -v "^./tests/"
+./CORE/timestamp.py:724:def timestamp_file(
+./CORE/timestamp.py:930:def timestamp_batch(
+```
+
+(Kalan eşleşmeler docstring'ler.) Ne arayüzde bir düğme, ne zamanlanmış
+bir iş, ne bir CLI. `CORE/scheduled_checks.py` damgalamayı çağırmıyor.
+
+### Sonucu
+
+Kasadaki gerçek dosyaların **hiçbiri** damgalı değil. Bu turda eklenen
+"Damgayı Doğrula" maddesi, bugünkü hâliyle her dosyada "Bu dosyada zaman
+damgası yok" diyecek. Doğru çalışıyor — söyleyecek başka bir şey yok.
+
+Yani şu an elde:
+
+| Parça | Durum |
+|---|---|
+| Damga ÜRETME (`timestamp_file`/`_batch`) | Yazıldı, test edildi, **bağlanmadı** |
+| Damga SAKLAMA (`.hcl` fragmanı v1/v2) | Çalışıyor |
+| Damga DOĞRULAMA (çevrimdışı, CLI) | Çalışıyor |
+| Damga DOĞRULAMA (arayüz) | Bu turda eklendi |
+
+Zincirin ilk halkası eksik. Doğrulama tarafına yatırılan iş
+(`timestamp_verify.py`, `timestamp_report.py`, CLI, diyalog, ~200 test)
+kullanıcı için henüz karşılıksız.
+
+### Neden bu turda düzeltilmedi
+
+İstenen iş doğrulama düğmesiydi ve damgalama akışı ayrı bir karar
+gerektiriyor — kapsamı bu turun dışında:
+
+* **Ne zaman damgalanacak?** Yüklemede mi (her dosya bir TSA çağrısı),
+  yoksa toplu ve zamanlanmış mı (`timestamp_batch` bunun için yazıldı)?
+* **Ağ erişimi.** Damgalama, doğrulamanın aksine ağ İSTİYOR. TSA
+  erişilemezse yükleme başarısız mı sayılacak, yoksa damga sonraya mı
+  bırakılacak? İkincisi bir kuyruk gerektirir.
+* **Hangi dosyalar?** Hepsi mi, yalnızca `Kritik` mi, kullanıcı seçimi mi?
+* **Maliyet.** freetsa.org ücretsiz ama hız sınırlı; kurumsal bir TSA
+  çağrı başına ücretli olabilir.
+
+### Öneri
+
+`timestamp_batch()` zaten toplu iş için tasarlanmış (N dosya, tek TSA
+çağrısı, Merkle kökü) ve `current_anchor_hash()` denetim çıpasını da
+yaprak olarak katıyor. En düşük riskli ilk adım: `CORE/scheduled_checks.py`
+içine günlük bir toplu damgalama görevi, `ZamanKapisi` deseniyle
+(`timestamp_last_run`), ve AdminPanel'de bir "Şimdi damgala" düğmesi.
+Ağ hatası görevi düşürmeli ama uygulamayı DEĞİL.

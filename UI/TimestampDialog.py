@@ -1,0 +1,344 @@
+"""
+HYCLEUS — Zaman Damgası Doğrulama Diyaloğu (adım 3.1)
+
+`verify_timestamp()` adım 3.1b'den beri komut satırından çalışıyordu.
+Bu diyalog aynı fonksiyonu arayüze bağlıyor — İKİNCİ bir doğrulama
+uygulaması DEĞİL, aynı fonksiyonun ikinci bir yüzü.
+
+Doğrulamanın kendisi burada YOK: sonuç dışarıdan geliyor
+(`TimestampVerification`), metne çevirme işi `CORE/timestamp_report.py`'de.
+Bu diyalogda yalnızca yerleşim var. Bölünme kasıtlı — bir Qt penceresinin
+içine gömülmüş karar mantığı test edilemez ve bu depoda "aynı iş için
+ikinci bir uygulama" beş kez kusur ürettti.
+
+Neden ayrı bir pencere, durum çubuğunda bir satır değil
+--------------------------------------------------------
+Sonuç tek satıra sığmıyor ve sığdırılmamalı. "Damga geçerli" cümlesinin
+yanında her seferinde İKİ sınır duruyor:
+
+  1. Damgayı atan kurumun kimliği, doğrulanan dosyanın kendi içinden
+     geldi (`anchor_trusted`).
+  2. Doğrulanan şey damganın kendisi; dosyanın içeriğinin damgalanan
+     parmak iziyle eşleştiği bu kontrolde SORULMUYOR.
+
+Bunları bir tooltip'e ya da bir bildirime sıkıştırmak, kullanıcının
+görmeyeceği yere koymak demekti — ve "geçerli" kelimesinin tek başına
+kalması, bu ekranın verebileceği en yanıltıcı çıktı.
+
+Neden iş parçacığı yok
+----------------------
+ÖLÇÜLDÜ: gerçek bir freetsa.org damgasının doğrulanması **3,3 ms**
+sürüyor ve süre dosya boyutundan BAĞIMSIZ — `read_trailer()` ile
+`read_aad()` yalnızca `seek` yapıyor, dosya baştan sona okunmuyor. Ağ
+erişimi de yok. Bir iş parçacığı burada ölçülebilir hiçbir şey
+kazandırmaz, karşılığında iptal/yaşam süresi yönetimi getirirdi
+(`_ScanWorker`'ın taşıdığı yük).
+"""
+from __future__ import annotations
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from CORE.timestamp_report import (
+    SEVIYE_BILGI,
+    SEVIYE_DAMGASIZ,
+    SEVIYE_GECERLI,
+    SEVIYE_GECERSIZ,
+    SEVIYE_OKUNAMADI,
+    SEVIYE_UYARI,
+    Aciklama,
+    aciklama,
+    detaylar,
+    notlar,
+    zaman_metni,
+)
+from CORE.timestamp_verify import TimestampVerification
+
+#: Seviye → (simge, renk). Renk kararı burada, ANLAM kararı
+#: `CORE/timestamp_report.py`'de — biri arayüz tercihi, diğeri değil.
+#:
+#: `okunamadi` ile `gecersiz` FARKLI renkte: "kontrol edemedim" ile "damga
+#: sahte" aynı şey değil ve ikisini tek kırmızıya toplamak, aktarımda
+#: zarar görmüş sağlam bir dosyayı kurcalanmış gibi gösterirdi.
+_SEVIYE_GORUNUM: dict[str, tuple[str, str]] = {
+    SEVIYE_GECERLI:   ("✔", "#a6e3a1"),
+    SEVIYE_GECERSIZ:  ("✖", "#f38ba8"),
+    SEVIYE_DAMGASIZ:  ("🕓", "#a6adc8"),
+    SEVIYE_OKUNAMADI: ("⚠", "#fab387"),
+    SEVIYE_UYARI:     ("⚠", "#f9e2af"),
+    SEVIYE_BILGI:     ("ℹ", "#89b4fa"),
+}
+
+_VARSAYILAN_GORUNUM = ("•", "#a6adc8")
+
+_STYLE = """
+QDialog  { background: #1e1e2e; color: #cdd6f4; }
+QLabel   { color: #cdd6f4; background: transparent; }
+QLabel#dosya    { color: #a6adc8; font-size: 11px; }
+QLabel#simge    { font-size: 26px; }
+QLabel#baslik   { font-size: 15px; font-weight: bold; }
+QLabel#ozet     { color: #cdd6f4; font-size: 12px; }
+QLabel#oneri    { color: #f9e2af; font-size: 12px; }
+QLabel#not_bas  { font-size: 12px; font-weight: bold; }
+QLabel#not_gov  { color: #a6adc8; font-size: 11px; }
+QLabel#alan_ad  { color: #a6adc8; font-size: 11px; }
+QLabel#alan_dgr { color: #cdd6f4; font-size: 12px; font-weight: bold; }
+QFrame#sep      { background: #313244; max-height: 1px; }
+QFrame#kutu     { background: #181825; border: 1px solid #313244; border-radius: 6px; }
+QScrollArea     { background: #1e1e2e; border: none; }
+QWidget#govde   { background: #1e1e2e; }
+QTextEdit#teknik {
+    background: #11111b; color: #a6adc8;
+    border: 1px solid #313244; border-radius: 6px;
+    font-family: Consolas, monospace; font-size: 11px;
+}
+QPushButton#primary_btn {
+    background: #89b4fa; color: #1e1e2e; border: none;
+    border-radius: 6px; padding: 9px 22px; font-size: 13px; font-weight: bold;
+}
+QPushButton#primary_btn:hover { background: #b4d0ff; }
+QPushButton#flat_btn {
+    background: #313244; color: #cdd6f4; border: none;
+    border-radius: 6px; padding: 7px 14px; font-size: 12px;
+}
+QPushButton#flat_btn:hover { background: #45475a; }
+"""
+
+
+def _sep() -> QFrame:
+    f = QFrame()
+    f.setObjectName("sep")
+    f.setFrameShape(QFrame.HLine)
+    return f
+
+
+def _sarmali(metin: str, nesne_adi: str) -> QLabel:
+    """Satır kaydıran bir etiket.
+
+    `setWordWrap(True)` olmadan uzun açıklamalar pencereyi ekran dışına
+    taşırıyor; metinler kasten uzun (bir cümlelik "geçersiz" yetmiyor).
+    """
+    lbl = QLabel(metin)
+    lbl.setObjectName(nesne_adi)
+    lbl.setWordWrap(True)
+    lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    return lbl
+
+
+class TimestampDialog(QDialog):
+    """Bir dosyanın zaman damgası doğrulama sonucunu gösterir."""
+
+    def __init__(
+        self,
+        sonuc: TimestampVerification,
+        dosya_adi: str,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._sonuc = sonuc
+        self._dosya_adi = dosya_adi
+        self._mesaj: Aciklama = aciklama(sonuc)
+        self._notlar: list[Aciklama] = notlar(sonuc)
+        self._detaylar: list[tuple[str, str]] = detaylar(sonuc)
+
+        self.setWindowTitle(f"HYCLEUS — Damga Doğrulama · {dosya_adi}")
+        self.setMinimumWidth(520)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setStyleSheet(_STYLE)
+        self._build_ui()
+
+    # ── Kurulum ───────────────────────────────────────────────────────────────
+
+    def _build_ui(self) -> None:
+        dis = QVBoxLayout(self)
+        dis.setContentsMargins(0, 0, 0, 0)
+        dis.setSpacing(0)
+
+        # Kaydırma: teknik ayrıntılar açıldığında ya da uzun bir zincirde
+        # içerik ekrandan taşabilir.
+        kaydir = QScrollArea()
+        kaydir.setWidgetResizable(True)
+        govde = QWidget()
+        govde.setObjectName("govde")
+        kaydir.setWidget(govde)
+        dis.addWidget(kaydir, 1)
+
+        yerlesim = QVBoxLayout(govde)
+        yerlesim.setContentsMargins(24, 20, 24, 16)
+        yerlesim.setSpacing(10)
+
+        yerlesim.addWidget(self._baslik_bloku())
+        yerlesim.addWidget(_sarmali(self._mesaj.ozet, "ozet"))
+
+        if self._mesaj.oneri:
+            yerlesim.addWidget(self._kutu([
+                _sarmali(f"→  {self._mesaj.oneri}", "oneri"),
+            ]))
+
+        ozet_alanlari = self._ozet_alanlari()
+        if ozet_alanlari:
+            yerlesim.addWidget(_sep())
+            yerlesim.addWidget(self._kutu(ozet_alanlari))
+
+        for mesaj in self._notlar:
+            yerlesim.addWidget(self._not_bloku(mesaj))
+
+        yerlesim.addWidget(_sep())
+        yerlesim.addWidget(self._teknik_bloku())
+        yerlesim.addStretch(1)
+
+        dis.addWidget(self._alt_cubuk())
+
+    def _baslik_bloku(self) -> QWidget:
+        simge_metni, renk = _SEVIYE_GORUNUM.get(
+            self._mesaj.seviye, _VARSAYILAN_GORUNUM
+        )
+        sarici = QWidget()
+        satir = QHBoxLayout(sarici)
+        satir.setContentsMargins(0, 0, 0, 0)
+        satir.setSpacing(12)
+
+        simge = QLabel(simge_metni)
+        simge.setObjectName("simge")
+        simge.setStyleSheet(f"color:{renk};")
+        simge.setAlignment(Qt.AlignTop)
+        satir.addWidget(simge)
+
+        sutun = QVBoxLayout()
+        sutun.setSpacing(2)
+        baslik = _sarmali(self._mesaj.baslik, "baslik")
+        baslik.setStyleSheet(f"color:{renk};")
+        sutun.addWidget(baslik)
+        sutun.addWidget(_sarmali(self._dosya_adi, "dosya"))
+        satir.addLayout(sutun, 1)
+        return sarici
+
+    def _ozet_alanlari(self) -> list[QWidget]:
+        """Kullanıcının kararını değiştirebilecek alanlar — yalnızca üçü.
+
+        Seri numarası ve politika kodu buraya GİRMİYOR: doğru bilgi ama
+        kullanıcı için gürültü. Teknik ayrıntılarda tam listesi var.
+        """
+        if not self._sonuc.valid:
+            return []
+        satirlar: list[tuple[str, str]] = [
+            ("Damga zamanı", zaman_metni(self._sonuc.gen_time)),
+        ]
+        if self._sonuc.tsa_name:
+            satirlar.append(("Damgayı atan kurum", self._sonuc.tsa_name))
+        if self._sonuc.tsa_url:
+            satirlar.append(("Kurumun adresi", self._sonuc.tsa_url))
+
+        cikti: list[QWidget] = []
+        for ad, deger in satirlar:
+            cikti.append(_sarmali(ad, "alan_ad"))
+            cikti.append(_sarmali(deger, "alan_dgr"))
+        return cikti
+
+    def _not_bloku(self, mesaj: Aciklama) -> QWidget:
+        simge_metni, renk = _SEVIYE_GORUNUM.get(mesaj.seviye, _VARSAYILAN_GORUNUM)
+        icerik: list[QWidget] = []
+        baslik = _sarmali(f"{simge_metni}  {mesaj.baslik}", "not_bas")
+        baslik.setStyleSheet(f"color:{renk};")
+        icerik.append(baslik)
+        icerik.append(_sarmali(mesaj.ozet, "not_gov"))
+        if mesaj.oneri:
+            icerik.append(_sarmali(f"→  {mesaj.oneri}", "not_gov"))
+        return self._kutu(icerik)
+
+    def _teknik_bloku(self) -> QWidget:
+        """Kapalı başlayan teknik ayrıntılar.
+
+        Silinmiyor, bir kat aşağı konuyor: kullanıcı yöneticisine ya da
+        bir denetçiye durumu iletecekse tam olarak bu alanlar gerekiyor —
+        CLI'ın bastığı bilginin aynısı.
+        """
+        sarici = QWidget()
+        sutun = QVBoxLayout(sarici)
+        sutun.setContentsMargins(0, 0, 0, 0)
+        sutun.setSpacing(8)
+
+        self._teknik_alan = QTextEdit()
+        self._teknik_alan.setObjectName("teknik")
+        self._teknik_alan.setReadOnly(True)
+        self._teknik_alan.setPlainText(self.teknik_metin())
+        self._teknik_alan.setFixedHeight(150)
+        self._teknik_alan.setVisible(False)
+
+        dugmeler = QHBoxLayout()
+        dugmeler.setSpacing(8)
+        self._ac_kapa = QPushButton("▸  Teknik ayrıntılar")
+        self._ac_kapa.setObjectName("flat_btn")
+        self._ac_kapa.clicked.connect(self._teknik_degistir)
+        dugmeler.addWidget(self._ac_kapa)
+
+        kopyala = QPushButton("⧉  Kopyala")
+        kopyala.setObjectName("flat_btn")
+        kopyala.clicked.connect(self._kopyala)
+        dugmeler.addWidget(kopyala)
+        dugmeler.addStretch(1)
+
+        sutun.addLayout(dugmeler)
+        sutun.addWidget(self._teknik_alan)
+        return sarici
+
+    def _alt_cubuk(self) -> QWidget:
+        sarici = QWidget()
+        satir = QHBoxLayout(sarici)
+        satir.setContentsMargins(24, 8, 24, 16)
+        satir.addStretch(1)
+        kapat = QPushButton("Kapat")
+        kapat.setObjectName("primary_btn")
+        kapat.setDefault(True)
+        kapat.clicked.connect(self.accept)
+        satir.addWidget(kapat)
+        return sarici
+
+    def _kutu(self, icerik: list[QWidget]) -> QFrame:
+        cerceve = QFrame()
+        cerceve.setObjectName("kutu")
+        sutun = QVBoxLayout(cerceve)
+        sutun.setContentsMargins(12, 10, 12, 10)
+        sutun.setSpacing(3)
+        for w in icerik:
+            sutun.addWidget(w)
+        return cerceve
+
+    # ── Davranış ──────────────────────────────────────────────────────────────
+
+    def teknik_metin(self) -> str:
+        """Panoya kopyalanabilir tam rapor.
+
+        Dosya adı BAŞA yazılıyor: kullanıcı bunu yöneticisine yapıştırdığında
+        hangi dosyadan söz edildiği metnin içinde durmalı.
+        """
+        satirlar = [f"HYCLEUS damga doğrulama — {self._dosya_adi}", ""]
+        satirlar += [f"{ad}: {deger}" for ad, deger in self._detaylar]
+        return "\n".join(satirlar)
+
+    def _teknik_degistir(self) -> None:
+        acik = not self._teknik_alan.isVisible()
+        self._teknik_alan.setVisible(acik)
+        self._ac_kapa.setText(
+            ("▾  Teknik ayrıntılar" if acik else "▸  Teknik ayrıntılar")
+        )
+        self.adjustSize()
+
+    def _kopyala(self) -> None:
+        pano = QApplication.clipboard()
+        if pano is not None:  # pragma: no branch — başsız ortamda None olabilir
+            pano.setText(self.teknik_metin())
+
+
+__all__ = ["TimestampDialog"]
