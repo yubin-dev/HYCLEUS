@@ -34,6 +34,11 @@ from CORE.idle_lock import (
     DEFAULT_IDLE_MINUTES,
     IdleTracker,
 )
+from CORE.roles import (
+    can_write as rol_yazabilir,
+    display_role,
+    is_admin_role,
+)
 from CORE.usb_manager import get_usb_hwid
 from CORE.version import surum_etiketi
 from CORE.vault_manager import (
@@ -188,11 +193,14 @@ class HycleusWindow(
 
     def _apply_role_restrictions(self) -> None:
         _log.debug("apply_role_restrictions  role=%r", self._role)
-        _role_norm  = self._role.strip().lower().replace("_", " ")
-        is_admin    = _role_norm == "yönetici"
-        is_readonly = _role_norm == "salt okunur"
-        # Standart = not admin and not readonly
-        can_write   = not is_readonly   # Yönetici + Standart yazabilir
+        # Rol kararları TEK yerden: CORE/roles.py (B-028).
+        #
+        # `is_readonly` ara değişkeni KALDIRILDI: tek kullanıcısı
+        # `can_write = not is_readonly` idi ve o hesap artık `can_write()`
+        # içinde. Bırakılsaydı "salt okunur mu" sorusunun İKİNCİ bir
+        # cevabı burada durmaya devam ederdi — düzeltilen şeyin ta kendisi.
+        is_admin  = is_admin_role(self._role)
+        can_write = rol_yazabilir(self._role)
 
         # ── Yönetici bölümü: sadece Yönetici görür ───────────────────────
         for _w in (self._admin_sep, self._admin_label, self._blacklist_btn,
@@ -213,7 +221,7 @@ class HycleusWindow(
             _kritik.setVisible(can_write)
             _kritik.setEnabled(can_write)
 
-        self._role_badge.setText(self._role)
+        self._role_badge.setText(display_role(self._role))
 
     # ── Action bar işlemleri ──────────────────────────────────────────────────
 
@@ -273,7 +281,7 @@ class HycleusWindow(
         AuditLogDialog(self).exec()
 
     def _on_open_admin_panel(self) -> None:
-        if self._role != "Yönetici":
+        if not is_admin_role(self._role):
             QMessageBox.warning(self, "Erişim Reddedildi", "Bu alana erişim yetkiniz yok.")
             return
         AdminPanel(current_hwid=self._hwid, role=self._role, parent=self).exec()
@@ -367,7 +375,7 @@ class HycleusWindow(
 
         try:
             rows = files_by_label(
-                DBManager(), db_label, include_private=self._role == "Yönetici"
+                DBManager(), db_label, include_private=is_admin_role(self._role)
             )
         except Exception as exc:
             QMessageBox.warning(self, "Veritabanı", str(exc))
@@ -386,7 +394,7 @@ class HycleusWindow(
         self._table.setRowCount(0)
         try:
             rows = search_files(
-                DBManager(), term, include_private=self._role == "Yönetici"
+                DBManager(), term, include_private=is_admin_role(self._role)
             )
         except Exception as exc:
             QMessageBox.warning(self, "Arama", str(exc))

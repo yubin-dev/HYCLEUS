@@ -57,6 +57,12 @@ import unicodedata
 #: Arayüz rolleri, kanonik (ASCII slug) biçimde.
 ROL_YONETICI = "yonetici"
 ROL_STANDART = "standart"
+# `hycleus-hardcoded-key-material` kuralı bu satırı YANLIŞ POZİTİF olarak
+# işaretliyor: adın içindeki Türkçe "SALT" (yalnızca) sözcüğü kriptografik
+# `salt` ile çakışıyor. Değer bir rol adı; ne anahtar, ne nonce, ne tuz.
+# Kuralı gevşetmek yerine bu satır susturuldu — kural gerçek gömülü
+# anahtarları yakalamaya devam etsin.
+# nosemgrep: hycleus-hardcoded-key-material
 ROL_SALT_OKUNUR = "salt okunur"
 
 #: `users.role` sütunundaki değerler. Sütunda CHECK kısıtı var.

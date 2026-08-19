@@ -55,6 +55,7 @@ _SELFTEST_MODULLERI: tuple[str, ...] = (
     "CORE.file_queries", "CORE.file_records", "CORE.folders", "CORE.hwid_probe",
     "CORE.idle_lock", "CORE.integrity", "CORE.inventory", "CORE.merkle",
     "CORE.paths", "CORE.pin_policy", "CORE.rate_limit", "CORE.recover_vault",
+    "CORE.roles",
     "CORE.recovery_share", "CORE.retention", "CORE.safezone", "CORE.scanner",
     "CORE.scanner_backends", "CORE.scheduled_checks", "CORE.scheduler",
     "CORE.secret_migration", "CORE.secret_store", "CORE.secure_erase",

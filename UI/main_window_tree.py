@@ -65,6 +65,7 @@ from CORE.usb_manager import DEV_MODE as _DEV_MODE
 from DB.db_manager import DBManager
 
 from CORE.secret_store import load_totp_secret
+from CORE.roles import is_admin_role, is_readonly_role
 from UI.main_window_palette import (
     _TAG_COLORS,
     _make_dot_pixmap,
@@ -104,7 +105,7 @@ class TreeMixin:
             color      = tag["color"]
             is_private = bool(tag["is_private"])
 
-            if is_private and self._role != "Yönetici":
+            if is_private and not is_admin_role(self._role):
                 continue
 
             is_active = (tag_id == self._current_tag_id)
@@ -207,7 +208,7 @@ class TreeMixin:
             # B-007: diğer üç görünümle aynı biçimde role bağlı
             rows = files_by_folder(
                 DBManager(), folder_id,
-                include_private=self._role == "Yönetici",
+                include_private=is_admin_role(self._role),
             )
         except Exception as exc:
             QMessageBox.warning(self, "Veritabanı", str(exc))
@@ -216,7 +217,7 @@ class TreeMixin:
 
     def _on_folder_context_menu(self, pos: QPoint, folder_id: int, folder_name: str,
                                 btn: QPushButton) -> None:
-        if self._role.strip().lower() == "salt okunur":
+        if is_readonly_role(self._role):
             _log.debug("context_menu_blocked  fn=_on_folder_context_menu  role=%r", self._role)
             return
         T = self._T
@@ -365,7 +366,7 @@ class TreeMixin:
         QMessageBox.information(self, "Klasör İndir", msg)
 
     def _on_tag_click(self, tag_id: int, tag_name: str, tag_color: str, btn: QPushButton) -> None:
-        if btn.property("is_private") and self._role != "Yönetici":
+        if btn.property("is_private") and not is_admin_role(self._role):
             QMessageBox.warning(
                 self, "Erişim Reddedildi",
                 "Bu klasör gizlidir, erişim yetkiniz yok."
@@ -395,7 +396,7 @@ class TreeMixin:
         self._load_tag_files(tag_id)
 
     def _on_tag_context_menu(self, pos: QPoint, tag_id: int, tag_name: str, btn: QPushButton) -> None:
-        if self._role.strip().lower() == "salt okunur":
+        if is_readonly_role(self._role):
             _log.debug("context_menu_blocked  fn=_on_tag_context_menu  role=%r", self._role)
             return
         T = self._T
@@ -440,7 +441,7 @@ class TreeMixin:
             # B-007: kenar çubuğu engeli KALDIRILMADI — iki katman birlikte
             rows = files_by_tag(
                 DBManager(), tag_id,
-                include_private=self._role == "Yönetici",
+                include_private=is_admin_role(self._role),
             )
         except Exception as exc:
             QMessageBox.warning(self, "Veritabanı", str(exc))

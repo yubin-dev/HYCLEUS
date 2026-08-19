@@ -57,6 +57,7 @@ from CORE.scanner import ScanResult
 from DB.db_manager import DBManager
 
 from CORE.secret_store import load_totp_secret
+from CORE.roles import is_readonly_role
 from UI.main_window_table import _ScanWorker
 from UI.main_window_palette import (
     _VERDICT_BADGE,
@@ -69,7 +70,7 @@ class FileActionsMixin:
     # ── Context menu ──────────────────────────────────────────────────────────
 
     def _on_context_menu(self, pos: QPoint) -> None:
-        if self._role.strip().lower() == "salt okunur":
+        if is_readonly_role(self._role):
             _log.debug("context_menu_blocked  fn=_on_context_menu  role=%r", self._role)
             return
 

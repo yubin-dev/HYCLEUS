@@ -71,6 +71,7 @@ from CORE.file_records import record_encrypted_file
 from CORE.folders import create_folder
 from CORE.scanner import ScanResult, scan_file
 from CORE.usb_manager import get_usb_hwid
+from CORE.roles import is_admin_role, is_readonly_role
 from DB.db_manager import DBManager
 
 from UI.main_window_palette import (
@@ -404,7 +405,7 @@ class TableMixin:
     # ── Drag & drop ───────────────────────────────────────────────────────────
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if self._role.strip().lower() == "salt okunur":
+        if is_readonly_role(self._role):
             event.ignore()
             return
         if event.mimeData().hasUrls():
@@ -426,7 +427,7 @@ class TableMixin:
 
     def dropEvent(self, event: QDropEvent) -> None:
         self._reset_drop_hint_style()
-        if self._role.strip().lower() == "salt okunur":
+        if is_readonly_role(self._role):
             _log.debug("drop_blocked  role=%r", self._role)
             event.ignore()
             return
@@ -515,7 +516,9 @@ class TableMixin:
         if not files:
             return files
 
-        yonetici = self._role.strip().lower() in ("yönetici", "yonetici", "admin")
+        # Üç yazımı elle sayan liste KALDIRILDI — normalizasyon artık
+        # CORE/roles.py içinde ve depodaki tek yerde (B-028).
+        yonetici = is_admin_role(self._role)
         bulgular: list[tuple[Path, str, list]] = []
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
