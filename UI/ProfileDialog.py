@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from CORE.roles import ROL_SALT_OKUNUR, ROL_STANDART, ROL_YONETICI, normalize_role
 from CORE.pin_policy import validate_new_pin
 from DB.db_manager import DBManager
 
@@ -124,10 +125,11 @@ QPushButton#btn_secondary {
 QPushButton#btn_secondary:hover { background: #F3F4F6; }
 """
 
+#: Anahtarlar KANONİK rol değeri — bkz. main_window_palette._ROLE_BADGE.
 _ROLE_COLOR = {
-    "Yönetici":    ("#DBEAFE", "#2563EB"),
-    "Standart":    ("#D1FAE5", "#059669"),
-    "Salt Okunur": ("#FEF3C7", "#D97706"),
+    ROL_YONETICI:    ("#DBEAFE", "#2563EB"),
+    ROL_STANDART:    ("#D1FAE5", "#059669"),
+    ROL_SALT_OKUNUR: ("#FEF3C7", "#D97706"),
 }
 
 
@@ -181,7 +183,7 @@ class ProfileDialog(QDialog):
         name_lbl.setObjectName("user_name")
         info.addWidget(name_lbl)
 
-        bg, fg = _ROLE_COLOR.get(self._role, ("#F3F4F6", "#6B7280"))
+        bg, fg = _ROLE_COLOR.get(normalize_role(self._role), ("#F3F4F6", "#6B7280"))
         role_lbl = QLabel(self._role)
         role_lbl.setObjectName("user_role")
         info.addWidget(role_lbl)

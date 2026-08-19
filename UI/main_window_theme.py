@@ -36,6 +36,8 @@ _ACTIVITY_EVENTS = frozenset({
 
 
 
+from CORE.roles import normalize_role
+
 from UI.main_window_palette import (
     _DARK,
     _LIGHT,
@@ -123,7 +125,7 @@ class ThemeMixin:
         self._theme_btn.setText("☀" if self._dark else "🌙")
         self._avatar.setText(self._username[0].upper() if self._username else "?")
 
-        bg, fg = _ROLE_BADGE.get(self._role, ("#F3F4F6", "#6B7280"))
+        bg, fg = _ROLE_BADGE.get(normalize_role(self._role), ("#F3F4F6", "#6B7280"))
         self._role_badge.setStyleSheet(
             f"QLabel {{ color: {fg}; background: {bg}; border-radius: 20px;"
             f" font-size: 12px; font-weight: 600; padding: 4px 12px;"

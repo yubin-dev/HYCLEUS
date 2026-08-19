@@ -15,6 +15,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QPainter, QPixmap
 
+from CORE.roles import ROL_SALT_OKUNUR, ROL_STANDART, ROL_YONETICI
+
 
 # ── Renk paletleri ────────────────────────────────────────────────────────────
 _DARK: dict[str, str] = {
@@ -67,10 +69,13 @@ _SIDEBAR_NAV: list[tuple[str, str, str]] = [
 ]
 
 
+#: Anahtarlar KANONİK rol değeri (CORE/roles.py). Eskiden görünen ad
+#: ("Yönetici") anahtardı ve kasada ASCII "Yonetici" yazan bir kullanıcı
+#: rozetsiz kalıyordu — B-028'in görünür ama zararsız yüzü.
 _ROLE_BADGE: dict[str, tuple[str, str]] = {
-    "Yönetici":    ("#DBEAFE", "#2563EB"),
-    "Standart":    ("#D1FAE5", "#059669"),
-    "Salt Okunur": ("#FEF3C7", "#D97706"),
+    ROL_YONETICI:    ("#DBEAFE", "#2563EB"),
+    ROL_STANDART:    ("#D1FAE5", "#059669"),
+    ROL_SALT_OKUNUR: ("#FEF3C7", "#D97706"),
 }
 
 

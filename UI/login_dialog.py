@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from CORE.roles import db_role as rol_db
 from CORE.usb_manager import get_usb_hwid
 from CORE.vault_manager import (
     USBAuthError,
@@ -901,7 +902,9 @@ class LoginDialog(QDialog):
             self._show_reg_error(f"Vault oluşturulamadı: {exc}")
             return
 
-        db_role = "admin" if role == "Yönetici" else "user"
+        # B-030: eşleme CORE/roles.py'de. Satır içi ifade ASCII
+        # "Yonetici" ile kaydolan kullanıcıyı `user` yazıyordu.
+        db_role = rol_db(role)
         try:
             db.execute(
                 "INSERT INTO users (username, password_hash, role, status, hwid) "

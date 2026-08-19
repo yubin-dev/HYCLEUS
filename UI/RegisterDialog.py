@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from CORE.roles import db_role as rol_db
 from CORE.pin_policy import PIN_MIN_LEN as _PIN_MIN_LEN
 from CORE.pin_policy import validate_new_pin
 from CORE.usb_manager import _sanitize_hwid, get_usb_hwid
@@ -382,7 +383,8 @@ class RegisterDialog(QDialog):
             return
 
         # ── DB: users kaydı (status='pending') ────────────────────────
-        db_role = "admin" if role == "Yönetici" else "user"
+        # B-030: eşleme CORE/roles.py'de (login_dialog ile aynı karar).
+        db_role = rol_db(role)
         try:
             db.execute(
                 """

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from CORE.roles import is_admin_role
 from CORE.idle_lock import (
     DEFAULT_IDLE_MINUTES,
     IDLE_DISABLED,
@@ -97,7 +98,7 @@ class AdminPanel(QDialog):
         self.setWindowTitle("HYCLEUS — USB Yönetim Paneli")
         self.setStyleSheet(_STYLE)
 
-        if role != "Yönetici":
+        if not is_admin_role(role):
             self.setFixedSize(360, 120)
             lay = QVBoxLayout(self)
             lay.setContentsMargins(24, 20, 24, 20)
@@ -523,7 +524,7 @@ class AdminPanel(QDialog):
 
         old_role = self._selected_role()
 
-        if old_role == "Yönetici":
+        if is_admin_role(old_role):
             QMessageBox.warning(
                 self,
                 "İzin Verilmedi",

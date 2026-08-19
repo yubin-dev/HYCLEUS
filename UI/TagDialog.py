@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from CORE.roles import is_admin_role
 from DB.db_manager import DBManager
 
 _TAG_COLORS = [
@@ -86,8 +87,9 @@ class TagDialog(QDialog):
         self._file_ids: list[int] | None = file_ids
         self._file_id        = file_ids[0] if file_ids else file_id
         self._initial_assigned: set[int] = set()
-        self._role_norm      = role.strip().lower()
-        self._is_admin       = self._role_norm == "yönetici"
+        # Rol kararı CORE/roles.py'de (B-028). `_role_norm` ara değişkeni
+        # KALDIRILDI: tek kullanıcısı bu karşılaştırmaydı.
+        self._is_admin       = is_admin_role(role)
         self._selected_color = _TAG_COLORS[0]
         self._color_btns: list[QPushButton]           = []
         self._checkboxes: list[tuple[QCheckBox, int]] = []
