@@ -546,14 +546,27 @@ kapı bilerek açık bırakıldı.
 
 ## B-024 — Windows `.spec` dosyası iki yerden bozuk
 
-**Durum:** Açık — Linux ayağı düzeltildi, Windows'a DOKUNULMADI
+**Durum:** KAPALI — 2026-08-19, `HYCLEUS.spec` düzeltildi
 **Öncelik:** Yüksek (dağıtılan yapı eksik çalışıyor, hata sessiz)
 **Bulundu:** 2026-08-17 — AppImage ayağı kurulurken, `HYCLEUS.spec` referans
 alınıp aynısı Linux için yazıldığında. İkisi de ÖLÇÜLDÜ, tahmin değil.
 
-Kapsam kararı: bu tur yalnızca Linux paketlemesini kurmakla ilgiliydi.
-`HYCLEUS-linux.spec` her iki sorunu da baştan içermeyecek şekilde yazıldı;
-`HYCLEUS.spec` bilerek olduğu gibi bırakıldı.
+Bulunduğu turda Windows'a bilerek dokunulmamıştı (o tur Linux paketlemesini
+kurmakla ilgiliydi). Bir tur sonra düzeltme taşındı: bu bir özellik eksiği
+değil, elde duran paketin gerçek bir bozukluğuydu — geciktirmek riski
+büyütüyordu.
+
+### Ölçüm — düzeltmeden önce ve sonra
+
+Aynı makinede, `HYCLEUS.spec` ile üretilen EXE üzerinde `--selftest`:
+
+| | Temiz ağaçta yapı | Yüklenen modül |
+|---|---|---|
+| Önce | `ERROR: Unable to find …\data` — hiç başlamıyor | 43/53 |
+| Sonra | başarılı | **53/53** |
+
+Ara ölçüm için `data/` elle oluşturuldu; yoksa "önce" sütununun ikinci
+hücresi hiç ölçülemezdi.
 
 ### Bulgu 1 — temiz bir ağaçta yapı HİÇ başlamıyor
 
@@ -575,7 +588,7 @@ Spec `CORE`/`DB`/`UI`'yı **veri** olarak kopyalıyor. Bu, `.py` dosyalarını
 pakete koyar ama PyInstaller'ın onları ANALİZ etmesini sağlamaz — dolayısıyla
 `main.py`'nin import etmediği her modül kendi bağımlılıkları olmadan gidiyor.
 
-Aynı desenle üretilen bir yapıda ölçülen sonuç: **53 modülün 11'i yüklenemedi.**
+`HYCLEUS.spec` ile üretilen EXE'de ölçülen sonuç: **53 modülün 10'u yüklenemedi.**
 
 | Eksik | Nereden | Kullanıcıya etkisi |
 |---|---|---|
@@ -588,7 +601,7 @@ Hatanın biçimi en kötüsü: **uygulama açılıyor ve normal görünüyor.** 
 ancak kullanıcı o özelliğe dokunduğunda — muhtemelen kurtarma anında —
 ortaya çıkıyor.
 
-### Düzeltme (Linux tarafında uygulanan, Windows'a taşınabilir)
+### Düzeltme (iki spec'te de uygulandı)
 
 `datas` yerine `hiddenimports`: modül adları `os.listdir` ile dizinden
 üretiliyor, PyInstaller bağımlılık grafiğini yürüyor ve eksik dördü
@@ -596,22 +609,47 @@ kendiliğinden geliyor. `reportlab` için `collect_all` gerekli (gömülü
 Type-1 yazı tipleri veri dosyası), `qrcode` için `collect_submodules`
 (görüntü arka ucu çalışma anında seçiliyor).
 
-Ölçülen sonuç: **53/53**. Bkz. `HYCLEUS-linux.spec`.
+Windows'a ÖZGÜ olan hiçbir şey değişmedi: wmi/pywin32 toplama, tek dosya
+EXE, `upx=True` yerinde.
 
 ### Neden bir daha sessizce olmayacak
 
 `main.py --selftest` paketlenmiş yapıda her modülü içe aktarıp raporluyor,
-CI'ın `appimage` işi de her push'ta onu çalıştırıyor. Yukarıdaki 11 modül
+CI'ın `appimage` işi de her push'ta onu çalıştırıyor. Yukarıdaki 10 modül
 zaten bu komutla bulundu — kod okunarak değil.
 
 Windows tarafı bu ağa BAĞLI DEĞİL: EXE'yi üreten CI işi yok, yapı elle
-alınıyor. B-024 kapatılırken `--selftest`'in Windows yapısında da
-koşturulması düşünülmeli.
+alınıyor. Bu yüzden README'nin yapı bölümü artık her yapıda `--selftest`
+çalıştırmayı söylüyor — kalan koruma bu.
+
+KALAN AÇIK NOKTA (yeni madde açmaya değmez, burada duruyor): Windows EXE'si
+için CI işi yok. AppImage her push'ta üretilip duman testinden geçiyor,
+Windows yapısı geçmiyor. Bir gün EXE'yi de CI'da üretmek gerekirse bu
+maddedeki ölçüm yöntemi (`--selftest`, 53/53) hazır.
 
 ### Yan ölçüm — `console=False` ile `--selftest`
 
-Yukarıdaki 11 modüllük ölçüm, `console=False` ile üretilmiş bir Windows
+Yukarıdaki ölçüm, `console=False` ile üretilmiş bir Windows
 EXE'sinde yapıldı ve çıktı BORUYA sorunsuz yazıldı. Yani `--selftest`
 pencereli bir yapıda da kullanılabiliyor; ayrı bir konsollu yapı gerekmiyor.
 Ölçülmeyen tek durum, çıktının yönlendirilmediği (doğrudan çift tıklanmış)
 çalıştırma — orada zaten okuyacak kimse yok.
+
+### Testler
+
+`tests/test_packaging.py` iki spec'i AYNI parametrik testlerle denetliyor —
+hata tam olarak birinden diğerine kopyalanarak yayılmıştı, ayrı ayrı
+denetlemek birinin unutulmasına kapı bırakırdı.
+
+Denetimlerin HEPSİ AST; hiçbiri metin araması değil. İlk hâlleri metindi ve
+mutasyon testi ikisini birden yakaladı: `assert "upx=True" in metin`,
+`upx=False`'a çevrilmiş bir spec'te bile geçiyordu çünkü dosyanın
+başındaki AÇIKLAMA da "upx=True" yazıyor. Aynı sınıf hata bu depoda
+dördüncü kez çıktı (bkz. B-011, B-008, B-013 testleri): bir kuralı düz
+metinle denetlemek, kuralı ANLATAN metni de eşleştirir.
+
+Modül üreticisi ayrıca SÖKÜLÜP ÇALIŞTIRILIYOR ve sonucu depoyla
+karşılaştırılıyor — "fonksiyon tanımlı mı" yetmiyordu; gövdesi boş
+döndürülen bir üretici tanım denetiminden geçmişti.
+
+15 mutasyonun 15'i ölüyor.

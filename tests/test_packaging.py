@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import configparser
+import os
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,80 @@ def _sabit(dosya: Path, ad: str) -> object:
             if isinstance(hedef, ast.Name) and hedef.id == ad and dugum.value:
                 return ast.literal_eval(dugum.value)
     raise AssertionError(f"{dosya.name} içinde {ad} bulunamadı")
+
+
+# ── Spec okuma yardımcıları ───────────────────────────────────────────────────
+#
+# Hepsi AST, hiçbiri metin araması DEĞİL. Mutasyon testi bunu gerektirdi:
+# ilk hâlleri `assert "upx=True" in metin` gibiydi ve `upx=False`'a çevrilen
+# bir spec testi GEÇİYORDU — çünkü dosyanın başındaki AÇIKLAMA SATIRI da
+# "upx=True" yazıyor. Aynı sınıf hata bu depoda dördüncü kez çıktı
+# (bkz. tests/test_session_user.py, test_disposal.py, test_console.py):
+# bir kuralı düz metinle denetlemek, kuralı ANLATAN metni de eşleştirir.
+
+def _agac(spec: Path) -> ast.Module:
+    return ast.parse(spec.read_text(encoding="utf-8"))
+
+
+def _cagri_anahtari(spec: Path, cagri_adi: str, anahtar: str) -> ast.expr:
+    """`Analysis(...)` / `EXE(...)` çağrısındaki bir anahtar argümanın düğümü."""
+    for dugum in ast.walk(_agac(spec)):
+        if (isinstance(dugum, ast.Call) and isinstance(dugum.func, ast.Name)
+                and dugum.func.id == cagri_adi):
+            for kw in dugum.keywords:
+                if kw.arg == anahtar:
+                    return kw.value
+    raise AssertionError(f"{spec.name}: {cagri_adi}(…) içinde `{anahtar}` yok")
+
+
+def _cagiriyor_mu(dugum: ast.expr, ad: str, ilk_arg: str | None = None) -> bool:
+    """İfadenin içinde `ad(...)` çağrısı geçiyor mu."""
+    for alt in ast.walk(dugum):
+        if not (isinstance(alt, ast.Call) and isinstance(alt.func, ast.Name)):
+            continue
+        if alt.func.id != ad:
+            continue
+        if ilk_arg is None:
+            return True
+        if alt.args and isinstance(alt.args[0], ast.Constant) \
+                and alt.args[0].value == ilk_arg:
+            return True
+    return False
+
+
+def _demet_sabitleri(dugum: ast.expr) -> list[tuple]:
+    """İfadenin içindeki tüm sabit demetler — `a + b + [('x','y')]` dahil."""
+    bulunan = []
+    for alt in ast.walk(dugum):
+        if isinstance(alt, ast.Tuple):
+            try:
+                bulunan.append(ast.literal_eval(alt))
+            except ValueError:
+                pass
+    return bulunan
+
+
+def _modul_ureticisini_calistir(spec: Path) -> list[str]:
+    """
+    Spec'teki `_uygulama_modulleri()` fonksiyonunu SÖKÜP ÇALIŞTIRIR.
+
+    Metin araması "fonksiyon tanımlı mı" sorusunu cevaplıyor; asıl soru
+    "doğru listeyi üretiyor mu". Mutasyon testinde gövdesi `pass` yapılan
+    bir üretici metin denetiminden geçmişti.
+    """
+    for dugum in _agac(spec).body:
+        if isinstance(dugum, ast.FunctionDef) and dugum.name == "_uygulama_modulleri":
+            kod = compile(ast.Module(body=[dugum], type_ignores=[]),
+                          filename=str(spec), mode="exec")
+            ad_alani: dict = {"os": os}
+            exec(kod, ad_alani)  # noqa: S102  # kaynak DEPONUN kendi spec dosyası
+            onceki = os.getcwd()
+            os.chdir(KOK)   # spec göreli yol kullanıyor ("CORE", "DB")
+            try:
+                return list(ad_alani["_uygulama_modulleri"]())
+            finally:
+                os.chdir(onceki)
+    raise AssertionError(f"{spec.name}: `_uygulama_modulleri` tanımı yok")
 
 
 # ── --selftest modül listesi ──────────────────────────────────────────────────
@@ -115,61 +190,138 @@ def test_linux_spec_windows_bagimliliklarini_eliyor():
     pytest.fail("Linux spec `excludes` vermiyor")
 
 
-def test_linux_spec_uygulama_modullerini_hiddenimportsa_uretiyor():
-    """
-    ÖLÇÜLMÜŞ HATA. İlk hâli Windows spec'ini birebir izliyor ve CORE/DB'yi
-    VERİ olarak kopyalıyordu. Veri kopyası dosyaları pakete koyar ama
-    PyInstaller'ın onları analiz etmesini SAĞLAMAZ: donmuş yapıda
-    `main.py`'nin import etmediği her modül kendi bağımlılıkları olmadan
-    gitti (getpass, asn1crypto, reportlab, qrcode.image.svg — 11 modül).
+# ── İKİ SPEC İÇİN ORTAK — B-024 ───────────────────────────────────────────────
+#
+# Aşağıdaki üç test HER İKİ spec'e birden uygulanıyor. Sebep, hatanın nasıl
+# ortaya çıktığı: Windows spec'i referans alınıp Linux'a kopyalandı ve
+# bozukluk da kopyalandı. İki dosyayı ayrı ayrı denetlemek, birinin
+# düzeltilip diğerinin unutulmasına açık kapı bırakırdı.
+#
+# ÖLÇÜLEN HATA (B-024), her iki yapıda da aynıydı:
+# CORE/DB VERİ olarak kopyalanıyordu. Veri kopyası .py dosyalarını pakete
+# koyar ama PyInstaller'ın onları ANALİZ etmesini sağlamaz — dolayısıyla
+# main.py'nin import etmediği her modül kendi bağımlılıkları olmadan gitti.
+# Windows yapısında ölçülen: 53 modülün 10'u yüklenemiyordu.
+#
+#     getpass          ← backup_cli, recover_vault, setup_usb
+#     asn1crypto       ← timestamp, timestamp_verify
+#     reportlab        ← inventory
+#     qrcode.image.svg ← recovery_share
+#
+# Düzeltmeden sonra ikisi de 53/53.
 
-    Liste `os.listdir` ile ÜRETİLİYOR; elle yazılsaydı ilk yeni modülde
-    sessizce eskirdi. Bu test o üretimin yerinde durduğunu sabitliyor.
-    """
-    metin = LINUX_SPEC.read_text(encoding="utf-8")
-    assert "_uygulama_modulleri()" in metin
-    assert "os.listdir" in metin
-    assert "collect_all('reportlab')" in metin, "reportlab yazı tipleri veri dosyası"
-    assert "collect_submodules('qrcode')" in metin
+SPECLER = [pytest.param(WINDOWS_SPEC, id="windows"),
+           pytest.param(LINUX_SPEC, id="linux")]
 
 
-def test_linux_spec_var_olmayan_yol_istemiyor():
-    """
-    Windows spec'i `('data', 'data')` istiyor ama data/ .gitignore'da —
-    ölçüldü: temiz bir ağaçta PyInstaller "Unable to find ...\\data" ile
-    düşüyor (BACKLOG / B-024). Linux spec'i sabit bir `datas` listesi
-    taşımıyor; taşırsa CI'ın `appimage` işi ilk adımda kırılır.
-    """
-    for dugum in ast.walk(ast.parse(LINUX_SPEC.read_text(encoding="utf-8"))):
-        if isinstance(dugum, ast.keyword) and dugum.arg == "datas":
-            # Değer bir ad (rl_datas) — sabit liste DEĞİL. Sabit bir liste
-            # yazılmışsa içindeki her yolun var olduğu denetleniyor.
-            if isinstance(dugum.value, ast.Name):
-                return
-            for kaynak, _ in ast.literal_eval(dugum.value):
-                assert (KOK / kaynak).exists(), f"spec olmayan yolu istiyor: {kaynak}"
-            return
-    pytest.fail("Linux spec `datas` vermiyor")
+@pytest.mark.parametrize("spec", SPECLER)
+def test_spec_uygulama_modullerini_hiddenimportsa_veriyor(spec: Path):
+    """`Analysis(hiddenimports=…)` GERÇEKTEN üreticiyi çağırıyor mu."""
+    hidden = _cagri_anahtari(spec, "Analysis", "hiddenimports")
+    assert _cagiriyor_mu(hidden, "_uygulama_modulleri"), (
+        f"{spec.name}: CORE/DB modülleri hiddenimports'a girmiyor — B-024 geri geldi"
+    )
 
+
+@pytest.mark.parametrize("spec", SPECLER)
+def test_spec_modul_uretici_depoyla_ayni_listeyi_veriyor(spec: Path):
+    """
+    Üreticiyi ÇALIŞTIRIP sonucu depoyla karşılaştırır.
+
+    "Fonksiyon tanımlı mı" yetmiyor: mutasyon testinde gövdesi boş
+    döndürülen bir üretici, tanımı yerinde durduğu için metin
+    denetiminden geçmişti. Ölçülen şey artık davranış.
+    """
+    assert set(_modul_ureticisini_calistir(spec)) == _depodaki_moduller()
+
+
+@pytest.mark.parametrize("spec", SPECLER)
+def test_spec_gizli_ucuncu_taraf_bagimliliklarini_topluyor(spec: Path):
+    """
+    `collect_all` reportlab için ZORUNLU (saf Python değil — gömülü Type-1
+    yazı tipleri taşıyor; onlarsız PDF üretimi çalışma anında düşer, modül
+    yüklenmiş görünürken). qrcode'un görüntü arka ucu çalışma anında
+    seçiliyor, statik analiz göremiyor.
+    """
+    agac = _agac(spec)
+    assert any(_cagiriyor_mu(d, "collect_all", "reportlab")
+               for d in agac.body if isinstance(d, ast.Assign)), \
+        f"{spec.name}: reportlab collect_all ile toplanmıyor"
+    assert any(_cagiriyor_mu(d, "collect_submodules", "qrcode")
+               for d in agac.body if isinstance(d, ast.Assign)), \
+        f"{spec.name}: qrcode alt modülleri toplanmıyor"
+
+    # Toplananlar Analysis'e GERÇEKTEN bağlanmalı; değişkene atayıp
+    # kullanmamak sessizce aynı hatayı geri getirirdi.
+    hidden = ast.dump(_cagri_anahtari(spec, "Analysis", "hiddenimports"))
+    assert "rl_hiddenimports" in hidden and "qr_hiddenimports" in hidden
+    datas = ast.dump(_cagri_anahtari(spec, "Analysis", "datas"))
+    assert "rl_datas" in datas, "reportlab yazı tipleri datas'a bağlanmamış"
+
+
+@pytest.mark.parametrize("spec", SPECLER)
+def test_spec_var_olmayan_yol_istemiyor(spec: Path):
+    """
+    `('data', 'data')` istiyordu ama data/ .gitignore'da — ölçüldü, temiz
+    bir ağaçta PyInstaller "Unable to find …\\data" ile HİÇ BAŞLAMIYORDU.
+    Satır ayrıca gereksizdi: data_dir() donmuş modda EXE'nin yanına bakıyor.
+
+    Denetim `datas` ifadesinin TAMAMINI geziyor. İlk hâli yalnızca düz bir
+    liste bekliyordu ve `[('data','data')] + wmi_datas` biçimindeki bir
+    toplamı görmeden geçiyordu — mutasyon testi yakaladı.
+    """
+    for anahtar in ("datas", "binaries"):
+        for kaynak, *_ in _demet_sabitleri(_cagri_anahtari(spec, "Analysis", anahtar)):
+            assert (KOK / kaynak).exists(), \
+                f"{spec.name}: `{anahtar}` var olmayan '{kaynak}' yolunu istiyor"
+
+
+# ── Platforma özgü farklar ────────────────────────────────────────────────────
 
 def test_linux_spec_onedir_uretiyor():
     """
     AppImage'ın içine onefile koymak her açılışta iki kez açma demek
     (squashfs + PyInstaller'ın /tmp çıkarması). COLLECT bunun işareti.
     """
-    metin = LINUX_SPEC.read_text(encoding="utf-8")
-    assert "COLLECT(" in metin
-    assert "exclude_binaries=True" in metin
+    assert any(isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+               and d.func.id == "COLLECT" for d in ast.walk(_agac(LINUX_SPEC)))
+    ayri = _cagri_anahtari(LINUX_SPEC, "EXE", "exclude_binaries")
+    assert isinstance(ayri, ast.Constant) and ayri.value is True
 
 
-def test_windows_spec_dokunulmadi():
+def test_windows_spec_tek_dosya_ve_wmi_toplamaya_devam_ediyor():
     """
-    Linux ayağı eklenirken Windows yapısı DEĞİŞMEMELİ. Bu test, ikisinin
-    ayrı dosyalar olduğunu ve Windows'unkinin hâlâ wmi topladığını sabitler.
+    B-024 düzeltmesi Windows'a ÖZGÜ olanı değiştirmemeli: tek dosya EXE,
+    wmi/pywin32 toplama, upx. Değişen yalnızca modül/bağımlılık toplaması.
     """
-    metin = WINDOWS_SPEC.read_text(encoding="utf-8")
-    assert "collect_all('wmi')" in metin
-    assert "COLLECT(" not in metin, "Windows tarafı tek dosya EXE üretmeye devam etmeli"
+    agac = _agac(WINDOWS_SPEC)
+    assert any(_cagiriyor_mu(d, "collect_all", "wmi")
+               for d in agac.body if isinstance(d, ast.Assign)), "wmi toplanmıyor"
+
+    hidden = ast.dump(_cagri_anahtari(WINDOWS_SPEC, "Analysis", "hiddenimports"))
+    for ad in ("wmi", "pythoncom", "win32api", "win32con"):
+        assert f"'{ad}'" in hidden, f"{ad} hiddenimports'tan düşmüş"
+
+    # `upx=True` DOSYA AÇIKLAMASINDA da geçiyor; metin araması `upx=False`'a
+    # çevrilmiş bir spec'i yakalayamıyordu (mutasyon testi gösterdi).
+    upx = _cagri_anahtari(WINDOWS_SPEC, "EXE", "upx")
+    assert isinstance(upx, ast.Constant) and upx.value is True
+
+    assert not any(isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+                   and d.func.id == "COLLECT" for d in ast.walk(agac)), \
+        "Windows tarafı tek dosya EXE üretmeye devam etmeli"
+
+
+def test_windows_spec_wmi_excludelamiyor():
+    """
+    Linux spec'i wmi'yi `excludes` ile eliyor. O satırın Windows'a
+    kopyalanması, HWID okumasını sessizce mock'a düşürürdü.
+    """
+    for dugum in ast.walk(ast.parse(WINDOWS_SPEC.read_text(encoding="utf-8"))):
+        if isinstance(dugum, ast.keyword) and dugum.arg == "excludes":
+            assert ast.literal_eval(dugum.value) == []
+            return
+    pytest.fail("Windows spec `excludes` vermiyor")
 
 
 # ── AppDir varlıkları ─────────────────────────────────────────────────────────

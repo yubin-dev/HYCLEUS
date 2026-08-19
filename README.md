@@ -154,10 +154,6 @@ pyinstaller HYCLEUS.spec
 # Output: dist\HYCLEUS.exe  (single file, no console)
 ```
 
-> ⚠️ `HYCLEUS.spec` currently fails on a clean checkout and under-collects
-> dependencies — see BACKLOG.md / **B-024**. Both problems are already fixed
-> on the Linux side.
-
 **Linux — AppImage**
 
 ```bash
@@ -178,7 +174,12 @@ to the binary — see `CORE/paths.py`.
 ```bash
 HYCLEUS --version     # version string only
 HYCLEUS --selftest    # imports every module, reports what is missing
+# Expected: "Modüller : 53/53 yüklendi" and "SELFTEST OK"
 ```
+
+Run `--selftest` on every build you intend to ship. It is what caught
+B-024: ten modules were missing from the packaged app while the app itself
+started up and looked fine.
 
 ---
 
@@ -468,10 +469,6 @@ pyinstaller HYCLEUS.spec
 # Çıktı: dist\HYCLEUS.exe  (tek dosya, konsol yok)
 ```
 
-> ⚠️ `HYCLEUS.spec` şu an temiz bir klonda çalışmıyor ve bağımlılıkları
-> eksik topluyor — bkz. BACKLOG.md / **B-024**. İkisi de Linux tarafında
-> düzeltilmiş durumda.
-
 **Linux — AppImage**
 
 ```bash
@@ -492,7 +489,12 @@ yanında değil `$XDG_DATA_HOME/HYCLEUS` altında duruyor (varsayılan
 ```bash
 HYCLEUS --version     # yalnızca sürüm dizesi
 HYCLEUS --selftest    # her modülü içe aktarır, eksikleri raporlar
+# Beklenen: "Modüller : 53/53 yüklendi" ve "SELFTEST OK"
 ```
+
+Dağıtacağınız her yapıda `--selftest` çalıştırın. B-024'ü bulan buydu:
+paketlenmiş uygulamada on modül eksikti ve uygulama yine de açılıp normal
+görünüyordu.
 
 ---
 
