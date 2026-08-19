@@ -937,8 +937,8 @@ zorluyor.
 
 ## B-028 — Rol karşılaştırması üç farklı biçimde, 19 karar noktasında
 
-**Durum:** Açık — DÜZELTİLMEDİ, önce rapor
-**Öncelik:** YÜKSEK — erişilebilir bir yetki kaybı yolu var (aşağıda)
+**Durum:** KAPALI — 2026-08-19, `CORE/roles.py` tek karar noktası oldu
+**Öncelik:** YÜKSEK — erişilebilir bir yetki kaybı yolu vardı (aşağıda)
 **Bulundu:** 2026-08-19 — "aynı iş için birden fazla uygulama" sistematik taraması
 
 ### Ölçüm
@@ -1033,7 +1033,7 @@ kalabilir — paylaşılması gereken KURAL, tercih değil.
 
 ## B-030 — Arayüz rolü → `users.role` eşlemesi üç ayrı yerde
 
-**Durum:** Açık — DÜZELTİLMEDİ, önce rapor
+**Durum:** KAPALI — 2026-08-19, B-028 ile birlikte
 **Öncelik:** Orta (B-011 ile aynı sınıf)
 **Bulundu:** 2026-08-19 — aynı tarama
 
@@ -1170,3 +1170,80 @@ Negatif sonuçlar da kayda değer — bu kategoriler gerçekten birleştirilmiş
 | Saklama koruması | `is_retention_protected` → `check_disposal`'a devrediyor |
 | Pay ayrıştırma | `_parse_share` belgeli darboğaz; `decode_share` dahil üç giriş de oradan geçiyor |
 | PIN alt sınırı | 5 çağrı yerinin 5'i de `validate_new_pin()` |
+
+---
+
+## B-028 / B-030 — çözüm kaydı (2026-08-19)
+
+`CORE/roles.py` eklendi ve 19 karar noktasının tamamı ona bağlandı.
+Beş commit: modül → CORE tarafı → main_window ailesi → diyaloglar →
+AST denetimi.
+
+### Ölçülen: sorun sanılandan genişti
+
+Tarama raporu "ASCII `Yonetici` tanınmıyor" diyordu. Ölçünce
+`.strip().lower()` kullanan yedi çağrı yerinin de kırık olduğu çıktı:
+
+```
+"YÖNETİCİ".lower()          ->  'yöneti̇ci̇'   (10 karakter, 8 değil)
+"YÖNETİCİ".lower() == "yönetici"  ->  False
+```
+
+Sebep `İ` (U+0130): küçük harfi `i` + U+0307 BİRLEŞEN NOKTA. Yani
+Türkçe büyük harfle yazılmış bir rol, "toleranslı" sanılan yolda da
+tanınmıyordu. `normalize_role()` NFKD ayrıştırması + birleşen işaretleri
+atarak çözüyor; `ı` (U+0131) atomik olduğu için elle eşlendi (ölçüldü:
+`NFKD("ı") == "ı"`).
+
+### Saf refactor kuralının bilerek yapılan tek istisnası
+
+`can_write()`. Eski kod `not is_readonly` diyordu, yani BİLİNMEYEN bir rol
+yazabiliyordu. Yeni hâli yalnızca tanınan iki role izin veriyor. Kanonik
+üç rol için davranış aynı; değişim yalnızca bilinmeyen rollerde ve
+daraltma yönünde. Testte açıkça yazılı.
+
+### Kaldırılan "ikinci cevaplar"
+
+| Nerede | Neydi |
+|---|---|
+| `main_window_table.py` | `in ("yönetici","yonetici","admin")` — bu hatanın tek yere yamanmış hâli |
+| `main_window.py` | `is_readonly` ara değişkeni — tek kullanıcısı `can_write` hesabıydı |
+| `TagDialog.py` | `_role_norm` ara değişkeni |
+| `session_user.py` | `_ROL_ESLEMESI` sözlüğü (uygulama `roles.db_role()`'e taşındı) |
+
+### Grep'in kaçırdığı, AST'nin bulduğu
+
+`_ROLE_BADGE` (`main_window_palette.py`) ve `_ROLE_COLOR`
+(`ProfileDialog.py`) rolü SÖZLÜK ANAHTARI olarak kullanıyordu. Kasada
+ASCII `Yonetici` yazan bir kullanıcı rozetsiz kalıyordu — B-028'in
+görünür ama zararsız yüzü. Anahtarlar kanonik değere çevrildi,
+aramalar `normalize_role()`'den geçiyor.
+
+### Denetim ve mutasyon testi
+
+`tests/test_role_decision_point.py` (85 test). Mutasyon testi denetimi
+İKİ KEZ düzeltti:
+
+1. İlk hâl yalnızca `ast.Compare` arıyordu ve
+   `{"Yönetici": "admin"}.get(...)` mutasyonu HAYATTA KALDI — oysa
+   B-030'un düzeltilen şekli tam olarak buydu. Üçüncü kalıp eklendi:
+   anahtarı rol adı olan sözlük sabiti.
+2. Kanonik modül için yazılan muafiyet GEREKSİZ çıktı: `roles.py` rol adı
+   sabitleriyle değil `ROL_YONETICI` gibi adlandırılmış sabitlerle
+   karşılaştırıyor, yani denetimden kendi başına temiz geçiyor. Muafiyet
+   kaldırıldı — kuralın artık hiçbir istisnası yok.
+
+Son ölçüm: 10 mutasyonun 10'u ölüyor.
+
+### Yan bulgu — semgrep yanlış pozitifi
+
+`hycleus-hardcoded-key-material` kuralı `ROL_SALT_OKUNUR` adını
+işaretledi: Türkçe **"salt"** (yalnızca) sözcüğü kriptografik `salt` ile
+çakışıyor. Kuralı gevşetmek yerine o satır gerekçeli susturuldu.
+
+### Kapanmayan
+
+`recover_vault.py` artık kanonik yazıyor ve okuma tarafı her yazımı
+tanıyor, yani ESKİ kasalar da düzeliyor — migration gerekmedi. Ama bu
+yalnızca ROL dizesi için geçerli; kasadaki başka alanların benzer bir
+normalizasyon sorunu olup olmadığı BAKILMADI.
