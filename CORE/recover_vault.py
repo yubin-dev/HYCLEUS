@@ -38,6 +38,7 @@ from CORE.recovery_share import (  # noqa: E402
     decode_share,
 )
 from CORE.pin_policy import validate_new_pin  # noqa: E402
+from CORE.roles import display_role  # noqa: E402
 from CORE.usb_manager import get_usb_hwid  # noqa: E402
 from CORE.vault_manager import (  # noqa: E402
     export_recovery_share,
@@ -172,7 +173,14 @@ def _cmd_recover(args: argparse.Namespace) -> None:
             )
             return
 
-        role = input("  Rol (orn. Yonetici): ").strip() or "Yonetici"
+        # KANONİK biçimde yazılıyor (B-028). Eski hâli ham girdiyi ve
+        # ASCII varsayılan "Yonetici"yi doğrudan kasaya koyuyordu; giriş
+        # akışı kasadan normalize etmeden okuduğu için kurtarma sonrası
+        # yönetici sessizce yönetici olmayan gibi davranılıyordu.
+        # `display_role()` tanınan rolü kanonik yazımına çeviriyor,
+        # tanınmayanı olduğu gibi bırakıyor.
+        ham_rol = input("  Rol (orn. Yonetici): ").strip() or "Yonetici"
+        role = display_role(ham_rol)
         yeni_pin = _prompt_pin("  Yeni PIN: ")
         pin_hatasi = validate_new_pin(yeni_pin)
         if pin_hatasi:

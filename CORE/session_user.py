@@ -70,6 +70,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from CORE.roles import db_role as _rol_db
+
 _log = logging.getLogger("hycleus.session_user")
 
 #: Parola yoluyla giriş yapılamayacağını belirten `password_hash` değeri.
@@ -81,11 +83,6 @@ PAROLASIZ = "!vault-only-no-password-login"
 #: Otomatik oluşturulan satırların kullanıcı adı ön eki. Bir insanı taklit
 #: etmemesi için bilerek makine biçiminde.
 VAULT_USERNAME_PREFIX = "vault:"
-
-#: Arayüz rolü → `users.role` sütunu. Sütunda CHECK kısıtı var
-#: (`admin` / `user`), yani eşleme zorunlu.
-_ROL_ESLEMESI = {"Yönetici": "admin"}
-
 
 def vault_username(hwid: str) -> str:
     """HWID'den otomatik satırın kullanıcı adını üretir."""
@@ -99,8 +96,14 @@ def db_role(session_role: str | None) -> str:
     Bilinmeyen rol `user`'a düşüyor — yetki genişletmesi yanlış yön
     olurdu. Eski kaçamak bunun tersini yapıyordu: rol ne olursa olsun
     `admin` yazıyordu.
+
+    UYGULAMA `CORE.roles.db_role()`'DE (B-030). Buradaki eski eşleme
+    `{"Yönetici": "admin"}` sözlüğüydü ve yalnızca TAM o yazımı tanıyordu;
+    ASCII `Yonetici` ile kurtarılmış bir kasa `user` olarak yazılıyordu.
+    Bu ad geriye dönük uyumluluk için duruyor — `sync_session_user()` ve
+    testler onu kullanıyor.
     """
-    return _ROL_ESLEMESI.get(session_role or "", "user")
+    return _rol_db(session_role)
 
 
 def kullanici_bilgisi(db: Any, hwid: str) -> tuple[int, str] | None:

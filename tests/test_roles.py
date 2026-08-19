@@ -185,6 +185,71 @@ def test_db_role_yalnizca_iki_deger_uretiyor():
     assert {db_role(g) for g in girdiler} <= {DB_ADMIN, DB_USER}
 
 
+# ── Kurtarma zinciri: B-028'in erişilebilir kusuru ────────────────────────────
+
+def test_kurtarma_zinciri_hangi_yazim_saklanmis_olursa_olsun_yonetici():
+    """
+    B-028'in ASIL senaryosu.
+
+    `recover_vault` rolü KASAYA yazıyor, giriş akışı da kasadan okuyup
+    doğrudan `HycleusWindow(role=...)`'a veriyor. Yani kasada duran dize
+    ne ise, yetki kararı onun üzerinden veriliyor.
+
+    Eski davranış: kasada `Yonetici` (ASCII) varsa `== "Yönetici"`
+    karşılaştırmalarının 11'i de False dönüyordu — yönetici sessizce
+    düşüyordu. Aşağıdaki yazımların HEPSİ tanınmalı; hangisinin
+    saklandığı, kurtarmayı kimin ne zaman yaptığına bağlı.
+    """
+    kasada_olabilecekler = [
+        "Yönetici",   # arayüzden kurulmuş kasa
+        "Yonetici",   # recover_vault.py'nin eski ASCII varsayılanı
+        "YÖNETİCİ",   # kullanıcı büyük harfle yazmış
+        "YONETICI",
+        "admin",      # elle/betikle kurulmuş kasa
+    ]
+    for saklanan in kasada_olabilecekler:
+        assert is_admin_role(saklanan) is True, f"{saklanan!r} yönetici sayılmadı"
+        assert db_role(saklanan) == DB_ADMIN
+
+
+def test_recover_vault_kanonik_yaziyor():
+    """
+    Yazma tarafı: `recover_vault` artık ham girdiyi değil kanonik yazımı
+    saklıyor, yani yeni kasalarda sorun hiç doğmuyor.
+
+    AST ile denetleniyor — kaynak metni değil, `display_role()` çağrısının
+    gerçekten `input()` sonucuna uygulandığı.
+    """
+    import ast
+    from pathlib import Path
+
+    kaynak = (Path(__file__).resolve().parent.parent / "CORE" / "recover_vault.py")
+    agac = ast.parse(kaynak.read_text(encoding="utf-8"))
+
+    display_cagrilari = [
+        d for d in ast.walk(agac)
+        if isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+        and d.func.id == "display_role"
+    ]
+    assert display_cagrilari, "recover_vault.py rolü kanonikleştirmiyor"
+
+    # Ham `input()` sonucu DOĞRUDAN role atanmamalı.
+    for dugum in ast.walk(agac):
+        if not (isinstance(dugum, ast.Assign) and len(dugum.targets) == 1):
+            continue
+        hedef = dugum.targets[0]
+        if not (isinstance(hedef, ast.Name) and hedef.id == "role"):
+            continue
+        icinde_input = any(
+            isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == "input"
+            for c in ast.walk(dugum.value)
+        )
+        assert not icinde_input, (
+            "recover_vault.py: `role` doğrudan input()'tan atanıyor — "
+            "display_role() ile kanonikleştirilmeli (B-028)"
+        )
+
+
 def test_db_role_eski_satir_ici_ifadeyle_ayni_sonucu_veriyor():
     """
     login_dialog:904 ve RegisterDialog:385 şunu yapıyordu:

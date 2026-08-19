@@ -62,6 +62,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from CORE.retention import RetentionError, destruction_date_for_file
+from CORE.roles import DB_ADMIN
 
 if TYPE_CHECKING:  # pragma: no cover
     from DB.db_manager import DBManager
@@ -225,7 +226,9 @@ def is_admin(db: DBManager, user_id: int | None) -> bool:
     if user_id is None:
         return False
     row = db.fetchone("SELECT role FROM users WHERE id = ?", (user_id,))
-    return row is not None and row["role"] == "admin"
+    # Sütun değeri CHECK kısıtıyla zaten `admin`/`user`; sabit
+    # `CORE.roles`'tan geliyor ki rol adları tek yerde dursun (B-028).
+    return row is not None and row["role"] == DB_ADMIN
 
 
 def _require_approval(
