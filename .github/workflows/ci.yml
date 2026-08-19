@@ -12,9 +12,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # HER İŞTE `timeout-minutes` VAR — bu bir tercih değil, ölçülmüş bir kapı
+  #
+  # GitHub'ın varsayılanı iş başına 360 DAKİKA. Yani asılan bir adım altı saat
+  # koşucu tüketiyor ve o süre boyunca "çalışıyor" görünüyor: kırmızı bir X
+  # gelmediği için kimse bakmıyor. `f61a470` push'unda AppImage işi tam olarak
+  # böyle davrandı — apt adımında yarım saat asılı kaldı ve elle iptal edildi.
+  #
+  # Sınırlar tipik sürenin 4-8 katı; yani yavaş bir koşucu yanlış alarm
+  # üretmiyor ama asılan bir adım dakikalar içinde KIRMIZI oluyor. Sessiz bir
+  # bekleme, açık bir başarısızlıktan her zaman kötüdür.
+  # ────────────────────────────────────────────────────────────────────────────
   test:
     name: ${{ matrix.os }} · Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
 
     strategy:
       # Bir ayak kırılınca diğerini de iptal etme — platforma özel
@@ -117,6 +130,7 @@ jobs:
   security:
     name: Statik güvenlik analizi (semgrep)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     # PYTHONUTF8=1: semgrep kural dosyasını yerel kod sayfasıyla okuyor ve
     # Türkçe karakterli bir kural dosyası UTF-8 olmayan bir locale altında
@@ -193,6 +207,7 @@ jobs:
   appimage:
     name: AppImage yapısı (Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -216,20 +231,73 @@ jobs:
       # duman testi de `--appimage-extract` ile çalışıyor. Ubuntu 24.04'te
       # libfuse2 yok ve onu kurmak, testin gerçek kullanıcı ortamına
       # benzerliğini artırmadan bir bağımlılık daha eklerdi.
+      #
+      # BU ADIM ASILDI (f61a470, ~30 dk) — üç ayrı mekanizma kapatıldı.
+      #
+      # apt'nin CI'da asılmasının bilinen üç yolu var ve hangisinin
+      # yakaladığı günlükten ayırt edilemedi, o yüzden üçü de kapatılıyor:
+      #
+      #   1. dpkg KİLİDİ. Koşucu görüntüsünde `apt-daily` ve
+      #      `unattended-upgrades` systemd zamanlayıcıları var; açılıştan
+      #      hemen sonra tetiklenirlerse `/var/lib/dpkg/lock-frontend`
+      #      tutulur. `DPkg::Lock::Timeout=180` beklemeyi SINIRLIYOR:
+      #      kilit üç dakikada açılmazsa adım net bir hatayla düşüyor.
+      #
+      #   2. needrestart. Ubuntu 22.04+ koşucu görüntülerinde kurulu ve
+      #      kurulum sırasında "hangi servisler yeniden başlatılsın"
+      #      diyaloğunu açabiliyor. TTY yokken bile bloklayabildiği için
+      #      `NEEDRESTART_MODE=a` ile otomatiğe alınıyor;
+      #      `DEBIAN_FRONTEND=noninteractive` de debconf tarafını susturuyor.
+      #      `-y` bunların HİÇBİRİNİ kapatmıyor — sık yapılan varsayım bu.
+      #
+      #   3. Ayna yanıt vermiyor. `Acquire::Retries=3` ile yeniden deneniyor,
+      #      `Acquire::http::Timeout=30` ile her denemenin süresi sınırlı
+      #      (apt'nin varsayılanı 120 sn ve üç indirmede dakikalara çıkıyor).
+      #
+      # `timeout-minutes: 6` son emniyet: yukarıdakilerin kaçırdığı bir
+      # asılma da altı dakikada KIRMIZI oluyor. Adım normalde ~20 saniye.
       - name: Sistem kütüphaneleri (Qt)
+        timeout-minutes: 6
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a
+          NEEDRESTART_SUSPEND: "1"
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          set -euo pipefail
+          APT_OPTS=(
+            -o DPkg::Lock::Timeout=180
+            -o Acquire::Retries=3
+            -o Acquire::http::Timeout=30
+            -o Acquire::https::Timeout=30
+          )
+          sudo apt-get "${APT_OPTS[@]}" update -qq
+          sudo apt-get "${APT_OPTS[@]}" install -y --no-install-recommends \
             libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 \
             libdbus-1-3 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 \
             libxcb-shape0 libxcb-xkb1 libxcb-randr0 libxcb-render-util0
 
       - name: Install dependencies
+        timeout-minutes: 10
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-build.txt
 
+      # Sistem kütüphanelerinin GERÇEKTEN yettiğini burada ölçüyoruz,
+      # PyInstaller'ın uzun analizinin ortasında değil.
+      #
+      # Eksik bir kütüphanenin belirtisi "libEGL.so.1: cannot open shared
+      # object file" ve o hata yapı adımının derinlerinde, yüzlerce satırlık
+      # bir günlüğün içinde çıkıyor. Bir satırlık bu içe aktarma aynı hatayı
+      # adım ADINDA gösteriyor: "Qt içe aktarılabiliyor mu" kırmızıysa sorun
+      # paketlemede değil, yukarıdaki apt listesinde.
+      - name: Qt içe aktarılabiliyor mu
+        timeout-minutes: 3
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -c "import PySide6.QtWidgets; print('Qt yuklendi')"
+
       - name: AppImage üret
+        timeout-minutes: 12
         run: bash packaging/linux/build-appimage.sh
 
       - name: Duman testi
@@ -266,6 +334,9 @@ jobs:
   exe:
     name: EXE yapısı (Windows)
     runs-on: windows-latest
+    # Windows koşucusu Linux'unkinden belirgin yavaş (dosya sistemi ve
+    # Defender taraması); sınır bu yüzden AppImage işinden yüksek.
+    timeout-minutes: 35
     defaults:
       run:
         shell: pwsh

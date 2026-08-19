@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import configparser
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -436,8 +437,102 @@ def test_kabuk_betikleri_shebang_tasiyor(ad: str):
 # requirements-dev.txt'te yok ve yalnızca bu iki denetim için bir bağımlılık
 # eklemek pahalı; `importorskip` ise korumayı CI'da sessizce kapatırdı —
 # depoda tam olarak kaçınılan şey (bkz. tests/test_static_analysis.py).
+#
+# AMA: metin denetiminin bu depoda DÖRT kez yanlış yere takıldığı biliniyor
+# ve sonuncusu `assert "upx=True" in metin`'in dosyanın kendi AÇIKLAMASINA
+# eşleşmesiydi (B-024). ci.yml artık aynı riski taşıyor — asılma
+# düzeltmesinin gerekçesi, tam olarak denetlenen seçenek adlarını
+# (`DPkg::Lock::Timeout`, `DEBIAN_FRONTEND`) sayan uzun bir yorum bloğu.
+#
+# `_ci_kodu()` bu yüzden YORUM SATIRLARINI atıyor. Tam satır yorumlarıyla
+# sınırlı, çünkü satır içi `#` bir değerin parçası olabilir; kuralı
+# anlatan düzyazı zaten tam satır yorumlarda duruyor.
 
 CI = KOK / ".github" / "workflows" / "ci.yml"
+
+
+def _ci_kodu() -> str:
+    """ci.yml — tam satır yorumları atılmış hâli."""
+    return "\n".join(
+        satir for satir in CI.read_text(encoding="utf-8").splitlines()
+        if not satir.lstrip().startswith("#")
+    )
+
+
+def _ci_isleri() -> dict[str, str]:
+    """`jobs:` altındaki her işin adı → gövdesi.
+
+    İki girinti seviyesi ayırt ediliyor: iş başlıkları iki boşlukla,
+    adım ayarları sekizle. `timeout-minutes` denetimi buna dayanıyor —
+    bir ADIMA konan sınır, işin tamamını korumaz.
+    """
+    satirlar = _ci_kodu().splitlines()
+    basla = next(i for i, s in enumerate(satirlar) if s.rstrip() == "jobs:")
+    isler: dict[str, list[str]] = {}
+    ad: str | None = None
+    for satir in satirlar[basla + 1:]:
+        eslesme = re.match(r"^  ([A-Za-z_][\w-]*):\s*$", satir)
+        if eslesme:
+            ad = eslesme.group(1)
+            isler[ad] = []
+        elif ad is not None:
+            isler[ad].append(satir)
+    return {k: "\n".join(v) for k, v in isler.items()}
+
+
+def test_ci_is_tarayicisi_gercekten_is_buluyor():
+    """Boş sözlük dönerse aşağıdaki denetim kendiliğinden geçerdi."""
+    isler = _ci_isleri()
+    assert set(isler) == {"test", "security", "appimage", "exe"}, sorted(isler)
+
+
+def test_HER_ci_isinin_zaman_siniri_var():
+    """
+    GitHub'ın varsayılanı iş başına 360 DAKİKA.
+
+    `f61a470` push'unda AppImage işi apt adımında asıldı ve yarım saat
+    "çalışıyor" göründü; sınır olmasaydı altı saat sürecekti. Asılan bir
+    iş, kırmızı bir iş değil — kimse bakmıyor.
+    """
+    siniri_olmayan = [
+        ad for ad, govde in _ci_isleri().items()
+        if not re.search(r"^    timeout-minutes:\s*\d+\s*$", govde, re.M)
+    ]
+    assert not siniri_olmayan, (
+        f"Bu işlerde iş düzeyinde `timeout-minutes` yok: {siniri_olmayan}. "
+        "Varsayılan 360 dakika ve asılan bir adım o kadar koşucu tüketir."
+    )
+
+
+def test_apt_adimi_asilamaz_hale_getirilmis():
+    """
+    Asılmanın üç bilinen yolu da kapalı kalmalı.
+
+    Denetim YORUMSUZ metne bakıyor: gerekçe yorum bloğu bu seçeneklerin
+    adlarını sayıyor ve düz metin araması onlara da eşleşirdi — B-024'te
+    tam olarak bu oldu.
+    """
+    kod = _ci_kodu()
+    for secenek, neden in (
+        ("DPkg::Lock::Timeout", "unattended-upgrades dpkg kilidini tutabilir"),
+        ("DEBIAN_FRONTEND", "debconf diyaloğu bloklayabilir"),
+        ("NEEDRESTART_MODE", "needrestart servis diyaloğu bloklayabilir"),
+        ("Acquire::Retries", "ayna yanıt vermeyebilir"),
+    ):
+        assert secenek in kod, f"apt adımı {secenek} taşımıyor — {neden}"
+
+
+def test_qt_kontrolu_bagimliliklardan_SONRA_kosuyor():
+    """
+    Sıra önemli: PySide6 kurulmadan çalışan bir `import PySide6` her
+    zaman düşer ve sistem kütüphanelerinin durumu hakkında hiçbir şey
+    söylemez. İlk yazımda adım yanlış yere kondu ve bu test onu yakaladı.
+    """
+    govde = _ci_isleri()["appimage"]
+    kurulum = govde.index("- name: Install dependencies")
+    kontrol = govde.index("- name: Qt içe aktarılabiliyor mu")
+    yapi = govde.index("- name: AppImage üret")
+    assert kurulum < kontrol < yapi
 
 
 def test_ci_yapi_isleri_var_olan_betikleri_cagiriyor():
