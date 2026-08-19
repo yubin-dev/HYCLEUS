@@ -932,3 +932,241 @@ kayıtlı değil" olsun.
 B-025 ile birlikte ele alınmalı: ikisi de aynı fonksiyonun aynı döngüsünü
 değiştiriyor ve ikisi de `get_usb_hwid()`'in tek değer döndüren imzasını
 zorluyor.
+
+---
+
+## B-028 — Rol karşılaştırması üç farklı biçimde, 19 karar noktasında
+
+**Durum:** Açık — DÜZELTİLMEDİ, önce rapor
+**Öncelik:** YÜKSEK — erişilebilir bir yetki kaybı yolu var (aşağıda)
+**Bulundu:** 2026-08-19 — "aynı iş için birden fazla uygulama" sistematik taraması
+
+### Ölçüm
+
+`role` karşılaştırması UI genelinde **üç farklı normalizasyonla** yapılıyor:
+
+| Biçim | Adet | Nerede |
+|---|---|---|
+| katı literal `== "Yönetici"` | **11** | AdminPanel:100,526 · login_dialog:904 · main_window:276,370,389 · main_window_tree:107,210,368,443 · RegisterDialog:385 |
+| `.strip().lower()` | **7** | main_window_files:72 · main_window_table:407,429,518 · main_window_tree:219,398 · TagDialog:89 |
+| `.strip().lower().replace("_"," ")` | **1** | main_window:191 |
+
+Biri (`main_window_table.py:518`) üç yazımı birden kabul ediyor:
+`in ("yönetici", "yonetici", "admin")`. Yani birisi bu sorunla ZATEN
+karşılaşmış ve tek bir çağrı yerini yamamış.
+
+### Erişilebilir kusur — kurtarma sonrası yönetici sessizce düşüyor
+
+`CORE/recover_vault.py:175` satırı rolü şöyle alıyor: `input()` sonucu
+boşsa varsayılan **ASCII** `Yonetici` — Türkçe `ö` yok. Zincir:
+
+```
+recover_vault (Enter'a basıldı)  ->  reprovision_vault(hwid, pin, "Yonetici")
+  ->  kasaya "Yonetici" yazılır
+  ->  login: role, key = open_vault(...)      (normalize EDİLMEDEN)
+  ->  HycleusWindow(role="Yonetici")
+  ->  11 katı karşılaştırmanın hepsi False
+```
+
+Sonuç: kasa kurtarma işleminden sonra yönetici, yönetici olmayan gibi
+davranılıyor — AdminPanel hiç kurulmuyor (`AdminPanel.py:100`), mahrem
+etiketli dosyalar gizleniyor, arayüz kısıtlanıyor. Üstelik **aynı oturum
+içinde tutarsız**: `main_window_table.py:518` toleranslı olduğu için
+tekrar tespiti kullanıcıyı yönetici saymaya devam ediyor.
+
+**Yön:** kapanma yönünde (yetki KAYBI, genişlemesi değil) — güvenlik açığı
+değil. Ama kilitlenme sınıfı bir hata ve en kötü anda, kurtarmadan hemen
+sonra ortaya çıkıyor; kullanıcı AdminPanel'e erişemediği için rolü
+düzeltemez de.
+
+### Yapılacaklar
+
+1. Tek karar noktası: `CORE/roles.py::yonetici_mi(role)` (ve
+   `salt_okunur_mu`). Normalizasyon TEK yerde — `.strip().lower()` +
+   `_` yerine boşluk + ASCII/Türkçe eşdeğerliği.
+2. 19 çağrı yeri ona bağlansın.
+3. `recover_vault.py` varsayılanı ya kaldırılsın (rol zorunlu sorulsun) ya
+   da kanonik biçime normalize edilsin.
+4. AST denetimi: kanonik modül dışında `"Yönetici"` sabitiyle `Compare`
+   düğümü YASAK (bkz. B-033).
+
+**Dikkat:** rol dizesi KASADA saklanıyor. Kanonik biçime geçmek, mevcut
+kasalardaki ASCII değerleri okuma anında normalize etmeyi gerektirir —
+kasayı yeniden yazmak PIN ister, yani migration DEĞİL okuma-anı
+normalizasyonu doğru çözüm.
+
+---
+
+## B-029 — `_EXCLUDE_PRIVATE` iki kopya, VARSAYILANLARI ters
+
+**Durum:** Açık — DÜZELTİLMEDİ, önce rapor
+**Öncelik:** Orta-Yüksek (görünürlük filtresi; B-007 ile aynı sınıf)
+**Bulundu:** 2026-08-19 — aynı tarama
+
+`CORE/file_queries.py` ve `CORE/duplicates.py` **bayt bayt aynı** SQL
+parçasını ayrı ayrı tanımlıyor (`_EXCLUDE_PRIVATE`): mahrem etiket taşıyan
+dosya id'lerini `NOT IN` ile eleyen alt sorgu.
+
+Ve varsayılanları TERS:
+
+| Modül | `include_private` varsayılanı |
+|---|---|
+| `file_queries.*` (4 görünüm) | `True` |
+| `duplicates.find_duplicates_by_hash` | `False` |
+
+İkisinin de gerekçesi kendi docstring'inde yazılı ve ikisi de kendi
+bağlamında savunulabilir (B-007 varsayılanı bilerek `True` bıraktı;
+`duplicates` bilerek `False`). Sorun varsayılanlar değil, **kuralın iki
+kopyası**: mahremiyet tanımı bir gün değişirse (ör. klasör bazlı gizleme
+eklenirse) bir kopya güncellenir, diğeri sessizce eski semantikte kalır.
+
+B-007 dört görünümü birleştirmişti ama `duplicates.py` o ailenin dışında
+kaldı — tarama bunu buldu.
+
+### Yapılacak
+
+SQL parçası tek yerde (`CORE/file_queries.py` ya da yeni bir
+`CORE/privacy.py`), iki modül oradan alsın. Varsayılanlar bilerek farklı
+kalabilir — paylaşılması gereken KURAL, tercih değil.
+
+---
+
+## B-030 — Arayüz rolü → `users.role` eşlemesi üç ayrı yerde
+
+**Durum:** Açık — DÜZELTİLMEDİ, önce rapor
+**Öncelik:** Orta (B-011 ile aynı sınıf)
+**Bulundu:** 2026-08-19 — aynı tarama
+
+| Yer | Uygulama |
+|---|---|
+| `CORE/session_user.py:87` + `db_role()` | `_ROL_ESLEMESI` sözlüğü, bilinmeyen rol → `user` (belgeli) |
+| `UI/login_dialog.py:904` | satır içi `"admin" if role == "Yönetici" else "user"` |
+| `UI/RegisterDialog.py:385` | satır içi, aynı ifade |
+
+B-011 tam olarak bu sorunu çözmek için `session_user.db_role()`'ü tek karar
+noktası yapmıştı; iki kayıt akışı ona hiç bağlanmadı.
+
+Bugün **aynı sonucu** veriyorlar, yani görünür bir hata yok. Risk ileriye
+dönük: `db_role()`'e bir eşleme eklendiği gün (ör. "Salt Okunur" için ayrı
+bir DB rolü) iki UI yolu eskisini yazmaya devam eder ve `users.role`
+sütununda CHECK kısıtını geçen ama YANLIŞ bir değer oluşur.
+
+Ayrıca ikisi de B-028'in katı literal karşılaştırmasını kullanıyor, yani
+ASCII `Yonetici` ile kaydolan bir kullanıcı `user` olarak yazılır.
+
+### Yapılacak
+
+İki UI çağrı yeri `session_user.db_role()`'ü çağırsın. AST denetimi:
+`users` tablosuna `role` yazan bir INSERT'in yakınında literal
+`"admin"` / `"user"` YASAK.
+
+---
+
+## B-031 — `is_admin` adı iki farklı soruyu cevaplıyor
+
+**Durum:** Açık — büyük ihtimalle YALNIZCA BELGELEME işi
+**Öncelik:** Düşük
+**Bulundu:** 2026-08-19 — aynı tarama
+
+| Yer | Kaynak | Güç |
+|---|---|---|
+| `CORE/disposal.py:217` `is_admin(db, user_id)` | **veritabanı** (`users.role`) | yetkili karar |
+| `UI/main_window.py:192` `is_admin` | oturum dizesi | görünürlük ipucu |
+| `UI/TagDialog.py:90` `_is_admin` | oturum dizesi | görünürlük ipucu |
+
+Bu ayrım **kasıtlı ve doğru**: `disposal.is_admin` docstring'i "onay,
+çağıranın gönderdiği bayrağa değil VERİTABANINA sorulur" diyor. UI'nınki
+bir yetki kapısı değil, bir çizim kararı.
+
+Yine de aynı ad üç yerde iki farklı anlam taşıyor. Yeni bir geliştiricinin
+UI'daki `is_admin`'i yetki kontrolü sanması kolay. Öneri: UI'dakiler
+`_yonetici_gorunumu` gibi bir ada geçsin, `disposal.is_admin` olduğu gibi
+kalsın. Kod davranışı değişmiyor.
+
+---
+
+## B-032 — PIN üst sınırı yalnızca `setup_usb`'de uygulanıyor
+
+**Durum:** Açık
+**Öncelik:** Düşük (UX tutarsızlığı, güvenlik etkisi yok)
+**Bulundu:** 2026-08-19 — aynı tarama
+
+`CORE/pin_policy.validate_new_pin()` yalnızca ALT sınırı uyguluyor ve bunu
+docstring'inde açıkça söylüyor. Beş çağrı yerinin dördü (login_dialog ×2,
+ProfileDialog, RegisterDialog) sadece bunu çağırıyor.
+
+`CORE/setup_usb.py:144` ise ayrıca üst sınırı denetliyor.
+
+Sonuç: 40 karakterlik bir PIN arayüzden KABUL edilir, `setup_usb`'den
+REDDEDİLİR. Argon2id uzun girdiden etkilenmiyor, yani güvenlik sorunu yok;
+tutarsız olan kullanıcıya söylenen kural.
+
+### Yapılacak
+
+Üst sınır `validate_new_pin()`'e taşınsın (tek karar noktası) ve
+`setup_usb`'deki kopya silinsin. Mevcut uzun PIN'ler etkilenmez — kontrol
+yalnızca YENİ PIN belirlerken çalışıyor.
+
+---
+
+## B-033 — "Tek karar noktası" denetimlerini genelleştir
+
+**Durum:** Açık — araç önerisi
+**Öncelik:** Orta (bu kusur sınıfı 8 kez çıktı)
+**Bulundu:** 2026-08-19 — aynı tarama
+
+Depoda bu sınıftan **sekiz** bulgu var: B-004/B-008, B-007, B-010, B-011,
+pay ayrıştırıcı, ve bu turda B-028, B-029, B-030. Beş tanesi için elle
+yazılmış AST denetimi mevcut (`test_disposal.py`, `test_session_user.py`,
+`test_crypto.py`, `test_audit_report.py`, `test_layering.py`).
+
+Her biri ayrı yazılmış, ortak bir iskelet yok.
+
+### Neyi genelleştirmek MÜMKÜN
+
+**1. Yasak-desen kaydı (uygulanabilir, yüksek değer).** Veri tablosu:
+
+```python
+KararNoktasi(
+    ad="rol → yönetici kararı",
+    kanonik="CORE.roles",
+    yasak=SabitKarsilastirma("Yönetici"),   # ast.Compare + ast.Constant
+)
+```
+
+Beş bespoke testi tek tabloya indirir; yeni bir madde eklemek bir satır olur.
+
+**2. Tekrarlanan sabit dedektörü (ÖLÇÜLDÜ, hemen yazılabilir).**
+CORE/ ve DB/ altındaki 40+ karakterlik modül seviyesi string sabitlerini
+normalize edip karşılaştıran ~15 satırlık bir test denendi:
+
+```
+40+ karakterlik modül sabiti  : 8
+birden fazla yerde AYNI olan  : 1   ->  _EXCLUDE_PRIVATE (B-029)
+yanlış pozitif                : 0
+```
+
+Yani B-029'u mekanik olarak, sıfır gürültüyle yakalıyor.
+
+### Neyi genelleştirmek MÜMKÜN DEĞİL
+
+"Aynı işi yapan iki bağımsız uygulama" genel hâlde tespit edilemez —
+B-010 (iki indirme akışının AAD davranışı) ya da B-028'in ASCII/Türkçe
+ayrışması hiçbir sözdizimsel imza taşımıyor. Bu turdaki bulguların çoğu
+ELLE okumayla çıktı ve öyle çıkmaya devam edecek.
+
+Dolayısıyla öneri "otomatik dedektör" değil: **bilinen karar noktalarının
+kayıt defteri** artı iki mekanik tarayıcı. Kayıt defterinin değeri, bir
+maddeyi kapatırken denetimini de eklemeyi ucuzlatması.
+
+### Taramanın TEMİZ çıkanları
+
+Negatif sonuçlar da kayda değer — bu kategoriler gerçekten birleştirilmiş:
+
+| Kategori | Durum |
+|---|---|
+| Güvenli silme (`shred`) | 5 çağrı yerinin 5'i de `secure_erase.shred_file()` |
+| TTL/imha silme | UI ve zamanlayıcı, ikisi de `purge_expired_file()` (B-004/B-008 tuttu) |
+| Saklama koruması | `is_retention_protected` → `check_disposal`'a devrediyor |
+| Pay ayrıştırma | `_parse_share` belgeli darboğaz; `decode_share` dahil üç giriş de oradan geçiyor |
+| PIN alt sınırı | 5 çağrı yerinin 5'i de `validate_new_pin()` |
