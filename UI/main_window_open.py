@@ -285,19 +285,22 @@ class OpenMixin:
 
 class BackupMixin:
     """
-    Yedek alma — arayüz tarafı.
+    Yedek ALMA ve DOĞRULAMA — arayüz tarafı.
 
-    Yalnızca yedek ALMA burada. Doğrulama ve GERİ YÜKLEME komut satırında
-    (`CORE/backup_cli.py`) ve bu ayrım bilinçli: geri yüklemenin tipik
-    senaryosu "disk gitti, yeni makine" ve o makinede grafik arayüz
-    AÇILMIYOR — `main.py` takılı ve kayıtlı bir USB ile bir vault dosyası
-    istiyor, ikisi de yok. Ayrıntılı gerekçe `CORE/backup_cli.py` modül
-    docstring'inde.
+    GERİ YÜKLEME komut satırında kalıyor (`CORE/backup_cli.py --restore`)
+    ve bu ayrım bilinçli: geri yüklemenin tipik senaryosu "disk gitti,
+    yeni makine" ve o makinede grafik arayüz AÇILMIYOR — `main.py` takılı
+    ve kayıtlı bir USB ile bir vault dosyası istiyor, ikisi de yok.
+    Ayrıntılı gerekçe `CORE/backup_cli.py` modül docstring'inde.
 
-    Yedek alma ise rutin bir iş ve zaten çalışan bir oturum gerektiriyor
-    (metadata'yı şifrelemek için oturum anahtarı lazım). Menüde olmasının
-    sebebi basit: bulunamayan bir yedekleme özelliği, olmayan bir
-    yedekleme özelliğidir.
+    Yedek alma ve doğrulama ise rutin işler ve ikisi de zaten çalışan bir
+    oturumda yapılıyor. Menüde olmalarının sebebi basit: bulunamayan bir
+    yedekleme özelliği, olmayan bir yedekleme özelliğidir — ve hiç
+    doğrulanmayan bir yedek, olmayan bir yedektir.
+
+    Doğrulama komut satırından KALKMIYOR. `--verify` orada duruyor ve
+    orada durması gerekiyor: çıkış kodu var, yani bir betik ya da
+    zamanlanmış bir iş sonucu okuyabilir; bir diyalog kutusu okuyamaz.
     """
 
     def _on_create_backup(self) -> None:
@@ -348,10 +351,85 @@ class BackupMixin:
                 "GİRMEDİ:", *(f"   • {ad}" for ad in rapor.skipped[:10]), "",
             ]
         mesaj += [
-            "Yedeği doğrulamak için:",
+            "Yedeği doğrulamak için menüden “Yedek Doğrula…” seçin.",
+            "Betikten çalıştırmak isterseniz (çıkış kodu döner):",
             f"  python CORE/backup_cli.py --verify \"{yol}\" --deep",
             "",
             "Not: anahtar kasası (.hclv) yedeğe DAHİL DEĞİL. Anahtar kaybı",
             "için kurtarma parçasını kullanın (recover_vault.py --export).",
         ]
         QMessageBox.information(self, "Yedek Tamamlandı", "\n".join(mesaj))
+
+    def _on_verify_backup(self) -> None:
+        """
+        Bir yedek dizinini GERİ YÜKLEMEDEN doğrular.
+
+        Komut satırındaki `--verify --deep` ile AYNI fonksiyonu
+        (`CORE.backup.verify_backup`) çağırıyor; ikinci bir doğrulama
+        uygulaması DEĞİL.
+
+        Derin mod varsayılan: anahtar oturumda zaten elde, yani bütünlük
+        mührü kontrolünün ek bir kullanıcı adımı yok. CLI'da opsiyonel
+        olmasının sebebi orada anahtarın USB + PIN istemesi.
+
+        İlerleme ve iptal ZORUNLU, süs değil: doğrulama her baytı okuyor
+        (derin modda iki kez) ve yedeğin doğal yeri harici disk. Ölçüldü —
+        işlemci tarafında ~1,3 GB/s, ama 120 MB/s bir diskte 50 GB'lık bir
+        yedek on dakikaları buluyor.
+        """
+        from PySide6.QtWidgets import QFileDialog, QProgressDialog
+
+        from CORE.backup import verify_backup
+        from UI.BackupVerifyDialog import BackupVerifyDialog
+
+        secilen = QFileDialog.getExistingDirectory(
+            self, "Doğrulanacak yedek dizinini seçin")
+        if not secilen:
+            return
+        yedek = Path(secilen)
+
+        ilerleme = QProgressDialog("Yedek doğrulanıyor…", "İptal", 0, 0, self)
+        ilerleme.setWindowTitle("Yedek Doğrula")
+        ilerleme.setMinimumDuration(0)
+        ilerleme.setValue(0)
+
+        def _adim(i: int, n: int, ad: str) -> None:
+            ilerleme.setMaximum(n)
+            ilerleme.setValue(i)
+            ilerleme.setLabelText(f"({i}/{n})  {ad}")
+            QApplication.processEvents()
+
+        try:
+            rapor = verify_backup(
+                yedek, key=self._key, hwid=self._hwid,
+                on_progress=_adim,
+                should_continue=lambda: not ilerleme.wasCanceled(),
+            )
+        except Exception as exc:
+            # `verify_backup()` beklenen hataları rapora çeviriyor
+            # (`error` alanı); buraya yalnızca öngörülmeyen bir okuma
+            # hatası düşer. Yakalanmazsa pencere kapanırdı.
+            _log.error("verify_backup_error  dir=%s  exc=%s", yedek, exc)
+            QMessageBox.critical(
+                self, "Yedek Doğrula",
+                f"Yedek doğrulanamadı — beklenmeyen bir hata oluştu.\n\n{exc}")
+            return
+        finally:
+            ilerleme.close()
+
+        # Denetim kaydı: "yedeğim sağlam mı" sorusunun ne zaman sorulduğu
+        # ve ne yanıt aldığı, yedekleme disiplininin kendisi kadar önemli.
+        try:
+            DBManager().log(
+                "backup_verified",
+                user_id=self._user_id,
+                detail=(
+                    f"hwid={self._hwid} dir={yedek} ok={rapor.ok} "
+                    f"deep={rapor.deep} checked={rapor.checked}/{rapor.total} "
+                    f"cancelled={rapor.cancelled}"
+                ),
+            )
+        except Exception as exc:  # pragma: no cover — kayıt, sonucu engellemez
+            _log.warning("backup_verify_log_failed  exc=%s", exc)
+
+        BackupVerifyDialog(rapor, yedek, parent=self).exec()

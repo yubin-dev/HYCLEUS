@@ -40,7 +40,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -64,6 +63,13 @@ from CORE.timestamp_report import (
     zaman_metni,
 )
 from CORE.timestamp_verify import TimestampVerification
+from UI.dialog_kit import (
+    RAPOR_STILI,
+    VARSAYILAN_GORUNUM,
+    ayrac as _sep,
+    kutu as _kutu,
+    sarmali as _sarmali,
+)
 
 #: Seviye → (simge, renk). Renk kararı burada, ANLAM kararı
 #: `CORE/timestamp_report.py`'de — biri arayüz tercihi, diğeri değil.
@@ -79,62 +85,6 @@ _SEVIYE_GORUNUM: dict[str, tuple[str, str]] = {
     SEVIYE_UYARI:     ("⚠", "#f9e2af"),
     SEVIYE_BILGI:     ("ℹ", "#89b4fa"),
 }
-
-_VARSAYILAN_GORUNUM = ("•", "#a6adc8")
-
-_STYLE = """
-QDialog  { background: #1e1e2e; color: #cdd6f4; }
-QLabel   { color: #cdd6f4; background: transparent; }
-QLabel#dosya    { color: #a6adc8; font-size: 11px; }
-QLabel#simge    { font-size: 26px; }
-QLabel#baslik   { font-size: 15px; font-weight: bold; }
-QLabel#ozet     { color: #cdd6f4; font-size: 12px; }
-QLabel#oneri    { color: #f9e2af; font-size: 12px; }
-QLabel#not_bas  { font-size: 12px; font-weight: bold; }
-QLabel#not_gov  { color: #a6adc8; font-size: 11px; }
-QLabel#alan_ad  { color: #a6adc8; font-size: 11px; }
-QLabel#alan_dgr { color: #cdd6f4; font-size: 12px; font-weight: bold; }
-QFrame#sep      { background: #313244; max-height: 1px; }
-QFrame#kutu     { background: #181825; border: 1px solid #313244; border-radius: 6px; }
-QScrollArea     { background: #1e1e2e; border: none; }
-QWidget#govde   { background: #1e1e2e; }
-QTextEdit#teknik {
-    background: #11111b; color: #a6adc8;
-    border: 1px solid #313244; border-radius: 6px;
-    font-family: Consolas, monospace; font-size: 11px;
-}
-QPushButton#primary_btn {
-    background: #89b4fa; color: #1e1e2e; border: none;
-    border-radius: 6px; padding: 9px 22px; font-size: 13px; font-weight: bold;
-}
-QPushButton#primary_btn:hover { background: #b4d0ff; }
-QPushButton#flat_btn {
-    background: #313244; color: #cdd6f4; border: none;
-    border-radius: 6px; padding: 7px 14px; font-size: 12px;
-}
-QPushButton#flat_btn:hover { background: #45475a; }
-"""
-
-
-def _sep() -> QFrame:
-    f = QFrame()
-    f.setObjectName("sep")
-    f.setFrameShape(QFrame.HLine)
-    return f
-
-
-def _sarmali(metin: str, nesne_adi: str) -> QLabel:
-    """Satır kaydıran bir etiket.
-
-    `setWordWrap(True)` olmadan uzun açıklamalar pencereyi ekran dışına
-    taşırıyor; metinler kasten uzun (bir cümlelik "geçersiz" yetmiyor).
-    """
-    lbl = QLabel(metin)
-    lbl.setObjectName(nesne_adi)
-    lbl.setWordWrap(True)
-    lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-    return lbl
-
 
 class TimestampDialog(QDialog):
     """Bir dosyanın zaman damgası doğrulama sonucunu gösterir."""
@@ -155,7 +105,7 @@ class TimestampDialog(QDialog):
         self.setWindowTitle(f"HYCLEUS — Damga Doğrulama · {dosya_adi}")
         self.setMinimumWidth(520)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setStyleSheet(_STYLE)
+        self.setStyleSheet(RAPOR_STILI)
         self._build_ui()
 
     # ── Kurulum ───────────────────────────────────────────────────────────────
@@ -182,14 +132,14 @@ class TimestampDialog(QDialog):
         yerlesim.addWidget(_sarmali(self._mesaj.ozet, "ozet"))
 
         if self._mesaj.oneri:
-            yerlesim.addWidget(self._kutu([
+            yerlesim.addWidget(_kutu([
                 _sarmali(f"→  {self._mesaj.oneri}", "oneri"),
             ]))
 
         ozet_alanlari = self._ozet_alanlari()
         if ozet_alanlari:
             yerlesim.addWidget(_sep())
-            yerlesim.addWidget(self._kutu(ozet_alanlari))
+            yerlesim.addWidget(_kutu(ozet_alanlari))
 
         for mesaj in self._notlar:
             yerlesim.addWidget(self._not_bloku(mesaj))
@@ -202,7 +152,7 @@ class TimestampDialog(QDialog):
 
     def _baslik_bloku(self) -> QWidget:
         simge_metni, renk = _SEVIYE_GORUNUM.get(
-            self._mesaj.seviye, _VARSAYILAN_GORUNUM
+            self._mesaj.seviye, VARSAYILAN_GORUNUM
         )
         sarici = QWidget()
         satir = QHBoxLayout(sarici)
@@ -247,7 +197,7 @@ class TimestampDialog(QDialog):
         return cikti
 
     def _not_bloku(self, mesaj: Aciklama) -> QWidget:
-        simge_metni, renk = _SEVIYE_GORUNUM.get(mesaj.seviye, _VARSAYILAN_GORUNUM)
+        simge_metni, renk = _SEVIYE_GORUNUM.get(mesaj.seviye, VARSAYILAN_GORUNUM)
         icerik: list[QWidget] = []
         baslik = _sarmali(f"{simge_metni}  {mesaj.baslik}", "not_bas")
         baslik.setStyleSheet(f"color:{renk};")
@@ -255,7 +205,7 @@ class TimestampDialog(QDialog):
         icerik.append(_sarmali(mesaj.ozet, "not_gov"))
         if mesaj.oneri:
             icerik.append(_sarmali(f"→  {mesaj.oneri}", "not_gov"))
-        return self._kutu(icerik)
+        return _kutu(icerik)
 
     def _teknik_bloku(self) -> QWidget:
         """Kapalı başlayan teknik ayrıntılar.
@@ -304,16 +254,6 @@ class TimestampDialog(QDialog):
         kapat.clicked.connect(self.accept)
         satir.addWidget(kapat)
         return sarici
-
-    def _kutu(self, icerik: list[QWidget]) -> QFrame:
-        cerceve = QFrame()
-        cerceve.setObjectName("kutu")
-        sutun = QVBoxLayout(cerceve)
-        sutun.setContentsMargins(12, 10, 12, 10)
-        sutun.setSpacing(3)
-        for w in icerik:
-            sutun.addWidget(w)
-        return cerceve
 
     # ── Davranış ──────────────────────────────────────────────────────────────
 

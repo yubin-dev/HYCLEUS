@@ -28,10 +28,20 @@ ikiye AYRILIYOR, cunku iki islemin calistigi durumlar farkli:
     Geri yuklemeyi UI'a koymak, tam ihtiyac duyuldugu anda ulasilamaz
     yapardi - recover_vault.py'nin var olma sebebinin aynisi.
 
-DOGRULAMA ikisinde de var. Anahtarsiz calisabildigi icin (bkz.
-CORE/backup.py, verify_backup) bir yedegin saglamligini kontrol etmek
-kasayi acmayi gerektirmiyor; bu araci bir yedekleme betigine baglamak
-mumkun.
+DOGRULAMA ikisinde de var - arayuzde "Yedek Dogrula..." menu maddesi
+(UI/BackupVerifyDialog.py) ayni `verify_backup()` fonksiyonunu cagiriyor.
+Ikinci bir uygulama DEGIL.
+
+Buradaki hali KALKMIYOR ve kalkmamali: cikis kodu var, yani bir betik ya
+da zamanlanmis bir is sonucu okuyabilir; bir diyalog kutusu okuyamaz.
+Ayrica anahtarsiz calisabildigi icin (bkz. CORE/backup.py,
+verify_backup) bir yedegin saglamligini kontrol etmek kasayi acmayi
+gerektirmiyor.
+
+Iki yuzey arasindaki tek fark VARSAYILAN DERINLIK. Burada derin mod
+opsiyonel (`--deep`), cunku anahtar USB + PIN istiyor ve bunu her
+kontrolde istemek araci kullanilmaz yapardi. Arayuzde anahtar zaten
+oturumda, yani derin mod bedava - orada varsayilan.
 
 ANAHTAR NEREDEN GELIYOR
 -----------------------

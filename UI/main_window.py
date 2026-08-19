@@ -315,6 +315,11 @@ class HycleusWindow(
         act_support = menu.addAction("💬  Destek")
         menu.addSeparator()
         act_backup  = menu.addAction("💾  Yedek Al…")
+        # Doğrulama, almanın hemen yanında: hiç doğrulanmayan bir yedek,
+        # olmayan bir yedektir ve iki işi ayrı yerlere koymak ikincisini
+        # bulunmaz yapardı. GERİ YÜKLEME menüye GİRMİYOR — bilinçli,
+        # gerekçesi `UI/main_window_open.py::BackupMixin` docstring'inde.
+        act_verify_backup = menu.addAction("🔍  Yedek Doğrula…")
         menu.addSeparator()
         act_about   = menu.addAction("ℹ  Hakkında")
 
@@ -329,6 +334,8 @@ class HycleusWindow(
             self._on_open_contact()
         elif action == act_backup:
             self._on_create_backup()
+        elif action == act_verify_backup:
+            self._on_verify_backup()
         elif action == act_about:
             QMessageBox.information(
                 self, "HYCLEUS — Hakkında",

@@ -174,10 +174,26 @@ class VerifyReport:
     manifest_mismatch: bool = False
     deep: bool = False
     error: str | None = None
+    #: Kullanıcı doğrulamayı yarıda kesti.
+    #:
+    #: `ok` bu durumda ZORLA False. Yarım kalmış bir tarama "sağlam"
+    #: diyemez: 500 dosyanın 3'ünü okuyup durmakla 3 dosyalık sağlam bir
+    #: yedeği doğrulamak, rapordan ayırt edilemez olurdu. Yanlış yön
+    #: burada "sağlam sanmak".
+    cancelled: bool = False
+    #: Manifestoda listelenen toplam dosya sayısı. `checked` yarıda
+    #: kesilmiş bir taramada bundan küçük kalır; ikisi birlikte "ne
+    #: kadarı bakıldı" sorusunu yanıtlıyor.
+    total: int = 0
 
     def summary(self) -> str:
         if self.error:
             return f"Yedek OKUNAMADI — {self.error}"
+        if self.cancelled:
+            return (
+                f"Doğrulama YARIDA KESİLDİ — {self.total} dosyanın "
+                f"{self.checked} tanesine bakıldı."
+            )
         if self.ok:
             derinlik = "GCM doğrulaması dahil" if self.deep else "yalnızca özet"
             return f"Yedek SAĞLAM — {self.checked} dosya ({derinlik})."
@@ -425,6 +441,8 @@ def verify_backup(
     *,
     key: bytes | None = None,
     hwid: str | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
+    should_continue: Callable[[], bool] | None = None,
 ) -> VerifyReport:
     """
     Yedeği GERİ YÜKLEMEDEN doğrular.
@@ -442,6 +460,24 @@ def verify_backup(
         Ayrıca manifestonun şifreli kopyayla tutarlılığı sınanıyor.
 
     Hiçbir durumda hedefe YAZMIYOR.
+
+    Args:
+        on_progress: (sıra, toplam, ad) — `create_backup()` ile aynı
+            sözleşme.
+        should_continue: Her dosyadan ÖNCE soruluyor; `False` dönerse
+            tarama durur ve rapor `cancelled=True` ile döner.
+
+            Neden `on_progress`'in dönüş değeri DEĞİL: aynı adı taşıyan
+            parametrenin `create_backup()`'ta `None` döndürüp burada
+            anlam taşıması, iki çağrı yerini sessizce ayrıştırırdı.
+            Ayrı ad, ayrı iş.
+
+            Neden iptal gerekiyor: doğrulama her baytı OKUYOR (derin
+            modda iki kez — bir kez özet, bir kez GCM). Ölçüldü, işlemci
+            tarafında ~1,3 GB/s; ama yedeğin doğal yeri harici disk ve
+            orada sınır diskin okuma hızı. 50 GB'lık bir yedek ~120 MB/s
+            bir diskte on dakikaları buluyor. Durdurulamayan on dakikalık
+            bir kontrol, çalıştırılmayan bir kontrole dönüşür.
     """
     backup_dir = Path(backup_dir)
     rapor = VerifyReport(deep=key is not None)
@@ -454,9 +490,17 @@ def verify_backup(
         return rapor
 
     dosya_dizini = backup_dir / FILES_DIRNAME
-    beklenen = {e["name"] for e in manifest.get("entries", [])}
+    girdiler = manifest.get("entries", [])
+    beklenen = {e["name"] for e in girdiler}
+    rapor.total = len(girdiler)
 
-    for girdi in manifest.get("entries", []):
+    for sira, girdi in enumerate(girdiler, start=1):
+        if should_continue is not None and not should_continue():
+            rapor.cancelled = True
+            rapor.ok = False
+            return rapor
+        if on_progress:
+            on_progress(sira, len(girdiler), girdi["name"])
         yol = dosya_dizini / girdi["name"]
         rapor.checked += 1
         if not yol.is_file():

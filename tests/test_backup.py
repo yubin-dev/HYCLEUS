@@ -478,6 +478,86 @@ def test_verification_writes_nothing(dolu_db, vault, tmp_path, key) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 4b. İlerleme ve iptal
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Doğrulama her baytı okuyor (derin modda iki kez) ve yedeğin doğal yeri
+# harici disk. Ölçüldü: işlemci tarafında ~1,3 GB/s, ama 120 MB/s bir
+# diskte 50 GB'lık bir yedek on dakikaları buluyor. Durdurulamayan on
+# dakikalık bir kontrol, çalıştırılmayan bir kontrole dönüşür.
+
+
+def test_progress_reports_every_file_in_order(dolu_db, vault, tmp_path, key) -> None:
+    rapor = _yedek(dolu_db, vault, tmp_path, key)
+    adimlar: list[tuple[int, int, str]] = []
+    verify_backup(rapor.path, on_progress=lambda i, n, ad: adimlar.append((i, n, ad)))
+
+    assert [i for i, _n, _ad in adimlar] == [1, 2, 3]
+    assert {n for _i, n, _ad in adimlar} == {3}
+
+
+def test_cancelling_stops_the_scan(dolu_db, vault, tmp_path, key) -> None:
+    rapor = _yedek(dolu_db, vault, tmp_path, key)
+    gorulen: list[str] = []
+
+    sonuc = verify_backup(
+        rapor.path,
+        on_progress=lambda i, n, ad: gorulen.append(ad),
+        should_continue=lambda: len(gorulen) < 2,
+    )
+    assert sonuc.cancelled
+    assert len(gorulen) == 2, "İptalden sonra dosya okunmaya devam etti."
+
+
+def test_a_cancelled_scan_is_NOT_reported_as_healthy(
+    dolu_db, vault, tmp_path, key,
+) -> None:
+    """
+    En tehlikeli yanlış cevap bu olurdu.
+
+    Yedek gerçekten sağlam; tarama ilk dosyada kesiliyor. `ok=True`
+    dönseydi kullanıcı 500 dosyalık bir yedeği 1 dosyaya bakarak
+    onaylamış olurdu ve rapordan bunu ayırt edemezdi.
+    """
+    rapor = _yedek(dolu_db, vault, tmp_path, key)
+    assert verify_backup(rapor.path).ok, "Yedek zaten sağlam olmalı."
+
+    sonuc = verify_backup(rapor.path, should_continue=lambda: False)
+    assert sonuc.cancelled is True
+    assert sonuc.ok is False
+    assert sonuc.checked == 0
+    assert "YARIDA KESİLDİ" in sonuc.summary()
+
+
+def test_total_says_how_much_was_NOT_looked_at(dolu_db, vault, tmp_path, key) -> None:
+    """`checked` tek başına eksik: neyin dışında kaldığı bilinmeli."""
+    rapor = _yedek(dolu_db, vault, tmp_path, key)
+    gorulen: list[str] = []
+    sonuc = verify_backup(
+        rapor.path,
+        on_progress=lambda i, n, ad: gorulen.append(ad),
+        should_continue=lambda: len(gorulen) < 1,
+    )
+    assert (sonuc.checked, sonuc.total) == (1, 3)
+
+
+def test_total_is_filled_on_a_complete_scan_too(dolu_db, vault, tmp_path, key) -> None:
+    sonuc = verify_backup(_yedek(dolu_db, vault, tmp_path, key).path)
+    assert sonuc.total == sonuc.checked == 3
+
+
+def test_verification_without_callbacks_behaves_as_before(
+    dolu_db, vault, tmp_path, key,
+) -> None:
+    """
+    Geriye dönük uyumluluk: CLI ve zamanlanmış çağrılar iki yeni
+    parametreyi geçmiyor.
+    """
+    sonuc = verify_backup(_yedek(dolu_db, vault, tmp_path, key).path)
+    assert sonuc.ok and not sonuc.cancelled
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 5. Geri yükleme
 # ══════════════════════════════════════════════════════════════════════════════
 

@@ -37,7 +37,7 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | **Idle Auto-Lock** | Session locks after N minutes of inactivity even with the USB inserted; PIN required to resume (default 10 min, configurable) |
 | **SafeZone** | Temporary decrypted copies never touch the system temp directory — shredded on exit, and leftovers from a crash are shredded at startup |
 | **Transparent Access** | Open a document in its default application; edits are re-encrypted automatically with a fresh nonce and the plaintext copy is shredded — no manual re-encrypt step |
-| **Encrypted Backup** | Copy the vault to external media; database metadata is encrypted, never plaintext. Backups verify **without the key** and restore refuses to run on a corrupt one (`backup_cli.py --verify`) |
+| **Encrypted Backup** | Copy the vault to external media; database metadata is encrypted, never plaintext. Backups verify **without the key** and restore refuses to run on a corrupt one — verify from the menu (**Yedek Doğrula…**) or the CLI (`backup_cli.py --verify`); restore stays CLI-only |
 | **Brute-force Defence** | Login rate limit — 5 failures → 30s, escalating to 300s; counter persisted in DB |
 | **Access Control** | RBAC: Administrator / Standard / Read-only roles |
 | **Malware Scan** | Every uploaded file — Windows Defender (`MpCmdRun.exe`) on Windows, ClamAV (`clamdscan`/`clamscan`) elsewhere |
@@ -286,7 +286,7 @@ HYCLEUS/
 │   ├── scheduler.py          # APScheduler — expired file cleanup
 │   ├── setup_usb.py          # CLI USB registration tool
 │   ├── backup.py             # Encrypted backup + verifiable restore
-│   ├── backup_cli.py         # CLI: --verify / --restore
+│   ├── backup_cli.py         # CLI: --verify / --restore (restore is CLI-only)
 │   ├── checkout.py           # Transparent access (open → edit → re-encrypt)
 │   ├── hwid_probe.py         # PROTOTYPE: cross-platform USB id (not wired in)
 │   ├── timestamp.py          # RFC 3161 trusted timestamps (.hcl trailer)
@@ -299,6 +299,7 @@ HYCLEUS/
 │   └── db_manager.py         # SQLite3 singleton, schema migrations
 ├── UI/
 │   ├── main_window.py        # Main window, QThreadPool, USB lock overlay
+│   ├── dialog_kit.py         # Shared plumbing for report dialogs
 │   ├── login_dialog.py       # Login / first-run setup (Argon2id + TOTP)
 │   ├── AdminPanel.py         # Admin: registrations, USB mgmt, settings
 │   ├── RegisterDialog.py     # New user registration dialog
@@ -363,7 +364,7 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | **Hareketsizlik Kilidi** | USB takılı olsa bile N dakika hareketsizlikte oturum kilitlenir; devam için PIN gerekir (varsayılan 10 dk, yapılandırılabilir) |
 | **SafeZone** | Geçici çözülmüş kopyalar sistem TEMP'ine hiç yazılmaz — çıkışta imha edilir, çökme sonrası artıklar açılışta temizlenir |
 | **Şeffaf Erişim** | Belgeyi varsayılan uygulamasında açın; düzenleme yeni bir nonce ile otomatik geri şifrelenir ve düz metin kopya güvenli silinir — elle yeniden şifreleme adımı yok |
-| **Şifreli Yedekleme** | Kasayı harici medyaya kopyalayın; veritabanı metadata'sı şifreli gider, düz metin asla. Yedekler **anahtarsız** doğrulanabilir ve bozuk bir yedek geri yüklenmez (`backup_cli.py --verify`) |
+| **Şifreli Yedekleme** | Kasayı harici medyaya kopyalayın; veritabanı metadata'sı şifreli gider, düz metin asla. Yedekler **anahtarsız** doğrulanabilir ve bozuk bir yedek geri yüklenmez — doğrulama menüden (**Yedek Doğrula…**) ya da komut satırından (`backup_cli.py --verify`); geri yükleme yalnızca komut satırında |
 | **Kaba Kuvvet Savunması** | Giriş sınırlaması — 5 hatada 30 sn, 300 sn'ye kadar artan; sayaç DB'de kalıcı |
 | **Erişim Kontrolü** | RBAC: Yönetici / Standart / Salt Okunur rolleri |
 | **Zararlı Tarama** | Her yüklenen dosyaya: Windows'ta Windows Defender (`MpCmdRun.exe`), diğer platformlarda ClamAV (`clamdscan`/`clamscan`) |
@@ -614,7 +615,7 @@ HYCLEUS/
 │   ├── scheduler.py          # APScheduler — süresi dolmuş dosya temizliği
 │   ├── setup_usb.py          # CLI USB kayıt aracı
 │   ├── backup.py             # Şifreli yedekleme + doğrulanabilir geri yükleme
-│   ├── backup_cli.py         # CLI: --verify / --restore
+│   ├── backup_cli.py         # CLI: --verify / --restore (geri yükleme yalnızca CLI)
 │   ├── checkout.py           # Şeffaf erişim (aç → düzenle → geri şifrele)
 │   ├── hwid_probe.py         # PROTOTİP: çapraz platform USB kimliği (bağlı değil)
 │   ├── timestamp.py          # RFC 3161 zaman damgası (.hcl fragmanı)
@@ -627,6 +628,7 @@ HYCLEUS/
 │   └── db_manager.py         # SQLite3 singleton, şema migrasyonları
 ├── UI/
 │   ├── main_window.py        # Ana pencere, QThreadPool, USB kilit overlay
+│   ├── dialog_kit.py         # Rapor diyaloglarının ortak tesisatı
 │   ├── login_dialog.py       # Giriş / ilk kurulum (Argon2id + TOTP)
 │   ├── AdminPanel.py         # Yönetici: kayıtlar, USB yönetimi, ayarlar
 │   ├── RegisterDialog.py     # Yeni kullanıcı kayıt diyaloğu
