@@ -1202,6 +1202,10 @@ yazabiliyordu. Yeni hâli yalnızca tanınan iki role izin veriyor. Kanonik
 üç rol için davranış aynı; değişim yalnızca bilinmeyen rollerde ve
 daraltma yönünde. Testte açıkça yazılı.
 
+Gözden geçirmede ayrıca işaretlendi ve **2026-08-19'da onaylandı**. Kayda
+geçiriliyor çünkü bu, "davranış değişmeyecek" kuralının bilerek delindiği
+tek yer; ileride biri farkı görüp hata sanabilir.
+
 ### Kaldırılan "ikinci cevaplar"
 
 | Nerede | Neydi |

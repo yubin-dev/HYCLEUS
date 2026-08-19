@@ -153,6 +153,11 @@ def can_write(role: str | None) -> bool:
     burada `False` dönüyor. Eski kod `not is_readonly` diyordu, yani
     bilinmeyen bir rol YAZABİLİYORDU — bu düzeltme o yönü daraltıyor.
     Kanonik üç rol için davranış aynı.
+
+    Bu, B-028'in saf-refactor kuralına yapılan TEK bilinçli istisna.
+    Ayrıca işaretlenip 2026-08-19'da onaylandı; yani "gözden kaçmış bir
+    davranış değişikliği" değil, verilmiş bir karar. Geri alınacaksa
+    tek satır: `return not is_readonly_role(role)`.
     """
     kanonik = normalize_role(role)
     return kanonik in (ROL_YONETICI, ROL_STANDART)
