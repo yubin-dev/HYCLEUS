@@ -25,7 +25,7 @@ Harcanmış ama bu dosyada görünmeyen numaralar:
 | B-004 | `④` grubu — B-004 düzeltmesi | İmha Odası sayacını işleten tek yer `UI/main_window_table.py::_tick_expiry` idi ve o metot `if self._current_label != "Imha": return` ile başlıyordu — süresi dolmuş dosya, kullanıcı o sekmeye girmedikçe diskte kalıyordu. Zamanlayıcının `_purge_expired` görevi artık `Karantina` yanında `Imha` etiketini de işliyor; iki etiket ayrı denetim kaynağı yazıyor (`quarantine_ttl` / `imha_ttl`). Arayüz sayacı KALDIRILMADI, ikisi de aynı `purge_expired_file()`'ı çağırıyor (B-008). Saklama süpürmesiyle gelen `expires_at = NULL` satırlar korunuyor; korumanın kaynağı SQLite'ın üç değerli mantığı (`datetime(NULL) <= …` → NULL), ölçüldü. Bu maddeyi "son çalışma zamanı + kapı" deseni ÇÖZMEDİ: oradaki kapı global değil dosya başına. |
 | B-015 | `④` grubu — B-015 düzeltmesi | Yedekleme özelliği vardı ama HATIRLATMASI yoktu; yedek yalnızca kullanıcının aklına geldiğinde alınıyordu. `CORE/backup_reminder.py` eklendi ve `ZamanKapisi`'nı (`backup_last_run`) kullanıyor — ④ grubunda deseni gerçekten kullanan tek madde. Damga `create_backup()` içinde yazılıyor, arayüzde değil: CLI'dan alınan yedekler de hatırlatmayı susturmalı. Uyarı ENGELLEYİCİ değil, "sonra sorma" bir eşik süresi kadar (süresiz değil) ve eşik `0` hatırlatmayı kapatıyor. "Hedef erişilemiyor" ile "hiç yedek yok" AYRI durumlar — harici disk takılı değilse yedek yok değil, görünmüyor. Negatif eşik kapatmıyor, varsayılana düşüyor. |
 | B-006 | `④` grubu — B-006 düzeltmesi | Zincir doğrulaması üç yerden çağrılabiliyordu ama arayüzde düğmesi yoktu; TXT dışa aktarımı da yalnızca dört sütun yazıyor, hash/son uç/doğrulama durumu taşımıyordu. `CORE/audit_report.py` iki doğrulamayı (`verify_audit_chain` + `verify_against_anchor`) birleştirip METİN üretiyor; AdminPanel'e "Zinciri Doğrula" düğmesi eklendi (panel zaten `role != "Yönetici"` ise hiç kurulmuyor) ve sonuç `audit_chain_verified` olarak denetim kaydına düşüyor — doğrulayan kullanıcı B-011'in `users` satırından okunuyor, yan etkisiz `kullanici_bilgisi()` ile. TXT başlığı artık zincir durumunu, son hash'i, ilk kırılma id'sini ve "bu dosya imzalı DEĞİLDİR" sınırını taşıyor. Bu madde de "son çalışma zamanı + kapı" desenini KULLANMIYOR: zamanlanmış bir iş değil, kullanıcının bastığı bir düğme. |
-| B-022 | `③` grubu — B-022 düzeltmesi | `hwid_probe.read_windows()` yalnızca `Win32_DiskDrive.PNPDeviceID`'yi okuyordu; o USBSTOR (depolama) düğümü ve seriye `&<n>` örnek soneki ekliyor. Onaltılık bir seri artı `&0`, "üretilmiş kimlik" desenine tam uyduğu için prototip SERİLİ token'a "serisiz" diyordu — SanDisk'te sistematik, ve B-016 kararını ters yöne itecek bir ölçüm hatası. Artık `Win32_PnPEntity` üzerinden USB düğümü de okunuyor ve seriyle eşleştiriliyor; VID/PID de oradan geliyor (eski `????:????` çıktısı bunun belirtisiydi). Eşleştirme saf bir fonksiyona (`build_windows_identity`) ayrıldı, artık WMI'siz test edilebiliyor. Yanında `normalize_serial()`'ın `.lstrip("0")`'ı kaldırıldı: `0123ABC` ile `123ABC`'yi aynı kimliğe indiriyordu — kimlik üreten bir fonksiyonda ÇAKIŞMA, kapatmaya çalıştığı (ve hiç ölçülmemiş) dolgu farkından ağır basar. İki sabitleme testi bilerek kırıldı. **2026-08-19:** gerçek bir aygıtla doğrulandı — prototip tanımlayıcı serisini okuyor, `generated=False`, VID/PID çözülüyor (eski `????:????` yok). Ölçüm SanDisk'le DEĞİL, o sırada takılı olan `30DE:6544` aygıtıyla yapıldı; mekanizma doğrulandı, özgün yanlış negatifi üreten aygıtta tekrar ölçüm hâlâ yapılmadı (bkz. B-016). |
+| B-022 | `③` grubu — B-022 düzeltmesi | `hwid_probe.read_windows()` yalnızca `Win32_DiskDrive.PNPDeviceID`'yi okuyordu; o USBSTOR (depolama) düğümü ve seriye `&<n>` örnek soneki ekliyor. Onaltılık bir seri artı `&0`, "üretilmiş kimlik" desenine tam uyduğu için prototip SERİLİ token'a "serisiz" diyordu — SanDisk'te sistematik, ve B-016 kararını ters yöne itecek bir ölçüm hatası. Artık `Win32_PnPEntity` üzerinden USB düğümü de okunuyor ve seriyle eşleştiriliyor; VID/PID de oradan geliyor (eski `????:????` çıktısı bunun belirtisiydi). Eşleştirme saf bir fonksiyona (`build_windows_identity`) ayrıldı, artık WMI'siz test edilebiliyor. Yanında `normalize_serial()`'ın `.lstrip("0")`'ı kaldırıldı: `0123ABC` ile `123ABC`'yi aynı kimliğe indiriyordu — kimlik üreten bir fonksiyonda ÇAKIŞMA, kapatmaya çalıştığı (ve hiç ölçülmemiş) dolgu farkından ağır basar. İki sabitleme testi bilerek kırıldı. **2026-08-19:** gerçek bir aygıtla doğrulandı — prototip tanımlayıcı serisini okuyor, `generated=False`, VID/PID çözülüyor (eski `????:????` yok). Ölçüm hem `30DE:6544` hem de özgün yanlış negatifi üreten SanDisk `0781:5567` ile yapıldı; SanDisk'te sonuç 2026-08-16 ölçümüyle birebir aynı çıktı (uzunluk, karakter kümesi, önek, yığın-uyumu, fallback yokluğu — bkz. B-016). |
 | B-019 | `②` grubu — B-019 düzeltmesi | `.github/scripts/test_summary.py` JUnit XML'ini `xml.etree.ElementTree` ile okuyordu ("billion laughs" iç varlık genişlemesine açık). Girdi kendi CI'ımızın ürettiği dosya olduğu için bulgu bir süre bilinçli açık bırakılmıştı; kapatma kararının gerekçesi maliyetin iki satır olması ve `defusedxml`'in saf Python / bağımlılıksız / ~30 KB olması. İthalat KOŞULLU: paket yoksa stdlib'e düşüyor, çünkü betik CI dışında da elle çalıştırılıyor ve bir bağımlılık eksikliği yüzünden hiç konuşmaması raporladığı sorundan kötü olurdu. `XML_HATALARI` demeti `DefusedXmlException`'ı da yakalıyor — yoksa düşmanca XML'de betik temiz mesaj yerine izlemeyle düşerdi, yani koruma eklenirken raporlama bozulurdu. |
 | B-013 | `512e7be` → düzeltme aynı seride | `setup_usb.py` İngilizce Windows konsolunda (cp1252/cp437) çöküyordu. Bir tur backlog'da durdu, sonra `CORE/console.py` yardımcısıyla düzeltildi ve madde kaldırıldı. Düzeltme: `setup_usb.py` + `recover_vault.py` artık `ensure_utf8_console()` çağırıyor; kuralı AST ile denetleyen test `tests/test_console.py` içinde. |
 
@@ -355,18 +355,38 @@ Karşılaştırma, seri değerine hiç bakmadan yapıldı:
 | `usb_ids.json` | dosya yok | kayıt **var** |
 
 Dört alan da ayrışıyor; bu, aynı çubuğun farklı okunması değil, farklı bir
-çubuk. Dolayısıyla "aynı USB'nin aynı serisi" sorusu bu turda
-CEVAPLANAMADI — SanDisk takılı değildi.
+çubuk. O an bağlı **tek** USB depolama aygıtı buydu.
 
-Bu makinede o an bağlı **tek** USB depolama aygıtı bu; `read_windows()` de
-`get_usb_hwid()` de aynı aygıtı görüyor.
+#### Aynı gün, SanDisk takıldıktan sonra — SORU CEVAPLANDI
+
+SanDisk sonradan takıldı ve karşılaştırma yapılabildi. **Sonuç: önceki
+ölçümle birebir aynı.**
+
+| Denetim | Sonuç |
+|---|---|
+| prototip "serisiz" diyor mu | **hayır** (B-022 öncesi "evet" diyordu) |
+| tanımlayıcı serisi == depolama serisi | evet |
+| tanımlayıcı serisi == `get_usb_hwid()` | evet |
+| `_sanitize_hwid()` karakter düşürüyor mu | hayır |
+| `normalize_serial()` değeri değiştiriyor mu | hayır (B-022'nin `lstrip("0")` kaldırması burada da zararsız) |
+| uzunluk 20 mi | evet |
+| tümü `[0-9A-F]` mi | evet |
+| B-016'nın kaydettiği `4C53` öneki | evet |
+| UUID fallback'e düştü mü | hayır |
+
+**Ölçümün sınırı:** 2026-08-16'daki HAM DEĞER hiçbir yere yazılmamıştı
+(bilinçli), dolayısıyla iki değer karakter karakter karşılaştırılamıyor.
+Karşılaştırılan şey, o turda kaydedilmiş olan TÜM özellikler: aynı fiziksel
+aygıt (aynı VID:PID, model, kapasite), aynı uzunluk, aynı karakter kümesi,
+aynı önek, aynı yığın-uyumu, aynı fallback-yokluğu. Bu, sırrı saklayarak
+elde edilebilecek en güçlü eşleşme kanıtı.
 
 #### B-022 düzeltmesi bu aygıtta ÇALIŞIYOR
 
 Prototip tanımlayıcı serisini okuyor (`generated=False`, `stable_id`
 üretiliyor) ve VID/PID'yi çözüyor — eski hatanın belirtisi olan
-`????:????` çıktısı yok. Yani mekanizma doğrulandı; ama özgün yanlış
-negatifi üreten aygıtta değil, başka bir aygıtta.
+`????:????` çıktısı yok. Doğrulama **özgün yanlış negatifi üreten
+aygıtta da** yapıldı (aşağıdaki tablo): B-022 kapandı.
 
 #### Yeni bulgu — bu maddenin öngördüğü dal artık ÖLÇÜLDÜ
 
@@ -793,6 +813,34 @@ okumalıyız, platformlar arası uyuşuyor mu" sorusuydu. Bu madde
 "okuduğumuz alan bozuk olduğunda ne oluyor" sorusu ve cevabı ölçüldü:
 sessizce dosya tabanlı bir kimliğe geçiliyor.
 
+### Etkilenen aygıt tespit edildi (2026-08-19)
+
+UUID yoluna düşen aygıt **KIOXIA TransMemory** (`30DE:6544`, 31 GB) —
+sıradan bir USB bellek. SanDisk (`0781:5567`) etkilenmiyor, onun depolama
+serisi temiz.
+
+Yani sorun tek bir bozuk çubuğa özgü değil, **satıcıya göre değişen** bir
+davranış: aynı makinede iki USB belleğin biri depolama yığınına temiz seri
+veriyor, diğeri 2 karakterlik bozuk değer. İkisinin de USB düğümünde
+kullanılabilir seri VAR.
+
+### Mali mühür / akıllı kart token'ları — HİÇ görünmüyor
+
+Aynı ölçümde makinede bir **mali mühür** de takılıydı: `08E6:3438`
+"USB Key Smart Card Reader" (+ `SmartCard` sınıfında bir kart). USB
+düğümünde 8 karakterlik bir serisi var.
+
+`get_usb_hwid()` yalnızca `Win32_DiskDrive`'ı geziyor, akıllı kart
+okuyucusu orada YOK. Yani bugün bir mali mühür ya da e-imza token'ı
+HYCLEUS'a token olarak KAYDEDİLEMEZ — uygulama onu hiç göremez.
+
+Bu, yukarıdaki düzeltmenin (USB düğümü yolunu da denemek) ikinci
+kazanımı olurdu. Ama ayrı bir tasarım sorusu açıyor ve bu madde onu
+kapsamıyor: mali mühür sertifikası 1-3 yılda bir yenileniyor ve fiziksel
+token DEĞİŞİYOR. Kasa kimliği ona bağlanırsa yenileme günü kullanıcı
+kasasından kilitlenir. Bir token'ın kasa için uygun olması, seri
+taşımasından ibaret değil.
+
 ---
 
 ## B-026 — Testler gerçek `data/usb_ids.json` dosyasına yazıyor
@@ -830,3 +878,57 @@ desen, `CORE.usb_manager._USB_IDS_FILE`'ı `tmp_path`'e taşıyacak.
 Dikkat: `_USB_IDS_FILE` modül seviyesinde hesaplanıyor, yani
 `monkeypatch.setattr(usb_manager, "_USB_IDS_FILE", …)` gerekiyor;
 `data_dir()`'i patch'lemek yetmez.
+
+---
+
+## B-027 — Birden fazla USB bellek takılıyken `get_usb_hwid()` İLKİNİ seçiyor
+
+**Durum:** Açık
+**Öncelik:** Orta-Yüksek (kayıtlı token takılıyken açılışın reddedilmesi)
+**Bulundu:** 2026-08-19 — iki USB bellek aynı anda takılıyken ölçüm sırasında
+
+`CORE/usb_manager.get_usb_hwid()` `Win32_DiskDrive`'ı geziyor ve
+`InterfaceType == "USB"` olan **ilk** aygıtın serisini döndürüp çıkıyor.
+Hangi aygıtın KAYITLI token olduğuna bakmıyor — o bilgi veritabanında ve
+bu fonksiyon veritabanını hiç görmüyor.
+
+### Ölçülen durum
+
+İki USB bellek birden takılıyken:
+
+| Sıra | Aygıt | Sonuç |
+|---|---|---|
+| 1 | SanDisk Cruzer Blade (`0781:5567`) | **seçildi** |
+| 2 | KIOXIA TransMemory (`30DE:6544`) | kullanılmadı |
+
+Beş çağrının beşi de aynı değeri döndürdü, yani tek oturumda sıra kararlı.
+Bu turda kayıtlı token zaten birinci sıradaydı — yani hata GÖRÜLMEDİ,
+yalnızca yolu ölçüldü.
+
+### Neden sorun
+
+Sıra, numaralandırmadan geliyor; hangi çubuğun önce geleceğini kod
+belirlemiyor. Kayıtsız bir çubuk önce gelirse:
+
+`get_usb_hwid()` onun serisini döndürür → `DBManager().connect(hwid=…)`
+`HWIDMissingError` fırlatır → `main.py` "Hata" kutusu gösterip
+`sys.exit(1)` yapar.
+
+Yani **kayıtlı token TAKILIYKEN uygulama açılmayı reddeder** ve kullanıcıya
+gösterilen mesaj sebebi söylemez. Kullanıcının yapması gereken şey (diğer
+çubuğu çıkarmak) hiçbir yerde yazmıyor.
+
+Bu bir güvenlik açığı DEĞİL — yanlış aygıtla açılmıyor, hiç açılmıyor.
+Ama teşhisi zor bir kilitlenme ve tetiklemesi çok kolay: yanında telefon
+şarj eden ya da harici disk takılı bir kullanıcı yeter.
+
+### Yapılacak
+
+`get_usb_hwid()` tek bir değer yerine ADAY LİSTESİ döndürsün; kayıtlı
+olanı seçme işi çağırana (veritabanını gören katmana) geçsin. Hiçbiri
+kayıtlı değilse mesaj "USB bulunamadı" değil "takılı N aygıttan hiçbiri
+kayıtlı değil" olsun.
+
+B-025 ile birlikte ele alınmalı: ikisi de aynı fonksiyonun aynı döngüsünü
+değiştiriyor ve ikisi de `get_usb_hwid()`'in tek değer döndüren imzasını
+zorluyor.
