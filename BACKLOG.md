@@ -144,7 +144,8 @@ görülüp "Source file found twice" hatası veriyor.
 
 ## B-003 — Mevcut 4-5 haneli PIN kullanıcılarını 6 haneye taşıma
 
-**Durum:** Açık — geçici köprü devrede
+**Durum:** ÇÖZÜLDÜ (2026-08-21) — zorunlu yenileme akışı devrede.
+Köprünün kaldırılması B-040'a devredildi; çözüm kaydı dosyanın sonunda.
 **Öncelik:** **Orta.** Güvenlik açığı değil, politika boşluğu: yeni kayıtlar
 6 hane zorunlu ama eski hesaplar süresiz olarak 4-5 hanede kalabiliyor.
 Yani politikanın koruduğu şey (kısa PIN'e karşı kaba kuvvet direnci) tam
@@ -1624,3 +1625,145 @@ düzeyi `env` bloğu ikisi de `PYTHONUTF8=1` taşıyor;
 * **Bağımlılıklar SABİTLENMİYOR.** Bugünkü tarama "bugün çözümlenen
   sürümler" hakkında; yarın farklı sürümler çözümlenebilir. Sabitleme ayrı
   bir karar (bkz. yukarıdaki 1. kriter).
+
+---
+
+## B-003 — çözüm kaydı (2026-08-21) + köprünün kaldırılması B-040'a devredildi
+
+Zorunlu PIN yenileme akışı eklendi. Kısa PIN'le giren kullanıcı, ana
+pencere açılmadan önce PIN'ini yenilemek zorunda.
+
+### Ne yapıldı
+
+| Parça | Nerede |
+|---|---|
+| Tespit + uygulama + denetim | `CORE/pin_rotation.py` (yeni) |
+| Zorunlu ekran | `UI/PinRotationDialog.py` (yeni) |
+| Kapı | `UI/login_dialog.py::_zorunlu_pin_yenileme()` |
+| İsteğe bağlı akış da aynı yere bağlandı | `UI/ProfileDialog.py` |
+
+### Asıl kapı diyalogda DEĞİL
+
+Diyalog kapatılamaz (iptal düğmesi yok, `reject()` ve `closeEvent`
+yutuluyor) ama bu bir **kullanılabilirlik** tercihi. Güvenlik kararını
+`_on_login()` veriyor: `dlg.rotated` False ise `accept()` HİÇ
+çağrılmıyor. Pencere yöneticisi diyaloğu dışarıdan kapatsa bile
+kullanıcı içeri giremiyor.
+
+Ayrım bilinçli: kapatılamaz bir pencere, kullanıcıyı uygulamayı görev
+yöneticisinden öldürmeye iten bir tuzağa dönüşebilir. Uygulamadan ÇIKMAK
+her zaman mümkün; engellenen tek şey PIN yenilenmeden İÇERİ GİRMEK.
+
+### İkinci bir uygulama yazılmadı
+
+`UI/ProfileDialog.py` PIN değiştirmeyi zaten uyguluyordu. Zorunlu akış
+için ikinci bir kopya, bu deponun beş kez ürettiği kusurun altıncısı
+olurdu. İkisi de `rotate_pin()` çağırıyor ve AST denetimi
+(`test_change_vault_pin_UI_katmanindan_dogrudan_cagrilmiyor`)
+`change_vault_pin()`'in UI'dan doğrudan çağrılmasını yasaklıyor.
+
+Yan etki: `rotate_pin()` "yeni PIN eskisiyle aynı olamaz" kuralını
+getiriyor. ProfileDialog'da bu YENİ bir kısıt — eskiden aynı PIN'e
+"değiştirmek" sessizce kabul ediliyor, kasa boşuna yeniden şifreleniyor
+ve denetim kaydı yanıltıcı oluyordu.
+
+### Mutasyon testi
+
+19/20 → düzeltme → **19/19**. Hayatta kalan iki mutasyon:
+
+1. `reject()`'i `super().reject()` yapmak. Testim `result()`'a bakıyordu
+   ve `QDialog.Rejected == 0` — başlangıç değeriyle AYNI, yani gerçekten
+   reddedilmiş bir diyalog hiç dokunulmamış olandan ayırt edilemiyordu.
+   Test artık GÖRÜNÜRLÜĞE bakıyor.
+2. `keyPressEvent`'teki Esc kancası. Kaldırmak hiçbir davranışı
+   değiştirmedi — `QDialog` Esc'i zaten `reject()`'e yönlendiriyor, yani
+   ikinci katman bağımsız olarak gözlenemiyordu. **Katman kaldırıldı**:
+   gözlenemeyen bir koruma, zamanla "bu neden burada" diye sorulan ölü
+   koda dönüşür.
+
+### Kapsanmayan: kasasız yol
+
+`change_vault_pin()` bir kasa dosyası istiyor. DEV_MODE ve kasa öncesi
+kurulumlarda PIN ayrı bir hash dosyasında duruyor ve yenilenemiyor. O
+yolda giriş ENGELLENMİYOR — engellemek, çıkış yolu olmayan bir
+kilitlenme üretirdi. Durum `_log.warning("pin_rotation_skipped", …)`
+ile kayda geçiyor.
+
+Bu yol DEV_MODE ve eski kurulumlara özgü; dağıtılan yapıda
+(`sys.frozen`) kasa zorunlu.
+
+---
+
+## B-040 — `LOGIN_MIN_LEN` köprüsü: kaldırma kriteri ve geçiş süresi
+
+**Durum:** Açık — KALDIRILMADI, bilinçli
+**Öncelik:** Düşük (köprü zararsız; B-003 kapandıktan sonra yalnızca artık)
+**Bulundu:** 2026-08-21 — B-003 çözüm turu
+
+B-003 kapandı ama `LOGIN_MIN_LEN = 4` DURUYOR. Kaldırılmadı ve hemen
+kaldırılmamalı.
+
+### Neden hemen kaldırılamaz
+
+Köprü, henüz giriş yapmamış kısa PIN'li kullanıcılar için tek erişim
+yolu. Bugün 6'ya çekilirse o hesaplar KENDİ DOĞRU PIN'leriyle giriş
+ekranını geçemez — yani B-003'ün kapattığı sessiz kilitlenme, tam da
+onu düzelten turda geri gelir.
+
+Sıra kaçınılmaz: önce herkes girip yenileyecek, sonra köprü kalkacak.
+
+### "Herkes göç etti" ÖLÇÜLEBİLİR mi — evet, dolaylı olarak
+
+İlk bakışta hayır: PIN uzunluğu Argon2id hash'inden çıkarılamaz, yani
+"kaç hesap hâlâ kısa PIN'de" diye sorulamıyor. `pin_rotation_forced`
+kaydı yalnızca GÖÇ EDENLERİ sayıyor; göç etmeyenler görünmez.
+
+Ama sorunun eşdeğeri ölçülebilir: **B-003 akışı yayına girdikten sonra
+giriş yapan her hesap zaten uyumludur** — ya PIN'i 6+'ydı ya da
+yenilemeye zorlandı. Yani soru "kim kısa PIN'de" değil, "kim akıştan
+sonra hiç giriş yapmadı".
+
+`users.last_login` bu soruyu yanıtlıyor:
+
+```sql
+-- Köprü hâlâ gerekli olan hesaplar
+SELECT u.id, u.username, u.last_login
+FROM   users u
+JOIN   usb_tokens t ON t.hwid = u.hwid
+WHERE  t.blacklisted = 0
+  AND  (u.last_login IS NULL OR u.last_login < '<AKIŞ_YAYIN_TARİHİ>');
+```
+
+Bu sorgu BOŞ dönüyorsa köprü kaldırılabilir.
+
+### Önerilen geçiş
+
+1. **Gözlem penceresi — en az 90 gün.** Gerekçe: bu bir kurum içi
+   belge kasası; bir kullanıcı izinde, raporlu ya da başka bir projede
+   olabilir. Üç ay, "aktif ama seyrek" bir kullanıcının en az bir kez
+   giriş yapması için makul bir alt sınır. Bir çeyrek dönemi de kapsıyor.
+2. **Pencere boyunca ölçüm.** Yukarıdaki sorgu AdminPanel'e bir satır
+   olarak eklenebilir ("N hesap henüz PIN göçünü tamamlamadı"). Bugün
+   böyle bir gösterge YOK ve elle SQL çalıştırmayı gerektiriyor.
+3. **Pencere sonunda kalan hesaplar için karar.** Boş değilse iki
+   seçenek: (a) o hesapları elle devre dışı bırakıp kullanıcıyı
+   kurtarma akışına yönlendirmek, (b) pencereyi uzatmak. Köprüyü
+   kalanları görmezden gelerek kaldırmak, onları kilitlemek demektir.
+4. **Kaldırma.** `LOGIN_MIN_LEN` silinir, giriş kontrolü `PIN_MIN_LEN`'e
+   çekilir, `test_login_floor_stays_below_new_policy` kaldırılır ve
+   yerine "iki eşik artık AYNI" testi yazılır.
+
+### Dikkat — invariant hâlâ geçerli
+
+`tests/test_pin_policy.py::test_login_floor_stays_below_new_policy`
+`LOGIN_MIN_LEN < PIN_MIN_LEN` şartını koruyor ve bu test 4. adıma kadar
+KALDIRILMAMALI. Bugün ikisini eşitlemek, göç etmemiş hesapları sessizce
+kilitler.
+
+### Kapsanmayan
+
+* **Göç göstergesi yok.** Yukarıdaki sorgu hiçbir arayüzde görünmüyor;
+  2. adım onu AdminPanel'e bağlamayı öneriyor ama bu tur yapılmadı.
+* **Akış yayın tarihi kayıtlı değil.** Sorgu bir eşik tarih istiyor ve o
+  tarih şu an yalnızca git geçmişinde. Bir `settings` satırı
+  (`pin_rotation_deployed_at`) bunu ölçülebilir kılardı.

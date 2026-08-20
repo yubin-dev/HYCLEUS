@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from CORE.roles import ROL_SALT_OKUNUR, ROL_STANDART, ROL_YONETICI, normalize_role
-from CORE.pin_policy import validate_new_pin
+from CORE.pin_rotation import PinRotationError, rotate_pin
 from DB.db_manager import DBManager
 
 _QSS = """
@@ -336,32 +336,21 @@ class ProfileDialog(QDialog):
         if new != rep:
             QMessageBox.warning(self, "PIN", "Yeni PIN'ler eşleşmiyor.")
             return
-        pin_error = validate_new_pin(new)
-        if pin_error:
-            QMessageBox.warning(self, "PIN", pin_error)
-            return
-
+        # Doğrulama, kasa yeniden şifreleme, `last_pin_changed` güncelleme
+        # ve denetim kaydı TEK YERDE: `CORE/pin_rotation.py`. Zorunlu
+        # yenileme akışı (B-003) da aynı fonksiyonu çağırıyor — ikinci bir
+        # uygulama, bu deponun beş kez ürettiği kusur sınıfı olurdu.
         try:
-            from CORE.vault_manager import change_vault_pin
-            change_vault_pin(self._hwid, old, new)
-        except ValueError as exc:
+            rotate_pin(
+                DBManager(), self._hwid, old, new,
+                user_id=self._user_id, zorunlu=False,
+            )
+        except PinRotationError as exc:
             QMessageBox.warning(self, "PIN Hatası", str(exc))
             return
         except Exception as exc:
             QMessageBox.critical(self, "Hata", str(exc))
             return
-
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        try:
-            db = DBManager()
-            db.execute(
-                "UPDATE users SET last_pin_changed = ? WHERE id = ?",
-                (now_str, self._user_id),
-            )
-            db.log("pin_changed", user_id=self._user_id,
-                   detail=f"hwid={self._hwid[:8]}")
-        except Exception:
-            pass
 
         self._old_pin.clear()
         self._new_pin.clear()

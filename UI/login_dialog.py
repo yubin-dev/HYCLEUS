@@ -49,6 +49,8 @@ from DB.db_manager import DBManager
 from CORE.paths import data_dir as _data_dir
 from CORE import rate_limit
 from CORE.pin_policy import LOGIN_MIN_LEN, PIN_MIN_LEN, validate_new_pin
+from CORE.pin_rotation import yenileme_gerekli
+from CORE.session_user import kullanici_bilgisi
 from CORE.rate_limit import LockState
 from CORE.secret_store import load_totp_secret, store_totp_secret
 
@@ -853,6 +855,18 @@ class LoginDialog(QDialog):
                 self._show_error("Hesabınız yönetici onayı bekliyor — giriş yapılamaz")
                 return
 
+        # ── B-003: kısa PIN'le girildiyse yenileme ZORUNLU ────────────────
+        #
+        # Tespit ancak BURADA yapılabiliyor: PIN'in uzunluğu Argon2id
+        # hash'inden çıkarılamaz, düz metin yalnızca bu anda elde.
+        #
+        # ASIL KAPI BU BLOK — diyaloğun kapatılamaz olması bir
+        # kullanılabilirlik tercihi. Yenileme başarılı olmadıkça
+        # `accept()` çağrılmıyor, yani diyalog dışarıdan kapatılsa bile
+        # kullanıcı içeri giremiyor.
+        if not self._zorunlu_pin_yenileme(pin):
+            return
+
         # Başarılı giriş sayacı sıfırlar ve audit log'a düşer
         rate_limit.record_success(DBManager(), self._rl_key())
 
@@ -862,6 +876,58 @@ class LoginDialog(QDialog):
             self._hwid, self._role, len(self.session_key) if self.session_key else 0,
         )
         self.accept()
+
+    def _zorunlu_pin_yenileme(self, pin: str) -> bool:
+        """Kısa PIN'i olan kullanıcıyı yenilemeye zorlar (B-003).
+
+        Returns:
+            True  — giriş sürebilir (PIN zaten uygun ya da yenilendi)
+            False — giriş ENGELLENDİ; kullanıcı giriş ekranında kalıyor
+
+        Kasa kullanılmayan yolda (DEV_MODE ve kasa öncesi kurulumlar)
+        yenileme YAPILAMIYOR: `change_vault_pin()` bir kasa dosyası
+        istiyor, o yolda ise PIN ayrı bir hash dosyasında duruyor.
+        Girişi engellemek orada bir kilitlenme üretirdi — çıkış yolu
+        olmayan bir zorunluluk. Durum kayda geçiyor; kalan boşluk
+        BACKLOG'a yazıldı.
+        """
+        if not yenileme_gerekli(pin):
+            return True
+
+        if not (self._use_vault and self._hwid):
+            _log.warning(
+                "pin_rotation_skipped  kasa yok  hwid=%s  uzunluk=%d",
+                self._hwid, len(pin),
+            )
+            return True
+
+        from UI.PinRotationDialog import PinRotationDialog
+
+        db = DBManager()
+        # `users.id` girişte henüz eşlenmemiş olabilir
+        # (`sync_session_user` main.py'de, bu diyalogdan SONRA çalışıyor).
+        # Yan etkisiz arama: bulunursa `last_pin_changed` da güncellenir,
+        # bulunmazsa denetim kaydı yine düşer.
+        try:
+            bilgi = kullanici_bilgisi(db, self._hwid)
+        except Exception:
+            bilgi = None
+
+        dlg = PinRotationDialog(
+            db=db, hwid=self._hwid, mevcut_pin=pin,
+            user_id=bilgi[0] if bilgi else None, parent=self,
+        )
+        dlg.exec()
+
+        if not dlg.rotated:
+            # Diyalog kapatılamaz olsa da pencere yöneticisi ya da bir
+            # test onu dışarıdan kapatabilir. Karar burada verilir.
+            _log.warning("pin_rotation_incomplete  hwid=%s", self._hwid)
+            self._show_error("PIN güncellenmeden giriş yapılamaz")
+            return False
+
+        _log.info("pin_rotation_done  hwid=%s", self._hwid)
+        return True
 
     def _on_register(self) -> None:
         self._reg_error.hide()
