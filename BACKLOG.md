@@ -1370,3 +1370,151 @@ yaprak olarak katıyor. En düşük riskli ilk adım: `CORE/scheduled_checks.py`
 içine günlük bir toplu damgalama görevi, `ZamanKapisi` deseniyle
 (`timestamp_last_run`), ve AdminPanel'de bir "Şimdi damgala" düğmesi.
 Ağ hatası görevi düşürmeli ama uygulamayı DEĞİL.
+
+---
+
+## B-036 — USB fiziksel olarak kaybolduğunda çalışan bir kurtarma yolu YOK
+
+**Durum:** Açık — DÜZELTİLMEDİ, karar gerekiyor
+**Öncelik:** **Yüksek** (kurtarma şemasının kapatmayı vaat ettiği senaryo)
+**Bulundu:** 2026-08-20 — kullanıcı rehberi yazılırken
+
+Kurtarma şeması 2-of-3 ve gerekçesi SECURITY.md §4.4'te yazılı: üç
+paydan herhangi biri kaybolsa kalan ikisi yeterli. Ama `--recover`
+**takılı ve kayıtlı bir USB olmadan hiç başlamıyor**:
+
+```python
+def _require_hwid() -> str:
+    hwid = get_usb_hwid()
+    if hwid is None:
+        _abort("USB tespit edilemedi. ...")
+```
+
+Sebebi teknik olarak doğru: kalan iki payın **ikisi de HWID ile
+adresleniyor** — `share_1` `data/vaults/<hwid>.hclv` içinde,
+`share_2` işletim sistemi anahtar kasasında `hwid` anahtarıyla. USB
+yoksa hangi kaydın okunacağı bilinmiyor.
+
+### Sonucu
+
+| Kaybolan | Kurtarılabilir mi |
+|---|---|
+| Basılı parça (share_3) | ✅ Evet — normal giriş çalışıyor, `--export` yenisini üretiyor |
+| PIN (share_1'e erişim) | ✅ Evet — `--recover`, seçenek 2 |
+| Anahtar kasası / makine (share_2) | ✅ Evet — `--recover`, seçenek 1 |
+| **USB'nin kendisi** | ❌ **Hayır** — araç başlamıyor |
+
+Yani şema üç paydan birinin kaybını tolere ediyor gibi görünüyor ama
+pratikte USB, payların hepsine erişimin ÖN KOŞULU. USB dördüncü ve
+yedeksiz bir bileşen.
+
+### Neden acil
+
+Kullanıcının bu noktada bulacağı tek "çözüm" `setup_usb.py --reset` ve o
+komut bütün `.hcl` dosyalarını kalıcı olarak açılamaz hâle getiriyor.
+Yani çalışan bir yolun yokluğu, kullanıcıyı veri kaybına iten bir
+boşluk — sadece bir eksik özellik değil.
+
+`docs/kullanici-rehberi.md` şu an sınırı açıkça yazıyor ("kendi başınıza
+yapabileceğiniz bir şey yok, yöneticinize başvurun") ve
+`tests/test_kullanici_rehberi.py::test_kayip_USB_icin_calismayan_bir_yol_
+ONERILMIYOR` bu notun silinmesini engelliyor. Ama bu bir çözüm değil,
+dürüst bir kayıt.
+
+### Karar gerektiren nokta
+
+Bir "yeni USB'ye taşı" akışı eklenecek mi? Eklenirse tasarımı düşünmek
+gerekiyor:
+
+* `share_2` kasada HWID ile anahtarlanmış. Yeni HWID'e taşımak, eski
+  kaydı **HWID olmadan bulmayı** gerektiriyor — ya kasada bir dizin
+  tutulacak ya `usb_tokens` tablosu kullanılacak.
+* `share_1` vault dosyasında; dosya adı HWID'den geliyor ama içerik PIN
+  ile açılıyor. Dosyayı yeni HWID adına kopyalamak yeterli olabilir —
+  ÖLÇÜLMEDİ, AAD'de hwid bağı olup olmadığı kontrol edilmeli.
+* Böyle bir akış, USB'yi çalan birinin işine yaramamalı: yeni USB'ye
+  taşıma **basılı parça + PIN** istemeli (yani yine 2-of-3).
+* B-025 ile kesişiyor: HWID bazı aygıtlarda `usb_ids.json`'dan
+  türüyor, yani "USB'nin kimliği" her zaman donanımdan gelmiyor.
+
+Alternatif karar: akış EKLENMEZ ve sınır belgelenir. O durumda kurulum
+akışı kullanıcıya **iki USB kaydettirmeli** (yedek anahtar gibi) —
+bugün böyle bir şey yok.
+
+---
+
+## B-037 — Kurtarma ve yedek CLI'ları dağıtılan pakete GİRMİYOR
+
+**Durum:** Açık — DÜZELTİLMEDİ, önce rapor
+**Öncelik:** Orta-Yüksek (kurtarma yolunun ulaşılabilirliği)
+**Bulundu:** 2026-08-20 — kullanıcı rehberi yazılırken
+
+`HYCLEUS.spec` ve `HYCLEUS-linux.spec` yalnızca `main.py`'yi paketliyor
+(ölçüldü: her iki spec'te tek bir `EXE(` bloğu, `Analysis(['main.py'])`).
+
+Yani son kullanıcıya giden EXE/AppImage şunları **içermiyor**:
+
+* `CORE/recover_vault.py` — kurtarma parçası, PIN sıfırlama
+* `CORE/backup_cli.py` — yedek doğrulama ve geri yükleme
+* `CORE/setup_usb.py` — ilk kurulum
+* `CORE/verify_timestamp_cli.py` — damga doğrulama
+
+### Çelişki
+
+Bu araçların CLI olmasının gerekçesi her dosyanın docstring'inde aynı:
+"grafik arayüz tam ihtiyaç duyulan anda açılmıyor, o yüzden kurtarma
+komut satırında." Gerekçe doğru — ama araçlar **dağıtılan pakette hiç
+yok.** Elinde yalnızca EXE olan bir kullanıcı için kurtarma yolu
+UI'dakinden bile uzak: hiç yok.
+
+Çalıştırmak için kaynak depo + kurulu Python gerekiyor. Bu, hedef
+kitlenin (KVKK sorumlusu, denetçi, büro personeli) sahip olduğu bir şey
+değil.
+
+### Öneri
+
+Spec'e ikinci bir konsol hedefi eklemek düşük maliyetli: PyInstaller tek
+bir `Analysis`/`EXE` çiftinden fazlasını destekliyor. Bir `hycleus-kurtar`
+konsol EXE'si, dört CLI'ı alt komut olarak toplayabilir
+(`hycleus-kurtar recover`, `... verify-backup`, `... verify-timestamp`).
+
+Dikkat: `console=True` olmalı — `main.py` penceresel derleniyor ve o
+kipte `print()` çıktısı hiçbir yere gitmiyor.
+
+Ölçülmesi gereken: paket boyutu artışı (PySide6 ikinci kez girmemeli;
+kurtarma CLI'ları Qt kullanmıyor, `excludes` ile dışarıda tutulabilir).
+
+---
+
+## B-038 — Bütünlük taramasının sonucu arayüzde HİÇBİR YERDE gösterilmiyor
+
+**Durum:** Açık — DÜZELTİLMEDİ, önce rapor
+**Öncelik:** Orta
+**Bulundu:** 2026-08-20 — kullanıcı rehberi yazılırken
+
+Haftalık bütünlük taraması gerçekten çalışıyor: `main.py`
+`start_scheduler(key_provider=...)` çağırıyor, zamanlayıcı
+`maybe_run_weekly_sweep()`'i koşturuyor. Bozuk dosya bulursa sonuç
+**yalnızca iki yere** gidiyor:
+
+1. `logger.warning(...)` — konsola; pencereli EXE'de hiçbir yere.
+2. `db.log("integrity_check_failed", ...)` — denetim kaydına.
+
+`files.integrity_status` sütunu da doldurulmuş durumda ve indeksi var
+(`DB/db_manager.py`), ama **hiçbir arayüz kodu onu okumuyor** (ölçüldü:
+`UI/` altında `integrity_status` geçmiyor).
+
+### Sonucu
+
+Kullanıcının bozulmayı öğrenmesinin tek yolu, Denetim Günlüğü'nü açıp
+`integrity_` ile başlayan kayıtları elle aramak. Rehber şu an bunu
+adım adım anlatıyor — ama bu, bir bildirimin yerine geçen bir arama
+talimatı.
+
+Dosya tablosunda zaten bir "tarama" rozeti sütunu var
+(`_VERDICT_BADGE`, antivirüs sonucu için). Bütünlük durumu için aynı
+desen kullanılabilir; veri hazır, eksik olan yalnızca gösterim.
+
+Daha önemlisi: `SweepReport.clean` False döndüğünde kullanıcıya bir
+kere, açıkça söylenmeli. Sessizce denetim kaydına yazılan bir bozulma,
+aylar sonra fark edilir.

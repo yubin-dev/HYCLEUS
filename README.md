@@ -25,6 +25,13 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 
 ---
 
+> **Lost your USB, PIN, or recovery slip?** Read
+> **[docs/kullanici-rehberi.md](docs/kullanici-rehberi.md)** first — a
+> step-by-step guide written for non-technical users, in Turkish. It
+> starts with the one command you must never run.
+
+---
+
 ### ✨ Features
 
 | Category | Feature |
@@ -349,6 +356,13 @@ MIT License — see [LICENSE](LICENSE) for details.
 ### HYCLEUS Nedir?
 
 HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için geliştirilmiş bir Windows masaüstü uygulamasıdır. Her dosya diske yazılmadan önce **AES-256-GCM** ile şifrelenir. Ana anahtar **Shamir 2-of-3 Gizli Paylaşımı** ile üçe bölünür — üç paydan herhangi ikisi anahtarı geri getirir. share_1, Argon2id PIN-türevli KEK ile şifreli yerel kasa dosyasında (`.hclv`) saklanır; share_2 ise **işletim sistemi anahtar kasasında** (Windows Credential Manager / macOS Keychain / Linux Secret Service) `HYCLEUS` / `share_2:<hwid>` adıyla tutulur. TOTP sırrı da aynı şekilde saklanır. Anahtar kasasına erişilemezse HYCLEUS düz metne geri dönmek yerine açılmayı reddeder. Ana anahtarı yeniden oluşturmak için hem doğru PIN hem de kayıtlı USB cihazının fiziksel olarak mevcut olması zorunludur.
+
+---
+
+> **USB'nizi, PIN'inizi ya da kurtarma kâğıdınızı mı kaybettiniz?** Önce
+> **[docs/kullanici-rehberi.md](docs/kullanici-rehberi.md)** dosyasını okuyun —
+> teknik bilgi gerektirmeyen, adım adım bir rehber. Asla çalıştırmamanız
+> gereken tek komutla başlıyor.
 
 ---
 
