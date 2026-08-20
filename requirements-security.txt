@@ -18,6 +18,14 @@
 #   # 3) kural kanaryaları
 #   PYTHONUTF8=1 pytest tests/test_static_analysis.py
 #
+#   # 4) bağımlılık zafiyetleri (AĞ gerektirir)
+#   PYTHONUTF8=1 pip-audit -r requirements.txt -r requirements-dev.txt --desc on
+#
+# 4. adımda PYTHONUTF8=1 SÜS DEĞİL: pip-audit'in requirements ayrıştırıcısı
+# dosyaları yerel kod sayfasıyla açıyor ve bu dosyalar Türkçe yorum taşıyor.
+# Türkçe bir Windows'ta (cp1254) ölçüldü — değişken olmadan UnicodeDecodeError
+# ile ÇÖKÜYOR, "bulgu yok" demiyor. B-020'nin birebir tekrarı.
+#
 # 2. adımı atlamak bir kez gerçekten CI'ı kırdı: `defusedxml` geçişinde
 # takma ad (`_xml_parse`) yüzünden çıkan yanlış pozitif yalnızca orada
 # görünüyordu. Ayrıca `.github` dizini TARAMAYA DAHİL — CI betikleri de
@@ -31,3 +39,17 @@
 # Alt sınır, kuralların ve kanaryaların üzerinde doğrulandığı sürüm.
 # Daha eskisinin çalışmayacağı iddia edilmiyor — denenmedi.
 semgrep>=1.173
+
+# Bağımlılık zafiyet taraması (ci.yml → security işi, 4. adım).
+#
+# semgrep KODA bakıyor, pip-audit KÜTÜPHANEYE: "bizim yazdığımız kodda
+# zafiyet deseni var mı" ile "kullandığımız sürümlerde bilinen bir CVE var
+# mı" farklı sorular ve HYCLEUS'un saldırı yüzeyinin büyük kısmı
+# bağımlılıklarda (cryptography, PySide6, requests).
+#
+# CI'da GEVŞEK KAPI: bulgu işi kırmıyor, iş özetine ve artifact'a yazıyor.
+# Gerekçe ve sertleştirme kriteri BACKLOG.md / B-039'da.
+#
+# İlk tarama TEMİZ: 49 paket, PyPI ve OSV kaynaklarının ikisinde de
+# 0 bulgu (2026-08-20).
+pip-audit>=2.10

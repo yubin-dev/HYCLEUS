@@ -504,6 +504,116 @@ def test_HER_ci_isinin_zaman_siniri_var():
     )
 
 
+def _yorumsuz(metin: str) -> str:
+    """Tam satır `#` yorumlarını atar (YAML ve requirements için)."""
+    return "\n".join(
+        satir for satir in metin.splitlines()
+        if not satir.lstrip().startswith("#")
+    )
+
+
+def _guvenlik_isi() -> str:
+    """`security` işinin gövdesi, yorumsuz.
+
+    KAPSAM ÖNEMLİ: `GITHUB_STEP_SUMMARY` gibi ifadeler `test` işinde de
+    geçiyor. Dosyanın tamamında aramak, pip-audit adımı tümüyle silinse
+    bile testi geçirirdi — mutasyon testinde tam olarak bu oldu.
+    """
+    return _ci_isleri()["security"]
+
+
+def test_pip_audit_CI_da_kurulu_ve_kosuyor():
+    """
+    Bağımlılık taraması iki yerde birden olmalı: aracın kurulduğu yer ve
+    çalıştırıldığı yer. `requirements`'e eklenip ci.yml'e eklenmezse araç
+    kurulur ama hiç koşmaz; tersi durumda adım "command not found" ile
+    düşer.
+
+    Aranan şey ÇAĞRI BİÇİMİ (`pip-audit -r`), yalnızca "pip-audit"
+    dizesi değil: o dize adım adında, artifact adında ve dosya
+    adlarında da geçiyor, yani komutu silmek testi düşürmezdi.
+    """
+    assert "pip-audit -r" in _guvenlik_isi(), "ci.yml pip-audit çalıştırmıyor"
+    guvenlik = _yorumsuz((KOK / "requirements-security.txt").read_text(encoding="utf-8"))
+    assert re.search(r"^pip-audit>=", guvenlik, re.M), (
+        "pip-audit requirements-security.txt'te yok (yorum satırı sayılmaz)"
+    )
+
+
+def test_pip_audit_HER_IKI_requirements_dosyasini_da_tariyor():
+    """
+    `requirements-dev.txt` içinde `-r requirements.txt` var, yani teoride
+    tek dosya yeterdi. İkisi de AÇIKÇA veriliyor: o `-r` satırı bir gün
+    kaldırılırsa runtime bağımlılıkları sessizce taranmaz olurdu.
+
+    HER çağrı denetleniyor — biri düzeltilip diğeri unutulursa özet ile
+    artifact farklı şeyler anlatırdı.
+    """
+    govde = _guvenlik_isi()
+    cagrilar = re.findall(r"pip-audit ([^\n]*)", govde)
+    assert len(cagrilar) >= 2, f"Beklenen iki tarama, bulunan: {len(cagrilar)}"
+    for arg in cagrilar:
+        assert "-r requirements.txt" in arg and "-r requirements-dev.txt" in arg, (
+            f"Bu pip-audit çağrısı iki dosyayı da taramıyor: {arg!r}"
+        )
+
+
+def test_pip_audit_GEVSEK_kapi_ve_bu_bilerek():
+    """
+    Gevşek kapının en büyük riski, kalıcı hâle gelip unutulması.
+
+    Adım gevşekse gerekçesi de yazılı olmalı: "sertleştirdim ama yorumu
+    unuttum" ve "yorumu sildim ama gevşek bıraktım" durumlarının ikisi de
+    testi düşürüyor.
+    """
+    tam = CI.read_text(encoding="utf-8")
+    if "continue-on-error: true" in _guvenlik_isi():
+        assert "B-039" in tam, (
+            "pip-audit gevşek kapı ama sertleştirme kriteri (B-039) "
+            "ci.yml'de anılmıyor"
+        )
+        assert "GEVŞEK KAPI" in tam
+
+
+def test_pip_audit_bulgusu_GORUNUR_kaliyor():
+    """
+    Sessiz bir gevşek kapı, olmayan bir kapıdır.
+
+    Bulgu CI'ı kırmıyorsa en azından iş özetine ve indirilebilir bir
+    artifact'a düşmeli. Üç ayrı yol denetleniyor ve üçü de `security`
+    işinin İÇİNDE aranıyor — `GITHUB_STEP_SUMMARY` `test` işinde de
+    geçiyor ve dosya genelinde aramak bu testi anlamsız yapardı.
+    """
+    govde = _guvenlik_isi()
+    assert "GITHUB_STEP_SUMMARY" in govde, "Bulgu iş özetine yazılmıyor"
+    assert re.search(r"^\s*name: pip-audit-raporu\s*$", govde, re.M), (
+        "Rapor `pip-audit-raporu` adıyla artifact olarak yüklenmiyor"
+    )
+    assert "steps.pip_audit.outcome" in govde, (
+        "Özet, adımın GERÇEK sonucunu okumuyor. `continue-on-error` "
+        "`conclusion`'ı 'success' yapıyor; ayrım yalnızca `outcome`'da ve "
+        "`conclusion` okunursa özet her zaman 'temiz' der."
+    )
+
+
+def test_pip_audit_PYTHONUTF8_altinda_kosuyor():
+    """
+    Ölçüldü: Türkçe bir Windows'ta (cp1254) pip-audit, requirements
+    dosyalarımızı yerel kod sayfasıyla açıp UnicodeDecodeError ile
+    ÇÖKÜYOR — çünkü dosyalar Türkçe yorum taşıyor.
+
+    Linux koşucusu zaten UTF-8, yani CI'da görünmez. Görünmemesi
+    düzeltmeyi gereksiz yapmıyor: belgelenen elle çalıştırma komutu
+    kırılırdı ve geliştirici "bulgu yok" değil bir yığın izleme görürdü.
+    B-020'nin birebir tekrarı.
+    """
+    assert 'PYTHONUTF8: "1"' in _guvenlik_isi()
+    guvenlik = (KOK / "requirements-security.txt").read_text(encoding="utf-8")
+    assert "PYTHONUTF8=1 pip-audit" in guvenlik, (
+        "Belgelenen elle çalıştırma komutu PYTHONUTF8=1 taşımıyor"
+    )
+
+
 def test_apt_adimi_asilamaz_hale_getirilmis():
     """
     Asılmanın üç bilinen yolu da kapalı kalmalı.

@@ -128,7 +128,7 @@ jobs:
   #     tek bakışta görünüyor.
   # ────────────────────────────────────────────────────────────────────────────
   security:
-    name: Statik güvenlik analizi (semgrep)
+    name: Statik güvenlik analizi (semgrep + pip-audit)
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -186,6 +186,99 @@ jobs:
       #    hiçbir şey aramıyor" ayırt edilemez.
       - name: Kural kanaryaları (pytest)
         run: pytest tests/test_static_analysis.py -v
+
+      # ──────────────────────────────────────────────────────────────────────
+      # 4) BAĞIMLILIK zafiyet taraması — semgrep KODA bakıyor, bu KÜTÜPHANEYE
+      #
+      # İki adım farklı soruları yanıtlıyor ve biri diğerinin yerine geçmiyor:
+      # semgrep "bizim yazdığımız kodda zafiyet deseni var mı" diyor,
+      # pip-audit "kullandığımız sürümlerde bilinen bir CVE var mı" diyor.
+      # HYCLEUS'un saldırı yüzeyinin büyük kısmı bağımlılıklarda
+      # (cryptography, PySide6, requests) ve o yüzey şimdiye kadar hiç
+      # taranmıyordu.
+      #
+      # ⚠️ GEVŞEK KAPI — BİLEREK, ama gerekçesi ALIŞILDIK OLANDAN FARKLI.
+      #
+      # Normalde gevşek başlangıcın sebebi "mevcut bulgular CI'ı kırmasın"
+      # olur. Burada öyle değil: ilk tarama TEMİZ çıktı (49 paket, PyPI ve
+      # OSV kaynaklarının ikisinde de 0 bulgu, 2026-08-20). Yani sert kapı
+      # bugün hiçbir şeyi kırmazdı.
+      #
+      # Gevşek bırakılmasının sebebi başka: bu adım, DEPODAKİ HİÇBİR ŞEY
+      # DEĞİŞMEDEN kırılabilen tek adım. Yukarıda bir CVE yayınlandığı an
+      # tamamen ilgisiz bir PR kırmızıya döner. Semgrep kayıt defteri
+      # adımında bu gürültü bilerek kabul edildi ("bulgu kaçırmaktansa
+      # gürültü") — orada tetikleyici bizim kodumuz; burada tetikleyici
+      # bizim dışımızda ve düzeltme çoğu zaman bir sürüm yükseltmesi,
+      # yani ayrı bir iş.
+      #
+      # Bu yüzden bulgu KIRMIZI YAPMIYOR ama GÖRÜNMEZ de değil: iş özetine
+      # yazılıyor ve artifact olarak yükleniyor. Sessiz bir gevşek kapı,
+      # olmayan bir kapıdır.
+      #
+      # Sertleştirme kriteri BACKLOG.md / B-039'da yazılı.
+      #
+      # PYTHONUTF8=1 (iş düzeyinde zaten verili) BURADA DA ZORUNLU:
+      # pip-audit'in requirements ayrıştırıcısı dosyaları YEREL KOD
+      # SAYFASIYLA açıyor ve requirements dosyalarımız Türkçe yorum
+      # taşıyor. Türkçe bir Windows'ta (cp1254) ölçüldü: değişken olmadan
+      # UnicodeDecodeError ile ÇÖKÜYOR. B-020'nin birebir tekrarı.
+      - name: Bağımlılık zafiyet taraması (pip-audit)
+        id: pip_audit
+        continue-on-error: true
+        # Tek çözümleme ~12 sn ölçüldü (49 paket); iki tarama + ağ payı.
+        timeout-minutes: 8
+        run: |
+          set -uo pipefail
+          # Çıkış kodu ELDE TUTULUYOR. `continue-on-error` işi yeşil
+          # tutuyor ama `steps.pip_audit.outcome` gerçek sonucu taşıyor ve
+          # özet adımı onu okuyor. `|| durum=$?` şart: GitHub `run:`
+          # bloklarını `bash -e` ile koşuyor, yani ilk hatada betik
+          # doğrudan biter ve kod hiç yakalanamaz.
+          durum=0
+          # 1) KISA tablo — iş özetine gidiyor. `--desc on` BİLEREK YOK:
+          #    ölçüldü, 23 bulguda açıklamalı çıktı 26 KB / açıklamasız
+          #    3 KB. Özet eyleme dönüştürülebilir olanı göstermeli
+          #    (paket, sürüm, düzeltme sürümü); kimlikler zaten osv.dev'e
+          #    bağlantılı.
+          pip-audit -r requirements.txt -r requirements-dev.txt             --progress-spinner off             --format markdown > pip-audit.md || durum=$?
+          # 2) TAM kayıt — yalnızca artifact. Açıklamalar burada; boyut
+          #    önemli değil. Bu satırın başarısızlığı sonucu
+          #    DEĞİŞTİRMEMELİ, karar 1. taramanın.
+          pip-audit -r requirements.txt -r requirements-dev.txt             --desc on --progress-spinner off             --format json > pip-audit.json || true
+          # Temiz taramada markdown çıktısı BOŞ kalıyor ve "No known
+          # vulnerabilities found" stderr'e gidiyor (ölçüldü).
+          if [ -s pip-audit.md ]; then cat pip-audit.md; else echo "Bulgu yok."; fi
+          exit $durum
+
+      - name: Zafiyet özeti
+        if: always()
+        run: |
+          {
+            echo "## Bağımlılık zafiyet taraması (pip-audit)"
+            echo
+            if [ "${{ steps.pip_audit.outcome }}" = "success" ]; then
+              echo "✅ Bilinen zafiyet bulunamadı."
+            else
+              echo "⚠️ **Zafiyet bulundu.** Bu adım CI'ı KIRMIYOR (gevşek kapı,"
+              echo "bkz. ci.yml yorumu ve BACKLOG.md / B-039) ama bulgular"
+              echo "değerlendirilmeli."
+            fi
+            echo
+            if [ -s pip-audit.md ]; then cat pip-audit.md; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Günlüğe güvenmeden indirilip incelenebilsin — AppImage/EXE
+      # artifact'larıyla aynı gerekçe.
+      - name: Zafiyet raporunu yükle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-raporu
+          path: |
+            pip-audit.md
+            pip-audit.json
+          if-no-files-found: warn
 
   # ────────────────────────────────────────────────────────────────────────────
   # AppImage — Linux dağıtım yapısı

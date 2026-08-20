@@ -1518,3 +1518,109 @@ desen kullanılabilir; veri hazır, eksik olan yalnızca gösterim.
 Daha önemlisi: `SweepReport.clean` False döndüğünde kullanıcıya bir
 kere, açıkça söylenmeli. Sessizce denetim kaydına yazılan bir bozulma,
 aylar sonra fark edilir.
+
+---
+
+## B-039 — pip-audit gevşek kapı; sertleştirme kriteri
+
+**Durum:** Açık — karar bekliyor (araç KURULDU ve çalışıyor)
+**Öncelik:** Düşük (bugün bulgu yok; madde kapının kendisi hakkında)
+**Bulundu:** 2026-08-20 — pip-audit'in CI'a eklendiği tur
+
+### İlk tarama sonucu: TEMİZ
+
+```
+49 paket çözümlendi (geçişli bağımlılıklar dahil)
+ 0 zafiyet — PyPI kaynağı
+ 0 zafiyet — OSV kaynağı (çapraz kontrol)
+```
+
+Taranan: `requirements.txt` + `requirements-dev.txt`, geçişli bağımlılıklar
+dahil (`shiboken6`, `charset-normalizer`, `idna`, `urllib3`, `cffi` …).
+İki ayrı zafiyet kaynağıyla çapraz kontrol edildi çünkü PyPI ve OSV her
+zaman aynı şeyi bildirmiyor.
+
+Yani **düzeltilecek bir bulgu yok** ve bu maddenin konusu bulgular değil,
+kapının sertliği.
+
+### Kapı neden GEVŞEK
+
+Alışıldık gerekçe ("mevcut bulgular CI'ı kırmasın") burada GEÇERSİZ —
+bulgu yok, sert kapı bugün hiçbir şeyi kırmazdı.
+
+Gevşek bırakılmasının sebebi başka ve daha kalıcı: **bu adım, depodaki
+hiçbir şey değişmeden kırılabilen tek adım.** Yukarıda bir CVE yayınlandığı
+an, tamamen ilgisiz bir PR kırmızıya döner ve yazarının o bulguyla hiçbir
+ilgisi olmaz.
+
+Semgrep kayıt defteri adımında aynı gürültü bilerek kabul edilmişti
+("bulgu kaçırmaktansa gürültü"). Fark şu: orada tetikleyici bizim kodumuz
+ve düzeltme aynı PR'da yapılabilir. Burada tetikleyici bizim dışımızda ve
+düzeltme çoğu zaman bir sürüm yükseltmesi — ayrı bir iş, ayrı bir test
+turu.
+
+Bulgu **görünmez değil**: iş özetine markdown tablo olarak yazılıyor ve
+`pip-audit-raporu` artifact'ı olarak (kısa tablo + açıklamalı JSON)
+yükleniyor.
+
+### Sertleştirme kriteri
+
+Kapı şu ikisinden biri sağlandığında sertleştirilmeli:
+
+1. **Sürüm sabitleme geldiğinde.** Bugün `requirements.txt` sürüm
+   sabitlemiyor (`PySide6`, `cryptography`, `requests` … hepsi serbest).
+   Sabitlenmiş bir dosyada yeni bir CVE, biz bir şey değiştirene kadar
+   ortaya çıkmaz; yani "ilgisiz PR kırmızıya döner" riski büyük ölçüde
+   kalkar ve sert kapının bedeli düşer.
+2. **`--ignore-vuln` listesi kurulduğunda.** Bilinen ve bilerek kabul
+   edilen bulgular gerekçeleriyle listelenirse, sert kapı yalnızca YENİ
+   bulgularda çalar. Bu, gevşek kapıdan kesin olarak daha iyi: gevşek
+   kapıda kabul edilen bulgu ile fark edilmemiş bulgu ayırt edilemez.
+
+İkincisi tercih edilmeli. Bugün liste BOŞ olacağı için maliyeti bir satır.
+
+Kapının sessizce kalıcılaşmasını `tests/test_packaging.py::
+test_pip_audit_GEVSEK_kapi_ve_bu_bilerek` engelliyor: adım gevşekse
+gerekçe ve bu madde numarası ci.yml'de anılmak ZORUNDA.
+
+### Yan bulgu — B-020 birebir tekrarladı
+
+pip-audit'in requirements ayrıştırıcısı (`pip_requirements_parser`)
+dosyaları **yerel kod sayfasıyla** açıyor:
+
+```python
+data.decode(locale.getpreferredencoding(False) or sys.getdefaultencoding())
+```
+
+Bizim requirements dosyalarımız Türkçe yorum taşıyor. Türkçe bir
+Windows'ta (cp1254) ÖLÇÜLDÜ:
+
+```
+UnicodeDecodeError: 'charmap' codec can't decode byte 0x9e in position 506
+decoding with 'cp1254' codec failed
+```
+
+`PYTHONUTF8=1` ile sorun kayboluyor. Bu, B-020'nin (semgrep + Türkçe kural
+dosyası + UTF-8 olmayan locale) birebir aynısı — aynı sınıf üçüncü kez
+çıkıyor.
+
+Linux koşucusu zaten UTF-8, yani **CI'da hiç görünmezdi.** Görünmemesi
+düzeltmeyi gereksiz yapmıyor: belgelenen elle çalıştırma komutu Türkçe bir
+Windows'ta kırılırdı ve geliştirici "bulgu yok" değil bir yığın izleme
+görürdü — yani aracın sessizce yanlış cevap verdiğini sanırdı.
+
+`requirements-security.txt`'teki elle çalıştırma komutu ve ci.yml'in iş
+düzeyi `env` bloğu ikisi de `PYTHONUTF8=1` taşıyor;
+`test_pip_audit_PYTHONUTF8_altinda_kosuyor` ikisini birden denetliyor.
+
+### Kapsanmayan
+
+* **`requirements-build.txt` (PyInstaller) taranmıyor.** Yalnızca paketleme
+  makinesinde kurulu ve ürüne girmiyor; yine de bir yapı aracının zafiyeti
+  tedarik zinciri riski. Ayrı bir değerlendirme konusu.
+* **Sistem/Qt kütüphaneleri taranmıyor.** pip-audit yalnızca Python
+  paketlerine bakıyor; AppImage'in `apt` ile kurduğu `libegl1` ve
+  arkadaşları kapsam dışında.
+* **Bağımlılıklar SABİTLENMİYOR.** Bugünkü tarama "bugün çözümlenen
+  sürümler" hakkında; yarın farklı sürümler çözümlenebilir. Sabitleme ayrı
+  bir karar (bkz. yukarıdaki 1. kriter).
