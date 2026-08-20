@@ -63,7 +63,7 @@ _SELFTEST_MODULLERI: tuple[str, ...] = (
     "CORE.timestamp_report",
     "CORE.timestamp_verify", "CORE.usb_manager", "CORE.vault_manager",
     "CORE.verify_timestamp_cli", "CORE.version",
-    "DB.db_manager",
+    "DB.db_manager", "DB.migrations",
 )
 
 #: Üçüncü taraf modüller. Ağırlık, yalnızca FONKSİYON İÇİNDE import edilen

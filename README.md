@@ -303,7 +303,8 @@ HYCLEUS/
 │   ├── usb_manager.py        # USB HWID detection (WMI)
 │   └── vault_manager.py      # Shamir SSS + key reconstruction
 ├── DB/
-│   └── db_manager.py         # SQLite3 singleton, schema migrations
+│   ├── db_manager.py         # SQLite3 singleton, schema bootstrap
+│   └── migrations.py         # Numbered schema-migration ledger (1..21 + future)
 ├── UI/
 │   ├── main_window.py        # Main window, QThreadPool, USB lock overlay
 │   ├── dialog_kit.py         # Shared plumbing for report dialogs
@@ -639,7 +640,8 @@ HYCLEUS/
 │   ├── usb_manager.py        # USB HWID tespiti (WMI)
 │   └── vault_manager.py      # Shamir SSS + anahtar birleştirme
 ├── DB/
-│   └── db_manager.py         # SQLite3 singleton, şema migrasyonları
+│   ├── db_manager.py         # SQLite3 singleton, şema kurulumu
+│   └── migrations.py         # Numaralı göç kayıt defteri (1..21 + gelecek)
 ├── UI/
 │   ├── main_window.py        # Ana pencere, QThreadPool, USB kilit overlay
 │   ├── dialog_kit.py         # Rapor diyaloglarının ortak tesisatı

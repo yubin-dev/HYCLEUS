@@ -418,6 +418,29 @@ class DBManager:
             pass  # kolon zaten var
         self._conn.commit()
 
+        # ── Göç defteri ────────────────────────────────────────────────────
+        #
+        # Yukarıdaki blokların HEPSİ `DB/migrations.py` içinde numaralı
+        # olarak kayıtlı (1..TEMEL_SURUM). `senkronize()` onları YENİDEN
+        # ÇALIŞTIRMIYOR — az önce yapıldılar — yalnızca deftere
+        # damgalıyor. Yani bu satır bugün davranışı DEĞİŞTİRMİYOR.
+        #
+        # Değiştirdiği tek şey görünürlük: bundan sonra bir veritabanına
+        # bakan kişi hangi göçlerin ne zaman uygulandığını
+        # `schema_migrations` tablosundan okuyabiliyor. `except: pass`
+        # deseni bunu asla söyleyemiyordu.
+        #
+        # TEMEL_SURUM üstündeki göçler GERÇEKTEN buradan çalışacak; v3.0'ın
+        # TPM ve .hclx maddeleri o numaraları kullanacak.
+        #
+        # `PRAGMA user_version` bu defter için KULLANILMIYOR: onu
+        # CORE/secret_migration.py sır taşıma sayacı olarak tutuyor ve
+        # paylaşmak sır taşımanın sessizce atlanmasına yol açardı.
+        # Gerekçenin tamamı DB/migrations.py modül docstring'inde.
+        from DB.migrations import senkronize
+
+        senkronize(self._conn)
+
         # Yerel importlar: DB katmanı CORE'a modül seviyesinde bağlanmasın.
 
         # Zincir başlangıcı — idempotent, yalnızca ilk açılışta genesis yazar.
