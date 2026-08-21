@@ -42,6 +42,8 @@ from CORE.vault_manager import (
     blacklist_usb,
     change_vault_role,
     delete_usb_token,
+    export_recovery_share,
+    has_recovery_share,
 )
 from DB.db_manager import DBManager
 
@@ -870,8 +872,98 @@ class AdminPanel(QDialog):
         lay.addWidget(btn_save)
 
         lay.addWidget(self._tsa_kok_bloku())
+        lay.addWidget(self._kurtarma_bloku())
         lay.addStretch()
         return page
+
+    # ── Kurtarma parçası ─────────────────────────────────────────────────────
+    #
+    # Bugüne kadar yalnızca komut satırından alınabiliyordu
+    # (`python CORE/recover_vault.py --export`). Panikleyen bir kullanıcının
+    # o komutu bulması beklenemez; rehber de onu "kaybetmeden önce al"
+    # diyerek uyarıyor.
+    #
+    # Buraya konmasının sebebi: AdminPanel zaten yönetici kapısının
+    # ARDINDA (`main_window::_on_open_admin_panel`, `is_admin_role`). Ayrı
+    # bir rol kontrolü yazmak ikinci bir karar noktası olurdu.
+
+    def _kurtarma_bloku(self) -> QWidget:
+        kutu = QWidget()
+        lay = QVBoxLayout(kutu)
+        lay.setContentsMargins(0, 12, 0, 0)
+        lay.setSpacing(8)
+
+        baslik = QLabel("Kurtarma parçası")
+        baslik.setStyleSheet("color:#89b4fa; font-size:12px; font-weight:600;")
+        lay.addWidget(baslik)
+
+        ipucu = QLabel(
+            "USB ya da anahtar kasası kaybolduğunda kasayı açan üçüncü pay. "
+            "Bir kez gösterilir, hiçbir yere kaydedilmez — yazdırıp fiziksel "
+            "olarak saklayın."
+        )
+        ipucu.setWordWrap(True)
+        ipucu.setStyleSheet("color:#a6adc8; font-size:12px;")
+        lay.addWidget(ipucu)
+
+        btn = QPushButton("Kurtarma Parçasını Göster…")
+        btn.setObjectName("admin_btn_kurtarma")
+        btn.setStyleSheet(_BTN_DANGER)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFixedWidth(230)
+        btn.clicked.connect(self._on_kurtarma_parcasi)
+        lay.addWidget(btn)
+        return kutu
+
+    def _on_kurtarma_parcasi(self) -> None:
+        """
+        Kurtarma parçasını üretir ve modalda gösterir.
+
+        Pay bu metotta da, diyalogda da DİSKE YAZILMIYOR; `build_export`
+        yalnızca bellekte yaşayan bir nesne döndürüyor ve blok biterken
+        ikisi de bırakılıyor.
+        """
+        from CORE.recovery_share import build_export
+        from UI.RecoveryShareDialog import RecoveryShareDialog
+
+        hwid = self._current_hwid
+        if has_recovery_share(hwid):
+            # Aynı pay yeniden üretiliyor — kasa DEĞİŞMİYOR. Kullanıcı
+            # "yeni bir parça mı alıyorum, eskisi geçersiz mi oluyor"
+            # sorusunu sorar; yanıtı sormadan veriyoruz.
+            if QMessageBox.question(
+                self, "Kurtarma Parçası",
+                "Bu cihaz için daha önce kurtarma parçası alınmış.\n\n"
+                "Yeniden göstermek kasayı DEĞİŞTİRMEZ; aynı parça üretilir "
+                "ve eski çıktınız geçerli kalır.\n\nDevam edilsin mi?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            ) != QMessageBox.Yes:
+                return
+
+        pin, ok = QInputDialog.getText(
+            self, "PIN Doğrulama",
+            "Kurtarma parçasını görmek için vault PIN'inizi girin:",
+            QLineEdit.Password,
+        )
+        if not ok or not pin.strip():
+            return
+
+        try:
+            share_3 = export_recovery_share(hwid, pin.strip())
+        except Exception as exc:  # noqa: BLE001 — vault katmanı çeşitli tip atıyor
+            QMessageBox.critical(
+                self, "Kurtarma Parçası",
+                f"Kurtarma parçası üretilemedi:\n\n{exc}")
+            return
+
+        try:
+            disa_aktarim = build_export(share_3)
+            try:
+                RecoveryShareDialog(disa_aktarim, self).exec()
+            finally:
+                del disa_aktarim
+        finally:
+            del share_3
 
     # ── Güvenilir zaman damgası kökleri ──────────────────────────────────────
     #

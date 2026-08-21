@@ -2383,3 +2383,58 @@ düşülmeli (traceback'te istisna satırı sondadır).
 Bugünkü maliyet: CI kırmızıyken sebep hâlâ yetkisiz API'den okunamıyor —
 B-046'yı kapatmak için eklenen mekanizma tam da bu yüzden B-047'de
 işlemedi.
+
+---
+
+## B-049 — Ekran yakalama koruması yalnızca Windows'ta var
+
+**Durum:** Açık — Windows'ta ÇÖZÜLDÜ, diğer platformlarda boşluk
+**Öncelik:** Orta
+**Bulundu:** 2026-08-22 — kurtarma parçası modalı turu
+
+`UI/RecoveryShareDialog.py` ekranın en tehlikeli içeriğini gösteriyor:
+kurtarma parçası, kalan tek payla birlikte kasadaki her dosyanın
+anahtarını veriyor. `WARNING_TEXT` kullanıcıya "ekran görüntüsü almayın"
+diyor ama bunu YALNIZCA rica ediyordu.
+
+### Windows'ta çözüldü — ölçüldü
+
+`SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)` uygulanıyor.
+Gerçek bir pencerede doğrulandı:
+
+```
+platform: windows
+koruma  : True
+GetWindowDisplayAffinity -> 1  (0x11 = WDA_EXCLUDEFROMCAPTURE)
+```
+
+Win10 2004 öncesinde bu bayrak reddediliyor; kod o zaman `WDA_MONITOR`'a
+düşüyor (yakalamada pencere SİYAH çıkar — içerik yine korunur).
+
+### Açık kalan
+
+Linux ve macOS'ta karşılığı **yok**: Qt'nin platformdan bağımsız bir
+"beni yakalama" API'si yok, X11'de kavramsal olarak da yok (herhangi bir
+istemci ekranı okuyabilir). Wayland'de kısıtlama derleyiciye bağlı ve
+uygulamanın isteyebileceği bir bayrak değil.
+
+macOS'ta `NSWindow.sharingType = .none` karşılığı var ama PySide6'dan
+erişmek PyObjC gerektirir — bugün bir bağımlılık değil ve yalnızca bu
+ekran için eklemek orantısız.
+
+### Bugünkü davranış — sessiz DEĞİL
+
+Koruma kurulamadığında modal bunu **yazıyor**:
+
+> ⚠ Ekran yakalama ENGELLENEMEDİ — bu pencere ekran görüntüsüne ve ekran
+> kaydına düşebilir. Bu özellik yalnızca Windows'ta var (platform: linux).
+
+Ve kurulduğunda da yazıyor. Yalnızca sorun varken yazmak, "yazmıyorsa her
+şey yolunda" diye okunurdu ve o çıkarım sessiz bir düşüşte yanlış olurdu
+(B-025).
+
+### Not — numaralandırma
+
+Bu madde istekte "B-045" olarak anılmıştı ama B-045 (görünüm tercihleri
+için kullanıcı başına ayar altyapısı) zaten dolu. Numaralar yeniden
+kullanılmıyor; sıradaki boş numara verildi.
