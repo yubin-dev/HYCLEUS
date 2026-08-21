@@ -1862,3 +1862,83 @@ tutuldu: §1.2 matrisinin GCM satırı ⚠️'ye çekildi (madde 2), §2'nin iki
 kurcalama satırı yalnızca **M2** etiketlendi (M3 iddiası §1.2'ye bırakıldı),
 ve §1.3'e migration öncesi kopya istisnası (madde 3) ile B-025 atfı
 (madde 4) yazıldı.
+
+---
+
+## B-042 — TPM mühürlemesinin kapsamadıkları
+
+**Durum:** Açık — bilinçli kapsam sınırları, hata değil
+**Öncelik:** Orta (1. madde), Düşük (kalanlar)
+**Bulundu:** 2026-08-21 — TPM 2.0 mühürlemesi eklenirken
+
+`CORE/tpm_sealing.py` eklendi ve SECURITY.md §4.13'te belgelendi. Bilerek
+YAPILMAYAN dört şey burada; hiçbiri gizlenmiyor.
+
+### 1. Mevcut kayıtlar geriye dönük mühürlenmiyor — ASIL EKSİK
+
+Mühürleme yalnızca YAZMA anında oluyor. `share_2` ise yalnızca kasa
+kurulurken ya da yeniden sağlanırken yazılıyor. Sonuç:
+
+> **TPM'li bir makinedeki YERLEŞİK bir kurulum, kasa yeniden sağlanana
+> kadar bu özellikten hiçbir kazanım görmüyor.**
+
+Ve bunu hiçbir arayüz söylemiyor. Kullanıcı Hakkında kutusunda "TPM
+mühürlemesi ETKİN" görüyor — ki doğru, mühürleme etkin — ama KENDİ
+`share_2` kaydı hâlâ mühürsüz olabilir. Bu, B-025'in şeklinin bir tık
+yumuşamış hâli: katman açık, ama o kayda uygulanmamış.
+
+Neden bu turda yapılmadı: göç iki yoldan biriyle olurdu ve ikisi de
+istenen "saf ekleme" sınırını aşıyor.
+
+  (a) **Okurken yeniden mühürle.** `load()` mühürsüz bir kayıt görünce
+      mühürleyip geri yazar. Ucuz ama `open_vault()` bir OKUMA işlemine
+      yazma ekler — kasa açma akışının davranışı değişir.
+  (b) **Açılışta göç adımı.** `DB/migrations.py` iskeleti hazır ama o
+      defter SQLite şeması için; anahtar kasası kayıtları şema değil.
+      Ayrı bir göç noktası gerekir.
+
+Yapılacak: önce ÖLÇÜM. `share_2` kaydının mühürlü olup olmadığı
+`muhurlu_mu()` ile bakılabiliyor; AdminPanel'e "bu kasa TPM'e mühürlü:
+evet/hayır" satırı eklemek göçten önce gelmeli — göç edilmemiş kurulumun
+görünmemesi, göçün kendisinden daha büyük sorun.
+
+### 2. CI'da TPM yolu HİÇ çalışmıyor (B-023 sınıfı)
+
+`gercek_tpm` fixture'ı isteyen testler CI'da ATLANIYOR: ne Linux ne de
+Windows koşucusunda TPM sağlayıcısı var. Yani mühürleme yolunun yeşil
+kalması TEK bir geliştirici makinesinin ölçümüne dayanıyor.
+
+Ölçüldüğü ortam, kayıt için: AMD fTPM 2.0, Level 0, Revision 1.59,
+Firmware 393248.6, Windows 11 Pro 26200, 2026-08-21.
+
+Seçenek: GitHub'ın Windows koşucularında vTPM yok; kendi barındırılan bir
+koşucu ya da Hyper-V vTPM'li bir sanal makine gerekir. Maliyeti bu projenin
+ölçeğine göre yüksek — madde şimdilik "biliniyor ve yazılı" durumunda.
+
+### 3. Tek bir TPM üreticisi görüldü
+
+Yalnızca AMD fTPM denendi. Intel PTT, ayrık TPM yongaları (Infineon,
+Nuvoton) ve sanal TPM'ler DENENMEDİ.
+
+Somut bilinmezlik: OAEP'in reddedilmesi (`NCryptEncrypt` → `NTE_BAD_FLAGS`,
+0x80090009) BU sağlayıcıda ölçüldü. Kod zaten PKCS#1'e sabitlendiği için
+başka bir üreticide davranış değişmez — ama "OAEP hiçbir TPM'de
+çalışmıyor" DENMEDİ ve denmemeli.
+
+İkinci bilinmezlik: `NCryptDecrypt`, KURCALANMIŞ bir PKCS#1 sarmalını hata
+vermeden çözüp BOŞ tampon döndürdü (ölçüldü). Bu davranışın üreticiye
+bağlı olup olmadığı bilinmiyor. Kod artık DEK uzunluğunu denetliyor, yani
+her iki davranışta da `TpmSealingError` çıkıyor.
+
+### 4. TPM temizleme senaryosu fiziksel olarak denenmedi
+
+"TPM silinirse mühür kalıcı olarak açılamaz" iddiası mantıksal. BIOS'tan
+Clear TPM yapılıp doğrulanmadı — o işlem ölçüm makinesindeki BitLocker ve
+Windows Hello kayıtlarını da yok ederdi.
+
+Yerine aynı HATA YOLU testte üretiliyor (`test_tpm_sealing.py::
+test_muhurlu_kayit_TPM_yokken_None_DONMUYOR` ve
+`test_TPM_li_kasa_TPM_gidince_ACILMIYOR`): kasada mühürlü kayıt varken TPM
+kapatılıyor ve istisnanın gerçekten fırladığı, `None` DÖNMEDİĞİ ölçülüyor.
+Ölçülmeyen tek şey, gerçek bir Clear TPM'in CNG'den hangi hata kodunu
+döndürdüğü.

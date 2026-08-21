@@ -122,7 +122,8 @@ can end up in any of the three hands, and §4.4 is where that is worked out.
 | AAD *confidentiality* (filename, plaintext SHA-256, ids) | — | ❌ readable in the header (§3) | ❌ |
 | Argon2id PIN → KEK → `share_1` | — | ✅ | ⚠️ offline brute force, no rate limit (§3) |
 | Shamir 2-of-3 | — | ✅ the vault yields one share, and one share is nothing | ❌ `share_2` is already theirs |
-| OS credential store holding `share_2` | — | ⚠️ the blob travels with the disk; the OS account password opens it | ❌ it answers them |
+| OS credential store holding `share_2` | — | ⚠️ the blob travels with the disk; the OS account password opens it — unless the record is TPM-sealed | ❌ it answers them |
+| TPM 2.0 sealing of stored secrets (Windows only) | — | ✅ where present: the blob is useless without that chip (§4.13) | ❌ the TPM answers them too |
 | Vault HMAC, key = HKDF(HWID) | — | ❌ the HWID is not a secret (§4.2) | ❌ |
 | Device binding via the HWID | — | ❌ see §1.3 | ❌ |
 | Login rate limit / lockout | — | ❌ they are not using the application (§4.5) | ⚠️ one `DELETE` removes it (§3) |
@@ -804,6 +805,55 @@ shares and on a real vault round-trip.
 
 ---
 
+### 4.13 TPM sealing raises the floor for M2 only — and binds the secret to one chip
+
+> **Attacker models:** M2 · M3
+
+On Windows with a TPM 2.0, secrets are sealed to the TPM before they are
+written to the credential store (`CORE/tpm_sealing.py`). The unsealing key is
+generated inside the chip and cannot leave it — measured, `NCryptExportKey`
+returns `NTE_NOT_SUPPORTED`. Records written this way carry a `TPM1:` prefix;
+records without it are unsealed and still read normally.
+
+**What it buys, precisely: M2 and nothing else.** §1.2 says the credential
+store blob travels with the disk and the OS account password opens it. For a
+sealed record that stops being true — the blob is useless without that
+specific chip. **M3 is unaffected**: the TPM answers the logged-in user
+exactly as the credential store does. This raises the floor under a stolen
+disk; it does not defend a compromised session.
+
+**It applies to Windows only.** Linux and macOS fall back to the credential
+store as before, and so does any Windows machine without a TPM. That
+fallback is *never silent* — it lands in the audit log every session
+(`tpm_sealing_unavailable`), in `--selftest`, and in Help → About. This is
+B-025's lesson applied deliberately: a layer that switches itself off
+quietly is worse than one that was never built, because the document keeps
+claiming it.
+
+**The cost is real and it is data loss.** Clearing the TPM (BIOS "Clear
+TPM", a mainboard swap, some firmware updates) destroys the key, and every
+sealed value becomes **permanently unopenable**. For `share_2` the way out
+is the printed recovery share (§4.4) — this is exactly the failure Shamir
+2-of-3 exists for. For the TOTP secret the way out is re-enrolling the
+second factor. Unsealing failure is never reported as "no record": that
+would read as *not configured* and push the caller into re-provisioning,
+which is how a recoverable vault becomes an unrecoverable one.
+
+**Existing records are not sealed retroactively.** A record written before
+this feature stays unsealed until something rewrites it — for `share_2`,
+that means re-provisioning. So an established installation on a TPM machine
+gets no benefit until then, and no part of the UI currently says so. Tracked
+as **B-042** in `BACKLOG.md`.
+
+**What was measured and what was not.** The path was exercised on real
+hardware (AMD fTPM 2.0, rev 1.59): seal 1.2 ms, unseal 38 ms, one-time key
+generation 1.33 s. Not measured: any other TPM vendor, and CI — no runner
+has a TPM, so those tests skip there and the path's health rests on one
+developer machine. Same caveat as ClamAV in B-023, stated for the same
+reason.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -821,6 +871,7 @@ shares and on a real vault round-trip.
 | Integrity sweep | Weekly GCM tag verification of every `.hcl` + vault HMAC; streaming, constant memory, no plaintext returned — see §4.7 |
 | PIN storage | Argon2id hash (never plaintext); minimum 6 characters for new PINs |
 | Secret storage | OS credential store, service `HYCLEUS`, usernames `share_2:<hwid>` and `totp_secret` |
+| Secret sealing | Windows + TPM 2.0 only: random 32-byte DEK, AES-256-GCM over the secret with the keyring username as AAD, DEK wrapped by a non-exportable TPM RSA-2048 key via CNG (PKCS#1 v1.5 — OAEP is rejected by the Platform Crypto Provider, measured); `TPM1:` prefix, falls back loudly — see §4.13 |
 | Second factor | TOTP (RFC 6238), 6 digits, ±1 window |
 | Backup | `.hcl` files copied verbatim (already GCM); DB tables exported to canonical JSON and encrypted with the same primitive; manifest carries ciphertext SHA-256 so integrity is checkable without the key — `.hclv` deliberately excluded, see §4.11 |
 | Trusted timestamp | RFC 3161, SHA-256 message imprint over the **plaintext** hash, nonce + `certReq`; token in an optional file trailer outside the GCM tag |
@@ -1075,7 +1126,8 @@ anahtar malzemesi ve bunun hesabı §4.4'te veriliyor.
 | AAD *gizliliği* (dosya adı, düz metin SHA-256, kimlikler) | — | ❌ başlıkta okunabilir (§3) | ❌ |
 | Argon2id PIN → KEK → `share_1` | — | ✅ | ⚠️ çevrimdışı kaba kuvvet, hız sınırı yok (§3) |
 | Shamir 2-of-3 | — | ✅ kasa tek pay veriyor, tek pay hiçbir şey | ❌ `share_2` zaten onda |
-| `share_2`'yi tutan OS anahtar kasası | — | ⚠️ blob diskle birlikte gidiyor; OS hesap parolası onu açar | ❌ ona cevap veriyor |
+| `share_2`'yi tutan OS anahtar kasası | — | ⚠️ blob diskle birlikte gidiyor; OS hesap parolası onu açar — kayıt TPM'e mühürlü DEĞİLSE | ❌ ona cevap veriyor |
+| Saklanan sırların TPM 2.0 mührü (yalnızca Windows) | — | ✅ varsa: blob o yonga olmadan işe yaramaz (§4.13) | ❌ TPM de onlara cevap veriyor |
 | Kasa HMAC'i, anahtar = HKDF(HWID) | — | ❌ HWID bir sır değil (§4.2) | ❌ |
 | HWID üzerinden cihaz bağı | — | ❌ bkz. §1.3 | ❌ |
 | Giriş hız sınırı / kilitleme | — | ❌ uygulamayı kullanmıyorlar (§4.5) | ⚠️ tek bir `DELETE` kaldırıyor (§3) |
@@ -1752,6 +1804,56 @@ vault round-trip'iyle kanıtlıyor.
 
 ---
 
+### 4.13 TPM mühürlemesi tabanı YALNIZCA M2 için yükseltiyor — ve sırrı tek bir yongaya bağlıyor
+
+> **Saldırgan modelleri:** M2 · M3
+
+Windows'ta TPM 2.0 varsa sırlar anahtar kasasına yazılmadan önce TPM'e
+mühürleniyor (`CORE/tpm_sealing.py`). Mührü açan anahtar yonganın içinde
+üretiliyor ve dışarı çıkamıyor — ölçüldü, `NCryptExportKey`
+`NTE_NOT_SUPPORTED` döndürüyor. Bu şekilde yazılan kayıtlar `TPM1:` öneki
+taşıyor; öneksiz kayıtlar mühürsüzdür ve eskisi gibi okunuyor.
+
+**Kazandırdığı şey tam olarak M2, başka hiçbir şey.** §1.2, anahtar kasası
+blob'unun diskle birlikte gittiğini ve OS hesap parolasının onu açtığını
+söylüyor. Mühürlü bir kayıt için bu artık doğru değil — blob, o belirli
+yonga olmadan işe yaramaz. **M3 etkilenmiyor**: TPM de oturum açmış
+kullanıcıya, tıpkı anahtar kasası gibi, cevap veriyor. Bu, çalınmış bir
+diskin altındaki tabanı yükseltiyor; ele geçirilmiş bir oturumu
+savunmuyor.
+
+**Yalnızca Windows'ta geçerli.** Linux ve macOS eskisi gibi anahtar
+kasasına düşüyor; TPM'i olmayan bir Windows makinesi de öyle. O düşüş
+*asla sessiz değil* — her oturumda denetim kaydına
+(`tpm_sealing_unavailable`), `--selftest` çıktısına ve Yardım → Hakkında
+kutusuna düşüyor. Bu, B-025'in dersinin bilinçli uygulaması: kendini
+sessizce kapatan bir katman, hiç kurulmamış olandan kötüdür, çünkü belge
+onu iddia etmeye devam eder.
+
+**Bedeli gerçek ve adı veri kaybı.** TPM temizlenirse (BIOS'ta "Clear TPM",
+anakart değişimi, bazı firmware güncellemeleri) anahtar yok oluyor ve
+mühürlenmiş her değer **kalıcı olarak açılamaz** hâle geliyor. `share_2`
+için çıkış yolu basılı kurtarma parçası (§4.4) — Shamir 2-of-3 tam olarak
+bu arıza için var. TOTP sırrı için çıkış yolu ikinci faktörü yeniden
+kurmak. Mühür açılamaması ASLA "kayıt yok" diye bildirilmiyor: öyle
+bildirilseydi *kurulmamış* diye okunur ve çağıran tarafı yeniden kurmaya
+iterdi — kurtarılabilir bir kasanın kurtarılamaz hâle gelmesi tam olarak
+böyle olur.
+
+**Mevcut kayıtlar geriye dönük MÜHÜRLENMİYOR.** Bu özellikten önce
+yazılmış bir kayıt, onu bir şey yeniden yazana kadar mühürsüz kalıyor;
+`share_2` için bu, yeniden sağlama demek. Yani TPM'li bir makinedeki
+yerleşik bir kurulum o güne kadar hiçbir kazanım görmüyor ve arayüzün
+hiçbir yeri bunu söylemiyor. `BACKLOG.md` içinde **B-042** olarak
+izleniyor.
+
+**Ne ölçüldü, ne ölçülmedi.** Yol gerçek donanımda çalıştırıldı (AMD fTPM
+2.0, rev 1.59): mühürleme 1.2 ms, açma 38 ms, tek seferlik anahtar üretimi
+1.33 sn. Ölçülmeyen: başka hiçbir TPM üreticisi, ve CI — hiçbir koşucuda
+TPM yok, o yüzden ilgili testler orada atlanıyor ve bu yolun sağlığı tek
+bir geliştirici makinesinin ölçümüne dayanıyor. B-023'teki ClamAV
+çekincesinin aynısı, aynı gerekçeyle yazılıyor.
+
 ## 5. Kriptografik ayrıntılar
 
 | Katman | Yapı |
@@ -1769,6 +1871,7 @@ vault round-trip'iyle kanıtlıyor.
 | Bütünlük taraması | Haftalık GCM tag doğrulaması (her `.hcl`) + vault HMAC; akış hâlinde, sabit bellek, düz metin döndürülmez — bkz. §4.7 |
 | PIN saklama | Argon2id hash (asla düz metin); yeni PIN'ler için en az 6 karakter |
 | Sır saklama | OS anahtar kasası, servis `HYCLEUS`, adlar `share_2:<hwid>` ve `totp_secret` |
+| Sır mühürleme | Yalnızca Windows + TPM 2.0: rastgele 32 baytlık DEK, sır üzerinde AES-256-GCM (AAD = kasa kullanıcı adı), DEK dışa aktarılamayan TPM RSA-2048 anahtarıyla CNG üzerinden sarmalanıyor (PKCS#1 v1.5 — OAEP'i Platform Crypto Provider reddediyor, ölçüldü); `TPM1:` öneki, düşüş GÜRÜLTÜLÜ — bkz. §4.13 |
 | İkinci faktör | TOTP (RFC 6238), 6 hane, ±1 pencere |
 | Yedekleme | `.hcl` dosyaları olduğu gibi (zaten GCM); DB tabloları kanonik JSON'a çıkarılıp aynı ilkelle şifreleniyor; manifesto ciphertext SHA-256 taşıyor, yani bütünlük anahtarsız kontrol edilebiliyor — `.hclv` bilerek hariç, bkz. §4.11 |
 | Güvenilir zaman damgası | RFC 3161, **düz metin** özeti üzerinden SHA-256 message imprint, nonce + `certReq`; token GCM tag'inin dışındaki opsiyonel dosya fragmanında |

@@ -98,6 +98,61 @@ def fake_keyring() -> Iterator[InMemoryKeyring]:
 
 
 @pytest.fixture(autouse=True)
+def tpm_kapali(request: pytest.FixtureRequest) -> Iterator[None]:
+    """
+    Varsayılan olarak TPM mühürlemesini KAPATIR.
+
+    autouse ve gerekçesi ölçüldü: bu geliştirme makinesinde gerçek bir
+    TPM 2.0 var (AMD fTPM), CI'ın Linux koşucusunda yok. Fixture olmadan
+    aynı test paketi iki makinede FARKLI sonuç veriyor — ölçüldü,
+    `test_secret_store.py::test_store_load_erase_round_trip` ve
+    `test_vault_keyring.py::test_save_usb_token_writes_to_keyring_not_db`
+    kasadaki HAM değere bakıyor ve TPM'li makinede `TPM1:…` görüp
+    düşüyorlar.
+
+    Makineye göre değişen bir test paketi güven veremez: yeşil bir CI,
+    geliştiricinin makinesinde kırmızı olanı gizler. O yüzden varsayılan
+    tek ve sabit: mühürsüz. TPM yolunu ölçmek isteyen testler
+    `gercek_tpm` fixture'ını isteyerek bunu devre dışı bırakıyor.
+    """
+    from CORE import tpm_sealing
+
+    if "gercek_tpm" in request.fixturenames:
+        yield  # `gercek_tpm` durumu kendisi ayarlıyor
+        return
+
+    onceki = tpm_sealing._durum_onbellek
+    tpm_sealing.zorla_durum(
+        tpm_sealing.TpmDurum(False, "test: TPM bilerek devre dışı (conftest)")
+    )
+    try:
+        yield
+    finally:
+        tpm_sealing._durum_onbellek = onceki
+
+
+@pytest.fixture
+def gercek_tpm():  # type: ignore[no-untyped-def]
+    """
+    GERÇEK TPM donanımını kullanır; yoksa testi atlar.
+
+    `tpm_kapali` bu fixture'ın varlığını görüp kenara çekiliyor.
+    """
+    from CORE import tpm_sealing
+
+    onceki = tpm_sealing._durum_onbellek
+    tpm_sealing.sifirla_onbellek()
+    d = tpm_sealing.durum()
+    if not d.kullanilabilir:
+        tpm_sealing._durum_onbellek = onceki
+        pytest.skip(f"Bu makinede TPM mühürlemesi yok: {d.neden}")
+    try:
+        yield d
+    finally:
+        tpm_sealing._durum_onbellek = onceki
+
+
+@pytest.fixture(autouse=True)
 def isolate_totp_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """
     Migration'ın baktığı totp_secret.json yolunu her test için tmp_path'e taşır.

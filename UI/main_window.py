@@ -39,6 +39,7 @@ from CORE.roles import (
     display_role,
     is_admin_role,
 )
+from CORE.tpm_sealing import durum as tpm_durum
 from CORE.usb_manager import get_usb_hwid
 from CORE.version import surum_etiketi
 from CORE.vault_manager import (
@@ -345,7 +346,12 @@ class HycleusWindow(
                 f"{surum_etiketi()}\n"
                 "Güvenli Dosya Yönetim Sistemi\n\n"
                 "Kriptografi: AES-256-GCM + Argon2id\n"
-                "Shamir Secret Sharing (2-of-3)\n\n"
+                "Shamir Secret Sharing (2-of-3)\n"
+                # TPM düşüşünün kullanıcıya ulaşan kanalı. Bu satır
+                # KOŞULSUZ: yalnızca sorun varken göstermek, "yazmıyorsa
+                # her şey yolunda" gibi okunur ve o çıkarım sessiz bir
+                # düşüşte yanlış olur (B-025). İki durum da yazılıyor.
+                f"{tpm_durum().ozet()}\n\n"
                 "© 2026 HYCLEUS — Tüm hakları saklıdır.",
             )
 

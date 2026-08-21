@@ -25,6 +25,7 @@ from CORE.scheduler import start_scheduler, stop_scheduler
 from CORE.secret_migration import MigrationError, run_migrations
 from CORE.secret_store import KeyringUnavailableError, backend_name, ensure_available
 from CORE.session_user import sync_session_user
+from CORE.tpm_sealing import oturum_raporu as tpm_oturum_raporu
 from CORE.usb_manager import get_usb_hwid
 from CORE.vault_manager import has_recovery_share
 from DB.db_manager import DBManager, HWIDMissingError
@@ -62,7 +63,8 @@ _SELFTEST_MODULLERI: tuple[str, ...] = (
     "CORE.secret_migration", "CORE.secret_store", "CORE.secure_erase",
     "CORE.session_user", "CORE.setup_usb", "CORE.timestamp",
     "CORE.timestamp_report",
-    "CORE.timestamp_verify", "CORE.usb_manager", "CORE.vault_manager",
+    "CORE.timestamp_verify", "CORE.tpm_sealing",
+    "CORE.usb_manager", "CORE.vault_manager",
     "CORE.verify_timestamp_cli", "CORE.version",
     "DB.db_manager", "DB.migrations",
 )
@@ -162,6 +164,15 @@ def _selftest() -> int:
         print(f"Anahtar kasası: {backend_name()}")
     except Exception as exc:
         print(f"Anahtar kasası: erişilemiyor ({type(exc).__name__})")
+
+    # TPM düşüşünün GÖRÜNÜRLÜK kanallarından biri (diğer ikisi: açılıştaki
+    # denetim kaydı ve Hakkında kutusu). Sessizce devre dışı kalan bir
+    # güvenlik katmanı, hiç olmamasından kötüdür — B-025.
+    try:
+        from CORE.tpm_sealing import durum as _tpm_durum
+        print(f"TPM mühürleme: {_tpm_durum().ozet()}")
+    except Exception as exc:
+        print(f"TPM mühürleme: okunamadı ({type(exc).__name__})")
 
     if hatalar:
         print("\nYÜKLENEMEYEN MODÜLLER:")
@@ -276,6 +287,25 @@ def main() -> None:
     except HWIDMissingError as exc:
         QMessageBox.critical(None, "Hata", str(exc))
         sys.exit(1)
+
+    # ── TPM mühürleme durumu ─────────────────────────────────────────────────
+    # Sırlar TPM varsa mühürlenerek kasaya yazılıyor (CORE/tpm_sealing.py).
+    # TPM yoksa mühürsüz yazılıyor ve bu DÜŞÜŞ SESSİZ KALMAMALI: sessizce
+    # devre dışı kalan bir güvenlik katmanı, hiç olmamasından kötüdür —
+    # belge onun varlığını iddia etmeye devam eder (B-025'in dersi).
+    #
+    # Modal uyarı BİLEREK YOK. TPM'siz makine (Linux, macOS, eski donanım)
+    # olağan durum; her açılışta kapatılacak bir kutu, kullanıcıyı tıklayıp
+    # geçmeye eğitir ve uyarının kendisini değersizleştirir. Kalıcı ve
+    # okunabilir üç kanal seçildi: her oturumda denetim kaydı, --selftest
+    # çıktısı, Hakkında kutusu. Asıl alarm zaten mühür AÇILAMADIĞINDA
+    # çalıyor ve orası bir istisna (CORE/secret_store.py::load).
+    try:
+        _tpm_eylem, _tpm_detay = tpm_oturum_raporu()
+        _log.info("tpm_sealing  %s  %s", _tpm_eylem, _tpm_detay)
+        DBManager().log(_tpm_eylem, detail=_tpm_detay)
+    except Exception as exc:  # görünürlük açılışı ENGELLEMEMELİ
+        _log.warning("TPM durumu raporlanamadı: %s", exc)
 
     # ── Denetim zinciri çıpası ───────────────────────────────────────────────
     # Zincir DBManager.connect() içinde kuruluyor (bkz. CORE/audit_chain.py);
