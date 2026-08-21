@@ -1967,3 +1967,74 @@ test_muhurlu_kayit_TPM_yokken_None_DONMUYOR` ve
 kapatılıyor ve istisnanın gerçekten fırladığı, `None` DÖNMEDİĞİ ölçülüyor.
 Ölçülmeyen tek şey, gerçek bir Clear TPM'in CNG'den hangi hata kodunu
 döndürdüğü.
+
+---
+
+## B-043 — `.hclx` teslim paketinin kapsamadıkları
+
+**Durum:** Açık — bilinçli kapsam sınırları
+**Öncelik:** Orta (1–2), Düşük (3–4)
+**Bulundu:** 2026-08-21 — `.hclx` formatı kurulurken
+
+`CORE/hclx.py` eklendi, SECURITY.md §4.14'te belgelendi. Bilerek YAPILMAYAN
+şeyler burada.
+
+### 1. Arayüz bağlantısı YOK — format var, düğme yok
+
+`create_package()` ve `open_package()` çalışıyor ve test ediliyor, ama
+hiçbir menüden çağrılmıyor. Bugün `.hclx` yalnızca koddan erişilebilir.
+
+Bu B-035'in ("hiçbir kullanıcı akışı damga ATMIYOR") ve B-038'in ("bütünlük
+taramasının sonucu arayüzde görünmüyor") aynı sınıfı: çalışan ama
+erişilemeyen bir özellik.
+
+Gerekenler: gönderme akışı (dosya seç → pencere seç → kaydet), açma akışı
+(dosya seç → doğrula → nereye çıkaracağını sor), ve reddedilen paket için
+`_pencere_mesaji()` metnini gösteren bir diyalog.
+
+### 2. Kullanıcı düzeyinde kaynak kanıtı YOK
+
+İmza kasa master key'i altında, yani "bu kasadan çıktı" kanıtlanıyor,
+"bunu KİM üretti" kanıtlanmıyor. Kasaya erişimi olan herkes aynı anahtarı
+paylaşıyor; `sender_user_id` kurcalanamaz ama bir BEYAN.
+
+Asimetrik bir kimlik gerekir. TPM anahtarı (B-042 turunda eklendi) bunun
+için kullanılamaz: bilerek yalnızca ÇÖZME yetkili
+(`NCRYPT_ALLOW_DECRYPT_FLAG`) ve makine başına, kullanıcı başına değil.
+
+Bu, "yeni imza şeması icat etme" kısıtıyla bilinçli olarak çelişmiyor —
+kısıt gereği mevcut mekanizma kullanıldı ve SINIRI YAZILDI. Asimetrik
+kimlik ayrı bir tasarım kararı ve bu maddenin konusu.
+
+### 3. Üretim zamanı BEYAN — RFC 3161 damgası yok
+
+`created_at` üreten makineden geliyor. Pencere hesabı `valid_from`/
+`valid_until`'e bakıyor ve ikisi de aynı beyandan türüyor.
+
+`timestamp.py` zaten RFC 3161 damgası atabiliyor ve gövde bir `.hcl`, yani
+damgalanabilir. Yapılmadı çünkü B-035 hâlâ açık: hiçbir akış damga atmıyor,
+yani damgalama önce KENDİ ayakları üzerinde durmalı.
+
+Damga eklense pencerenin BAŞLANGICI güvenilir bir alt sınır kazanırdı. Ama
+"şimdi"yi hâlâ çözmezdi (bkz. 4. madde).
+
+### 4. Pencere YEREL SAATE bakıyor — saati geri almak paketi açar
+
+SECURITY.md §4.14 bunu açıkça yazıyor ve §3 aynı çekinceyi giriş kilidi
+için zaten kabul ediyor. Çevrimdışı bir uygulamada güvenilir bir "şimdi"
+yok; çözüm bir zaman sunucusu ya da çevrimiçi anahtar dağıtımı ister ve
+ikisi de HYCLEUS'un çevrimdışı olma kararını bozar.
+
+Kayda geçiyor çünkü pencere bir GÜVENLİK özelliği gibi okunabiliyor;
+değil — uygulama seviyesi bir kontrol (§4.5 sınıfı).
+
+### 5. Boyut sınırı 64 MB ve bellekte ~%33 fazlası duruyor
+
+Gövde base64 taşıyan kanonik JSON ve `decrypt_file()` tamamını belleğe
+alıyor. Sınır aşılırsa net bir hata veriliyor ve kullanıcı yedeklemeye
+yönlendiriliyor.
+
+Akış tabanlı bir gövde (base64 yerine uzunluk önekli ikili çerçeveleme)
+sınırı kaldırırdı ama ikinci bir ayrıştırıcı demek. Belge teslimi için
+gerekli görülmedi; gerekirse sürüm `0x02` ile gelir — `SUPPORTED_VERSIONS`
+o gün için hazır.

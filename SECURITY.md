@@ -862,6 +862,70 @@ reason.
 
 ---
 
+### 4.14 The `.hclx` delivery package expires by policy, not by mathematics
+
+> **Attacker models:** M2 · M3
+
+A `.hclx` carries documents out of the vault with a validity window
+(`CORE/hclx.py`). It is for **user data only** — it never carries code, and
+an application update is a separate format that this one deliberately does
+not resemble: the magic bytes differ so that feeding one to the other stops
+at the first byte.
+
+**Expiry: the package stops opening. It is not deleted.** Both behaviours
+were available and this one was chosen, so the guarantee is stated plainly
+rather than implied:
+
+- Deleting would advertise something untrue. If the recipient opened the
+  package inside the window they already hold the plaintext and may have
+  saved, printed or copied it. Destroying the container afterwards does not
+  recall the content.
+- Deletion is best-effort anyway — every limit in §3 applies (SSD wear
+  levelling, copy-on-write filesystems, snapshots).
+- The file belongs to the recipient's machine. HYCLEUS erasing it without
+  asking would be a destructive act on someone else's disk, and it
+  contradicts the repository's existing rule: expiry means deletion is
+  *permitted*, not *required*, and a human decides (`CORE/disposal.py`).
+
+**So the window is an application-level control, exactly the class §4.5
+describes — not a cryptographic one.** Two consequences, both real:
+
+- The recipient necessarily holds the key (otherwise they could never open
+  it), so a modified client can ignore the window entirely.
+- The check reads the **local clock**. Setting it back reopens the package.
+  §3 already concedes the same for the login lockout; there is no trusted
+  "now" in a deliberately offline application.
+
+What the window does buy: on an honest recipient's machine the document
+does not stay open forever, and **every attempt — successful or refused —
+lands in the audit log** (`hclx_opened` / `hclx_rejected`), with who, when,
+and whether it was inside the window.
+
+**The signature is the GCM tag, and its reach is the vault.** No new scheme
+was invented: the body is sealed with `encrypt_file()`, the same primitive
+and the same key as everything else. That gives real integrity — one
+changed byte and it will not open. It gives origin authentication **at
+vault granularity only**: a package can only be produced by someone holding
+this vault's master key. It cannot prove *which* user, because everyone
+with vault access shares that key. The `sender_user_id` in the manifest is
+tamper-proof but self-declared. User-level origin needs an asymmetric
+identity, which this project does not have; the boundary is written down
+instead of blurred.
+
+**The manifest is readable without the key, and that is deliberate.** A
+recipient must be able to see the window and sender before attempting to
+open, and a refusal must be loggable by someone who cannot decrypt. Being
+plaintext, it is editable — so the same manifest is stored *inside* the
+encrypted body and the two are compared byte for byte on open. Editing the
+outer copy to extend a window is caught there. This is the pattern §4.11
+already uses for backup manifests.
+
+**Creation time is self-declared.** `created_at` comes from the producing
+machine and can say anything. An RFC 3161 stamp (§4.9) would turn it into a
+trustworthy lower bound; that was not done in this version — see B-035.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -882,6 +946,7 @@ reason.
 | Secret sealing | Windows + TPM 2.0 only: random 32-byte DEK, AES-256-GCM over the secret with the keyring username as AAD, DEK wrapped by a non-exportable TPM RSA-2048 key via CNG (PKCS#1 v1.5 — OAEP is rejected by the Platform Crypto Provider, measured); `TPM1:` prefix, falls back loudly — see §4.13 |
 | Second factor | TOTP (RFC 6238), 6 digits, ±1 window |
 | Backup | `.hcl` files copied verbatim (already GCM); DB tables exported to canonical JSON and encrypted with the same primitive; manifest carries ciphertext SHA-256 so integrity is checkable without the key — `.hclv` deliberately excluded, see §4.11 |
+| Delivery package (`.hclx`) | Header + plaintext manifest + a complete `.hcl` body; signature = that body's GCM tag under the vault master key, so origin is proven at vault granularity, not per user; the manifest is duplicated inside the body and compared byte for byte; validity window enforced by the application against the local clock — see §4.14 |
 | Trusted timestamp | RFC 3161, SHA-256 message imprint over the **plaintext** hash, nonce + `certReq`; token in an optional file trailer outside the GCM tag |
 | Timestamp verification | Offline, no network: CMS signature over `signedAttrs` (ECDSA / RSA PKCS#1 v1.5 / PSS) against the embedded signer certificate, `timeStamping` EKU, validity at `genTime`, chain walked among embedded certs, digest cross-checked against the AAD — trust anchor must be supplied externally, see §4.9 |
 
@@ -1869,6 +1934,64 @@ TPM yok, o yüzden ilgili testler orada atlanıyor ve bu yolun sağlığı tek
 bir geliştirici makinesinin ölçümüne dayanıyor. B-023'teki ClamAV
 çekincesinin aynısı, aynı gerekçeyle yazılıyor.
 
+### 4.14 `.hclx` teslim paketi POLİTİKAYLA süre doluyor, matematikle değil
+
+> **Saldırgan modelleri:** M2 · M3
+
+`.hclx`, belgeleri kasa dışına bir geçerlilik penceresiyle taşıyor
+(`CORE/hclx.py`). Yalnızca **kullanıcı verisi** için — kod taşımıyor, ve
+uygulama güncellemesi bu formata bilerek BENZEMEYEN ayrı bir format: magic
+baytları farklı, yani birini diğerine veren kod ilk baytta duruyor.
+
+**Süre dolunca: paket AÇILMIYOR. SİLİNMİYOR.** İki davranış da mümkündü,
+bu seçildi; o yüzden garanti ima edilmiyor, açıkça yazılıyor:
+
+- Silmek, doğru olmayan bir şeyi ilan etmek olurdu. Alıcı paketi pencere
+  içinde açtıysa düz metin zaten elinde — kaydetmiş, yazdırmış ya da
+  kopyalamış olabilir. Kabı sonradan yok etmek içeriği geri getirmiyor.
+- Silme zaten en iyi çaba: §3'teki bütün sınırlar geçerli (SSD wear
+  levelling, kopyala-yaz dosya sistemleri, anlık görüntüler).
+- Dosya alıcının makinesine ait. HYCLEUS'un onu sormadan silmesi, başkasının
+  diskinde yıkıcı bir işlem olurdu ve deponun mevcut kuralıyla çelişirdi:
+  sürenin dolması silmeyi *serbest* kılar, *zorunlu* değil; kararı insan
+  verir (`CORE/disposal.py`).
+
+**Yani pencere, §4.5'in tarif ettiği sınıftan bir uygulama seviyesi
+kontrol — kriptografik bir kontrol DEĞİL.** İki sonucu var, ikisi de
+gerçek:
+
+- Alıcı anahtarı zorunlu olarak tutuyor (yoksa hiç açamazdı), dolayısıyla
+  değiştirilmiş bir istemci pencereyi tamamen yok sayabilir.
+- Kontrol **yerel saate** bakıyor. Saati geri almak paketi yeniden açar.
+  §3 aynı çekinceyi giriş kilidi için zaten kabul ediyor; bilerek çevrimdışı
+  bir uygulamada güvenilir bir "şimdi" yok.
+
+Pencerenin gerçekten kazandırdığı: dürüst bir alıcının makinesinde belge
+süresiz açık kalmıyor, ve **her deneme — başarılı ya da reddedilmiş —
+denetim kaydına düşüyor** (`hclx_opened` / `hclx_rejected`); kim, ne zaman,
+pencere içinde miydi.
+
+**İmza, GCM tag'idir ve erişimi kasa düzeyindedir.** Yeni bir şema icat
+edilmedi: gövde `encrypt_file()` ile mühürleniyor, her yerdeki aynı ilkel
+ve aynı anahtar. Bu gerçek bir bütünlük veriyor — tek bayt değişse
+açılmıyor. Kaynak doğrulamasını ise **yalnızca kasa granülerliğinde**
+veriyor: bir paketi ancak bu kasanın master key'ini tutan biri üretebilir.
+HANGİ kullanıcı olduğunu kanıtlayamaz, çünkü kasaya erişimi olan herkes o
+anahtarı paylaşıyor. Manifestodaki `sender_user_id` kurcalanamaz ama bir
+beyandır. Kullanıcı düzeyinde kaynak kanıtı asimetrik bir kimlik ister; bu
+projede yok, sınır bulanıklaştırılmak yerine yazıldı.
+
+**Manifesto anahtarsız okunabiliyor ve bu bilinçli.** Alıcı, açmayı
+denemeden önce pencereyi ve göndereni görebilmeli; çözemeyen biri de bir
+reddi loglayabilmeli. Düz metin olduğu için düzenlenebilir — bu yüzden aynı
+manifesto şifreli gövdenin İÇİNDE de duruyor ve açılışta ikisi bayt bayt
+karşılaştırılıyor. Pencereyi uzatmak için dış kopyayı düzenlemek burada
+yakalanıyor. §4.11 yedek manifestosu için aynı deseni zaten kullanıyor.
+
+**Üretim zamanı beyandır.** `created_at` üreten makineden geliyor ve
+istediğini yazabilir. RFC 3161 damgası (§4.9) bunu güvenilir bir alt sınıra
+çevirirdi; bu sürümde yapılmadı — bkz. B-035.
+
 ## 5. Kriptografik ayrıntılar
 
 | Katman | Yapı |
@@ -1889,6 +2012,7 @@ bir geliştirici makinesinin ölçümüne dayanıyor. B-023'teki ClamAV
 | Sır mühürleme | Yalnızca Windows + TPM 2.0: rastgele 32 baytlık DEK, sır üzerinde AES-256-GCM (AAD = kasa kullanıcı adı), DEK dışa aktarılamayan TPM RSA-2048 anahtarıyla CNG üzerinden sarmalanıyor (PKCS#1 v1.5 — OAEP'i Platform Crypto Provider reddediyor, ölçüldü); `TPM1:` öneki, düşüş GÜRÜLTÜLÜ — bkz. §4.13 |
 | İkinci faktör | TOTP (RFC 6238), 6 hane, ±1 pencere |
 | Yedekleme | `.hcl` dosyaları olduğu gibi (zaten GCM); DB tabloları kanonik JSON'a çıkarılıp aynı ilkelle şifreleniyor; manifesto ciphertext SHA-256 taşıyor, yani bütünlük anahtarsız kontrol edilebiliyor — `.hclv` bilerek hariç, bkz. §4.11 |
+| Teslim paketi (`.hclx`) | Başlık + düz metin manifesto + eksiksiz bir `.hcl` gövdesi; imza, o gövdenin kasa master key'i altındaki GCM tag'i — yani kaynak kasa granülerliğinde kanıtlanıyor, kullanıcı başına değil; manifesto gövdenin içinde de duruyor ve bayt bayt karşılaştırılıyor; geçerlilik penceresi uygulama tarafından yerel saate karşı uygulanıyor — bkz. §4.14 |
 | Güvenilir zaman damgası | RFC 3161, **düz metin** özeti üzerinden SHA-256 message imprint, nonce + `certReq`; token GCM tag'inin dışındaki opsiyonel dosya fragmanında |
 | Zaman damgası doğrulaması | Çevrimdışı, ağsız: `signedAttrs` üzerindeki CMS imzası (ECDSA / RSA PKCS#1 v1.5 / PSS) gömülü imzalama sertifikasına karşı, `timeStamping` EKU, `genTime` anında geçerlilik, gömülü sertifikalar arasında zincir yürüyüşü, özetin AAD ile çapraz kontrolü — güven kökü dışarıdan verilmeli, bkz. §4.9 |
 
