@@ -2205,13 +2205,135 @@ içe aktarmıyor. Yerelde Linux yok (WSL kurulu değil, Docker yok).
 Yetkisiz API ile log (403) ve artifact (401) indirilemiyor; annotation'lar
 bu tura kadar yalnızca test ADINI taşıyordu.
 
-### Sıradaki adım
+### Sıradaki adım — DENENDI, SONUC ALINAMADI
 
-Bu tur `render_annotations` genişletildi: annotation artık
-`<failure message=...>`'in ilk satırını da taşıyor. Bir sonraki push'ta
-aynı beş test düşerse **sebep yetkisiz API'den okunabilecek** ve bu madde
-kapanabilecek.
+`render_annotations` genişletildi: annotation artık `<failure message=...>`
+ilk satırını da taşıyor. Ama bir sonraki koşuda **bu beş test hiç
+çalışmadı** — araya toplama (collection) hatası girdi ve pytest daha ilk
+saniyede durdu. Bkz. B-047.
 
-Alternatif (daha hızlı): `gh run download <id> -n
-test-results-ubuntu-latest-py3.11` ile JUnit XML'i çekmek — tam traceback
-orada.
+Yani bu madde açık kalmakla kalmıyor, artık **maskelendi**: B-047
+çözülmeden beş testin sebebi ölçülemez.
+
+### Güncelleme — 2026-08-21 21:00, run `32526378278` (`89826bd`)
+
+Ölçülenler (yetkisiz GitHub API; log 403, artifact indirme 401 — yalnızca
+metadata ve annotation okunabildi):
+
+| | `85c6dcc` / run 32489529229 | `89826bd` / run 32526378278 |
+|---|---|---|
+| Çıkış kodu | **1** (test başarısızlığı) | **2** (toplama hatası) |
+| "Test (pytest)" adımı | 21:00:38 → 21:01:23, **45 s** | 21:00:38 → 21:00:41, **3 s** |
+| İş toplamı | 1 dk 09 sn | 34 sn |
+| JUnit artifact | 32 230 bayt, 2200+ geçen | **935 bayt** |
+| Annotation | 5 adet, `test_panel_*` | 1 adet, `collection failure` |
+
+Kullanıcının fark ettiği "45 s → 34 s" farkının kaynağı budur: koşu
+hızlanmadı, **hiç başlamadı**. 935 baytlık XML tek bir toplama hatasından
+başka hiçbir şey içermiyor.
+
+Annotation'ın harfi harfine metni:
+
+```
+::error title=Basarisiz test (ubuntu-latest · Python 3.11)::tests.test_guvenlik_view — collection failure
+```
+
+Beş `test_panel_*` testi bu koşuda **hiç görünmüyor** — çünkü pytest
+toplama hatasında oturumu `Interrupted` ile bitiriyor, koşu evresine hiç
+geçmiyor.
+
+---
+
+## B-047 — `test_guvenlik_view.py` Qt'yi korumasız içe aktarıyor: ubuntu'da toplama hatası
+
+**Durum:** Açık — sebep ÖLÇÜLDÜ, düzeltme uygulanmadı
+**Öncelik:** YÜKSEK (CI kırmızı; B-046'yı da maskeliyor)
+**Bulundu:** 2026-08-22 — annotation okuma turu
+
+`89826bd` koşusunda ubuntu ayağını kıran şey `tests/test_guvenlik_view.py`
+dosyasının **toplanamaması**. Çıkış kodu 2, pytest 3 saniyede durdu.
+
+### Neden bu dosya
+
+Deponun Qt test dosyalarında yerleşik bir desen var ve bu dosya onu
+uygulamıyor. AST ile ölçüldü (modül seviyesinde, `try` bloğunun dışında
+`PySide6`/`UI`/`shiboken6` içe aktaran test dosyaları):
+
+```
+korumali test_backup_verify_ui.py    korumali test_pin_rotation_ui.py
+korumali test_checkout_ui.py         korumali test_timestamp_ui.py
+korumali test_duplicate_prompt.py    korumali test_lock_overlay.py
+korumali test_main_window_smoke.py
+CIPLAK   test_guvenlik_view.py  ->  PySide6.QtWidgets, UI.GuvenlikView,
+                                     UI.main_window_files
+```
+
+Sekiz dosyadan **yalnızca biri** korumasız ve annotation'ın adlandırdığı
+dosya tam olarak o. `tests/test_trusted_roots.py` bu listede hiç yok —
+modül seviyesinde Qt içe aktarmıyor, AdminPanel'i test gövdelerinin içinde
+kuruyor. Bu yüzden Linux'ta sorunsuz TOPLANDI ve `85c6dcc`'de koşu
+evresinde düştü (B-046). İki kırılma ayrı mekanizma.
+
+### Deponun kendi kayıtlı içtihadı
+
+`tests/test_lock_overlay.py` başındaki yorum bu hatayı adıyla anlatıyor:
+
+> `importorskip("PySide6")` YETMİYOR: paket kurulu olsa bile alt modüller
+> sistem kütüphanelerine bağlı (libEGL.so.1, libxkbcommon) ve çıplak bir
+> Linux runner'ında `from PySide6.QtGui import ...` ImportError veriyor.
+> Modül seviyesinde patlayan bir import, pytest'te ATLAMA değil TOPLAMA
+> HATASI olur (çıkış kodu 2) ve CI'ı kırar — nitekim 297327f'te Ubuntu
+> ayağı tam olarak böyle kırıldı.
+
+Aynı üç imza bu koşuda da var: çıkış kodu 2, toplama hatası, ubuntu.
+`.github/workflows` içinde ubuntu **test** işinde Qt sistem kütüphanesi
+adımı yok — AppImage işinde var ("Sistem kütüphaneleri (Qt)", adım 4),
+test işinde yok.
+
+### ÖLÇÜLEMEYEN: traceback'in kendisi
+
+Hangi satırın `ImportError` verdiği (`PySide6.QtWidgets` mi, zincirin
+ilerisindeki `UI.main_window_files` mi) **okunmadı**. Traceback 935
+baytlık JUnit XML'in içinde ve indirmek yetki istiyor. Yukarıdaki teşhis
+"hangi dosya" sorusunu ölçümle yanıtlıyor, "hangi satır" sorusunu
+yanıtlamıyor.
+
+### Düzeltme
+
+Diğer yedi dosyadaki blokla aynısı — Qt ve UI içe aktarmalarının hepsi tek
+bir `try` altında, `except ImportError` -> `pytest.skip(...,
+allow_module_level=True)`. Bu turda uygulanmadı: bu tur teşhis turuydu.
+
+Önlem sorusu açık: `test_layering.py`'deki offscreen denetiminin yanına
+"modül seviyesinde korumasız Qt/UI içe aktarma yasak" denetimi eklenmeli
+mi? Yukarıdaki tarama zaten AST ile bunu yapıyor ve tek ihlali buldu —
+teste dönüştürmek küçük iş. Karar kullanıcının.
+
+---
+
+## B-048 — Toplama hatalarında annotation "neden"i taşımıyor
+
+**Durum:** Açık
+**Öncelik:** Orta
+**Bulundu:** 2026-08-22 — annotation okuma turu
+
+`89826bd` turunda eklenen zenginleştirme çalıştı ama işe yaramadı:
+
+```
+tests.test_guvenlik_view — collection failure
+```
+
+`— collection failure` kısmı gerçekten `_ilk_satir()`'in ürettiği ek.
+Sorun şu: pytest **toplama** hatalarında `<error message="collection
+failure">` yazıyor — nitelik sabit ve bilgisiz; asıl traceback düğümün
+METNİNDE. `_ilk_satir()` ise `dugum.get("message") or dugum.text` diyor,
+yani metne hiç bakmıyor.
+
+Koşu başarısızlığı (`<failure message="AssertionError: ...">`) için
+nitelik doğru kaynak. Toplama hatası için değil. Ayrım gerekiyor:
+niteliğin bilgisiz olduğu durumda düğüm metninin **son** anlamlı satırına
+düşülmeli (traceback'te istisna satırı sondadır).
+
+Bugünkü maliyet: CI kırmızıyken sebep hâlâ yetkisiz API'den okunamıyor —
+B-046'yı kapatmak için eklenen mekanizma tam da bu yüzden B-047'de
+işlemedi.
