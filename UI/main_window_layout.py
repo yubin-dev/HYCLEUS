@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QStackedWidget,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -49,6 +50,7 @@ from PySide6.QtWidgets import (
 
 
 
+from UI.GuvenlikView import SAYFA_ADI as _GUVENLIK_SAYFA_ADI
 from UI.main_window_palette import (
     _SIDEBAR_NAV,
 )
@@ -69,7 +71,8 @@ class LayoutMixin:
         root.setSpacing(0)
 
         root.addWidget(self._make_top_bar())
-        root.addWidget(self._make_action_bar())
+        self._action_bar = self._make_action_bar()
+        root.addWidget(self._action_bar)
 
         body = QWidget()
         body.setObjectName("body")
@@ -77,7 +80,7 @@ class LayoutMixin:
         body_h.setContentsMargins(0, 0, 0, 0)
         body_h.setSpacing(0)
         body_h.addWidget(self._make_sidebar())
-        body_h.addWidget(self._make_content(), 1)
+        body_h.addWidget(self._make_govde_yigini(), 1)
         root.addWidget(body, 1)
 
     def _make_top_bar(self) -> QFrame:
@@ -198,6 +201,21 @@ class LayoutMixin:
             self._nav_btns[db_label] = btn
             lay.addWidget(btn)
 
+        # ── Güvenlik ─────────────────────────────────────────────────────
+        # Dosya gezinme düğmelerinden AYRI bir bölüm: bu bir etiket
+        # filtresi değil, ayrı bir görünüm. Aynı listeye konsaydı
+        # `_on_sidebar_click` onu bir `db_label` sanardı.
+        guvenlik_lbl = QLabel("GÜVENLİK")
+        guvenlik_lbl.setObjectName("nav_section_label")
+        lay.addWidget(guvenlik_lbl)
+
+        self._guvenlik_btn = QPushButton(f"   🛡   {_GUVENLIK_SAYFA_ADI}")
+        self._guvenlik_btn.setFixedHeight(44)
+        self._guvenlik_btn.setCursor(Qt.PointingHandCursor)
+        self._guvenlik_btn.setObjectName("nav_guvenlik")
+        self._guvenlik_btn.clicked.connect(self._on_guvenlik_click)
+        lay.addWidget(self._guvenlik_btn)
+
         # ── Scroll alanı: klasörler + etiketler ──────────────────────────────
         scroll = QScrollArea()
         scroll.setObjectName("sidebar_scroll")
@@ -295,6 +313,23 @@ class LayoutMixin:
         lay.addWidget(self._usb_badge)
 
         return sidebar
+
+    def _make_govde_yigini(self) -> QWidget:
+        """
+        İçerik alanı artık İKİ SAYFALI: dosya görünümü + Güvenlik.
+
+        `QStackedWidget` seçildi, ikinci bir pencere değil: tablo, arama
+        çubuğu ve seçim durumu YERİNDE kalıyor. Güvenlik sayfasından dosya
+        görünümüne dönen kullanıcı, bıraktığı yeri buluyor — ayrı bir
+        pencere olsaydı ya durum kopyalanır ya kaybolurdu.
+        """
+        from UI.GuvenlikView import GuvenlikView
+
+        self._govde_yigini = QStackedWidget()
+        self._govde_yigini.addWidget(self._make_content())      # 0 — dosyalar
+        self._guvenlik_view = GuvenlikView(self)
+        self._govde_yigini.addWidget(self._guvenlik_view)       # 1 — güvenlik
+        return self._govde_yigini
 
     def _make_content(self) -> QWidget:
         frame = QWidget()

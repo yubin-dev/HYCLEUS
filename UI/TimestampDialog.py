@@ -94,8 +94,29 @@ class TimestampDialog(QDialog):
         sonuc: TimestampVerification,
         dosya_adi: str,
         parent=None,
+        *,
+        sade: bool = False,
     ) -> None:
+        """
+        Args:
+            sade: `True` ise yalnızca SONUÇ gösteriliyor — simge, başlık,
+                tek cümlelik özet ve (varsa) öneri. Özet alanları, notlar
+                ve teknik blok GİZLENİYOR.
+
+                Gizleniyor, SİLİNMİYOR: bütün alanlar kuruluyor ve
+                `_gelismis` listesinde duruyor, yalnızca görünürlükleri
+                kapalı. Böylece "Basit" bir metin SEVİYESİ değil, aynı
+                içeriğin bir GÖRÜNÜMÜ — ikinci bir açıklama kümesi
+                yazılsaydı ikisi zamanla ayrışırdı.
+
+                Öneri sade modda da GÖSTERİLİYOR ve bu bilinçli: `oneri`
+                bir ayrıntı değil, sonucun eyleme dönüşen yarısı
+                ("bu dosyayı tarih kanıtı olarak KULLANMAYIN" gibi).
+                Gizlemek, sade modu varsayılandan daha TEHLİKELİ yapardı.
+        """
         super().__init__(parent)
+        self._sade = sade
+        self._gelismis: list[QWidget] = []
         self._sonuc = sonuc
         self._dosya_adi = dosya_adi
         self._mesaj: Aciklama = aciklama(sonuc)
@@ -138,14 +159,16 @@ class TimestampDialog(QDialog):
 
         ozet_alanlari = self._ozet_alanlari()
         if ozet_alanlari:
-            yerlesim.addWidget(_sep())
-            yerlesim.addWidget(_kutu(ozet_alanlari))
+            self._gelismis += [_sep(), _kutu(ozet_alanlari)]
 
         for mesaj in self._notlar:
-            yerlesim.addWidget(self._not_bloku(mesaj))
+            self._gelismis.append(self._not_bloku(mesaj))
 
-        yerlesim.addWidget(_sep())
-        yerlesim.addWidget(self._teknik_bloku())
+        self._gelismis += [_sep(), self._teknik_bloku()]
+        for parca in self._gelismis:
+            yerlesim.addWidget(parca)
+            if self._sade:
+                parca.setHidden(True)
         yerlesim.addStretch(1)
 
         dis.addWidget(self._alt_cubuk())

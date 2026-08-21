@@ -360,9 +360,13 @@ class BackupMixin:
         ]
         QMessageBox.information(self, "Yedek Tamamlandı", "\n".join(mesaj))
 
-    def _on_verify_backup(self) -> None:
+    def _on_verify_backup(self, *, sade: bool = False) -> None:
         """
         Bir yedek dizinini GERİ YÜKLEMEDEN doğrular.
+
+        `sade` YALNIZCA Güvenlik sekmesinden geliyor (`UI/GuvenlikView.py`);
+        hamburger menüsü varsayılanı kullanıyor ve bugünkü çıktısı
+        DEĞİŞMİYOR.
 
         Komut satırındaki `--verify --deep` ile AYNI fonksiyonu
         (`CORE.backup.verify_backup`) çağırıyor; ikinci bir doğrulama
@@ -432,4 +436,4 @@ class BackupMixin:
         except Exception as exc:  # pragma: no cover — kayıt, sonucu engellemez
             _log.warning("backup_verify_log_failed  exc=%s", exc)
 
-        BackupVerifyDialog(rapor, yedek, parent=self).exec()
+        BackupVerifyDialog(rapor, yedek, parent=self, sade=sade).exec()

@@ -174,7 +174,7 @@ class FileActionsMixin:
             self._on_ctx_verify_timestamp(file_id, filepath)
 
     def _on_ctx_verify_timestamp(
-        self, file_id: int | None, filepath: str | None
+        self, file_id: int | None, filepath: str | None, *, sade: bool = False
     ) -> None:
         """
         Dosyanın RFC 3161 zaman damgasını çevrimdışı doğrular (adım 3.1).
@@ -191,6 +191,10 @@ class FileActionsMixin:
 
         İş parçacığı yok — ölçüldü, 3,3 ms ve süre dosya boyutundan
         bağımsız (bkz. `UI/TimestampDialog.py` modül docstring'i).
+
+        `sade` YALNIZCA Güvenlik sekmesinden geliyor (`UI/GuvenlikView.py`).
+        Sağ tık menüsü varsayılanı kullanıyor, yani bugünkü çıktısı
+        DEĞİŞMİYOR — mevcut giriş noktalarına dokunulmaması istendi.
         """
         if not filepath:
             QMessageBox.warning(self, "Damga Doğrulama", "Dosya yolu bulunamadı.")
@@ -245,7 +249,7 @@ class FileActionsMixin:
         except Exception as exc:  # pragma: no cover — kayıt, sonucu engellemez
             _log.warning("timestamp_verify_log_failed  exc=%s", exc)
 
-        TimestampDialog(sonuc, path.name, parent=self).exec()
+        TimestampDialog(sonuc, path.name, parent=self, sade=sade).exec()
 
     def _on_ctx_download(self, file_id: int | None, filepath: str | None) -> None:
         if not filepath:

@@ -239,9 +239,22 @@ def test_adminpanel_dugmesi_raporu_cagiriyor():
         if isinstance(n, ast.FunctionDef) and n.name == "_on_verify_chain"
     )
     govde = ast.get_source_segment(src, hedef) or ""
-    assert "zincir_raporu" in govde
-    assert "kullanici_bilgisi" in govde, "doğrulayan kullanıcı gösterilmiyor (B-011)"
-    assert "audit_chain_verified" in govde, "doğrulama denetim kaydına düşmüyor"
+
+    # GÖVDE ARTIK PANELDE DEĞİL. Aynı doğrulama Güvenlik sekmesinden de
+    # çağrılıyor (`UI/GuvenlikView.py`) ve iki ayrı uygulama bu deponun
+    # beş kez ürettiği kusur olurdu; gövde
+    # `UI/security_actions.zinciri_dogrula()`'ya taşındı.
+    #
+    # Bu testin SORDUĞU ŞEY değişmedi: düğme gerçekten raporu üretiyor mu.
+    # Cevap artık bir adım derinde ve ZİNCİRİN TAMAMI izleniyor — panelin
+    # ortak gövdeyi çağırdığı, ortak gövdenin de raporu ürettiği.
+    assert "zinciri_dogrula" in govde, "panel ortak gövdeyi çağırmıyor"
+
+    ortak = (_P(__file__).resolve().parent.parent / "UI" / "security_actions.py"
+             ).read_text(encoding="utf-8")
+    assert "zincir_raporu" in ortak
+    assert "kullanici_bilgisi" in ortak, "doğrulayan kullanıcı gösterilmiyor (B-011)"
+    assert "audit_chain_verified" in ortak, "doğrulama denetim kaydına düşmüyor"
 
     # Sinyal bağlı mı — düğme var ama tıklanınca hiçbir şey olmasın olmaz.
     assert "_btn_chain.clicked.connect(self._on_verify_chain)" in src

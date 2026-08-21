@@ -113,7 +113,20 @@ _PROBLEM_LISTELERI: tuple[tuple[str, str, str], ...] = (
 class BackupVerifyDialog(QDialog):
     """Bir yedek doğrulamasının sonucunu gösterir."""
 
-    def __init__(self, rapor: VerifyReport, yedek_dizini: Path, parent=None) -> None:
+    def __init__(self, rapor: VerifyReport, yedek_dizini: Path, parent=None,
+                 *, sade: bool = False) -> None:
+        """
+        Args:
+            sade: `True` ise yalnızca simge, başlık ve tek cümlelik özet
+                görünüyor; kapsam alanları, problem/bilgi kutuları ve
+                teknik blok gizleniyor.
+
+                `UI/TimestampDialog.py` ile AYNI kural: gizleniyor,
+                silinmiyor — "Basit" ikinci bir metin kümesi değil, aynı
+                içeriğin bir görünümü.
+        """
+        self._sade = sade
+        self._gelismis: list[QWidget] = []
         super().__init__(parent)
         self._rapor = rapor
         self._dizin = Path(yedek_dizini)
@@ -145,17 +158,15 @@ class BackupVerifyDialog(QDialog):
 
         yerlesim.addWidget(self._baslik_bloku())
         yerlesim.addWidget(sarmali(self._rapor.summary(), "ozet"))
-        yerlesim.addWidget(ayrac())
-        yerlesim.addWidget(kutu(self._kapsam_alanlari()))
 
-        for kutucuk in self._problem_kutulari():
-            yerlesim.addWidget(kutucuk)
-
-        for kutucuk in self._bilgi_kutulari():
-            yerlesim.addWidget(kutucuk)
-
-        yerlesim.addWidget(ayrac())
-        yerlesim.addWidget(self._teknik_bloku())
+        self._gelismis += [ayrac(), kutu(self._kapsam_alanlari())]
+        self._gelismis += list(self._problem_kutulari())
+        self._gelismis += list(self._bilgi_kutulari())
+        self._gelismis += [ayrac(), self._teknik_bloku()]
+        for parca in self._gelismis:
+            yerlesim.addWidget(parca)
+            if self._sade:
+                parca.setHidden(True)
         yerlesim.addStretch(1)
 
         dis.addWidget(self._alt_cubuk())

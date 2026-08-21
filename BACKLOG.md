@@ -1304,6 +1304,33 @@ Alternatif (daha ucuz): doğrulama menüden bağımsız bir yerden de
 AdminPanel. Ama AdminPanel yalnızca yöneticiye açık, yani salt okunur
 rolü için çözüm DEĞİL.
 
+### Güncelleme (2026-08-21) — önerilen alternatif KURULDU, kapı açılmadı
+
+Yukarıdaki "alternatif (daha ucuz)" öneri bu turda gerçekleşti:
+`UI/GuvenlikView.py` — damga, yedek ve zincir doğrulamasını toplayan
+ayrı bir üst seviye görünüm. Yani doğrulama artık sağ tık menüsünden
+BAĞIMSIZ bir yerden de çağrılabiliyor.
+
+**Bu maddenin düzeltilmeme gerekçesi o yüzeyde GEÇERSİZ.** Yukarıda
+yazan itiraz, menüyü açmanın yıkıcı maddeleri (İndir, İmha, Taşı)
+sızdırma riskiydi. Güvenlik sayfasında yıkıcı madde YOK — üçü de saf
+okuma, hiçbiri dosyayı değiştirmiyor, anahtar istemiyor, ağa çıkmıyor.
+"Okuma maddelerini ekle" yönü de sağlanmış durumda: sayfaya ne
+eklendiğini `GuvenlikView._KARTLAR` tek yerde sayıyor.
+
+**Yine de kapı AÇILMADI ve bu bilinçli.** Sayfa bugün salt okunur rolde
+gizli; seçim, mevcut kısıtlamayla TUTARLILIK için yapıldı, bir karar
+olarak değil. Karar kullanıcıya bırakıldı.
+
+Açmak tek satır: `UI/GuvenlikView.py::GUVENLIK_SALT_OKUNURA_ACIK = True`.
+Mevcut davranış `tests/test_guvenlik_view.py::
+test_salt_okunura_KAPALI_sabitleniyor` ile sabitlendi — değiştirmek
+testi düşürür, yani bilinçli olmak zorunda.
+
+Açılırsa geriye kalan tek soru: salt okunur kullanıcının seçtiği dosyanın
+`files` satırını okuyabilmesi gerekiyor mu (denetim kaydının `target_id`
+alanı için). Doğrulamanın kendisi o satıra ihtiyaç duymuyor.
+
 ---
 
 ## B-035 — Hiçbir kullanıcı akışı damga ATMIYOR; doğrulama boşa çalışıyor
@@ -2093,3 +2120,37 @@ Bilinçli: §4.9 zaten iptal kontrolü yapılmadığını (OCSP/CRL ağ ister,
 uygulama çevrimdışı) ve kendinden imzalı bir kökün öz-imzasının bir güven
 beyanı OLMADIĞINI yazıyor. Kökün uygunluğu, onu ekleyen yöneticinin
 kararı — araç o kararı taklit etmemeli.
+
+---
+
+## B-045 — Görünüm tercihleri için kullanıcı başına ayar altyapısı yok
+
+**Durum:** Açık — bilinçli kapsam sınırı
+**Öncelik:** Düşük (kozmetik; veri ya da yetki etkisi yok)
+**Bulundu:** 2026-08-21 — Güvenlik sekmesi Basit/Gelişmiş anahtarı eklenirken
+
+Güvenlik sekmesinin Basit/Gelişmiş anahtarı OTURUM İÇİ tutuluyor
+(`GuvenlikView._gelismis`), kalıcı ayara yazılmıyor.
+
+### Neden kalıcı YAPILMADI
+
+`settings` tablosu KURULUM GENELİ, kullanıcı başına değil. Anahtar oraya
+yazılsaydı bir kullanıcının görünüm tercihi, aynı makineyi kullanan diğer
+kullanıcıların gördüğünü de değiştirirdi — bir tercih değil, bir hata.
+
+Kullanıcı başına tercih altyapısı yok ve kozmetik bir anahtar için onu
+kurmak orantısız: `users` tablosuna sütun eklemek ya da ayrı bir
+`user_settings` tablosu açmak bir şema göçü demek (`DB/migrations.py`).
+
+### Ne zaman gerekir
+
+İkinci bir kullanıcı başına tercih ortaya çıktığında. O gün tek bir
+`user_settings(user_id, key, value)` tablosu doğru cevap olur ve bu anahtar
+da oraya taşınır. Tek bir tercih için tablo açmak, tablo açmadan iki
+tercihi `settings`'e sıkıştırmaktan iyi DEĞİL — ikisi de erken karar.
+
+### Bugünkü maliyet
+
+Kullanıcı uygulamayı her açtığında anahtar Gelişmiş'e dönüyor. Varsayılan
+bilerek Gelişmiş: diyalogların bugünkü hâli o ve Basit'i varsayılan
+yapmak, mevcut kullanıcıların gördüğü bilgiyi habersiz azaltırdı.

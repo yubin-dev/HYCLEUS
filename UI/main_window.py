@@ -41,6 +41,10 @@ from CORE.roles import (
 )
 from CORE.tpm_sealing import durum as tpm_durum
 from CORE.usb_manager import get_usb_hwid
+from UI.GuvenlikView import (
+    GUVENLIK_SALT_OKUNURA_ACIK,
+    SAYFA_ADI as _GUVENLIK_SAYFA_ADI,
+)
 from CORE.version import surum_etiketi
 from CORE.vault_manager import (
     blacklist_usb,
@@ -216,6 +220,21 @@ class HycleusWindow(
             _w.setVisible(can_write)
             _w.setEnabled(can_write)
 
+        # ── Güvenlik sayfası: B-034'e bağlı, KARAR VERİLMEDİ ─────────────
+        #
+        # Bugün salt okunur rolde GİZLİ ve bu mevcut kısıtlamayla
+        # TUTARLILIK için; bir karar olarak değil. Salt okunur rol zaten
+        # dosya sağ tık menüsünü hiç açamıyor ve Yönetim Paneli'ne
+        # giremiyor — yani hiçbir doğrulamaya erişemiyor (B-034).
+        #
+        # B-034'ün "düzeltilmedi" gerekçesi bu yüzeyde GEÇERSİZ: oradaki
+        # itiraz sağ tık menüsünün yıkıcı maddeleri sızdırmasıydı, bu
+        # sayfada yıkıcı madde yok. Açmak `GUVENLIK_SALT_OKUNURA_ACIK`
+        # sabitini `True` yapmak; karar kullanıcıya bırakıldı.
+        _guvenlik_gorunur = can_write or GUVENLIK_SALT_OKUNURA_ACIK
+        self._guvenlik_btn.setVisible(_guvenlik_gorunur)
+        self._guvenlik_btn.setEnabled(_guvenlik_gorunur)
+
         # ── Kritik sekmesi: Salt Okunur'da gizli ─────────────────────────
         _kritik = self._nav_btns.get("Kritik")
         if _kritik:
@@ -357,12 +376,33 @@ class HycleusWindow(
 
     # ── Sidebar filtresi ──────────────────────────────────────────────────────
 
+    def _on_guvenlik_click(self) -> None:
+        """
+        Güvenlik görünümüne geçer.
+
+        Eylem barı (Dosya Ekle, Tara…) GİZLENİYOR: bu sayfada hiçbirinin
+        karşılığı yok ve görünür bırakmak, tıklandığında dosya görünümüne
+        geri dönmeyen düğmeler demek olurdu.
+        """
+        if self._active_btn is not None:
+            self._active_btn.setStyleSheet(self._nav_btn_style(active=False))
+            self._active_btn = None
+        self._guvenlik_btn.setStyleSheet(self._nav_btn_style(active=True))
+        self._govde_yigini.setCurrentWidget(self._guvenlik_view)
+        self._action_bar.setVisible(False)
+        self._page_title.setText(_GUVENLIK_SAYFA_ADI)
+
     def _on_sidebar_click(self, db_label: str, btn: QPushButton) -> None:
         if self._active_tag_btn is not None:
             prev_color = self._active_tag_btn.property("tag_color") or self._T["accent"]
             self._active_tag_btn.setStyleSheet(self._tag_btn_style(color=prev_color, active=False))
             self._active_tag_btn = None
         self._current_tag_id = None
+
+        # Güvenlik sayfasından dönüş — yığın ve eylem barı geri alınıyor.
+        self._guvenlik_btn.setStyleSheet(self._nav_btn_style(active=False))
+        self._govde_yigini.setCurrentIndex(0)
+        self._action_bar.setVisible(True)
 
         if self._active_btn is not None:
             self._active_btn.setStyleSheet(self._nav_btn_style(active=False))

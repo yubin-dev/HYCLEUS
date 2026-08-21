@@ -265,45 +265,15 @@ class AdminPanel(QDialog):
 
     def _on_verify_chain(self) -> None:
         """
-        Denetim zincirini ve çıpayı doğrular, sonucu gösterir.
+        Denetim zincirini doğrular.
 
-        Sonuç denetim kaydına da düşüyor: "kim ne zaman doğruladı" sorusu
-        zincirin kendi içinde yanıtlanabilmeli. Kullanıcı `users` satırından
-        okunuyor (B-011) — eskiden böyle bir satır güvenilir biçimde yoktu.
+        GÖVDE BURADA DEĞİL: `UI/security_actions.zinciri_dogrula()`.
+        Aynı iş Güvenlik sekmesinden de çağrılıyor ve iki ayrı uygulama,
+        bu deponun beş kez ürettiği kusur sınıfı olurdu.
         """
-        from CORE.audit_report import zincir_raporu
-        from CORE.session_user import kullanici_bilgisi
+        from UI.security_actions import zinciri_dogrula
 
-        try:
-            db = DBManager()
-            rapor = zincir_raporu(db)
-            kim = kullanici_bilgisi(db, self._current_hwid)
-        except Exception as exc:
-            QMessageBox.critical(self, "Zincir Doğrulama", str(exc))
-            return
-
-        kim_metni = f"{kim[1]} (id={kim[0]})" if kim else f"hwid={self._current_hwid}"
-        govde = f"{rapor.ayrinti()}\n\nDoğrulayan: {kim_metni}"
-
-        kutu = QMessageBox(self)
-        kutu.setWindowTitle("Denetim Zinciri")
-        kutu.setIcon(QMessageBox.Information if rapor.saglam else QMessageBox.Critical)
-        kutu.setText(rapor.baslik())
-        kutu.setInformativeText(govde)
-        kutu.exec()
-
-        try:
-            db.log(
-                "audit_chain_verified",
-                user_id=kim[0] if kim else None,
-                detail=(
-                    f"ok={rapor.saglam} checked={rapor.zincir.checked}"
-                    f" anchors={rapor.cipa.anchors_checked}"
-                    f" first_break={rapor.ilk_kirilma_id}"
-                ),
-            )
-        except Exception as exc:  # kayıt düşmezse sonuç yine gösterildi
-            _log.warning("audit_chain_verified log failed: %s", exc)
+        zinciri_dogrula(self, self._current_hwid)
 
     # ------------------------------------------------------------------
     # Veri yükleme
