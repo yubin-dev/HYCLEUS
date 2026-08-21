@@ -50,10 +50,73 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
+      # ── Qt'nin SİSTEM kütüphaneleri (yalnızca Linux) ────────────────────
+      #
+      # NEDEN GEREKLİ — bu adım silinirse ubuntu ayağı tekrar kırılır:
+      #
+      # PySide6 tekerleği kendi Qt kütüphanelerini taşıyor ama onların
+      # bağlandığı sistem kütüphanelerini TAŞIMIYOR. `import
+      # PySide6.QtWidgets` şu zinciri yüklüyor ve zincirin her halkası
+      # dinamik bağlayıcı tarafından AÇILIŞTA çözülüyor:
+      #
+      #   QtWidgets.abi3.so -> libQt6Widgets.so.6 -> libQt6Gui.so.6
+      #
+      # `libQt6Gui.so.6`'nın DT_NEEDED listesi (tekerleğin ELF başlıklarından
+      # okundu, PySide6-Essentials 6.9.3 manylinux_2_28_x86_64):
+      #
+      #   libEGL.so.1        -> libegl1        ← koşucuda YOKTU, arıza buydu
+      #   libGL.so.1         -> libgl1
+      #   libxkbcommon.so.0  -> libxkbcommon0
+      #   libdbus-1.so.3     -> `dbus` paketiyle zaten kurulu (görüntü listesi)
+      #   libX11 / fontconfig / freetype / glib / z / zstd -> zaten kurulu
+      #
+      # QT_QPA_PLATFORM=offscreen bunu KURTARMIYOR: offscreen eklentisi
+      # eklenti seçimini değiştirir, `libQt6Gui`'nin bağlandığı kütüphaneleri
+      # değiştirmez. Üstelik `libqoffscreen.so`'nun kendisi de libGL.so.1 ve
+      # libxkbcommon.so.0 istiyor. Windows ayağında sorun yok çünkü Windows
+      # tekerleği gereken DLL'leri kendi içinde taşıyor.
+      #
+      # LİSTE NEDEN BU KADAR KISA — xcb paketleri BİLEREK yok. Onları isteyen
+      # tek şey `libqxcb.so` (X11 platform eklentisi) ve offscreen modda o
+      # eklenti hiç yüklenmiyor. AppImage işindeki daha uzun liste gerçek bir
+      # pencere açtığı için farklı; iki listeyi eşitlemeye çalışmayın.
+      #
+      # apt sertleştirmesi AppImage işindekinin aynısı — gerekçesi orada
+      # ayrıntılı yazılı (f61a470'te bu adım ~30 dk asıldı, üç ayrı mekanizma
+      # kapatıldı). Kısaca: dpkg kilidi, needrestart, ayna zaman aşımı.
+      - name: Sistem kütüphaneleri (Qt) — Linux
+        if: runner.os == 'Linux'
+        timeout-minutes: 6
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a
+          NEEDRESTART_SUSPEND: "1"
+        run: |
+          set -euo pipefail
+          APT_OPTS=(
+            -o DPkg::Lock::Timeout=180
+            -o Acquire::Retries=3
+            -o Acquire::http::Timeout=30
+            -o Acquire::https::Timeout=30
+          )
+          sudo apt-get "${APT_OPTS[@]}" update -qq
+          sudo apt-get "${APT_OPTS[@]}" install -y --no-install-recommends libegl1 libgl1 libxkbcommon0
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
+
+      # Qt'nin gerçekten yüklenebildiğini BURADA ölçüyoruz, 2300 testin
+      # ortasında değil. Bu adım kırmızıysa sorun testlerde değil, yukarıdaki
+      # apt listesinde — AppImage işindeki "Qt içe aktarılabiliyor mu"
+      # adımıyla aynı gerekçe.
+      - name: Qt içe aktarılabiliyor mu (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 3
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -c "import PySide6.QtWidgets; print('Qt yuklendi')"
 
       - name: Lint (ruff)
         run: ruff check .
