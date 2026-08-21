@@ -10,7 +10,41 @@ document that only lists strengths is marketing, not security.
 
 ---
 
-## 1. Trust boundaries
+## How to read this document
+
+It is long because the honest answers are long. Nobody needs all of it at
+once. Find your row, start there, and follow the cross-references — every
+claim in §2 points at the §4 entry that qualifies it.
+
+| If you are | Start here | Then |
+|---|---|---|
+| **An auditor or reviewer** | §1.1 — the three attacker models | §1.2 (which layer holds against which model) → §1.3 (the gaps we know about) → §4 (every weakness, in our own words) |
+| **A developer working on HYCLEUS** | §1.2 — the layer matrix | §5 (constructions and parameters) → the §4 entry covering whatever you are changing |
+| **A user or an administrator** | §2 — what is actually protected | §3 (what is not) → `docs/kullanici-rehberi.md` for step-by-step recovery, written without command-line assumptions |
+| **About to report something** | §6.7 — is it already known? | §6.2 (scope) → §6.3 (what helps) → §6.1 (how to reach us) |
+
+And by question:
+
+| Question | Section |
+|---|---|
+| Who is HYCLEUS defending against — and who is it not? | §1.1 |
+| Which layer stops which attacker, and where does each one stop? | §1.2 |
+| What is deliberately outside the design? | §1.3, then §3 |
+| What is protected, concretely, scenario by scenario? | §2 |
+| Where is it weak, and how badly? | §4.1 – §4.12 |
+| Which algorithms, which parameters? | §5 |
+| How do I report a finding, and what happens next? | §6 |
+| I lost my USB / forgot my PIN / my files look corrupt | `docs/kullanici-rehberi.md` |
+
+Two conventions used throughout. **M1 / M2 / M3** name the attacker models
+defined in §1.1; every scenario in §2, every limit in §3 and every weakness
+in §4 is tagged with the models it applies to. And a claim tagged M2 is not
+automatically true for M3 — the whole point of the tags is that most of
+them are not.
+
+---
+
+## 1. Trust boundaries and attacker models
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
@@ -43,40 +77,194 @@ files, not the machine.** Once an attacker is the logged-in OS user, the
 credential store will hand them `share_2` on request. The remaining barrier
 is the PIN alone.
 
+### 1.1 Three attacker models
+
+The diagram above says where the boundary is. These three say who is
+standing at it. They are named M1, M2 and M3 throughout this document.
+
+| | Model | Has | Does not have |
+|---|---|---|---|
+| **M1** | **Remote — over the network** | Only what HYCLEUS reaches out to or is handed: a timestamp-authority response, a dependency, a document the user was sent | Any local presence. No file, no account, no process on the machine |
+| **M2** | **Holds a copy of the data, not the machine** | `data/`, the `.hcl` files, a `.hclv`, a backup set — a stolen laptop without full-disk encryption, a lost backup disk, an old drive, a synced folder | The PIN, the OS account password, a usable credential store, a running session |
+| **M3** | **On the machine, as the logged-in OS user** | Everything M2 has, plus `share_2` from the credential store on request, the running process and its memory, and write access to the database | The PIN, and the printed recovery share |
+
+**Capability grows M1 → M2 → M3, and the containment is real: anything that
+fails against M2 also fails against M3.** So a control is only worth
+describing at the weakest model it survives. The containment holds for
+*controls*, not for *holdings*: an M2 with old media can be carrying material
+the live machine no longer has — see §1.3, and §4.4 on why nothing is
+rotated.
+
+How the real world maps onto them:
+
+| Situation | Model |
+|---|---|
+| A laptop stolen while powered off, no full-disk encryption | M2 |
+| The same laptop after the OS account password is cracked | M3, offline and unhurried |
+| A backup disk lost in transit; an old drive sold on | M2 |
+| Malware running as the logged-in user; an unlocked desk; a remote-support session | M3 |
+| A powered-off machine with full-disk encryption and no password | outside all three |
+| Someone holding the printed recovery share | see §4.4 — a share, not a model |
+
+The last row is deliberate. The recovery share is not an attacker model
+because it is not a position an attacker occupies; it is key material that
+can end up in any of the three hands, and §4.4 is where that is worked out.
+
+### 1.2 Which layer holds, and against whom
+
+✅ holds · ⚠️ raises the cost, does not close it · ❌ does not apply ·
+— out of reach for that model.
+
+| Layer | M1 | M2 | M3 |
+|---|---|---|---|
+| AES-256-GCM over file contents | — | ✅ | ⚠️ as strong as the PIN — or as short as one unlocked session (§1.3) |
+| GCM tag / AAD authentication (tamper detection) | — | ✅ | ⚠️ keyed, so unforgeable — until M3 catches the key in an unlocked session (§1.3) |
+| AAD *confidentiality* (filename, plaintext SHA-256, ids) | — | ❌ readable in the header (§3) | ❌ |
+| Argon2id PIN → KEK → `share_1` | — | ✅ | ⚠️ offline brute force, no rate limit (§3) |
+| Shamir 2-of-3 | — | ✅ the vault yields one share, and one share is nothing | ❌ `share_2` is already theirs |
+| OS credential store holding `share_2` | — | ⚠️ the blob travels with the disk; the OS account password opens it | ❌ it answers them |
+| Vault HMAC, key = HKDF(HWID) | — | ❌ the HWID is not a secret (§4.2) | ❌ |
+| Device binding via the HWID | — | ❌ see §1.3 | ❌ |
+| Login rate limit / lockout | — | ❌ they are not using the application (§4.5) | ⚠️ one `DELETE` removes it (§3) |
+| TOTP second factor | — | ❌ not in the path they take | ❌ the secret is in the store that answers them |
+| USB blacklist | — | ❌ | ❌ one database write (§4.1) |
+| Audit hash chain + external anchor | — | — | ⚠️ detection, never prevention (§4.6) |
+| Weekly integrity sweep | — | — | ⚠️ the file cannot be forged, the verdict can (§4.7) |
+| Idle auto-lock | — | — | ⚠️ the application window only (§4.8) |
+| SafeZone shredding | — | ⚠️ best-effort at the logical layer (§3) | ⚠️ plaintext is on disk while a document is open (§4.10) |
+| RFC 3161 timestamp | ⚠️ a hostile authority still produces a valid-looking token (§4.9) | ⚠️ the trailer is outside the GCM tag and can be stripped (§4.9) | ⚠️ |
+| Backup encryption of the database export | — | ✅ (§4.11) | ✅ the key is still required |
+
+Rows tagged M3 also cover the causes that have no attacker at all — bit rot,
+a bad copy, a crash mid-write. The integrity sweep does not distinguish
+them, and does not need to.
+
+### 1.3 What each model gets, and what is out of scope
+
+**M1 — what holds.** HYCLEUS opens no port, runs no server and exposes no
+network-facing account system — the roles in §4.5 are enforced inside the
+application, not across a wire. There is exactly one outbound path in the
+shipped application: the RFC 3161 request in `CORE/timestamp.py`, opt-in per
+file. It carries a nonce that is checked against the response, the response
+size is capped, the configured URL is restricted to `http`/`https` so a setting
+cannot turn stamping into a local file reader, and the resulting token is
+verified with no network access at all (§4.9).
+
+**M1 — what does not.** That one request sends the **plaintext SHA-256** to
+a third party. §3 already concedes that this hash lets someone confirm a
+suspected file without decrypting it; stamping hands that capability to the
+timestamp authority, and to anyone on the path if the configured URL is
+plain `http`. And a hostile or impersonated authority can return a token
+that verifies perfectly, because the trust anchor travels inside the token —
+only an externally supplied root (`--trusted-root`) closes that (§4.9).
+
+**M1 — out of scope.** The supply chain. Dependencies are scanned on every
+push (`pip-audit` in `.github/workflows/ci.yml`), which is reporting, not a
+control. Third-party engines HYCLEUS invokes — the platform antivirus — have
+their own network behaviour, and this project does not govern it.
+
+**M2 — what holds.** This is the model HYCLEUS is built for, and it is where
+the design is strongest. File contents are AES-256-GCM and the key is never
+stored whole. The vault file yields `share_1` and nothing else, sealed under
+Argon2id — so **even a cracked PIN leaves the attacker with one share, which
+is information-theoretically nothing** (§4.4). `share_2` is not in the
+database of a current installation and is never written to a backup at all
+(`usb_tokens` is excluded, §4.11). Corruption and tampering are detectable
+against a key M2 does not have.
+
+One exception, and it is the reason §4.4 insists that nothing is rotated:
+`share_2` lived in `usb_tokens.share_2` in plaintext **before the migration
+to the OS credential store**. A raw copy of `data/` taken before that upgrade
+still carries it, and combined with a cracked PIN it *does* reconstruct the
+master key. Migration overwrites and purges the live copy; it cannot reach a
+copy that already left the machine.
+
+**M2 — what does not.** Everything in §3's first paragraph: the database is
+plaintext on disk, so filenames, user records, roles, HWIDs and the whole
+audit log are readable, and the AAD in each `.hcl` header is readable too.
+The vault HMAC is forgeable by anyone who knows the HWID (§4.2). Every
+application-level control — rate limit, blacklist, idle lock, TOTP — is
+simply absent, because M2 is not running the application (§4.5).
+
+**M2 — out of scope, and both cases are real.** First, **the HWID is not a
+hardware secret and on some devices is not hardware-derived at all.** When
+the storage stack reports an unusable serial, `get_usb_hwid()` falls back to
+a UUID persisted in `data/usb_ids.json` — measured on a real device, and
+recorded as **B-025** in `BACKLOG.md`. On that device class, anyone holding
+a copy of `data/` reproduces the device identity **without the USB**. The
+HWID was never a secret (§4.2), so no confidentiality is lost, but "bound to
+this device" is weaker than it sounds and the boundary diagram above should
+be read with that in mind. Second, `DEV_MODE` installations (§4.3): there
+the file key is derived from the HWID alone, so M2 decrypts everything. It
+is force-disabled in built executables.
+
+**M3 — what holds.** Very little, and §1's lead paragraph says so plainly.
+Two things survive. The GCM tag is **keyed**, so M3 can destroy a file but
+cannot alter one and leave it verifying (§4.7) — with one condition that
+§4.7 does not state: it holds only while M3 never catches the master key in
+an **unlocked** session, because at that moment the key is in process memory
+(§3, "Memory") and everything keyed falls with it. And the PIN is still
+required to reach that state from cold: M3 holds `share_2` and needs a
+second share, which means the vault's Argon2id seal or the printed paper.
+That is the barrier §1 names.
+
+**M3 — what does not.** The credential store answers them. Every
+application-level control is a database write away (§4.1, §4.5, §4.8). The
+lockout counter can be deleted (§3). Plaintext sits in `data/safezone/` for
+as long as a document is open (§4.10) and in process memory while the
+session is unlocked (§3). A timestamp trailer can be stripped without
+breaking the file (§4.9).
+
+**M3 — out of scope, by design.** §6.2 already declares attacks that assume
+an already-compromised machine out of scope for reports, and that is not
+evasion: M3 *is* the boundary, not something inside it. What HYCLEUS buys
+against M3 is **evidence rather than prevention** — the audit chain, the
+external anchor and the integrity sweep exist to make an M3 attacker's
+presence visible afterwards. Whether that works at all depends on the anchor
+living somewhere M3 cannot reach; see the `HYCLEUS_AUDIT_ANCHOR` discussion
+in §4.6, which is the difference between a real property and an
+inconvenience.
+
 ---
 
 ## 2. What HYCLEUS protects against
 
-| Scenario | Protected? | By what |
-|---|---|---|
-| Encrypted file (`.hcl`) copied off the machine | ✅ | AES-256-GCM; key never stored whole |
-| One byte of ciphertext or the GCM tag modified | ✅ | GCM authentication — `AuthenticationError`, never silent wrong plaintext |
-| File metadata (filename, user_id, hwid, SHA-256) edited in the header | ✅ | Metadata is the GCM AAD; any edit fails authentication |
-| Same key reused across files | ✅ | Fresh 12-byte `os.urandom` nonce per encryption |
-| Vault file (`.hclv`) copied, PIN unknown | ✅ | Argon2id KEK (time=3, mem=64 MB, para=4) + GCM |
-| `share_2` read out of the database | ✅ | It is no longer there — it lives in the OS credential store |
-| Only one Shamir share obtained | ✅ | 2-of-3 is information-theoretically secure; one share reveals nothing |
-| Brute-forcing the PIN through the app UI | ⚠️ Slowed | Rate limit: 5 failures → 30s, escalating to 300s, counter persisted in DB |
-| An audit entry edited or deleted from the middle of the log | ⚠️ Detected, not prevented | SHA-256 hash chain; `verify_audit_chain()` names the exact record — see §4.6 |
-| The newest audit entries deleted (log truncated) | ⚠️ Detected only via the anchor | The chain head is written outside the database to `data/audit_anchor.log` — see §4.6 |
-| The whole audit chain recomputed after an edit | ⚠️ Detected only via the anchor | The hash is unkeyed; only the external anchor disagrees — see §4.6 |
-| A `.hcl` file silently corrupted on disk (bit rot, bad copy, tampering) | ✅ Found without opening it | Weekly integrity sweep verifies every GCM tag; result in `files.integrity_status` — see §4.7 |
-| Someone reaching an unattended, still-unlocked session | ⚠️ Time-limited | Idle auto-lock: session locks after N minutes of no input even with the USB inserted; unlock requires the PIN — see §4.8 |
-| Decrypted copies left in the system temp directory | ✅ Not written there | Temporary plaintext goes to `data/safezone/`, shredded on exit and on next startup — see §4.8 |
+The **Model** column says which attacker the verdict is claimed against
+(§1.1). It is a scope, not a decoration: a row marked M2 makes **no claim
+about M3**, and several of these verdicts genuinely change once the attacker
+is the logged-in OS user. §1.2 shows where each one lands.
+
+| Scenario | Model | Protected? | By what |
+|---|---|---|---|
+| Encrypted file (`.hcl`) copied off the machine | M2 | ✅ | AES-256-GCM; key never stored whole |
+| One byte of ciphertext or the GCM tag modified | M2 | ✅ | GCM authentication — `AuthenticationError`, never silent wrong plaintext |
+| File metadata (filename, user_id, hwid, SHA-256) edited in the header | M2 | ✅ | Metadata is the GCM AAD; any edit fails authentication |
+| Same key reused across files | M2 · M3 | ✅ | Fresh 12-byte `os.urandom` nonce per encryption |
+| Vault file (`.hclv`) copied, PIN unknown | M2 | ✅ | Argon2id KEK (time=3, mem=64 MB, para=4) + GCM |
+| `share_2` read out of the database | M2 | ✅ | It is no longer there — it lives in the OS credential store |
+| Only one Shamir share obtained | M2 | ✅ | 2-of-3 is information-theoretically secure; one share reveals nothing |
+| Brute-forcing the PIN through the app UI | M3 | ⚠️ Slowed | Rate limit: 5 failures → 30s, escalating to 300s, counter persisted in DB |
+| An audit entry edited or deleted from the middle of the log | M3 | ⚠️ Detected, not prevented | SHA-256 hash chain; `verify_audit_chain()` names the exact record — see §4.6 |
+| The newest audit entries deleted (log truncated) | M3 | ⚠️ Detected only via the anchor | The chain head is written outside the database to `data/audit_anchor.log` — see §4.6 |
+| The whole audit chain recomputed after an edit | M3 | ⚠️ Detected only via the anchor | The hash is unkeyed; only the external anchor disagrees — see §4.6 |
+| A `.hcl` file silently corrupted on disk (bit rot, bad copy, tampering) | M3 | ✅ Found without opening it | Weekly integrity sweep verifies every GCM tag; result in `files.integrity_status` — see §4.7 |
+| Someone reaching an unattended, still-unlocked session | M3 | ⚠️ Time-limited | Idle auto-lock: session locks after N minutes of no input even with the USB inserted; unlock requires the PIN — see §4.8 |
+| Decrypted copies left in the system temp directory | M2 · M3 | ✅ Not written there | Temporary plaintext goes to `data/safezone/`, shredded on exit and on next startup — see §4.8 |
 
 ---
 
 ## 3. What HYCLEUS does **not** protect against
 
-These are not bugs. They are the boundaries of the design.
+These are not bugs. They are the boundaries of the design. Each is tagged
+with the attacker models it belongs to (§1.1).
 
-**An attacker who can read the disk.** The SQLite database
+**An attacker who can read the disk.** *(M2 · M3)* The SQLite database
 (`data/hycleus.db`) is **not encrypted**. Filenames, user records, roles,
 HWIDs and the entire audit log are plaintext on disk. `sqlcipher3` is a
 planned migration, not a shipped feature. Encrypted file *contents* stay
 protected; everything around them does not.
 
-**An attacker who can write to the disk.** The audit log is an ordinary
+**An attacker who can write to the disk.** *(M3)* The audit log is an ordinary
 table in that same unencrypted database, and nothing stops anyone with write
 access from editing or deleting rows. Since v2.2 those edits are *detectable*
 — the log is a hash chain anchored outside the database — but detection is
@@ -84,35 +272,35 @@ not prevention, the chain covers only entries written after the upgrade, and
 one of the two detection mechanisms can be defeated by an attacker who is
 thorough. Read §4.6 before relying on it.
 
-**Offline brute force of the vault.** Copy `.hclv` and attack it at leisure;
+**Offline brute force of the vault.** *(M2)* Copy `.hclv` and attack it at leisure;
 this codebase never runs. The only cost imposed is Argon2id
 (time=3, memory=64 MB, parallelism=4). The login rate limit is irrelevant
 here — it lives in the application, and the attacker is not using the
 application.
 
-**Rate-limit removal.** The counter is stored in `login_attempts` in the
+**Rate-limit removal.** *(M3)* The counter is stored in `login_attempts` in the
 unencrypted database. `DELETE FROM login_attempts` removes the lockout.
 It cannot be encrypted — the application must be able to read its own
 lockout. Rolling the system clock back also drops the lock early;
 `locked_until` is an absolute timestamp, because a monotonic clock would
 reset on restart and lose the property that matters most.
 
-**A compromised OS user account.** The credential store releases `share_2`
+**A compromised OS user account.** *(M3)* The credential store releases `share_2`
 to the logged-in user. Malware running as that user can ask for it the same
 way HYCLEUS does.
 
-**Memory.** Decrypted content lives in Python `bytes` objects. Intermediate
+**Memory.** *(M3)* Decrypted content lives in Python `bytes` objects. Intermediate
 buffers are zeroed with `ctypes.memset`, but Python may have already copied
 the data, and the returned `bytes` is immutable and cannot be wiped. A
 memory dump or swap file can contain plaintext.
 
-**Secure-erase guarantees.** Migration overwrites the old secret in place
+**Secure-erase guarantees.** *(M2)* Migration overwrites the old secret in place
 before deleting it. That assumes the write lands on the same physical
 sector — false on SSDs (wear levelling), copy-on-write filesystems (btrfs,
 ReFS), snapshots and VM images. It is best-effort at the logical layer, not
 a wipe.
 
-**Metadata confidentiality.** In a `.hcl` file the AAD block — original
+**Metadata confidentiality.** *(M2 · M3)* In a `.hcl` file the AAD block — original
 filename, SHA-256 of the plaintext, timestamps, `user_id`, `hwid` — is
 authenticated but **not encrypted**. It is readable in the file header. The
 SHA-256 also permits confirming a suspected file without decrypting it.
@@ -124,7 +312,14 @@ SHA-256 also permits confirming a suspected file without decrypting it.
 
 ## 4. Known weaknesses we are not hiding
 
+Each entry opens with the attacker models it concerns (§1.1). A weakness
+that only M3 can reach is a different thing from one M2 can reach with a
+copied disk, and reading them as equivalent is the mistake this tagging
+exists to prevent.
+
 ### 4.1 Blacklisting a USB does not revoke anything
+
+> **Attacker models:** M3
 
 `blacklist_usb()` sets `blacklisted = 1` in `usb_tokens`. Both entry paths —
 `authenticate_usb()` (USB re-insertion) and `open_vault()` (PIN login) —
@@ -151,6 +346,8 @@ credential-store entry (`delete_usb_token()`) and re-keying the vault.
 
 ### 4.2 The vault HMAC key is derived from a non-secret
 
+> **Attacker models:** M2 · M3
+
 The vault's HMAC-SHA256 signing key is `HKDF(hwid)` — and the HWID is a USB
 serial number, not a secret. It is stored in `data/usb_ids.json`, in the DB,
 and can be read from the device itself. **Anyone who knows the HWID can
@@ -164,6 +361,8 @@ holding the door.
 
 ### 4.3 DEV_MODE derives the file key from the HWID alone
 
+> **Attacker models:** M2 · M3
+
 When `DEV_MODE` is set (and only when not running as a frozen executable),
 the file-encryption key is `PBKDF2-HMAC-SHA256(hwid, fixed salt, 100 000)` —
 **no PIN involved**. Anyone who knows the HWID can decrypt every file. This
@@ -171,6 +370,8 @@ is a development convenience and is force-disabled in built executables
 (`sys.frozen`), but never enable it on a machine holding real data.
 
 ### 4.4 The recovery share is a third path to the key
+
+> **Attacker models:** M2 · M3
 
 Since v2.1.2 the master key is split 2-of-3. The third share — the **recovery
 share** — is never stored by HYCLEUS: it is displayed once and kept
@@ -216,6 +417,8 @@ rotation, re-key deliberately and export a fresh recovery share immediately.
 
 ### 4.5 Application-level controls are labelled as such
 
+> **Attacker models:** M2 · M3
+
 The USB HWID check and the login rate limit constrain what can be done
 *through the HYCLEUS interface*. Neither constrains someone operating on the
 files directly. We say this here because the earlier README claimed
@@ -223,6 +426,8 @@ files directly. We say this here because the earlier README claimed
 corrected.
 
 ### 4.6 The audit chain is tamper-evident, and only from v2.2 onward
+
+> **Attacker models:** M3
 
 Since v2.2 every audit entry carries the hash of the one before it
 (`CORE/audit_chain.py`):
@@ -296,6 +501,8 @@ papered over.
 
 ### 4.7 The integrity sweep finds corruption, but its verdict lives in the DB
 
+> **Attacker models:** M3
+
 A weekly background sweep (`CORE/integrity.py`) verifies the GCM tag of
 every registered `.hcl` and the vault's HMAC, writing the result to
 `files.integrity_status` and `files.integrity_checked_at`. Unlike the audit
@@ -333,6 +540,8 @@ accumulated, returned, or written", not "never produced". See
 `CORE.crypto.verify_file()`.
 
 ### 4.8 Idle lock and SafeZone close two gaps, neither completely
+
+> **Attacker models:** M2 · M3
 
 **Idle auto-lock.** The hardware lock only fires when the USB is *removed*,
 but someone who walks away from their desk usually leaves it plugged in. The
@@ -376,6 +585,8 @@ plaintext to disk. Downloads still stream straight to the path the user
 picks and never touch SafeZone.
 
 ### 4.9 Timestamps are verifiable offline — but the trust anchor comes from the file
+
+> **Attacker models:** M1 · M2 · M3
 
 A `.hcl` file can carry an RFC 3161 timestamp token, obtained by having a
 Timestamp Authority sign the **plaintext SHA-256** already recorded in the
@@ -444,6 +655,8 @@ could disagree would be worse than one.
 
 ### 4.10 Transparent access puts plaintext on disk for as long as you edit
 
+> **Attacker models:** M2 · M3
+
 "Open" decrypts a document into SafeZone, launches it in the default
 application, writes any edit back re-encrypted with a fresh nonce, and
 shreds the temporary copy. It closes a real gap — previously a user had to
@@ -486,6 +699,8 @@ that entry marks the moment plaintext reached the disk. A full virtual drive
 is out of scope; this is the interim answer.
 
 ### 4.11 A backup takes the vault off the machine — the database goes with it, encrypted
+
+> **Attacker models:** M2
 
 Shamir recovery (§4.4) covers a lost *key*. It does nothing for a lost
 *disk*. Backup closes that gap, and the two stay deliberately separate:
@@ -536,6 +751,9 @@ it never writes into the live vault or database.
 ---
 
 ### 4.12 Shamir shares are validated at the parser, and this is hardening — not a fix for a hole
+
+> **Attacker models:** none — this entry is about error reporting, not
+> about a control. The reasoning is below and it is the point of the section.
 
 An external reviewer asked (issue #1) whether the recovery-share decoder
 checks that the decoded value is in canonical form **and** below the field
@@ -748,7 +966,39 @@ Bu belge HYCLEUS'un neyi koruduğunu, neyi korumadığını ve halihazırda
 bildiğimiz zayıflıkları anlatır. Bilinçli olarak açık sözlüdür: yalnızca
 güçlü yanları sıralayan bir güvenlik belgesi güvenlik değil, pazarlamadır.
 
-## 1. Güven sınırları
+## Bu belge nasıl okunur
+
+Uzun, çünkü dürüst cevaplar uzun. Kimsenin tamamına birden ihtiyacı yok.
+Kendi satırınızı bulun, oradan başlayın ve çapraz atıfları izleyin — §2'deki
+her iddia, onu sınırlayan §4 maddesine bağlanıyor.
+
+| Kimseniz | Buradan başlayın | Sonra |
+|---|---|---|
+| **Denetçi ya da gözden geçiren** | §1.1 — üç saldırgan modeli | §1.2 (hangi katman hangi modele dayanıyor) → §1.3 (bildiğimiz boşluklar) → §4 (her zayıflık, kendi ifademizle) |
+| **HYCLEUS üzerinde çalışan geliştirici** | §1.2 — katman matrisi | §5 (yapılar ve parametreler) → değiştirdiğiniz şeyi kapsayan §4 maddesi |
+| **Kullanıcı ya da yönetici** | §2 — gerçekte ne korunuyor | §3 (ne korunmuyor) → adım adım kurtarma için `docs/kullanici-rehberi.md`, komut satırı bilgisi varsaymadan yazıldı |
+| **Bir şey bildirmek üzere olan** | §6.7 — zaten biliniyor mu? | §6.2 (kapsam) → §6.3 (işe yarayanlar) → §6.1 (bize nasıl ulaşılır) |
+
+Soruya göre:
+
+| Soru | Bölüm |
+|---|---|
+| HYCLEUS kime karşı savunuyor — kime karşı savunmuyor? | §1.1 |
+| Hangi katman hangi saldırganı durduruyor, her biri nerede duruyor? | §1.2 |
+| Tasarımın bilinçli olarak dışında kalan ne? | §1.3, ardından §3 |
+| Somut olarak, senaryo senaryo ne korunuyor? | §2 |
+| Nerede zayıf ve ne kadar? | §4.1 – §4.12 |
+| Hangi algoritmalar, hangi parametreler? | §5 |
+| Bir bulguyu nasıl bildiririm, sonra ne oluyor? | §6 |
+| USB'mi kaybettim / PIN'imi unuttum / dosyalarım bozuk görünüyor | `docs/kullanici-rehberi.md` |
+
+Belge boyunca iki kural geçerli. **M1 / M2 / M3**, §1.1'de tanımlanan
+saldırgan modellerinin adları; §2'deki her senaryo, §3'teki her sınır ve
+§4'teki her zayıflık, geçerli olduğu modellerle etiketli. Ve M2 etiketli bir
+iddia M3 için kendiliğinden doğru DEĞİL — etiketlerin bütün amacı, çoğunun
+doğru olmadığını göstermek.
+
+## 1. Güven sınırları ve saldırgan modelleri
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
@@ -780,36 +1030,192 @@ En önemli sonuç: **HYCLEUS dosyaların içeriğini korur, makineyi değil.**
 Saldırgan oturum açmış OS kullanıcısı hâline geldiğinde anahtar kasası
 `share_2`'yi istediğinde verir. Geriye kalan tek engel PIN'dir.
 
+### 1.1 Üç saldırgan modeli
+
+Yukarıdaki şema sınırın NEREDE olduğunu söylüyor. Bu üç model sınırda KİMİN
+durduğunu söylüyor. Belge boyunca M1, M2 ve M3 diye anılıyorlar.
+
+| | Model | Elinde olan | Elinde olmayan |
+|---|---|---|---|
+| **M1** | **Uzaktan — ağ üzerinden** | Yalnızca HYCLEUS'un uzandığı ya da kendisine verilen şey: bir zaman damgası makamının yanıtı, bir bağımlılık, kullanıcıya gönderilmiş bir belge | Hiçbir yerel varlık. Ne dosya, ne hesap, ne makinede çalışan bir süreç |
+| **M2** | **Verinin kopyası elinde, makine değil** | `data/`, `.hcl` dosyaları, bir `.hclv`, bir yedek kümesi — tam disk şifrelemesi olmayan çalınmış dizüstü, kaybolan yedek diski, elden çıkarılmış eski disk, eşitlenmiş bir klasör | PIN, OS hesap parolası, kullanılabilir bir anahtar kasası, çalışan bir oturum |
+| **M3** | **Makinede, oturum açmış OS kullanıcısı olarak** | M2'nin sahip olduğu her şey, ayrıca istendiğinde anahtar kasasından `share_2`, çalışan süreç ve belleği, veritabanına yazma yetkisi | PIN ve basılı kurtarma parçası |
+
+**Yetenek M1 → M2 → M3 yönünde büyüyor ve kapsama gerçek: M2'ye karşı
+DAYANMAYAN her şey M3'e karşı da dayanmaz.** Yani bir kontrol yalnızca
+hayatta kaldığı EN ZAYIF modelde anlatılmaya değer. Kapsama KONTROLLER için
+geçerli, ELDEKİLER için değil: eski medyaya sahip bir M2, canlı makinede
+artık bulunmayan malzemeyi taşıyor olabilir — bkz. §1.3 ve hiçbir şeyin neden
+döndürülmediği için §4.4.
+
+Gerçek dünya bu modellere şöyle düşüyor:
+
+| Durum | Model |
+|---|---|
+| Kapalıyken çalınan dizüstü, tam disk şifrelemesi yok | M2 |
+| Aynı dizüstü, OS hesap parolası kırıldıktan sonra | M3 — çevrimdışı ve acelesiz |
+| Nakliyede kaybolan yedek diski; satılan eski disk | M2 |
+| Oturum açmış kullanıcı olarak çalışan zararlı yazılım; kilitlenmemiş masa; uzaktan destek oturumu | M3 |
+| Tam disk şifrelemeli, parolası bilinmeyen kapalı makine | üçünün de dışında |
+| Basılı kurtarma parçasını elinde tutan kişi | bkz. §4.4 — bir pay, bir model değil |
+
+Son satır bilinçli. Kurtarma parçası bir saldırgan modeli değil, çünkü bir
+saldırganın BULUNDUĞU konum değil; üç elden herhangi birine düşebilen
+anahtar malzemesi ve bunun hesabı §4.4'te veriliyor.
+
+### 1.2 Hangi katman dayanıyor, kime karşı
+
+✅ dayanıyor · ⚠️ maliyeti yükseltiyor, kapatmıyor · ❌ geçerli değil ·
+— o model için erişilemez.
+
+| Katman | M1 | M2 | M3 |
+|---|---|---|---|
+| Dosya içeriğinde AES-256-GCM | — | ✅ | ⚠️ PIN kadar güçlü — ya da tek bir kilitsiz oturum kadar kısa (§1.3) |
+| GCM etiketi / AAD doğrulaması (kurcalama tespiti) | — | ✅ | ⚠️ anahtarlı, yani sahtelenemez — ta ki M3 anahtarı kilitsiz bir oturumda yakalayana kadar (§1.3) |
+| AAD *gizliliği* (dosya adı, düz metin SHA-256, kimlikler) | — | ❌ başlıkta okunabilir (§3) | ❌ |
+| Argon2id PIN → KEK → `share_1` | — | ✅ | ⚠️ çevrimdışı kaba kuvvet, hız sınırı yok (§3) |
+| Shamir 2-of-3 | — | ✅ kasa tek pay veriyor, tek pay hiçbir şey | ❌ `share_2` zaten onda |
+| `share_2`'yi tutan OS anahtar kasası | — | ⚠️ blob diskle birlikte gidiyor; OS hesap parolası onu açar | ❌ ona cevap veriyor |
+| Kasa HMAC'i, anahtar = HKDF(HWID) | — | ❌ HWID bir sır değil (§4.2) | ❌ |
+| HWID üzerinden cihaz bağı | — | ❌ bkz. §1.3 | ❌ |
+| Giriş hız sınırı / kilitleme | — | ❌ uygulamayı kullanmıyorlar (§4.5) | ⚠️ tek bir `DELETE` kaldırıyor (§3) |
+| TOTP ikinci faktörü | — | ❌ izledikleri yolda değil | ❌ sır, onlara cevap veren kasada |
+| USB kara listesi | — | ❌ | ❌ tek bir veritabanı yazımı (§4.1) |
+| Denetim hash zinciri + dış çapa | — | — | ⚠️ tespit, asla engelleme değil (§4.6) |
+| Haftalık bütünlük taraması | — | — | ⚠️ dosya sahtelenemez, karar sahtelenebilir (§4.7) |
+| Hareketsizlik kilidi | — | — | ⚠️ yalnızca uygulama penceresi (§4.8) |
+| SafeZone temizliği | — | ⚠️ mantıksal katmanda en iyi çaba (§3) | ⚠️ belge açıkken düz metin diskte (§4.10) |
+| RFC 3161 zaman damgası | ⚠️ düşman bir makam da geçerli görünen token üretir (§4.9) | ⚠️ fragman GCM etiketinin dışında, sökülebilir (§4.9) | ⚠️ |
+| Yedekteki veritabanı dışa aktarımının şifrelenmesi | — | ✅ (§4.11) | ✅ anahtar yine gerekli |
+
+M3 etiketli satırlar, hiç saldırganı olmayan nedenleri de kapsıyor — bit
+çürümesi, bozuk bir kopya, yazma sırasındaki çökme. Bütünlük taraması
+bunları ayırt etmiyor ve etmesi de gerekmiyor.
+
+### 1.3 Her model ne elde ediyor, kapsam dışı ne kalıyor
+
+**M1 — ne dayanıyor.** HYCLEUS hiçbir port açmıyor, hiçbir sunucu
+çalıştırmıyor ve ağa açık bir hesap sistemi sunmuyor — §4.5'teki roller bir
+kablo üzerinden değil, uygulamanın içinde uygulanıyor. Dağıtılan uygulamada
+tek bir dışa giden yol var: `CORE/timestamp.py` içindeki RFC 3161 isteği ve
+dosya başına isteğe bağlı. İstek, yanıtta karşılaştırılan bir
+nonce taşıyor, yanıt boyutu sınırlı, ayardaki adres `http`/`https` ile
+kısıtlı — böylece bir ayar satırı damgalamayı yerel dosya okuyucusuna
+çeviremiyor — ve ortaya çıkan token hiç ağ kullanılmadan doğrulanıyor
+(§4.9).
+
+**M1 — ne dayanmıyor.** O tek istek, **düz metnin SHA-256'sını** üçüncü bir
+tarafa gönderiyor. §3 zaten bu hash'in bir dosyayı çözmeden doğrulamaya
+yaradığını kabul ediyor; damgalama o yeteneği zaman damgası makamına ve
+ayardaki adres düz `http` ise yol üzerindeki herkese veriyor. Ayrıca düşman
+ya da taklit bir makam kusursuz doğrulanan bir token döndürebilir, çünkü
+güven kökü token'ın İÇİNDE geliyor — bunu yalnızca dışarıdan verilen bir
+kök (`--trusted-root`) kapatıyor (§4.9).
+
+**M1 — kapsam dışı.** Tedarik zinciri. Bağımlılıklar her push'ta taranıyor
+(`.github/workflows/ci.yml` içindeki `pip-audit`) ama bu raporlamadır,
+kontrol değil. HYCLEUS'un çağırdığı üçüncü taraf motorların — platformun
+antivirüsü — kendi ağ davranışı var ve bu proje onu yönetmiyor.
+
+**M2 — ne dayanıyor.** HYCLEUS'un asıl kurgulandığı model bu ve tasarımın en
+güçlü olduğu yer burası. Dosya içerikleri AES-256-GCM ve anahtar hiçbir
+zaman bütün hâlde saklanmıyor. Kasa dosyası yalnızca Argon2id ile mühürlü
+`share_1`'i veriyor — yani **PIN kırılsa bile saldırganın elinde tek bir pay
+kalıyor ve tek pay bilgi kuramsal olarak hiçbir şey** (§4.4). `share_2`,
+güncel bir kurulumun veritabanında DEĞİL ve yedeğe zaten hiç yazılmıyor
+(`usb_tokens` dışarıda bırakılıyor, §4.11). Bozulma ve kurcalama, M2'nin
+sahip olmadığı bir anahtara karşı tespit edilebiliyor.
+
+Tek bir istisna var ve §4.4'ün "hiçbir şey döndürülmüyor" ısrarının nedeni
+de bu: `share_2`, **OS anahtar kasasına taşınmadan önce**
+`usb_tokens.share_2` sütununda düz metin olarak duruyordu. O yükseltmeden
+ÖNCE alınmış ham bir `data/` kopyası onu hâlâ taşıyor ve kırılmış bir PIN'le
+birleştiğinde ana anahtarı GERÇEKTEN yeniden kuruyor. Migration canlı
+kopyanın üzerine yazıp onu temizliyor; makineden çoktan çıkmış bir kopyaya
+ulaşamıyor.
+
+**M2 — ne dayanmıyor.** §3'ün ilk paragrafındaki her şey: veritabanı diskte
+düz metin, yani dosya adları, kullanıcı kayıtları, roller, HWID'ler ve tüm
+denetim günlüğü okunabilir; her `.hcl` başlığındaki AAD de okunabilir. Kasa
+HMAC'i, HWID'yi bilen herkes tarafından üretilebilir (§4.2). Uygulama
+seviyesindeki her kontrol — hız sınırı, kara liste, hareketsizlik kilidi,
+TOTP — basitçe YOK, çünkü M2 uygulamayı çalıştırmıyor (§4.5).
+
+**M2 — kapsam dışı, ve iki durum da gerçek.** Birincisi: **HWID bir donanım
+sırrı değil ve bazı cihazlarda donanımdan hiç türemiyor.** Depolama yığını
+kullanılamaz bir seri bildirdiğinde `get_usb_hwid()` `data/usb_ids.json`
+içinde saklanan bir UUID'ye düşüyor — gerçek bir cihazda ölçüldü ve
+`BACKLOG.md` içinde **B-025** olarak kayıtlı. O cihaz sınıfında, `data/`
+dizininin bir kopyasını tutan kişi cihaz kimliğini **USB olmadan** yeniden
+üretiyor. HWID zaten bir sır değildi (§4.2), yani gizlilik kaybı yok; ama
+"bu cihaza bağlı" ifadesi kulağa geldiğinden zayıf ve yukarıdaki sınır
+şeması bu bilgiyle okunmalı. İkincisi: `DEV_MODE` kurulumları (§4.3) —
+orada dosya anahtarı yalnızca HWID'den türüyor, yani M2 her şeyi çözüyor.
+Derlenmiş çalıştırılabilirlerde zorla kapalı.
+
+**M3 — ne dayanıyor.** Çok az şey ve §1'in giriş paragrafı bunu açıkça
+söylüyor. İki şey ayakta kalıyor. GCM etiketi **anahtarlı**, yani M3 bir
+dosyayı yok edebilir ama değiştirip doğrulanır hâlde bırakamaz (§4.7) —
+§4.7'nin söylemediği tek bir koşulla: bu ancak M3 ana anahtarı **kilitli
+olmayan** bir oturumda yakalamadığı sürece geçerli, çünkü o anda anahtar
+süreç belleğinde (§3, "Bellek") ve anahtarlı olan her şey onunla birlikte
+düşüyor. Ve o hâle soğuktan ulaşmak için PIN hâlâ gerekli: M3'ün elinde
+`share_2` var ve ikinci bir paya ihtiyacı var; bu da kasanın Argon2id mührü
+ya da basılı kâğıt demek. §1'in adını koyduğu engel tam olarak bu.
+
+**M3 — ne dayanmıyor.** Anahtar kasası ona cevap veriyor. Uygulama
+seviyesindeki her kontrol bir veritabanı yazımı uzaklıkta (§4.1, §4.5,
+§4.8). Kilit sayacı silinebilir (§3). Bir belge açık olduğu sürece düz metin
+`data/safezone/` içinde (§4.10), oturum kilitli değilken de süreç belleğinde
+(§3). Zaman damgası fragmanı, dosyayı bozmadan sökülebilir (§4.9).
+
+**M3 — bilinçli olarak kapsam dışı.** §6.2 zaten "makinenin hâlihazırda ele
+geçirildiğini varsayan saldırılar" bildirimlerini kapsam dışı ilan ediyor ve
+bu bir kaçamak değil: M3 sınırın KENDİSİ, içindeki bir şey değil. HYCLEUS'un
+M3'e karşı sağladığı şey **engelleme değil kanıt** — denetim zinciri, dış
+çapa ve bütünlük taraması, bir M3 saldırganının varlığını SONRADAN görünür
+kılmak için var. Bunun gerçekten işe yarayıp yaramadığı, çapanın M3'ün
+ulaşamayacağı bir yerde durmasına bağlı; §4.6'daki `HYCLEUS_AUDIT_ANCHOR`
+tartışması tam olarak bunu, yani gerçek bir özellik ile bir zahmet arasındaki
+farkı anlatıyor.
+
 ## 2. HYCLEUS'un koruduğu senaryolar
 
-| Senaryo | Korunuyor mu | Neyle |
-|---|---|---|
-| Şifreli dosya (`.hcl`) makineden kopyalandı | ✅ | AES-256-GCM; anahtar hiçbir yerde bütün durmuyor |
-| Ciphertext veya GCM tag'inde tek byte değişti | ✅ | GCM doğrulaması — `AuthenticationError`, asla sessizce yanlış veri |
-| Başlıktaki metadata (dosya adı, user_id, hwid, SHA-256) düzenlendi | ✅ | Metadata GCM AAD'sidir; her değişiklik doğrulamayı düşürür |
-| Aynı anahtar dosyalar arasında yeniden kullanıldı | ✅ | Her şifrelemede taze 12 byte `os.urandom` nonce |
-| Vault dosyası (`.hclv`) kopyalandı, PIN bilinmiyor | ✅ | Argon2id KEK (time=3, bellek=64 MB, para=4) + GCM |
-| `share_2` veritabanından okundu | ✅ | Artık orada değil — OS anahtar kasasında |
-| Yalnızca bir Shamir payı ele geçirildi | ✅ | 2-of-3 bilgi-teorik olarak güvenli; tek pay hiçbir şey sızdırmaz |
-| Arayüz üzerinden PIN kaba kuvveti | ⚠️ Yavaşlatılır | 5 hatada 30 sn, 300 sn'ye tırmanır, sayaç DB'de kalıcı |
-| Denetim kaydının ORTASINDAN bir satırın değiştirilmesi/silinmesi | ⚠️ Tespit edilir, engellenmez | SHA-256 hash zinciri; `verify_audit_chain()` tam olarak hangi kayıt olduğunu söyler — bkz. §4.6 |
-| En yeni denetim kayıtlarının silinmesi (kuyruğun kesilmesi) | ⚠️ Yalnızca çıpayla tespit edilir | Zincirin ucu veritabanının dışına, `data/audit_anchor.log`'a yazılır — bkz. §4.6 |
-| Değişiklikten sonra tüm zincirin yeniden hesaplanması | ⚠️ Yalnızca çıpayla tespit edilir | Hash anahtarsızdır; yalnızca dıştaki çıpa itiraz eder — bkz. §4.6 |
-| Bir `.hcl` dosyasının diskte sessizce bozulması (bit çürümesi, yarım kopyalama, müdahale) | ✅ Dosya açılmadan bulunur | Haftalık bütünlük taraması her GCM tag'ini doğrular; sonuç `files.integrity_status` içinde — bkz. §4.7 |
-| Başında kimse olmayan, açık kalmış bir oturuma erişilmesi | ⚠️ Süreyle sınırlı | Hareketsizlik kilidi: USB takılı olsa bile N dakika giriş olmazsa oturum kilitlenir, açmak PIN ister — bkz. §4.8 |
-| Çözülmüş kopyaların sistem TEMP dizininde kalması | ✅ Oraya hiç yazılmaz | Geçici düz metin `data/safezone/`'a gider; çıkışta ve sonraki açılışta imha edilir — bkz. §4.8 |
+**Model** sütunu, kararın hangi saldırgana karşı iddia edildiğini söylüyor
+(§1.1). Bir süs değil, bir kapsam: M2 etiketli bir satır **M3 hakkında
+hiçbir iddia taşımıyor** ve bu kararların birkaçı, saldırgan oturum açmış OS
+kullanıcısı olduğunda gerçekten değişiyor. Her birinin nereye düştüğü
+§1.2'de.
+
+| Senaryo | Model | Korunuyor mu | Neyle |
+|---|---|---|---|
+| Şifreli dosya (`.hcl`) makineden kopyalandı | M2 | ✅ | AES-256-GCM; anahtar hiçbir yerde bütün durmuyor |
+| Ciphertext veya GCM tag'inde tek byte değişti | M2 | ✅ | GCM doğrulaması — `AuthenticationError`, asla sessizce yanlış veri |
+| Başlıktaki metadata (dosya adı, user_id, hwid, SHA-256) düzenlendi | M2 | ✅ | Metadata GCM AAD'sidir; her değişiklik doğrulamayı düşürür |
+| Aynı anahtar dosyalar arasında yeniden kullanıldı | M2 · M3 | ✅ | Her şifrelemede taze 12 byte `os.urandom` nonce |
+| Vault dosyası (`.hclv`) kopyalandı, PIN bilinmiyor | M2 | ✅ | Argon2id KEK (time=3, bellek=64 MB, para=4) + GCM |
+| `share_2` veritabanından okundu | M2 | ✅ | Artık orada değil — OS anahtar kasasında |
+| Yalnızca bir Shamir payı ele geçirildi | M2 | ✅ | 2-of-3 bilgi-teorik olarak güvenli; tek pay hiçbir şey sızdırmaz |
+| Arayüz üzerinden PIN kaba kuvveti | M3 | ⚠️ Yavaşlatılır | 5 hatada 30 sn, 300 sn'ye tırmanır, sayaç DB'de kalıcı |
+| Denetim kaydının ORTASINDAN bir satırın değiştirilmesi/silinmesi | M3 | ⚠️ Tespit edilir, engellenmez | SHA-256 hash zinciri; `verify_audit_chain()` tam olarak hangi kayıt olduğunu söyler — bkz. §4.6 |
+| En yeni denetim kayıtlarının silinmesi (kuyruğun kesilmesi) | M3 | ⚠️ Yalnızca çıpayla tespit edilir | Zincirin ucu veritabanının dışına, `data/audit_anchor.log`'a yazılır — bkz. §4.6 |
+| Değişiklikten sonra tüm zincirin yeniden hesaplanması | M3 | ⚠️ Yalnızca çıpayla tespit edilir | Hash anahtarsızdır; yalnızca dıştaki çıpa itiraz eder — bkz. §4.6 |
+| Bir `.hcl` dosyasının diskte sessizce bozulması (bit çürümesi, yarım kopyalama, müdahale) | M3 | ✅ Dosya açılmadan bulunur | Haftalık bütünlük taraması her GCM tag'ini doğrular; sonuç `files.integrity_status` içinde — bkz. §4.7 |
+| Başında kimse olmayan, açık kalmış bir oturuma erişilmesi | M3 | ⚠️ Süreyle sınırlı | Hareketsizlik kilidi: USB takılı olsa bile N dakika giriş olmazsa oturum kilitlenir, açmak PIN ister — bkz. §4.8 |
+| Çözülmüş kopyaların sistem TEMP dizininde kalması | M2 · M3 | ✅ Oraya hiç yazılmaz | Geçici düz metin `data/safezone/`'a gider; çıkışta ve sonraki açılışta imha edilir — bkz. §4.8 |
 
 ## 3. HYCLEUS'un **korumadığı** senaryolar
 
-Bunlar hata değil, tasarımın sınırlarıdır.
+Bunlar hata değil, tasarımın sınırlarıdır. Her biri, ait olduğu saldırgan
+modelleriyle etiketli (§1.1).
 
-**Diski okuyabilen saldırgan.** SQLite veritabanı (`data/hycleus.db`)
+**Diski okuyabilen saldırgan.** *(M2 · M3)* SQLite veritabanı (`data/hycleus.db`)
 **şifreli değildir.** Dosya adları, kullanıcı kayıtları, roller, HWID'ler ve
 denetim kaydının tamamı diskte düz metindir. `sqlcipher3` planlanmış bir
 geçiştir, mevcut bir özellik değil. Şifreli dosya *içerikleri* korunmaya
 devam eder; etraflarındaki her şey korunmaz.
 
-**Diske yazabilen saldırgan.** Denetim kaydı, aynı şifresiz veritabanında
+**Diske yazabilen saldırgan.** *(M3)* Denetim kaydı, aynı şifresiz veritabanında
 sıradan bir tablodur ve dosyaya yazabilen birinin satır değiştirmesini ya da
 silmesini hiçbir şey engellemez. v2.2'den itibaren bu müdahaleler *fark
 edilebilir* — kayıt, ucu veritabanının dışına çıpalanan bir hash zinciridir.
@@ -817,34 +1223,34 @@ Ama fark etmek engellemek değildir, zincir yalnızca yükseltmeden SONRAKİ
 kayıtları kapsar ve iki tespit mekanizmasından biri yeterince titiz bir
 saldırgan tarafından aşılabilir. Buna güvenmeden önce §4.6'yı okuyun.
 
-**Vault'un çevrimdışı kaba kuvvetle kırılması.** `.hclv` kopyalanıp rahatça
+**Vault'un çevrimdışı kaba kuvvetle kırılması.** *(M2)* `.hclv` kopyalanıp rahatça
 saldırıya uğrayabilir; bu kod hiç çalışmaz. Dayatılan tek maliyet
 Argon2id'dir (time=3, bellek=64 MB, paralellik=4). Giriş sınırlaması burada
 anlamsızdır — o uygulamanın içindedir, saldırgan ise uygulamayı kullanmıyor.
 
-**Giriş sınırlamasının kaldırılması.** Sayaç, şifresiz veritabanındaki
+**Giriş sınırlamasının kaldırılması.** *(M3)* Sayaç, şifresiz veritabanındaki
 `login_attempts` tablosundadır. `DELETE FROM login_attempts` kilidi kaldırır.
 Şifrelenemez — uygulamanın kendi kilidini okuyabilmesi gerekir. Sistem
 saatini geri almak da kilidi erken düşürür; `locked_until` mutlak zaman
 damgasıdır, çünkü monotonik saat yeniden başlatmada sıfırlanır ve en çok
 önemsediğimiz özelliği kaybettirirdi.
 
-**Ele geçirilmiş OS kullanıcı hesabı.** Anahtar kasası `share_2`'yi oturum
+**Ele geçirilmiş OS kullanıcı hesabı.** *(M3)* Anahtar kasası `share_2`'yi oturum
 açmış kullanıcıya verir. O kullanıcı olarak çalışan zararlı yazılım da
 HYCLEUS'un istediği gibi isteyebilir.
 
-**Bellek.** Çözülmüş içerik Python `bytes` nesnelerinde durur. Ara tamponlar
+**Bellek.** *(M3)* Çözülmüş içerik Python `bytes` nesnelerinde durur. Ara tamponlar
 `ctypes.memset` ile sıfırlanır, ama Python veriyi çoktan kopyalamış olabilir
 ve döndürülen `bytes` değiştirilemez olduğu için silinemez. Bellek dökümü ya
 da takas dosyası düz metin içerebilir.
 
-**Güvenli silme garantisi.** Migration eski sırrı silmeden önce üzerine
+**Güvenli silme garantisi.** *(M2)* Migration eski sırrı silmeden önce üzerine
 yazar. Bu, yazmanın aynı fiziksel sektöre indiğini varsayar — SSD'de (wear
 levelling), kopyala-yaz dosya sistemlerinde (btrfs, ReFS), snapshot'larda ve
 VM imajlarında bu yanlıştır. Mantıksal katmanda elden gelenin en iyisidir,
 bir silme değil.
 
-**Metadata gizliliği.** `.hcl` dosyasındaki AAD bloğu — orijinal dosya adı,
+**Metadata gizliliği.** *(M2 · M3)* `.hcl` dosyasındaki AAD bloğu — orijinal dosya adı,
 düz metnin SHA-256'sı, zaman damgaları, `user_id`, `hwid` — doğrulanır ama
 **şifrelenmez.** Dosya başlığında okunabilir. SHA-256 ayrıca şüphelenilen bir
 dosyanın şifresi çözülmeden doğrulanmasına imkân verir.
@@ -854,7 +1260,14 @@ dosyanın şifresi çözülmeden doğrulanmasına imkân verir.
 
 ## 4. Sakladığımız zayıflıklar yok — bilinenler
 
+Her madde, ilgilendirdiği saldırgan modelleriyle açılıyor (§1.1). Yalnızca
+M3'ün ulaşabildiği bir zayıflık, M2'nin kopyalanmış bir diskle
+ulaşabildiğinden BAŞKA bir şeydir; bu etiketleme tam olarak ikisini denk
+okuma hatasını önlemek için var.
+
 ### 4.1 USB'yi kara listeye almak hiçbir şeyi iptal etmez
+
+> **Saldırgan modelleri:** M3
 
 `blacklist_usb()` `usb_tokens` tablosunda `blacklisted = 1` yapar. Her iki
 giriş yolu da — `authenticate_usb()` (USB yeniden takma) ve `open_vault()`
@@ -883,6 +1296,8 @@ tutarlı biçimde uygulanıyor. Gerçek iptal, kasadaki kaydın silinmesini
 
 ### 4.2 Vault HMAC anahtarı sır olmayan bir şeyden türetiliyor
 
+> **Saldırgan modelleri:** M2 · M3
+
 Vault'un HMAC-SHA256 imza anahtarı `HKDF(hwid)`'dir — ve HWID bir USB seri
 numarasıdır, sır değil. `data/usb_ids.json` içinde, veritabanında saklanır ve
 cihazın kendisinden okunabilir. **HWID'i bilen herkes geçerli bir vault HMAC'ı
@@ -895,6 +1310,8 @@ bağlanıyor. HMAC ikinci, daha zayıf bir katmandır — kapıyı tutan o deği
 
 ### 4.3 DEV_MODE dosya anahtarını yalnızca HWID'den türetir
 
+> **Saldırgan modelleri:** M2 · M3
+
 `DEV_MODE` açıkken (ve yalnızca donmuş çalıştırılabilir olarak çalışmıyorken)
 dosya şifreleme anahtarı `PBKDF2-HMAC-SHA256(hwid, sabit tuz, 100 000)`
 olur — **PIN hiç işin içinde değildir.** HWID'i bilen herkes tüm dosyaların
@@ -903,6 +1320,8 @@ olur — **PIN hiç işin içinde değildir.** HWID'i bilen herkes tüm dosyalar
 bir makinede asla açmayın.
 
 ### 4.4 Kurtarma parçası anahtara giden üçüncü yoldur
+
+> **Saldırgan modelleri:** M2 · M3
 
 v2.1.2'den itibaren master key 2-of-3 bölünüyor. Üçüncü pay — **kurtarma
 parçası** — HYCLEUS tarafından hiçbir zaman saklanmıyor: bir kez gösterilip
@@ -950,6 +1369,8 @@ hemen ardından yeni kurtarma parçasını dışa aktarın.
 
 ### 4.5 Uygulama seviyesi kontroller böyle etiketlenmiştir
 
+> **Saldırgan modelleri:** M2 · M3
+
 USB HWID kontrolü ve giriş sınırlaması *HYCLEUS arayüzü üzerinden*
 yapılabilecekleri sınırlar. İkisi de dosyalar üzerinde doğrudan çalışan
 birini sınırlamaz. Bunu burada söylüyoruz çünkü README daha önce `share_2`'nin
@@ -957,6 +1378,8 @@ birini sınırlamaz. Bunu burada söylüyoruz çünkü README daha önce `share_
 düzeltildi.
 
 ### 4.6 Denetim zinciri kurcalama KANITIDIR ve yalnızca v2.2'den itibaren geçerlidir
+
+> **Saldırgan modelleri:** M3
 
 v2.2'den itibaren her denetim kaydı bir öncekinin hash'ini taşır
 (`CORE/audit_chain.py`):
@@ -1030,6 +1453,8 @@ bilinçli olarak çevrimdışıdır, bu yüzden o yol seçilmedi; takas üstü
 
 ### 4.7 Bütünlük taraması bozulmayı bulur, ama kararı veritabanında durur
 
+> **Saldırgan modelleri:** M3
+
 Haftalık arka plan taraması (`CORE/integrity.py`) kayıtlı her `.hcl`
 dosyasının GCM tag'ini ve vault'un HMAC'ını doğrular; sonucu
 `files.integrity_status` ve `files.integrity_checked_at` alanlarına yazar.
@@ -1067,6 +1492,8 @@ dürüst iddia "biriktirilmez, döndürülmez, yazılmaz"dır, "hiç üretilmez"
 değil. Bkz. `CORE.crypto.verify_file()`.
 
 ### 4.8 Hareketsizlik kilidi ve SafeZone iki boşluğu kapatıyor, ikisini de tam değil
+
+> **Saldırgan modelleri:** M2 · M3
 
 **Hareketsizlik kilidi.** Donanım kilidi yalnızca USB ÇEKİLDİĞİNDE devreye
 giriyor, ama masasından kalkan biri USB'yi genellikle takılı bırakır. Artık
@@ -1108,6 +1535,8 @@ var — şeffaf erişim, §4.10 — ve düz metni diske yazan tek şey o. İndir
 hâlâ doğrudan kullanıcının seçtiği yola akıyor, SafeZone'a hiç uğramıyor.
 
 ### 4.9 Zaman damgaları çevrimdışı doğrulanabiliyor — ama güven kökü dosyadan geliyor
+
+> **Saldırgan modelleri:** M1 · M2 · M3
 
 Bir `.hcl` dosyası RFC 3161 zaman damgası taşıyabiliyor: AAD'de zaten
 kayıtlı olan **düz metin SHA-256**'sı (`original_sha256`) bir Zaman Damgası
@@ -1175,6 +1604,8 @@ listeden kötü olurdu.
 
 ### 4.10 Şeffaf erişim, düzenlediğiniz sürece düz metni diskte tutuyor
 
+> **Saldırgan modelleri:** M2 · M3
+
 "Aç", belgeyi SafeZone'a çözüyor, varsayılan uygulamayla açıyor,
 değişikliği yeni bir nonce ile geri şifreliyor ve geçici kopyayı güvenli
 siliyor. Gerçek bir boşluğu kapatıyor — önceden kullanıcı indirmek, geri
@@ -1217,6 +1648,8 @@ Düz metni dosya sisteminden tamamen uzak tutacak tam sanal sürücü
 (Dokan/WinFsp) kapsam dışı; bu ara çözüm.
 
 ### 4.11 Yedek kasayı makineden çıkarıyor — veritabanı da şifreli olarak gidiyor
+
+> **Saldırgan modelleri:** M2
 
 Shamir kurtarma (§4.4) kaybolan ANAHTARI kapsıyor; kaybolan DİSK için
 hiçbir şey yapmıyor. Yedek o boşluğu kapatıyor ve ikisi bilerek ayrı
@@ -1265,6 +1698,9 @@ hedefe açık onay olmadan yazmıyor ve canlı kasaya ya da veritabanına hiç
 dokunmuyor.
 
 ### 4.12 Shamir payları ayrıştırıcıda doğrulanıyor — bu sertleştirme, bir açığın kapatılması değil
+
+> **Saldırgan modelleri:** yok — bu madde bir kontrolle değil, hata
+> bildirimiyle ilgili. Gerekçe aşağıda ve bölümün bütün konusu o.
 
 Bir dış incelemeci (issue #1) kurtarma parçası çözücüsünün, çözülen değerin
 kanonik biçimde olduğunu **ve** alan asalından küçük olduğunu kontrol edip

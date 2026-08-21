@@ -1767,3 +1767,98 @@ kilitler.
 * **Akış yayın tarihi kayıtlı değil.** Sorgu bir eşik tarih istiyor ve o
   tarih şu an yalnızca git geçmişinde. Bir `settings` satırı
   (`pin_rotation_deployed_at`) bunu ölçülebilir kılardı.
+
+---
+
+## B-041 — SECURITY.md'de saldırgan modeliyle ÇELİŞEN beş iddia (okuma turu bulgusu)
+
+**Durum:** Açık — DÜZELTİLMEDİ, karar kullanıcıya bırakıldı
+**Öncelik:** Orta (hiçbiri kod hatası değil; hepsi belge doğruluğu)
+**Bulundu:** 2026-08-21 — üç saldırgan modeli eklendikten sonraki okuma turu
+
+M1/M2/M3 modelleri eklenip her iddia etiketlenince, daha önce görünmeyen
+beş yer görünür oldu: iddianın kendisi doğru ama **hangi saldırgana karşı
+doğru olduğu** söylenmiyor ve modele göre okununca fazlasını vaat ediyor.
+
+Talimat gereği hiçbiri düzeltilmedi. Beşi de tek bir soruya bakıyor:
+§2/§5'in kısa ifadeleri mi genişletilsin, yoksa §1.2 matrisi tek doğruluk
+kaynağı sayılıp §2/§5 özet olarak mı bırakılsın.
+
+### 1. §2'nin bütünlük satırı ✅ diyor, §1.2 ve §4.7 ⚠️ diyor
+
+| Yer | Ne diyor |
+|---|---|
+| §2, "diskte sessizce bozulma" satırı | **✅** Dosya açılmadan bulunur |
+| §1.2, bütünlük taraması satırı | **⚠️** dosya sahtelenemez, KARAR sahtelenebilir |
+| §4.7 | "`UPDATE files SET integrity_status = 'ok'` bulguyu siler" |
+
+Satır M3 etiketli ve M3 kurcalayanın kendisiyse taramanın kararını da geri
+alabiliyor. §4.7 bunu zaten söylüyor ve satır §4.7'ye atıf veriyor — yani
+belge kendi içinde tutarsız değil, ama ✅ ile ⚠️ yan yana konduğunda
+denetçinin göreceği ilk şey bu.
+
+Seçenekler: (a) §2'nin kararını "⚠️ Bulunur, ama karar silinebilir — bkz.
+§4.7" yapmak, (b) satırı ikiye bölmek — saldırgansız nedenler (bit çürümesi,
+yarım kopya) ✅, M3 kurcalaması ⚠️.
+
+### 2. §4.7'nin "anahtarı olmayan hiç kimse" ifadesi koşulsuz
+
+§4.7: "GCM tag'i ana anahtar altında hesaplanıyor, yani anahtarı olmayan
+hiç kimse bir dosyayı değiştirip doğrulanan bir tag üretemez."
+
+Doğru — ama M3 açısından eksik: oturum KİLİTLİ DEĞİLKEN ana anahtar süreç
+belleğinde ve §3'ün "Bellek" paragrafı bir bellek dökümünün düz metin
+içerebileceğini zaten kabul ediyor. Yani anahtarlı denetim, M3'ün kilitsiz
+bir oturum yakalamadığı sürece dayanıyor.
+
+Bu turda §1.2 ve §1.3 koşulu AÇIKÇA yazdı; §4.7 hâlâ koşulsuz. İki yer aynı
+şeyi farklı kesinlikte söylüyor.
+
+### 3. §2'nin "`share_2` artık veritabanında değil" satırı GÜNCEL kurulum için doğru
+
+Satır: "`share_2` veritabanından okundu → ✅ Artık orada değil".
+
+Migration ÖNCESİ alınmış ham bir `data/` kopyası için yanlış: `share_2` o
+kopyada `usb_tokens.share_2` sütununda düz metin. Kırılmış bir PIN'le
+birleştiğinde ana anahtarı gerçekten yeniden kuruyor.
+
+`CORE/secret_migration.py` canlı kopyanın üzerine yazıp temizliyor ama
+makineden çıkmış bir kopyaya ulaşamıyor — §4.4'ün "hiçbir şey
+döndürülmüyor" ısrarının aynısı. §4.6 tam bu şekli ("zincir yükseltmede
+başlıyor") açıkça işaretliyor; §2'nin bu satırı işaretlemiyor.
+
+Bu tur §1.3'e bir istisna paragrafı olarak yazıldı. §2 satırının kendisi
+DEĞİŞTİRİLMEDİ.
+
+### 4. §5'in "device binding" ifadesi B-025 aygıt sınıfında geçerli değil
+
+§5: "Vault sealing: AES-256-GCM, AAD = HWID (**device binding**)".
+
+B-025'te ölçüldü: depolama yığını kullanılamaz seri bildirdiğinde HWID
+`data/usb_ids.json`'daki bir UUID'den geliyor. O aygıt sınıfında bağ cihaza
+değil DOSYAYA. §4.2 HWID'nin sır olmadığını zaten söylüyor ama "device
+binding" ifadesi ayrı bir şey vaat ediyor: cihazın VARLIĞINI.
+
+Kapsam notu: §5, kullanıcının taradığımı söylediği §1–§4.12 aralığının
+DIŞINDA, o yüzden dokunulmadı. §1.3 bu turda B-025'e açık atıf verdi.
+
+### 5. §5'in "yeni PIN'ler için en az 6 karakter" ifadesi giriş eşiğinden söz etmiyor
+
+§5: "PIN storage: Argon2id hash; **minimum 6 characters for new PINs**".
+
+Literal olarak doğru. Eksik olan, `LOGIN_MIN_LEN = 4` köprüsünün hâlâ
+duruyor olması (B-040): giriş ekranı 4 haneli bir PIN'i kabul ediyor ve
+B-003 akışı onu ancak kullanıcı GİRDİKTEN sonra yeniliyor. "En az 6 karakter"
+diyen bir güvenlik belgesi, kaba kuvvet direncini değerlendiren bir denetçi
+için burada eksik konuşuyor.
+
+SECURITY.md `LOGIN_MIN_LEN`'den hiçbir yerde söz etmiyor. B-040 kapanınca bu
+madde kendiliğinden düşer; kapanana kadar bir cümle hak ediyor.
+
+### Bu turda YAPILAN — kayıt için
+
+Çelişkiler düzeltilmedi ama bu turda YAZILAN metin kendi içinde tutarlı
+tutuldu: §1.2 matrisinin GCM satırı ⚠️'ye çekildi (madde 2), §2'nin iki
+kurcalama satırı yalnızca **M2** etiketlendi (M3 iddiası §1.2'ye bırakıldı),
+ve §1.3'e migration öncesi kopya istisnası (madde 3) ile B-025 atfı
+(madde 4) yazıldı.
