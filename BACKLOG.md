@@ -2154,3 +2154,64 @@ tercihi `settings`'e sıkıştırmaktan iyi DEĞİL — ikisi de erken karar.
 Kullanıcı uygulamayı her açtığında anahtar Gelişmiş'e dönüyor. Varsayılan
 bilerek Gelişmiş: diyalogların bugünkü hâli o ve Basit'i varsayılan
 yapmak, mevcut kullanıcıların gördüğü bilgiyi habersiz azaltırdı.
+
+---
+
+## B-046 — `85c6dcc` ubuntu kırmızısının GERÇEK sebebi hâlâ bilinmiyor
+
+**Durum:** Açık — teşhis yarım, sebep belirlenemedi
+**Öncelik:** YÜKSEK (CI kırmızı)
+**Bulundu:** 2026-08-21 — CI teşhis turu
+
+Run `32489529229`, job `96793665685` (`ubuntu-latest · Python 3.11`),
+adım "Test (pytest)". Beş test düştü, hepsi `AdminPanel` kuran testler:
+
+```
+tests.test_trusted_roots::test_panel_bos_depoyu_ANLASILIR_gosteriyor
+tests.test_trusted_roots::test_panel_eklenen_koku_LISTELIYOR
+tests.test_trusted_roots::test_panel_silme_dugmesi_KOK_SECILINCE_aciliyor
+tests.test_trusted_roots::test_panel_silmeyi_UYGULUYOR
+tests.test_trusted_roots::test_panel_ONAY_verilmezse_silmiyor
+```
+
+Aynı dosyadaki diğer 28 test — gerçek freetsa token'ıyla çalışan uçtan uca
+kök eşleşmesi dâhil — Linux'ta GEÇTİ. Yani kök deposu mantığı sağlam;
+düşen tek şey `AdminPanel` yüzeyi.
+
+### ELENEN sebep: eksik `QT_QPA_PLATFORM`
+
+İlk hipotez buydu ve **yanlış çıktı**. İki bağımsız ölçüm:
+
+1. Pytest bütün modülleri koşudan ÖNCE topluyor. Tam pakette
+   `test_backup_verify_ui.py` (alfabetik olarak önce) modül seviyesinde
+   `setdefault` çalıştırıyor, yani koşu başladığında değişken ZATEN
+   `offscreen`. Ölçüldü — izole koşuda `None`, tam pakette `'offscreen'`.
+2. Yüklenemeyen bir platformda `QApplication([])` **yakalanabilir istisna
+   vermiyor**, `qFatal` ile süreci öldürüyor (ölçüldü: çıktı hiç
+   basılmadı). Öyle olsaydı pytest hiç bitmez ve JUnit XML üretilmezdi —
+   oysa `test-results-ubuntu-latest-py3.11` artifact'i 32 KB ve içinde
+   2200+ geçen test var.
+
+Eksik satır yine de gerçek bir kusurdu (izole koşu Linux'ta çökerdi) ve bu
+turda düzeltildi + AST denetimi eklendi. Ama CI'ı kıran şey O DEĞİL.
+
+### Neden sebep okunamıyor
+
+`UI/AdminPanel.py` bugüne kadar hiçbir Linux koşusunda kurulmadı: onu
+kuran tek yer bu testler, `main.py --selftest` listesi yalnızca CORE/DB
+modüllerini içeriyor ve `test_layering.py` UI dosyalarını AST ile okuyup
+içe aktarmıyor. Yerelde Linux yok (WSL kurulu değil, Docker yok).
+
+Yetkisiz API ile log (403) ve artifact (401) indirilemiyor; annotation'lar
+bu tura kadar yalnızca test ADINI taşıyordu.
+
+### Sıradaki adım
+
+Bu tur `render_annotations` genişletildi: annotation artık
+`<failure message=...>`'in ilk satırını da taşıyor. Bir sonraki push'ta
+aynı beş test düşerse **sebep yetkisiz API'den okunabilecek** ve bu madde
+kapanabilecek.
+
+Alternatif (daha hızlı): `gh run download <id> -n
+test-results-ubuntu-latest-py3.11` ile JUnit XML'i çekmek — tam traceback
+orada.

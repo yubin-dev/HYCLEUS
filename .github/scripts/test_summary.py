@@ -88,6 +88,10 @@ except ImportError:  # pragma: no cover — depo yapisi bozuksa
 #: özetini taşırmak yerine ilk birkaçını gösterip geri kalanı sayıyoruz.
 _MAX_LISTED = 20
 
+#: Annotation'a giren mesajin ust siniri. Annotation tek satirlik bir
+#: yuzey; uzun bir `assert` dokumu onu okunmaz yapardi.
+_MESAJ_SINIRI = 220
+
 
 @dataclass(frozen=True)
 class Totals:
@@ -142,14 +146,72 @@ def parse(path: Path) -> tuple[Totals, list[str]]:
             time=toplam.time + float(suite.get("time", 0.0)),
         )
 
-    basarisiz: list[str] = []
+    basarisiz: list[Basarisiz] = []
     for case in root.iter("testcase"):
-        if case.find("failure") is not None or case.find("error") is not None:
-            sinif = case.get("classname", "")
-            ad = case.get("name", "?")
-            basarisiz.append(f"{sinif}::{ad}" if sinif else ad)
+        dugum = case.find("failure")
+        if dugum is None:
+            dugum = case.find("error")
+        if dugum is None:
+            continue
+        sinif = case.get("classname", "")
+        ad = case.get("name", "?")
+        basarisiz.append(Basarisiz(
+            f"{sinif}::{ad}" if sinif else ad, _ilk_satir(dugum)
+        ))
 
     return toplam, basarisiz
+
+
+class Basarisiz(str):
+    """
+    Basarisiz bir testin kimligi — ustune `mesaj` tasiyor.
+
+    Neden `str` alt sinifi, ayri bir dataclass degil: bu deger
+    `render()` icinde dogrudan bicimlendiriliyor ve `tests/
+    test_ci_summary.py` onu duz dizelerle karsilastiriyor. `str`den
+    turemek her iki cagri yerini de DEGISMEDEN birakiyor; ayri bir tip
+    ikisini de dokunmayi gerektirirdi ve bu dosya CI'in kendi raporlama
+    araci — degistirilen her satiri odemek gerekiyor.
+    """
+
+    mesaj: str
+
+    def __new__(cls, ad: str, mesaj: str = "") -> "Basarisiz":
+        nesne = super().__new__(cls, ad)
+        nesne.mesaj = mesaj
+        return nesne
+
+
+def _ilk_satir(dugum) -> str:  # type: ignore[no-untyped-def]
+    """
+    `<failure message="...">` iceriginin TEK satirlik ozeti.
+
+    `message` niteligi yoksa govde metnine dusuluyor: pytest kisa
+    hatalarda niteligi doldurur, uzun `assert` dokumlerinde asil metin
+    govdede olur.
+
+    Yalnizca ILK satir aliniyor. Annotation tek satirlik bir yuzey ve
+    tam traceback zaten JUnit XML'inde duruyor; buranin isi "hangi test"
+    bilgisinin yanina "neden" bilgisini koymak, gunlugu kopyalamak degil.
+    """
+    ham = (dugum.get("message") or dugum.text or "").strip()
+    if not ham:
+        return ""
+    ilk = ham.splitlines()[0].strip()
+    return ilk[:_MESAJ_SINIRI - 1] + "…" if len(ilk) > _MESAJ_SINIRI else ilk
+
+
+def _komut_kacisi(metin: str) -> str:
+    """
+    Workflow komutunun VERI kismi icin kacis.
+
+    GitHub `%`, satir basi ve satir sonunu ozel okuyor; kacilmazsa mesaj
+    kirpilir ya da komut bozulur. Sira onemli: `%` ONCE, yoksa sonradan
+    eklenen `%25`'lerin kendisi tekrar kacilirdi.
+    """
+    return (metin.replace("%", "%25")
+                 .replace("\r", "%0D")
+                 .replace("\n", "%0A"))
 
 
 def render(totals: Totals, failed: list[str], *, title: str) -> str:
@@ -190,11 +252,28 @@ def render_annotations(failed: list[str], *, title: str) -> str:
 
     Bu bir kolaylık değil, bir gereklilikti: 3.5 turunda Windows ayağı
     kırıldı ve hangi testin düştüğü hiçbir yerden okunamadı.
+
+    NEDEN bilgisi de burada
+    -----------------------
+    İlk sürüm yalnızca test ADINI basıyordu ve o yarım kalmış bir
+    çözümdü: `85c6dcc`'te ubuntu ayağı kırıldığında hangi beş testin
+    düştüğü okunabildi ama NİÇİN düştükleri okunamadı — mesaj yalnızca
+    yönetici yetkisi isteyen günlükte ve artifact'teydi.
+
+    Artık `<failure message=...>`'in ilk satırı da ekleniyor. Tam
+    traceback hâlâ JUnit XML'inde; buradaki iş bir satırlık bir ipucu
+    vermek, günlüğü kopyalamak değil.
+
+    Mesajı OLMAYAN girdiler eskisi gibi yalnızca adla basılıyor: bu
+    fonksiyon düz dize listeleriyle de çağrılabiliyor ve öyle
+    çağrıldığında bozulmamalı.
     """
     if not failed:
         return ""
     satirlar = [
         f"::error title=Basarisiz test ({title})::{ad}"
+        + (f" — {_komut_kacisi(getattr(ad, 'mesaj', ''))}"
+           if getattr(ad, "mesaj", "") else "")
         for ad in failed[:_MAX_LISTED]
     ]
     if len(failed) > _MAX_LISTED:

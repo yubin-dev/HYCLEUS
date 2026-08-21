@@ -155,6 +155,121 @@ def test_comments_and_docstrings_do_not_trigger_the_check(tmp_path: Path):
     assert not (_imported_roots(temiz) & _FORBIDDEN_ROOTS)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Qt test dosyalari: offscreen korumasi ZORUNLU
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Ayri bir kural ama ayni sinif: bir dosyanin CALISMASI, baska bir dosyanin
+# yan etkisine bagli olmamali.
+#
+# QApplication kuran bir test dosyasi `QT_QPA_PLATFORM` kurulmadan
+# calistirilirsa, ekransiz bir Linux'ta Qt varsayilan `xcb` eklentisini
+# yukleyemez ve `qFatal` ile SURECI OLDURUR. Olculdu: yakalanabilir bir
+# istisna DEGIL, yani `try/except -> pytest.skip` deseni kurtarmiyor.
+#
+# Tam pakette degisken, alfabetik olarak once toplanan baska bir modulun
+# modul seviyesindeki `setdefault`'undan geliyor. Yani korumasi olmayan bir
+# dosya TAM PAKETTE calisir, TEK BASINA cokerdi — ve tek basina calistirmak
+# hata ayiklamanin en sik yapilan hareketi.
+#
+# Iki dosya tam olarak bu durumdaydi (`test_trusted_roots.py`,
+# `test_guvenlik_view.py`); B-013 ve B-020 ile ayni tekrar sinifi: ortama
+# bagli, yalnizca bir platformda gorunur, ve sessiz.
+
+
+def _qapplication_kuran_dosyalar() -> list[Path]:
+    """
+    `QApplication(...)` CAGRISI yapan test dosyalari.
+
+    Metin aramasi DEGIL, AST: bu deponun docstring'lerinde ve
+    yorumlarinda "QApplication" bolca geciyor (`test_layering.py` dahil,
+    bu yorum da oyle) ve metin aramasi onlara takilirdi — B-024.
+    """
+    bulunan = []
+    for yol in sorted((_PROJECT_ROOT / "tests").glob("test_*.py")):
+        agac = ast.parse(yol.read_text(encoding="utf-8"))
+        for d in ast.walk(agac):
+            if (isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+                    and d.func.id == "QApplication"):
+                bulunan.append(yol)
+                break
+    return bulunan
+
+
+def _offscreen_koruyor_mu(yol: Path) -> bool:
+    """`os.environ.setdefault("QT_QPA_PLATFORM", ...)` cagrisi var mi — AST ile."""
+    agac = ast.parse(yol.read_text(encoding="utf-8"))
+    for d in ast.walk(agac):
+        if (isinstance(d, ast.Call)
+                and isinstance(d.func, ast.Attribute)
+                and d.func.attr == "setdefault"
+                and d.args
+                and isinstance(d.args[0], ast.Constant)
+                and d.args[0].value == "QT_QPA_PLATFORM"):
+            return True
+    return False
+
+
+def test_qapplication_kuran_dosyalar_gercekten_bulunuyor():
+    """Bos kume donen bir tarayici asagidaki kurali sessizce gecirirdi."""
+    dosyalar = _qapplication_kuran_dosyalar()
+    assert len(dosyalar) >= 7, (
+        f"QApplication kuran yalnizca {len(dosyalar)} dosya bulundu — tarayici kor"
+    )
+
+
+@pytest.mark.parametrize(
+    "yol", _qapplication_kuran_dosyalar(), ids=lambda p: p.name
+)
+def test_qapplication_kuran_dosya_offscreen_KURUYOR(yol: Path):
+    """
+    Her QApplication kuran test dosyasi kendi platformunu kurmali.
+
+    Gerekce yukaridaki blokta; kisaca: baska bir dosyanin toplama
+    yan etkisine guvenen bir dosya, tek basina calistirildiginda
+    ekransiz Linux'ta sureci oldurur.
+    """
+    assert _offscreen_koruyor_mu(yol), (
+        f"{yol.name} QApplication kuruyor ama QT_QPA_PLATFORM kurmuyor. "
+        'Import blogunun basina ekleyin: '
+        'os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")'
+    )
+
+
+def test_offscreen_denetimi_EKSIGI_gercekten_yakaliyor(tmp_path: Path):
+    """Denetimin kendisi calisiyor mu — korumasiz bir dosya uydurulup olculuyor."""
+    korumasiz = tmp_path / "test_korumasiz.py"
+    korumasiz.write_text(
+        "from PySide6.QtWidgets import QApplication\n"
+        "def test_x():\n    app = QApplication([])\n",
+        encoding="utf-8")
+    assert not _offscreen_koruyor_mu(korumasiz)
+
+    korumali = tmp_path / "test_korumali.py"
+    korumali.write_text(
+        "import os\n"
+        'os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")\n'
+        "from PySide6.QtWidgets import QApplication\n"
+        "def test_x():\n    app = QApplication([])\n",
+        encoding="utf-8")
+    assert _offscreen_koruyor_mu(korumali)
+
+
+def test_YORUMDAKI_setdefault_denetimi_kandirmiyor(tmp_path: Path):
+    """
+    Bu deponun dort kez yasadigi hata: kurali ANLATAN metnin kurala
+    takilmasi (son ornek B-024). AST kullaniliyor, metin aramasi degil.
+    """
+    sahte = tmp_path / "test_sahte.py"
+    sahte.write_text(
+        "# os.environ.setdefault(\"QT_QPA_PLATFORM\", \"offscreen\") yazmali\n"
+        '"""os.environ.setdefault("QT_QPA_PLATFORM", "offscreen") kurmuyor."""\n'
+        "from PySide6.QtWidgets import QApplication\n"
+        "def test_x():\n    app = QApplication([])\n",
+        encoding="utf-8")
+    assert not _offscreen_koruyor_mu(sahte), "yorum/docstring denetimi kandirdi"
+
+
 def test_ui_layer_may_import_core_freely():
     """
     Kural TEK YÖNLÜ: UI → CORE serbest, CORE → UI yasak.

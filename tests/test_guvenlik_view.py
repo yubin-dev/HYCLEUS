@@ -19,9 +19,23 @@ Bu paket iki şeyi ayrı ayrı ölçüyor:
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 
 import pytest
+
+# QApplication kurulmadan ÖNCE, modül seviyesinde. Diğer Qt test
+# dosyalarındaki desenin aynısı.
+#
+# Neden `setdefault` ve neden BURADA: bu dosya tek başına çalıştırıldığında
+# (`pytest tests/test_trusted_roots.py`) değişken HİÇBİR yerde kurulmuyor —
+# ölçüldü. Ekransız bir Linux'ta Qt varsayılan `xcb` eklentisini yükleyemez
+# ve `qFatal` ile SÜRECİ ÖLDÜRÜR; ölçüldü, yakalanabilir bir istisna DEĞİL,
+# yani aşağıdaki `try/except → pytest.skip` kurtarmaz.
+#
+# Tam pakette değişken başka bir modülün toplama anındaki yan etkisinden
+# geliyor — yani bu dosya bugüne kadar KAZAYLA çalışıyordu.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from CORE.crypto import encrypt_file, generate_key

@@ -247,6 +247,121 @@ def test_annotations_basarisiz_adlari_workflow_komutu_olarak_basar(
     assert "|" not in cikti
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Annotation'lar "HANGI test"in yanina "NEDEN"i de koyuyor mu
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Ilk surum yalnizca adi basiyordu ve o yarim bir cozumdu: `85c6dcc`'te
+# ubuntu ayagi kirildiginda hangi bes testin dustugu okunabildi ama NICIN
+# dustukleri okunamadi — mesaj yalnizca yonetici yetkisi isteyen gunlukte
+# ve artifact'teydi.
+
+_MESAJLI = """<?xml version="1.0" encoding="utf-8"?>
+<testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="1.0">
+  <testcase classname="tests.test_a" name="test_dusen">
+    <failure message="AttributeError: nesnede '_tsa_liste' yok">govde metni</failure>
+  </testcase>
+</testsuite>
+"""
+
+
+def test_annotation_mesaji_da_basiyor(tmp_path: Path, capsys) -> None:
+    """Adin yanina hata mesajinin ILK satiri geliyor."""
+    rapor = _write(tmp_path, _MESAJLI)
+    assert summary.main(["x", str(rapor), "ubuntu", "--annotations"]) == 0
+    cikti = capsys.readouterr().out
+    assert "tests.test_a::test_dusen" in cikti
+    assert "AttributeError: nesnede '_tsa_liste' yok" in cikti
+
+
+def test_parse_mesaji_TASIYOR(tmp_path: Path) -> None:
+    """
+    `parse()` geriye donuk uyumlu: donen deger duz dizeyle esit ama
+    ustunde `mesaj` var.
+    """
+    _totals, failed = summary.parse(_write(tmp_path, _MESAJLI))
+    assert failed == ["tests.test_a::test_dusen"]
+    assert failed[0].mesaj == "AttributeError: nesnede '_tsa_liste' yok"
+
+
+def test_mesaj_yoksa_GOVDE_metnine_dusuluyor(tmp_path: Path) -> None:
+    """
+    pytest kisa hatalarda `message` niteligini doldurur, uzun `assert`
+    dokumlerinde asil metin govdede olur — ikisi de okunabilmeli.
+    """
+    xml = (
+        '<testsuite tests="1" failures="1">'
+        '<testcase classname="t" name="a"><failure>ilk satir' + chr(10) + 'ikinci</failure></testcase>'
+        '</testsuite>'
+    )
+    _totals, failed = summary.parse(_write(tmp_path, xml))
+    assert failed[0].mesaj == "ilk satir", "govde metnine dusulmedi ya da coklu satir alindi"
+
+
+def test_YALNIZCA_ilk_satir_aliniyor(tmp_path: Path) -> None:
+    """Annotation tek satirlik bir yuzey; tam traceback JUnit XML'inde."""
+    # Gercek pytest, nitelik icindeki satir sonunu `&#10;` olarak yaziyor.
+    # DUZ bir satir sonu kullanilamaz: XML nitelik degeri normalizasyonu onu
+    # BOSLUGA cevirir (olculdu) ve test hicbir sey kanitlamamis olurdu.
+    xml = (
+        '<testsuite tests="1" failures="1">'
+        '<testcase classname="t" name="a">'
+        '<failure message="ilk&#10;ikinci&#10;ucuncu">x</failure>'
+        '</testcase></testsuite>'
+    )
+    _totals, failed = summary.parse(_write(tmp_path, xml))
+    assert failed[0].mesaj == "ilk"
+
+
+def test_uzun_mesaj_kirpiliyor(tmp_path: Path) -> None:
+    uzun = "A" * 500
+    xml = (
+        '<testsuite tests="1" failures="1">'
+        '<testcase classname="t" name="a"><failure message="' + uzun + '">x</failure>'
+        '</testcase></testsuite>'
+    )
+    _totals, failed = summary.parse(_write(tmp_path, xml))
+    assert len(failed[0].mesaj) <= summary._MESAJ_SINIRI
+    assert failed[0].mesaj.endswith("…")
+
+
+def test_yuzde_isareti_KACILIYOR(tmp_path: Path, capsys) -> None:
+    """
+    GitHub `%` isaretini workflow komutunda ozel okuyor; kacilmazsa mesaj
+    kirpilir. Gercek bir `assert` ciktisinda yuzde bolca gecer.
+    """
+    xml = (
+        '<testsuite tests="1" failures="1">'
+        '<testcase classname="t" name="a"><failure message="assert 50%25 != 100%25">x</failure>'
+        '</testcase></testsuite>'
+    ).replace("%25", "%")
+    rapor = _write(tmp_path, xml)
+    assert summary.main(["x", str(rapor), "ubuntu", "--annotations"]) == 0
+    cikti = capsys.readouterr().out
+    assert "assert 50%25 != 100%25" in cikti, cikti
+
+
+def test_DUZ_DIZE_listesiyle_de_calisiyor() -> None:
+    """
+    `render_annotations` disaridan duz dize listesiyle de cagrilabiliyor;
+    `mesaj` yoksa eskisi gibi yalnizca ad basilmali.
+    """
+    cikti = summary.render_annotations(["a::b"], title="t")
+    assert cikti.strip() == "::error title=Basarisiz test (t)::a::b"
+
+
+def test_mesaj_OZET_tablosuna_karismiyor(tmp_path: Path, capsys) -> None:
+    """
+    Genisletilen sey yalnizca annotation. Ozet tablosu adlari listeliyor;
+    oraya da mesaj eklemek tabloyu okunmaz yapardi.
+    """
+    rapor = _write(tmp_path, _MESAJLI)
+    assert summary.main(["x", str(rapor), "ubuntu"]) == 0
+    cikti = capsys.readouterr().out
+    assert "tests.test_a::test_dusen" in cikti
+    assert "AttributeError" not in cikti
+
+
 def test_annotations_gecen_kosuda_sessiz(tmp_path: Path, capsys) -> None:
     """Hiçbir test düşmediyse tek bir annotation bile basılmamalı."""
     rapor = _write(tmp_path, _GERCEK)
