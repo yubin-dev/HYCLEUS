@@ -2215,6 +2215,11 @@ saniyede durdu. Bkz. B-047.
 Yani bu madde açık kalmakla kalmıyor, artık **maskelendi**: B-047
 çözülmeden beş testin sebebi ölçülemez.
 
+**2026-08-22 güncelleme:** B-047 çözüldü, maske kalktı. Bir sonraki
+push'ta ubuntu ayağı koşu evresine geçebilecek ve beş `test_panel_*`
+testinin gerçek hata mesajı annotation'da görünecek — ama B-048 yüzünden
+yalnızca `<failure message=...>` taşıyan koşu başarısızlıkları için.
+
 ### Güncelleme — 2026-08-21 21:00, run `32526378278` (`89826bd`)
 
 Ölçülenler (yetkisiz GitHub API; log 403, artifact indirme 401 — yalnızca
@@ -2246,8 +2251,8 @@ geçmiyor.
 
 ## B-047 — `test_guvenlik_view.py` Qt'yi korumasız içe aktarıyor: ubuntu'da toplama hatası
 
-**Durum:** Açık — sebep ÖLÇÜLDÜ, düzeltme uygulanmadı
-**Öncelik:** YÜKSEK (CI kırmızı; B-046'yı da maskeliyor)
+**Durum:** ÇÖZÜLDÜ — 2026-08-22, kalıcı denetimle birlikte
+**Öncelik:** —
 **Bulundu:** 2026-08-22 — annotation okuma turu
 
 `89826bd` koşusunda ubuntu ayağını kıran şey `tests/test_guvenlik_view.py`
@@ -2298,16 +2303,57 @@ baytlık JUnit XML'in içinde ve indirmek yetki istiyor. Yukarıdaki teşhis
 "hangi dosya" sorusunu ölçümle yanıtlıyor, "hangi satır" sorusunu
 yanıtlamıyor.
 
-### Düzeltme
+### Düzeltme — uygulandı
 
-Diğer yedi dosyadaki blokla aynısı — Qt ve UI içe aktarmalarının hepsi tek
-bir `try` altında, `except ImportError` -> `pytest.skip(...,
-allow_module_level=True)`. Bu turda uygulanmadı: bu tur teşhis turuydu.
+`tests/test_guvenlik_view.py`, diğer yedi dosyadaki blokla **birebir aynı**
+desene sarıldı: Qt ve UI içe aktarmalarının hepsi tek bir `try` altında,
+`except ImportError` -> `pytest.skip(..., allow_module_level=True)`.
+`CORE.crypto`/`CORE.timestamp` bloğun dışında bırakıldı — Qt'ye bağlı
+değiller ve referans dosyaların hiçbiri onları sarmıyor.
 
-Önlem sorusu açık: `test_layering.py`'deki offscreen denetiminin yanına
-"modül seviyesinde korumasız Qt/UI içe aktarma yasak" denetimi eklenmeli
-mi? Yukarıdaki tarama zaten AST ile bunu yapıyor ve tek ihlali buldu —
-teste dönüştürmek küçük iş. Karar kullanıcının.
+Üstteki `os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")` **yerinde
+bırakıldı**: iki ayrı arıza, iki ayrı önlem. `setdefault` Qt
+yüklenebildiğinde hangi platformun seçileceğini belirler; `try` bloğu Qt
+hiç yüklenemediğinde toplamanın çökmesini engeller. Birinin diğerinin
+yerine geçtiğini sanmak bu maddeyi tekrar üretirdi.
+
+### Yerel kanıt — Linux arızası canlandırıldı
+
+`sys.path`'in başına, içe aktarılınca `ImportError` fırlatan sahte bir
+`PySide6` paketi konarak çıplak runner koşulu yerelde üretildi:
+
+```
+A) DÜZELTMELİ        -> çıkış kodu 5 · "collected 0 items / 1 skipped"
+B) MUTASYON (koruma yok) -> çıkış kodu 2 · "Interrupted: 1 error during collection"
+```
+
+B, CI'daki imzanın aynısı. Yani düzeltmenin doğru arızayı hedeflediği
+varsayım değil, ölçüm.
+
+### Kalıcı denetim — `test_layering.py`
+
+Aynı ailenin üçüncü kuralı eklendi: **hiçbir test modülü, modül
+seviyesinde korumasız Qt/UI içe aktaramaz.** AST tabanlı, `tests/*.py`'nin
+tamamını (conftest.py dâhil) geziyor, ihlalde dosya adı + satır numarası
+veriyor.
+
+Kapsam kararları:
+
+| | Kapsam | Gerekçe |
+|---|---|---|
+| Modül seviyesi import | **içinde** | Toplama anında çalışır → paketi durdurur |
+| `if`/`with`/`for` gövdesindeki modül seviyesi import | **içinde** | O da toplama anında çalışır; `if True:` kuralı atlatmamalı |
+| Fonksiyon/sınıf gövdesindeki import | dışında | Koşu anında patlar → tek test düşer, paket durmaz |
+| `except`/`finally` gövdesindeki import | **içinde** | Onu yakalayacak başka bir şey yok |
+
+Koruma sayılmak için **iki koşul birden** gerekiyor: `ImportError`
+yakalanacak VE `pytest.skip(..., allow_module_level=True)` çağrılacak.
+Yarım koruma (`except ImportError: pass`) toplamayı geçirir ama testleri
+`NameError`'a boğar — kusuru çözmez, yerini değiştirir.
+
+Denetim yük taşıyor: korumayı geri almak iki testi birden kırıyor
+(parametrik denetim + desen tanıma meta-testi), mesajda üç ihlal satırı
+adıyla listeleniyor.
 
 ---
 

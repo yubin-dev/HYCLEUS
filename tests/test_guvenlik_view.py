@@ -36,12 +36,40 @@ import pytest
 # Tam pakette değişken başka bir modülün toplama anındaki yan etkisinden
 # geliyor — yani bu dosya bugüne kadar KAZAYLA çalışıyordu.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from CORE.crypto import encrypt_file, generate_key
 from CORE.timestamp import timestamp_file
-from UI.GuvenlikView import GUVENLIK_SALT_OKUNURA_ACIK, SAYFA_ADI, GuvenlikView
-from UI.main_window_files import FileActionsMixin
+
+# Qt ve UI içe aktarmaları TEK korumanın altında — diğer yedi UI test
+# dosyasındaki desenin birebir aynısı.
+#
+# `importorskip("PySide6")` YETMİYOR: paket kurulu olsa bile alt modüller
+# sistem kütüphanelerine bağlı (libEGL.so.1, libxkbcommon) ve çıplak bir
+# Linux runner'ında import ImportError veriyor. Modül seviyesinde patlayan
+# bir import pytest'te ATLAMA değil TOPLAMA HATASI olur (çıkış kodu 2) ve
+# oturumu `Interrupted` ile bitirir — paketin geri kalanı hiç koşmaz.
+#
+# Bu dosya tam olarak böyle kırdı: run 32526378278, ubuntu-latest, pytest
+# adımı 3 saniyede düştü, JUnit çıktısı 935 bayt. Aynı hata 297327f'te de
+# yaşanmıştı (bkz. test_lock_overlay.py). B-047.
+#
+# Yukarıdaki `setdefault` bunun YERİNE GEÇMEZ: o, Qt yüklenebildiğinde
+# hangi platformun seçileceğini belirler; bu blok Qt HİÇ yüklenemediğinde
+# toplamanın çökmesini engelliyor. İki ayrı arıza, iki ayrı önlem.
+try:
+    from PySide6.QtWidgets import QApplication, QLabel, QWidget
+
+    from UI.GuvenlikView import (
+        GUVENLIK_SALT_OKUNURA_ACIK,
+        SAYFA_ADI,
+        GuvenlikView,
+    )
+    from UI.main_window_files import FileActionsMixin
+except ImportError as _exc:  # pragma: no cover — ortama bağlı
+    pytest.skip(
+        f"Qt katmanı bu ortamda yüklenemedi ({_exc}) — testler atlanıyor",
+        allow_module_level=True,
+    )
 
 KOK = Path(__file__).resolve().parent.parent
 
