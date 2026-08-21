@@ -136,6 +136,7 @@ from pathlib import Path
 from typing import Any
 
 from CORE.crypto import AuthenticationError, decrypt_file, encrypt_file
+from CORE import rehber
 from CORE.safezone import safezone_file
 
 _log = logging.getLogger("hycleus.hclx")
@@ -298,6 +299,7 @@ def create_package(
     dst: Path | str,
     gecerlilik_saat: int = VARSAYILAN_SAAT,
     note: str = "",
+    rehber_ekle: bool = False,
     db: Any = None,
     simdi: datetime | None = None,
 ) -> Manifest:
@@ -316,6 +318,12 @@ def create_package(
                          olurdu.
         note:            Alıcıya serbest metin not (manifestoya girer,
                          yani düz metin okunabilir — sır yazmayın).
+        rehber_ekle:     `True` ise kullanıcı rehberinin PDF kopyası da
+                         pakete girer. Paket, kasayı hiç tanımayan birine
+                         gidiyor olabilir; rehberin ÜÇÜNCÜ erişim yolu bu.
+                         Kopya `CORE/rehber.py::PDF`'ten OKUNUYOR, burada
+                         ÜRETİLMİYOR — tek üretim yolu kuralı (bkz.
+                         `CORE/rehber.py` modül başlığı).
         db:              Verilirse denetim kaydı düşülür.
         simdi:           Testler için; verilmezse UTC şimdi.
 
@@ -337,6 +345,22 @@ def create_package(
         )
 
     yollar = [Path(p) for p in dosyalar]
+    if rehber_ekle:
+        # Rehber SON sırada: alıcının kendi dosyaları listede önce görünsün.
+        #
+        # Eksikse SESSİZCE ATLANMIYOR. Atlamak, "rehber de gitti" sanan bir
+        # göndericiye yanlış bilgi vermek olurdu — B-025'in dersi: sessizce
+        # devre dışı kalan bir yetenek, hiç olmayandan kötü.
+        if not rehber.PDF.is_file():
+            raise HclxError(
+                f"Rehber PDF'i yok: {rehber.PDF}. "
+                "Üretmek için: python CORE/rehber.py --uret")
+        if any(y.name == rehber.PAKET_ADI for y in yollar):
+            raise HclxError(
+                f"Pakette zaten {rehber.PAKET_ADI} adlı bir dosya var — "
+                "rehber eklenirse hangisinin hangisi olduğu belirsizleşir.")
+        yollar.append(rehber.PDF)
+
     icerik: list[dict[str, Any]] = []
     ozet: list[dict[str, Any]] = []
     toplam = 0
@@ -404,7 +428,8 @@ def create_package(
               manifest.package_id[:8], len(yollar), manifest.pencere_metni())
     _kaydet(db, EYLEM_URETILDI, user_id=user_id,
             detay=(f"paket={manifest.package_id[:8]} dosya={len(yollar)} "
-                   f"pencere={manifest.pencere_metni()} boyut={len(payload)}"))
+                   f"pencere={manifest.pencere_metni()} boyut={len(payload)} "
+                   f"rehber={int(rehber_ekle)}"))
     return manifest
 
 

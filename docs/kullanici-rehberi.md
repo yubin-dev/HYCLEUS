@@ -5,6 +5,10 @@
 Bu rehber teknik bilgi varsaymıyor. Komut yazmanız gereken yerlerde
 komutun tamamı hazır veriliyor — kopyalayıp yapıştırmanız yeterli.
 
+Bu sayfaya üç yerden ulaşabilirsiniz: uygulamada sağ üstteki **☰** menüsünden
+**📘 Kullanım Rehberi**, `docs/kullanici-rehberi.pdf` dosyasından, ya da size
+gönderilen bir teslim paketinin (`.hclx`) içinden. Üçü de aynı metindir.
+
 ---
 
 ## ⛔ Her şeyden önce: asla yapmayacağınız tek şey

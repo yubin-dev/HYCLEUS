@@ -39,6 +39,8 @@ from CORE.roles import (
     display_role,
     is_admin_role,
 )
+from CORE.rehber import MENU_ETIKETI as _REHBER_ETIKETI
+from CORE.rehber import erisim_yolu as _rehber_erisim_yolu
 from CORE.tpm_sealing import durum as tpm_durum
 from CORE.usb_manager import get_usb_hwid
 from UI.GuvenlikView import (
@@ -310,6 +312,25 @@ class HycleusWindow(
         from UI.ContactDialog import ContactDialog
         ContactDialog(self).exec()
 
+    def _on_open_rehber(self) -> None:
+        """
+        Kullanım rehberini açar: yerel PDF varsa onu, yoksa web adresini.
+
+        Kararı bu metot VERMİYOR — `CORE.rehber.erisim_yolu()` veriyor.
+        Burada bir `if PDF.exists()` yazmak ikinci bir karar noktası
+        olurdu ve biri güncellenip diğeri unutulurdu.
+        """
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        tur, hedef = _rehber_erisim_yolu()
+        url = QUrl.fromLocalFile(hedef) if tur == "pdf" else QUrl(hedef)
+        if not QDesktopServices.openUrl(url):
+            QMessageBox.warning(
+                self, "HYCLEUS — Kullanım Rehberi",
+                "Rehber açılamadı. Dosyayı elle açabilirsiniz:\n\n"
+                f"{hedef}")
+
     def _on_open_profile(self) -> None:
         from UI.ProfileDialog import ProfileDialog
         ProfileDialog(
@@ -333,6 +354,10 @@ class HycleusWindow(
         act_audit   = menu.addAction("📋  Denetim Günlüğü")
         act_usb     = menu.addAction("🔌  USB Yönetimi")
         act_support = menu.addAction("💬  Destek")
+        # Rehberin İKİNCİ erişim yolu. Etiket ve hedef CORE/rehber.py'den
+        # geliyor — burada elle yazılsaydı rehber taşındığında menü
+        # sessizce boş bir dosyaya bakardı (B-017 sınıfı ayrışma).
+        act_rehber  = menu.addAction(_REHBER_ETIKETI)
         menu.addSeparator()
         act_backup  = menu.addAction("💾  Yedek Al…")
         # Doğrulama, almanın hemen yanında: hiç doğrulanmayan bir yedek,
@@ -352,6 +377,8 @@ class HycleusWindow(
             self._on_open_admin_panel()
         elif action == act_support:
             self._on_open_contact()
+        elif action == act_rehber:
+            self._on_open_rehber()
         elif action == act_backup:
             self._on_create_backup()
         elif action == act_verify_backup:

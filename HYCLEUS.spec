@@ -63,11 +63,18 @@ rl_datas, rl_binaries, rl_hiddenimports = collect_all('reportlab')
 # yani statik analiz hiçbirini göremiyor.
 qr_hiddenimports = collect_submodules('qrcode')
 
+# Kullanım rehberinin PDF kopyası — menüdeki "Kullanım Rehberi" bunu
+# açıyor. Pakete GİRMEZSE menü web adresine düşer; rehberin kitlesi ise
+# tam olarak "bir şeyler ters gitti" durumundaki kullanıcı ve o an
+# internet olmayabilir. Dosya depoda işli (B-024'teki `data/` durumu
+# DEĞİL: o dizin .gitignore'daydı, bu dosya değil).
+_REHBER = [("docs/kullanici-rehberi.pdf", "docs")]
+
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=wmi_binaries + rl_binaries,
-    datas=wmi_datas + rl_datas,
+    datas=wmi_datas + rl_datas + _REHBER,
     hiddenimports=(
         ['wmi', 'pythoncom', 'win32api', 'win32con']
         + wmi_hiddenimports
