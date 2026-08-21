@@ -273,7 +273,8 @@ def test_karsiligi_olup_artik_uretilmeyen_kod_yok() -> None:
 
 
 def _tum_aciklamalar() -> list[tr.Aciklama]:
-    return [*tr._ADIM.values(), tr.BILINMEYEN, tr._GECERLI]
+    return [*tr._ADIM.values(), tr.BILINMEYEN,
+            tr._GECERLI_GUVENILIR, tr._GECERLI_KOK_DOGRULANMADI]
 
 
 @pytest.mark.parametrize("mesaj", _tum_aciklamalar(), ids=lambda a: a.baslik[:30])
@@ -283,6 +284,10 @@ def test_her_mesajin_basligi_ve_ozeti_dolu(mesaj: tr.Aciklama) -> None:
     assert mesaj.seviye in {
         tr.SEVIYE_GECERLI, tr.SEVIYE_GECERSIZ,
         tr.SEVIYE_DAMGASIZ, tr.SEVIYE_OKUNAMADI,
+        # `uyari` bir BAŞLIK seviyesi olarak da kullanılıyor: "geçerli ama
+        # kök doğrulanmadı". Ayrı seviye olması kurumsal kök deposunun
+        # asıl talebi — iki durum aynı yeşil onayı paylaşmamalı.
+        tr.SEVIYE_UYARI,
     }
 
 
@@ -344,7 +349,10 @@ def test_gecerli_mesaji_dosya_degismedi_IDDIASINDA_bulunmuyor() -> None:
     DOĞRULAMIYOR — o kontrol anahtar istiyor. Arayüzün "dosya
     değiştirilmemiş" demesi, doğrulamanın yapmadığı bir iddia olurdu.
     """
-    metin = _kucult(f"{tr._GECERLI.baslik} {tr._GECERLI.ozet}")
+    metin = _kucult(
+        f"{tr._GECERLI_GUVENILIR.baslik} {tr._GECERLI_GUVENILIR.ozet} "
+        f"{tr._GECERLI_KOK_DOGRULANMADI.baslik} {tr._GECERLI_KOK_DOGRULANMADI.ozet}"
+    )
     for iddia in ("değiştirilmemiş", "bozulmamış", "el değmemiş"):
         assert _kucult(iddia) not in metin, (
             f"Geçerli mesajı {iddia!r} diyor — doğrulama bunu kontrol etmiyor."
@@ -387,9 +395,11 @@ def test_gercek_bir_damga_gecerli_okunuyor(tmp_path: Path, key: bytes) -> None:
         token_der=token,
     ))
 
+    # Kök VERİLMEDEN: kriptografik olarak geçerli ama güven kökü dosyanın
+    # kendisinden geldi — başlık ve seviye bunu söylemeli.
     mesaj = tr.aciklama(verify_timestamp(path))
-    assert mesaj.seviye == tr.SEVIYE_GECERLI
-    assert mesaj.baslik == "Damga geçerli"
+    assert mesaj.seviye == tr.SEVIYE_UYARI
+    assert mesaj.baslik == "Damga geçerli — ama damgayı atan kurum doğrulanmadı"
 
 
 def test_damgasiz_dosya_hata_DEGIL_eksiklik_olarak_bildiriliyor(
@@ -453,7 +463,10 @@ def test_gecerli_sonucta_failed_check_yok_sayiliyor() -> None:
     bozmamalı — karar `valid` alanının.
     """
     sonuc = TimestampVerification(valid=True, failed_check="eku")
-    assert tr.aciklama(sonuc).seviye == tr.SEVIYE_GECERLI
+    assert tr.aciklama(sonuc) is tr._GECERLI_KOK_DOGRULANMADI
+    guvenilir = TimestampVerification(valid=True, failed_check="eku",
+                                      anchor_trusted=True)
+    assert tr.aciklama(guvenilir).seviye == tr.SEVIYE_GECERLI
 
 
 # ══════════════════════════════════════════════════════════════════════════════

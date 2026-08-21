@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 
 _log = logging.getLogger("hycleus.admin_panel")
 
@@ -11,11 +12,14 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QTabWidget,
@@ -895,8 +899,155 @@ class AdminPanel(QDialog):
         btn_save.clicked.connect(self._on_save_settings)
         lay.addWidget(btn_save)
 
+        lay.addWidget(self._tsa_kok_bloku())
         lay.addStretch()
         return page
+
+    # ── Güvenilir zaman damgası kökleri ──────────────────────────────────────
+    #
+    # Bu bölüm olmadan damga doğrulaması arayüzde HER ZAMAN "kök
+    # doğrulanmadı" diyordu: `verify_timestamp()` 3.1b'den beri kök
+    # alabiliyor ama yalnızca komut satırı veriyordu. Kurumsal kullanımda
+    # kökü bir kez eklemek, sonraki her doğrulamayı etkiliyor.
+    #
+    # Kaydet düğmesine BAĞLI DEĞİL: ekleme/silme anında yazılıyor ve
+    # denetim kaydına düşüyor. Bir güven listesinin "kaydetmeyi unuttum"
+    # durumu olmamalı.
+
+    def _tsa_kok_bloku(self) -> QWidget:
+        kutu = QWidget()
+        lay = QVBoxLayout(kutu)
+        lay.setContentsMargins(0, 8, 0, 0)
+        lay.setSpacing(8)
+
+        baslik = QLabel("Güvenilir zaman damgası kökleri")
+        baslik.setStyleSheet("color:#89b4fa; font-size:12px; font-weight:600;")
+        lay.addWidget(baslik)
+
+        ipucu = QLabel(
+            "Kurumunuzun zaman damgası kökünü ekleyin. Liste boşken damgalar "
+            "«geçerli — ama kurum doğrulanmadı» olarak gösterilir."
+        )
+        ipucu.setWordWrap(True)
+        ipucu.setStyleSheet("color:#a6adc8; font-size:12px;")
+        lay.addWidget(ipucu)
+
+        self._tsa_liste = QListWidget()
+        self._tsa_liste.setFixedHeight(96)
+        self._tsa_liste.setStyleSheet(
+            "QListWidget{background:#313244;color:#cdd6f4;border:1px solid #45475a;"
+            "border-radius:6px;font-size:12px;}"
+            "QListWidget::item{padding:4px 8px;}"
+            "QListWidget::item:selected{background:#45475a;}"
+        )
+        lay.addWidget(self._tsa_liste)
+
+        satir = QHBoxLayout()
+        satir.setSpacing(10)
+        btn_ekle = QPushButton("Kök Ekle…")
+        btn_ekle.setStyleSheet(_BTN_SUCCESS)
+        btn_ekle.setCursor(Qt.PointingHandCursor)
+        btn_ekle.setFixedWidth(120)
+        btn_ekle.clicked.connect(self._on_tsa_kok_ekle)
+        satir.addWidget(btn_ekle)
+
+        self._btn_tsa_sil = QPushButton("Kaldır")
+        self._btn_tsa_sil.setStyleSheet(_BTN_DANGER)
+        self._btn_tsa_sil.setCursor(Qt.PointingHandCursor)
+        self._btn_tsa_sil.setFixedWidth(100)
+        # Başlangıç durumu BURADA verilmiyor: `_tsa_yukle()` her yüklemede
+        # zaten kapatıyor ve blok onunla bitiyor. Mutasyon testinde ölçüldü —
+        # buradaki `setEnabled(False)` hiçbir testi etkilemiyordu, yani
+        # gözlenemeyen bir satırdı.
+        self._btn_tsa_sil.clicked.connect(self._on_tsa_kok_sil)
+        satir.addWidget(self._btn_tsa_sil)
+        satir.addStretch()
+        lay.addLayout(satir)
+
+        self._tsa_liste.itemSelectionChanged.connect(
+            lambda: self._btn_tsa_sil.setEnabled(
+                self._tsa_liste.currentItem() is not None)
+        )
+        self._tsa_yukle()
+        return kutu
+
+    def _kim(self) -> int | None:
+        """
+        Denetim kaydına yazılacak `users.id` — 262. satırdaki zincir
+        doğrulamasıyla AYNI yol (B-011, yan etkisiz `kullanici_bilgisi`).
+        """
+        from CORE.session_user import kullanici_bilgisi
+
+        try:
+            kim = kullanici_bilgisi(DBManager(), self._current_hwid)
+        except Exception:  # pragma: no cover — kayıt işlemi engellemez
+            return None
+        return kim[0] if kim else None
+
+    def _tsa_yukle(self) -> None:
+        from CORE.trusted_roots import oku
+
+        self._tsa_liste.clear()
+        self._btn_tsa_sil.setEnabled(False)
+        try:
+            kokler = oku(DBManager())
+        except Exception as exc:
+            _log.error("tsa_kok_listesi_okunamadi  exc=%s", exc)
+            kokler = []
+        if not kokler:
+            bos = QListWidgetItem("(güvenilir kök eklenmemiş)")
+            bos.setFlags(Qt.NoItemFlags)
+            self._tsa_liste.addItem(bos)
+            return
+        for kok in kokler:
+            oge = QListWidgetItem(f"{kok.konu}   ·   {kok.kisa_izi()}")
+            oge.setData(Qt.UserRole, kok.parmak_izi)
+            oge.setToolTip(f"Dosya: {kok.ad}\nEklendi: {kok.eklendi}\n"
+                           f"Parmak izi: {kok.parmak_izi}")
+            self._tsa_liste.addItem(oge)
+
+    def _on_tsa_kok_ekle(self) -> None:
+        from CORE.trusted_roots import TrustedRootError, ekle
+
+        yol, _ = QFileDialog.getOpenFileName(
+            self, "Güvenilir kök sertifikası seç", "",
+            "Sertifika (*.pem *.crt *.cer *.der);;Tüm dosyalar (*)")
+        if not yol:
+            return
+        try:
+            kok = ekle(DBManager(), Path(yol).read_bytes(),
+                       ad=Path(yol).name, user_id=self._kim())
+        except TrustedRootError as exc:
+            QMessageBox.warning(self, "Kök Eklenemedi", str(exc))
+            return
+        except OSError as exc:
+            QMessageBox.warning(self, "Kök Eklenemedi", f"Dosya okunamadı:\n{exc}")
+            return
+        self._tsa_yukle()
+        QMessageBox.information(
+            self, "Güvenilir Kök Eklendi",
+            f"{kok.konu}\n\nParmak izi: {kok.parmak_izi}\n\n"
+            "Bundan sonraki damga doğrulamaları bu kökü kullanacak.\n\n"
+            "Not: liste şifresiz veritabanında tutuluyor — veritabanına "
+            "yazabilen biri kendi kökünü ekleyebilir (SECURITY.md §4.9).")
+
+    def _on_tsa_kok_sil(self) -> None:
+        from CORE.trusted_roots import sil
+
+        oge = self._tsa_liste.currentItem()
+        if oge is None:
+            return
+        izi = oge.data(Qt.UserRole)
+        if not izi:
+            return
+        if QMessageBox.question(
+            self, "Güvenilir Kökü Kaldır",
+            f"{oge.text()}\n\nBu kök kaldırılsın mı? Bu kökle imzalanmış "
+            "damgalar bundan sonra «kurum doğrulanmadı» olarak görünecek.",
+        ) != QMessageBox.Yes:
+            return
+        sil(DBManager(), izi, user_id=self._kim())
+        self._tsa_yukle()
 
     def _load_settings(self) -> None:
         try:

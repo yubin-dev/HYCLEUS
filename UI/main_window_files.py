@@ -203,10 +203,20 @@ class FileActionsMixin:
             return
 
         from CORE.timestamp_verify import verify_timestamp
+        from CORE.trusted_roots import der_listesi
         from UI.TimestampDialog import TimestampDialog
 
+        # Kurumsal kök deposu (AdminPanel → Ayarlar). Boşsa `[]` dönüyor ve
+        # `verify_timestamp` eskisi gibi `anchor_trusted=False` veriyor —
+        # yani depo kurulmamış bir sistemde davranış DEĞİŞMİYOR.
         try:
-            sonuc = verify_timestamp(path)
+            kokler = der_listesi(DBManager())
+        except Exception as exc:  # pragma: no cover — depo doğrulamayı engellemez
+            _log.warning("tsa_root_read_failed  exc=%s", exc)
+            kokler = []
+
+        try:
+            sonuc = verify_timestamp(path, trusted_roots=kokler or None)
         except Exception as exc:
             # `verify_timestamp()` beklenen hataları sonuca çeviriyor;
             # buraya yalnızca okuma hatası gibi ÖNGÖRÜLMEYEN bir şey
@@ -228,6 +238,7 @@ class FileActionsMixin:
                 detail=(
                     f"hwid={self._hwid} valid={sonuc.valid} "
                     f"anchor_trusted={sonuc.anchor_trusted} "
+                    f"kok_sayisi={len(kokler)} "
                     f"check={sonuc.failed_check or '-'}"
                 ),
             )

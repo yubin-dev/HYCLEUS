@@ -621,18 +621,42 @@ python CORE/verify_timestamp_cli.py --verify-timestamp <file.hcl> [--trusted-roo
 A timestamp is therefore no longer merely a record. Three limits remain, and
 the first is the one that matters:
 
-**The trust anchor comes from the artifact being verified.** What is proven
-is the chain's *internal consistency*, not that its root deserves trust — the
-root travels in the same file as the token. Anyone who can rewrite the
-trailer can mint their own CA, issue their own TSA certificate, sign a token
-saying whatever time they like, and this code will call it valid, because
-mathematically it is. Real trust requires comparing the root against a store
-held **outside** the file: `verify_timestamp(trusted_roots=...)`, or
-`--trusted-root` on the CLI. Without it the result carries
-`anchor_trusted=False` and the CLI prints an explicit warning every time —
-the default never quietly implies trust. This is the same shape of limit as
-the audit anchor in §4.6: evidence and the means of checking it must not
-live in the same place.
+**The trust anchor must come from outside the file, and now it can.** What
+the chain proves on its own is *internal consistency*, not that its root
+deserves trust — the root travels in the same file as the token. Anyone who
+can rewrite the trailer can mint their own CA, issue their own TSA
+certificate, sign a token saying whatever time they like, and the chain
+check alone will call it valid, because mathematically it is.
+
+The answer is a root store held outside the file, and there are now two
+ways to supply one:
+
+| Where | How | Who it is for |
+|---|---|---|
+| Application | `settings.tsa_trusted_roots`, managed in **Admin Panel → Settings** (`CORE/trusted_roots.py`) | Everyday use: the organisation adds its TSA root once and every later verification uses it |
+| CLI | `--trusted-root ca.pem` | An auditor, who brings their own root |
+
+**The CLI deliberately ignores the stored list.** Someone running the
+command-line verifier is auditing *this machine*; reading the trust list out
+of the database they are auditing would ask the question of the thing being
+questioned. Only the PEM/DER parser is shared, so the two cannot drift.
+
+**Three outcomes, and they are now visually distinct.** With no root
+configured the result is `valid=True, anchor_trusted=False` and the UI
+titles it "valid — but the issuing authority was not verified", in amber,
+not the green of a fully verified stamp. With a matching root it is
+`anchor_trusted=True`. With a root configured that does *not* match, the
+result is **invalid** (`failed_check="trust_anchor"`) — configuring a root
+does not merely add a badge, it hardens the verdict.
+
+**What this does not fix.** The list lives in `settings`, and §3 concedes
+that the database is plaintext on disk. Anyone who can write to it (M3) can
+add their own root and make a forged stamp read as fully trusted. So the
+improvement is exactly the shape of the audit anchor in §4.6: evidence and
+the means of checking it are no longer in the *same file*, but they are
+still on the *same machine*. Keeping the list somewhere M3 cannot reach —
+as `HYCLEUS_AUDIT_ANCHOR` allows for the anchor — is not implemented; see
+B-044.
 
 **The trailer is outside the GCM tag.** The tag covers the AAD and the
 ciphertext only — not the magic, the version byte, or the timestamp trailer.
@@ -1694,17 +1718,42 @@ python CORE/verify_timestamp_cli.py --verify-timestamp <dosya.hcl> [--trusted-ro
 Yani zaman damgası artık yalnızca bir kayıt değil. Üç sınır kaldı ve
 birincisi asıl önemli olan:
 
-**Güven kökü, doğrulanan dosyanın içinden geliyor.** Kanıtlanan şey zincirin
-*iç tutarlılığı*; kökünün güvenilir olduğu değil — kök, token'la aynı
-dosyada seyahat ediyor. Fragmanı yeniden yazabilen biri kendi CA'sını
-üretir, kendi TSA sertifikasını keser, istediği tarihi söyleyen bir token
-imzalar ve bu kod ona GEÇERLİ der; çünkü matematiksel olarak geçerlidir.
-Gerçek güven, kökün dosyanın **dışında** tutulan bir depoyla
-karşılaştırılmasını gerektirir: `verify_timestamp(trusted_roots=...)` ya da
-CLI'da `--trusted-root`. Verilmezse sonuç `anchor_trusted=False` taşıyor ve
-CLI her seferinde açık bir uyarı basıyor — varsayılan sessizce güven ima
-etmiyor. Bu, §4.6'daki denetim çıpasıyla aynı biçimde bir sınır: kanıt ile
-kanıtı doğrulayan şey aynı yerde durmamalı.
+**Güven kökü dosyanın DIŞINDAN gelmeli — ve artık gelebiliyor.** Zincirin
+tek başına kanıtladığı şey *iç tutarlılık*; kökünün güvenilir olduğu değil
+— kök, token'la aynı dosyada seyahat ediyor. Fragmanı yeniden yazabilen
+biri kendi CA'sını üretir, kendi TSA sertifikasını keser, istediği tarihi
+söyleyen bir token imzalar ve tek başına zincir kontrolü ona GEÇERLİ der;
+çünkü matematiksel olarak geçerlidir.
+
+Cevap, dosyanın dışında tutulan bir kök deposu ve artık iki yoldan
+verilebiliyor:
+
+| Nerede | Nasıl | Kimin için |
+|---|---|---|
+| Uygulama | `settings.tsa_trusted_roots`, **Yönetim Paneli → Ayarlar**'dan yönetiliyor (`CORE/trusted_roots.py`) | Günlük kullanım: kurum kendi TSA kökünü bir kez ekliyor, sonraki her doğrulama onu kullanıyor |
+| Komut satırı | `--trusted-root ca.pem` | Kendi kökünü getiren denetçi |
+
+**Komut satırı, kayıtlı listeyi BİLEREK yok sayıyor.** Komut satırı
+doğrulayıcısını çalıştıran kişi *bu makineyi* denetliyor; güven listesini
+denetlediği veritabanından okumak, sorulan sorunun cevabını sorunun
+kaynağına sordurmak olurdu. Ortaklaşan tek şey PEM/DER ayrıştırıcısı, yani
+ikisi ayrışamıyor.
+
+**Üç sonuç var ve artık görsel olarak da ayrışıyorlar.** Kök tanımlı
+değilken sonuç `valid=True, anchor_trusted=False` oluyor ve arayüz onu
+"geçerli — ama damgayı atan kurum doğrulanmadı" diye, tam doğrulanmış bir
+damganın yeşiline değil KEHRİBAR renge boyayarak başlıklandırıyor.
+Eşleşen bir kök varsa `anchor_trusted=True`. Tanımlı bir kök varsa ve
+eşleşmiyorsa sonuç **geçersiz** (`failed_check="trust_anchor"`) — yani kök
+tanımlamak sadece bir rozet eklemiyor, kararı sertleştiriyor.
+
+**Bunun ÇÖZMEDİĞİ şey.** Liste `settings` içinde ve §3 veritabanının diskte
+düz metin olduğunu kabul ediyor. Oraya yazabilen biri (M3) kendi kökünü
+ekleyip sahte bir damgayı tam güvenilir gösterebilir. Yani kazanım tam
+olarak §4.6'daki denetim çıpasının biçiminde: kanıt ile onu doğrulayan şey
+artık *aynı dosyada* değil, ama hâlâ *aynı makinede*. Listeyi M3'ün
+ulaşamayacağı bir yerde tutmak — çıpa için `HYCLEUS_AUDIT_ANCHOR`'ın
+sağladığı gibi — yapılmadı; bkz. B-044.
 
 **Fragman GCM tag'inin dışında.** Tag yalnızca AAD ile ciphertext'i
 kapsıyor; magic, sürüm byte'ı ve zaman damgası fragmanı kapsam dışı. Yani

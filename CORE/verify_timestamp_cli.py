@@ -61,9 +61,19 @@ def _load_roots(paths: list[str]) -> list[bytes]:
     """
     Guvenilen kok sertifikalari diskten okur (DER ya da PEM).
 
-    PEM destegi var cunku sertifikalar pratikte oyle dagitiliyor; disariya
-    "once DER'e cevir" demek, araci kullanilmaz yapardi.
+    AYRISTIRMA burada DEGIL: `CORE/trusted_roots.der_coz()` yapiyor.
+    Iki kopya olsaydi (biri burada, biri AdminPanel'in kok deposunda)
+    zamanla ayrisirlardi ve ayni sertifika bir yerde kabul edilip
+    otekinde reddedilirdi. Bu depoda o kusur bes kez uretildi.
+
+    Bu CLI, AdminPanel'deki KOK DEPOSUNU BILEREK KULLANMIYOR: araci
+    calistiran denetci tam olarak bu makineyi denetliyor ve guven
+    listesini denetledigi veritabanindan okumak, sorunun cevabini
+    sorunun kaynagina sordurmak olurdu. Gerekce
+    `CORE/trusted_roots.py` docstring'inde.
     """
+    from CORE.trusted_roots import TrustedRootError, der_coz
+
     roots: list[bytes] = []
     for raw_path in paths:
         path = Path(raw_path)
@@ -72,20 +82,11 @@ def _load_roots(paths: list[str]) -> list[bytes]:
         except OSError as exc:
             print(f"Hata: guvenilen kok okunamadi ({path}): {exc}", file=sys.stderr)
             raise SystemExit(1) from exc
-
-        if b"-----BEGIN CERTIFICATE-----" in data:
-            from cryptography import x509
-
-            try:
-                cert = x509.load_pem_x509_certificate(data)
-            except ValueError as exc:
-                print(f"Hata: PEM ayristirilamadi ({path}): {exc}", file=sys.stderr)
-                raise SystemExit(1) from exc
-            from cryptography.hazmat.primitives.serialization import Encoding
-
-            roots.append(cert.public_bytes(Encoding.DER))
-        else:
-            roots.append(data)
+        try:
+            roots.append(der_coz(data, kaynak=path.name))
+        except TrustedRootError as exc:
+            print(f"Hata: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
     return roots
 
 

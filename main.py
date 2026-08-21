@@ -64,7 +64,7 @@ _SELFTEST_MODULLERI: tuple[str, ...] = (
     "CORE.secret_migration", "CORE.secret_store", "CORE.secure_erase",
     "CORE.session_user", "CORE.setup_usb", "CORE.timestamp",
     "CORE.timestamp_report",
-    "CORE.timestamp_verify", "CORE.tpm_sealing",
+    "CORE.timestamp_verify", "CORE.tpm_sealing", "CORE.trusted_roots",
     "CORE.usb_manager", "CORE.vault_manager",
     "CORE.verify_timestamp_cli", "CORE.version",
     "DB.db_manager", "DB.migrations",

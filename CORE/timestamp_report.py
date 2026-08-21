@@ -79,7 +79,12 @@ SEVIYE_GECERSIZ = "gecersiz"
 SEVIYE_DAMGASIZ = "damgasiz"
 #: Kontrol tamamlanamadı; damga geçersiz olduğu SÖYLENEMEZ. Turuncu.
 SEVIYE_OKUNAMADI = "okunamadi"
-#: Geçerli sonuca eşlik eden uyarı (kök doğrulanmadı gibi).
+#: Damga kriptografik olarak geçerli AMA kökü doğrulanmadı.
+#:
+#: Ayrı bir seviye olması bilinçli ve kurumsal kullanımın asıl talebi:
+#: "geçerli" ile "geçerli ve güvenilir kök" aynı yeşil onay işaretini
+#: paylaşırsa, aradaki fark yalnızca alttaki bir nota kalır ve o notu
+#: okumayan kullanıcı ikisini aynı sanır. Başlığın KENDİSİ farklı.
 SEVIYE_UYARI = "uyari"
 #: Geçerli sonuca eşlik eden bilgi notu.
 SEVIYE_BILGI = "bilgi"
@@ -331,16 +336,38 @@ BILINMEYEN = Aciklama(
 )
 
 
-_GECERLI = Aciklama(
+#: Tam geçerli: imza tutuyor VE zincirin kökü kurumun güvenilir kök
+#: listesinde bulundu (`CORE/trusted_roots.py`).
+_GECERLI_GUVENILIR = Aciklama(
     seviye=SEVIYE_GECERLI,
-    baslik="Damga geçerli",
+    baslik="Damga geçerli ve damgayı atan kurum doğrulandı",
     ozet=(
         "Bu dosyanın parmak izi, aşağıda yazan tarihte bir zaman damgası "
-        "kurumu tarafından imzalanmış. İmza ve kurumun kimlik belgeleri "
-        "internete çıkılmadan, dosyanın kendi içindeki bilgilerle "
-        "doğrulandı."
+        "kurumu tarafından imzalanmış. İmza internete çıkılmadan "
+        "doğrulandı ve kurumun kimliği, DOSYADAN BAĞIMSIZ olarak tutulan "
+        "güvenilir kurum listenizle karşılaştırıldı."
     ),
     oneri=None,
+)
+
+#: Kriptografik olarak geçerli ama güven kökü dosyanın kendisinden geldi.
+#: Başlık `_GECERLI_GUVENILIR`'den AYRI ve seviyesi UYARI — gerekçe
+#: `SEVIYE_UYARI`'nin yanında.
+_GECERLI_KOK_DOGRULANMADI = Aciklama(
+    seviye=SEVIYE_UYARI,
+    baslik="Damga geçerli — ama damgayı atan kurum doğrulanmadı",
+    ozet=(
+        "Bu dosyanın parmak izi, aşağıda yazan tarihte imzalanmış ve imza "
+        "matematiksel olarak tutuyor. Ancak imzalayan kurumun kimlik "
+        "belgesi, doğrulanan dosyanın KENDİ İÇİNDEN geldi — yani bu ekran "
+        "dosyanın kendi iddiasını kontrol etti, o iddianın doğru olduğunu "
+        "değil."
+    ),
+    oneri=(
+        "Kurumsal kullanımda yöneticiniz, kurumunuzun zaman damgası kökünü "
+        "Yönetim Paneli → Ayarlar bölümünden bir kez ekler; sonraki her "
+        "doğrulama onu kullanır."
+    ),
 )
 
 
@@ -356,7 +383,10 @@ def aciklama(sonuc: TimestampVerification) -> Aciklama:
     gizlerdi.
     """
     if sonuc.valid:
-        return _GECERLI
+        # İKİ AYRI başlık. `anchor_trusted` bir ayrıntı değil, sonucun ne
+        # kadarına güvenilebileceğini belirleyen alan — SECURITY.md §4.9.
+        return (_GECERLI_GUVENILIR if sonuc.anchor_trusted
+                else _GECERLI_KOK_DOGRULANMADI)
     if not sonuc.failed_check:
         return BILINMEYEN
     return _ADIM.get(sonuc.failed_check, BILINMEYEN)
@@ -401,8 +431,9 @@ def notlar(sonuc: TimestampVerification) -> list[Aciklama]:
             ),
             oneri=(
                 "Gerçek bir güven kararı için damga, dosyadan bağımsız bir "
-                "güvenilir kurum listesiyle karşılaştırılmalı. Komut "
-                "satırındaki doğrulayıcı bunu --trusted-root seçeneğiyle "
+                "güvenilir kurum listesiyle karşılaştırılmalı. Bu listeye "
+                "Yönetim Paneli → Ayarlar bölümünden kök eklenir; komut "
+                "satırındaki doğrulayıcı aynı işi --trusted-root seçeneğiyle "
                 "yapıyor."
             ),
         ))

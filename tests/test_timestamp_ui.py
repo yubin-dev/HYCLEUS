@@ -184,7 +184,9 @@ def _etiket_metinleri(dlg: QWidget) -> list[str]:
 def test_gecerli_damga_diyalogda_gecerli_okunuyor(qapp, stamped: Path) -> None:
     dlg = TimestampDialog(verify_timestamp(stamped), stamped.name)
     metinler = _etiket_metinleri(dlg)
-    assert "Damga geçerli" in metinler
+    # Kök deposu boşken başlık "geçerli" DEĞİL, "geçerli ama kök
+    # doğrulanmadı" — ayrım kullanıcıya görünür olmalı.
+    assert "Damga geçerli — ama damgayı atan kurum doğrulanmadı" in metinler
     assert stamped.name in metinler
 
 
@@ -411,7 +413,7 @@ def test_diyalog_gercekten_KURULUYOR(sahne, stamped: Path, _diyalogu_acma) -> No
     """
     sahne._on_ctx_verify_timestamp(7, str(stamped))
     dlg = _diyalogu_acma[0]
-    assert dlg._mesaj.seviye == tr.SEVIYE_GECERLI
+    assert dlg._mesaj.seviye == tr.SEVIYE_UYARI      # kök deposu boş
     assert dlg.windowTitle().endswith(stamped.name)
 
 

@@ -2038,3 +2038,58 @@ Akış tabanlı bir gövde (base64 yerine uzunluk önekli ikili çerçeveleme)
 sınırı kaldırırdı ama ikinci bir ayrıştırıcı demek. Belge teslimi için
 gerekli görülmedi; gerekirse sürüm `0x02` ile gelir — `SUPPORTED_VERSIONS`
 o gün için hazır.
+
+---
+
+## B-044 — Güvenilir kök deposu makine DIŞINA taşınamıyor
+
+**Durum:** Açık — bilinçli kapsam sınırı
+**Öncelik:** Orta (kazanımın tavanını belirliyor)
+**Bulundu:** 2026-08-21 — kurumsal güvenilir kök deposu eklenirken
+
+`CORE/trusted_roots.py` güven kökünü doğrulanan DOSYANIN DIŞINA çıkardı —
+SECURITY.md §4.9'un yıllardır yazdığı sınır bu turda kapandı. Ama liste
+`settings` tablosunda, yani **şifresiz veritabanında** (§3).
+
+### Sınır
+
+Veritabanına yazabilen biri (M3) kendi kökünü ekleyip sahte bir damgayı
+"tam geçerli" gösterebilir. Bir `INSERT` yeter.
+
+Kazanım yine de gerçek ve ölçülebilir: kurcalayanın artık İKİ yeri birden
+tutarlı tutması gerekiyor (dosyadaki fragman + veritabanındaki liste) ve
+ikincisi denetim kaydına düşen bir eylem (`tsa_root_added`). Ama bu, §4.5'in
+tarif ettiği sınıftan bir kontrol — maliyeti yükseltiyor, kapatmıyor.
+
+### Çözüm: çıpanın deseni
+
+`CORE/audit_chain.py` aynı sorunu `HYCLEUS_AUDIT_ANCHOR` ile çözüyor: çıpa
+dosyasının yolu ortam değişkeniyle bir USB'ye, ağ paylaşımına ya da salt
+okunur bir konuma yönlendirilebiliyor. SECURITY.md §4.6 bunu açıkça
+"özelliğin gerçek olduğu yer" diye anlatıyor.
+
+Kök deposu için aynısı gerekir: `HYCLEUS_TSA_ROOTS` gibi bir değişken, ya
+da bir dizin yolu ayarı. O zaman liste M3'ün yazamayacağı bir güven
+alanına taşınabilir.
+
+Yapılmadı çünkü bu tur "settings'te bir ayar" olarak istendi ve iki kaynağı
+aynı anda kurmak "tek karar noktası" sınırını bulanıklaştırırdı: hangi
+listenin kazandığı, çakışınca ne olacağı ve hangisinin denetim kaydına
+gireceği ayrı kararlar.
+
+### İlgili, ama AYRI: CLI bilerek depoyu kullanmıyor
+
+`CORE/verify_timestamp_cli.py` kayıtlı listeyi okumuyor ve okumamalı —
+denetçi tam olarak bu makineyi denetliyor. Bu bir eksik değil, karar;
+`CORE/trusted_roots.py` docstring'inde ve §4.9'da yazılı,
+`tests/test_trusted_roots.py::test_CLI_kok_deposunu_KULLANMIYOR` sabitliyor.
+
+### Kapsanmayan diğer şey: kök GEÇERLİLİĞİ kontrol edilmiyor
+
+Depoya eklenen sertifikanın süresi dolmuş olabilir, iptal edilmiş olabilir,
+CA olmayabilir. `der_coz()` yalnızca "geçerli bir X.509 mu" diye bakıyor.
+
+Bilinçli: §4.9 zaten iptal kontrolü yapılmadığını (OCSP/CRL ağ ister,
+uygulama çevrimdışı) ve kendinden imzalı bir kökün öz-imzasının bir güven
+beyanı OLMADIĞINI yazıyor. Kökün uygunluğu, onu ekleyen yöneticinin
+kararı — araç o kararı taklit etmemeli.
