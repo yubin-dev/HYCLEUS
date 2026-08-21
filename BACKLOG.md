@@ -1772,9 +1772,34 @@ kilitler.
 
 ## B-041 — SECURITY.md'de saldırgan modeliyle ÇELİŞEN beş iddia (okuma turu bulgusu)
 
-**Durum:** Açık — DÜZELTİLMEDİ, karar kullanıcıya bırakıldı
+**Durum:** BEŞTE DÖRDÜ ÇÖZÜLDÜ (2026-08-21) — 4. madde (§5 "device binding")
+kullanıcı kararıyla KAPSAM DIŞI bırakıldı, açık kalmaya devam ediyor
 **Öncelik:** Orta (hiçbiri kod hatası değil; hepsi belge doğruluğu)
 **Bulundu:** 2026-08-21 — üç saldırgan modeli eklendikten sonraki okuma turu
+
+### Çözüm kaydı (2026-08-21)
+
+| Madde | Durum | Ne yapıldı |
+|---|---|---|
+| 1 — §2 bütünlük satırı ✅ vs ⚠️ | ÇÖZÜLDÜ | Karar `⚠️ Bulunur, ama kararı silinebilir` oldu; gerekçe kopyalanmadı, §4.7'ye atıf verildi |
+| 2 — §4.7 "anahtarı olmayan" koşulsuz | ÇÖZÜLDÜ | Kilitli/kilitsiz oturum ayrımı açıkça yazıldı; §3'ün bellek itirafına bağlandı |
+| 3 — §2 `share_2` satırı | ÇÖZÜLDÜ | `✅ güncel bir kurulumda` + migration öncesi ham kopya istisnası, §1.3'e atıf |
+| 4 — §5 "device binding" | **AÇIK** | Kullanıcı kararıyla kapsam dışı; satırlara DOKUNULMADI (parmak izleriyle doğrulandı) |
+| 5 — §5 "en az 6 karakter" | ÇÖZÜLDÜ | Geçiş penceresi ve `LOGIN_MIN_LEN = 4` yazıldı, B-040'a atıf |
+
+**2. madde bir yan tutarsızlık üretti ve o da kapatıldı.** Koşul §4.7'nin
+giriş paragrafına yazılınca, altı satır aşağıdaki madde imi (`*Dosya*
+taklit edilemez`) aynı mutlak ifadeyi tekrarlar hâle geldi — yani düzeltme
+kendi içinde yeni bir çelişki doğurdu. Hem o madde imi hem §1.2
+matrisindeki aynı ifade koşula bağlandı.
+
+**Belge sayıyı yazdığı için bir denetim eklendi.** §5 artık
+`LOGIN_MIN_LEN = 4` diyor ve bu elle yazılmış bir sayı — B-017'nin sınıfı.
+`tests/test_pin_policy.py::test_SECURITY_md_giris_esigini_DOGRU_yaziyor`
+sabiti belgeyle karşılaştırıyor ve iki dilde de arıyor. B-040 köprüyü
+kaldırdığında bu test düşecek ve belgeyi güncellemeye zorlayacak.
+
+### Özgün bulgular (kayıt için)
 
 M1/M2/M3 modelleri eklenip her iddia etiketlenince, daha önce görünmeyen
 beş yer görünür oldu: iddianın kendisi doğru ama **hangi saldırgana karşı

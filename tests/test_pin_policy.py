@@ -7,6 +7,8 @@ kurulum akışını (setup_usb._prompt_pin) sınar.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from CORE import setup_usb
@@ -48,6 +50,33 @@ def test_login_floor_stays_below_new_policy() -> None:
     """
     assert LOGIN_MIN_LEN == 4
     assert LOGIN_MIN_LEN < PIN_MIN_LEN
+
+
+def test_SECURITY_md_giris_esigini_DOGRU_yaziyor() -> None:
+    """
+    SECURITY.md §5 köprüyü sayıyla anlatıyor (`LOGIN_MIN_LEN = 4`) ve o
+    sayı elle yazılmış — B-017'nin sınıfı.
+
+    Burada durmasının somut sebebi B-040: köprü kaldırıldığında bu sabit
+    DEĞİŞECEK. Değiştiği gün bu test düşer ve belgeyi güncellemeye
+    zorlar; olmasaydı SECURITY.md sessizce "4 hane hâlâ kabul ediliyor"
+    demeye devam ederdi — bir güvenlik belgesinin verebileceği en kötü
+    yanlış bilgi, artık doğru olmayan bir zayıflık itirafıdır: okuyucu
+    onu düzeltilmiş sanmaz, hâlâ açık sanır ve yanlış yere bakar.
+
+    İki dil de denetleniyor: yalnızca birinin güncellenmesi tam olarak
+    `tests/test_belge_dil_paritesi.py`'nin kapatmadığı boşluk — o test
+    iki dilin BİRBİRİYLE tutarlılığına bakıyor, KOD ile değil.
+    """
+    metin = (Path(__file__).resolve().parent.parent / "SECURITY.md").read_text(
+        encoding="utf-8"
+    )
+    beklenen = f"`LOGIN_MIN_LEN = {LOGIN_MIN_LEN}`"
+    assert metin.count(beklenen) == 2, (
+        f"SECURITY.md {beklenen!r} ifadesini iki dilde de taşımalı "
+        f"(bulunan: {metin.count(beklenen)}). Köprü değiştiyse §5'teki "
+        "iki satır da güncellenmeli — bkz. BACKLOG.md / B-040."
+    )
 
 
 # ── Gerçek akış: CLI kurulum ──────────────────────────────────────────────────

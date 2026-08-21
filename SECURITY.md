@@ -130,7 +130,7 @@ can end up in any of the three hands, and §4.4 is where that is worked out.
 | TOTP second factor | — | ❌ not in the path they take | ❌ the secret is in the store that answers them |
 | USB blacklist | — | ❌ | ❌ one database write (§4.1) |
 | Audit hash chain + external anchor | — | — | ⚠️ detection, never prevention (§4.6) |
-| Weekly integrity sweep | — | — | ⚠️ the file cannot be forged, the verdict can (§4.7) |
+| Weekly integrity sweep | — | — | ⚠️ the file cannot be forged while the session is locked, the verdict can be at any time (§4.7) |
 | Idle auto-lock | — | — | ⚠️ the application window only (§4.8) |
 | SafeZone shredding | — | ⚠️ best-effort at the logical layer (§3) | ⚠️ plaintext is on disk while a document is open (§4.10) |
 | RFC 3161 timestamp | ⚠️ a hostile authority still produces a valid-looking token (§4.9) | ⚠️ the trailer is outside the GCM tag and can be stripped (§4.9) | ⚠️ |
@@ -242,13 +242,13 @@ is the logged-in OS user. §1.2 shows where each one lands.
 | File metadata (filename, user_id, hwid, SHA-256) edited in the header | M2 | ✅ | Metadata is the GCM AAD; any edit fails authentication |
 | Same key reused across files | M2 · M3 | ✅ | Fresh 12-byte `os.urandom` nonce per encryption |
 | Vault file (`.hclv`) copied, PIN unknown | M2 | ✅ | Argon2id KEK (time=3, mem=64 MB, para=4) + GCM |
-| `share_2` read out of the database | M2 | ✅ | It is no longer there — it lives in the OS credential store |
+| `share_2` read out of the database | M2 | ✅ in a current installation | It is no longer there — it lives in the OS credential store. A raw `data/` copy taken **before** that migration still carries it in plaintext; the exception is worked out in §1.3 |
 | Only one Shamir share obtained | M2 | ✅ | 2-of-3 is information-theoretically secure; one share reveals nothing |
 | Brute-forcing the PIN through the app UI | M3 | ⚠️ Slowed | Rate limit: 5 failures → 30s, escalating to 300s, counter persisted in DB |
 | An audit entry edited or deleted from the middle of the log | M3 | ⚠️ Detected, not prevented | SHA-256 hash chain; `verify_audit_chain()` names the exact record — see §4.6 |
 | The newest audit entries deleted (log truncated) | M3 | ⚠️ Detected only via the anchor | The chain head is written outside the database to `data/audit_anchor.log` — see §4.6 |
 | The whole audit chain recomputed after an edit | M3 | ⚠️ Detected only via the anchor | The hash is unkeyed; only the external anchor disagrees — see §4.6 |
-| A `.hcl` file silently corrupted on disk (bit rot, bad copy, tampering) | M3 | ✅ Found without opening it | Weekly integrity sweep verifies every GCM tag; result in `files.integrity_status` — see §4.7 |
+| A `.hcl` file silently corrupted on disk (bit rot, bad copy, tampering) | M3 | ⚠️ Found, but the verdict is erasable | Weekly integrity sweep verifies every GCM tag without opening the file; the file itself cannot be forged, the verdict in `files.integrity_status` can — conditions and reasoning in §4.7 |
 | Someone reaching an unattended, still-unlocked session | M3 | ⚠️ Time-limited | Idle auto-lock: session locks after N minutes of no input even with the USB inserted; unlock requires the PIN — see §4.8 |
 | Decrypted copies left in the system temp directory | M2 · M3 | ✅ Not written there | Temporary plaintext goes to `data/safezone/`, shredded on exit and on next startup — see §4.8 |
 
@@ -511,11 +511,19 @@ chain, this check is **keyed**: the GCM tag is computed under the AES-256
 master key, so nobody without the key can alter a file and produce a tag
 that still verifies. On that specific point it is strong.
 
+**"Without the key" is a condition, and it is the session lock.** While the
+session is *locked* the master key is not in reach and the sentence above
+holds as written. In an *unlocked* session it is in process memory, and §3
+already concedes that a memory dump can reach it — an M3 attacker who does
+holds the key, and every keyed check in this document falls with it, this
+one included. The strength is real; it is the strength of the lock.
+
 The limits:
 
 - **The verdict is stored in the unencrypted database.** `UPDATE files SET
-  integrity_status = 'ok'` erases the finding. The *file* cannot be forged;
-  the *report about it* can. The audit-log entry for the same finding is
+  integrity_status = 'ok'` erases the finding. The *file* cannot be forged
+  under the condition above; the *report about it* can be, under no condition
+  at all. The audit-log entry for the same finding is
   harder to erase — it is in the hash chain (§4.6) — which is why the sweep
   writes to both.
 - **Only files with a database row are checked.** Delete the row and the
@@ -869,7 +877,7 @@ reason.
 | Audit record encoding | Fixed field order, length-prefixed UTF-8, `NULL` distinct from `""` — deterministic and library-independent |
 | Audit anchor | Chain head appended to `data/audit_anchor.log` (JSON Lines, each line carries SHA-256 of the previous); path overridable via `HYCLEUS_AUDIT_ANCHOR` |
 | Integrity sweep | Weekly GCM tag verification of every `.hcl` + vault HMAC; streaming, constant memory, no plaintext returned — see §4.7 |
-| PIN storage | Argon2id hash (never plaintext); minimum 6 characters for new PINs |
+| PIN storage | Argon2id hash (never plaintext); minimum 6 characters for new PINs — but during the transition window the login screen still accepts an existing 4–5 character PIN (`LOGIN_MIN_LEN = 4`), so "minimum 6" is not yet true of every account. Bridge, removal criterion and window in `BACKLOG.md` / B-040 |
 | Secret storage | OS credential store, service `HYCLEUS`, usernames `share_2:<hwid>` and `totp_secret` |
 | Secret sealing | Windows + TPM 2.0 only: random 32-byte DEK, AES-256-GCM over the secret with the keyring username as AAD, DEK wrapped by a non-exportable TPM RSA-2048 key via CNG (PKCS#1 v1.5 — OAEP is rejected by the Platform Crypto Provider, measured); `TPM1:` prefix, falls back loudly — see §4.13 |
 | Second factor | TOTP (RFC 6238), 6 digits, ±1 window |
@@ -1134,7 +1142,7 @@ anahtar malzemesi ve bunun hesabı §4.4'te veriliyor.
 | TOTP ikinci faktörü | — | ❌ izledikleri yolda değil | ❌ sır, onlara cevap veren kasada |
 | USB kara listesi | — | ❌ | ❌ tek bir veritabanı yazımı (§4.1) |
 | Denetim hash zinciri + dış çapa | — | — | ⚠️ tespit, asla engelleme değil (§4.6) |
-| Haftalık bütünlük taraması | — | — | ⚠️ dosya sahtelenemez, karar sahtelenebilir (§4.7) |
+| Haftalık bütünlük taraması | — | — | ⚠️ oturum kilitliyken dosya sahtelenemez, karar her zaman sahtelenebilir (§4.7) |
 | Hareketsizlik kilidi | — | — | ⚠️ yalnızca uygulama penceresi (§4.8) |
 | SafeZone temizliği | — | ⚠️ mantıksal katmanda en iyi çaba (§3) | ⚠️ belge açıkken düz metin diskte (§4.10) |
 | RFC 3161 zaman damgası | ⚠️ düşman bir makam da geçerli görünen token üretir (§4.9) | ⚠️ fragman GCM etiketinin dışında, sökülebilir (§4.9) | ⚠️ |
@@ -1246,13 +1254,13 @@ kullanıcısı olduğunda gerçekten değişiyor. Her birinin nereye düştüğ�
 | Başlıktaki metadata (dosya adı, user_id, hwid, SHA-256) düzenlendi | M2 | ✅ | Metadata GCM AAD'sidir; her değişiklik doğrulamayı düşürür |
 | Aynı anahtar dosyalar arasında yeniden kullanıldı | M2 · M3 | ✅ | Her şifrelemede taze 12 byte `os.urandom` nonce |
 | Vault dosyası (`.hclv`) kopyalandı, PIN bilinmiyor | M2 | ✅ | Argon2id KEK (time=3, bellek=64 MB, para=4) + GCM |
-| `share_2` veritabanından okundu | M2 | ✅ | Artık orada değil — OS anahtar kasasında |
+| `share_2` veritabanından okundu | M2 | ✅ güncel bir kurulumda | Artık orada değil — OS anahtar kasasında. O taşımadan **önce** alınmış ham bir `data/` kopyası onu hâlâ düz metin taşıyor; istisnanın hesabı §1.3'te |
 | Yalnızca bir Shamir payı ele geçirildi | M2 | ✅ | 2-of-3 bilgi-teorik olarak güvenli; tek pay hiçbir şey sızdırmaz |
 | Arayüz üzerinden PIN kaba kuvveti | M3 | ⚠️ Yavaşlatılır | 5 hatada 30 sn, 300 sn'ye tırmanır, sayaç DB'de kalıcı |
 | Denetim kaydının ORTASINDAN bir satırın değiştirilmesi/silinmesi | M3 | ⚠️ Tespit edilir, engellenmez | SHA-256 hash zinciri; `verify_audit_chain()` tam olarak hangi kayıt olduğunu söyler — bkz. §4.6 |
 | En yeni denetim kayıtlarının silinmesi (kuyruğun kesilmesi) | M3 | ⚠️ Yalnızca çıpayla tespit edilir | Zincirin ucu veritabanının dışına, `data/audit_anchor.log`'a yazılır — bkz. §4.6 |
 | Değişiklikten sonra tüm zincirin yeniden hesaplanması | M3 | ⚠️ Yalnızca çıpayla tespit edilir | Hash anahtarsızdır; yalnızca dıştaki çıpa itiraz eder — bkz. §4.6 |
-| Bir `.hcl` dosyasının diskte sessizce bozulması (bit çürümesi, yarım kopyalama, müdahale) | M3 | ✅ Dosya açılmadan bulunur | Haftalık bütünlük taraması her GCM tag'ini doğrular; sonuç `files.integrity_status` içinde — bkz. §4.7 |
+| Bir `.hcl` dosyasının diskte sessizce bozulması (bit çürümesi, yarım kopyalama, müdahale) | M3 | ⚠️ Bulunur, ama kararı silinebilir | Haftalık bütünlük taraması her GCM tag'ini dosyayı açmadan doğrular; dosyanın kendisi sahtelenemez, `files.integrity_status` içindeki karar silinebilir — koşullar ve gerekçe §4.7'de |
 | Başında kimse olmayan, açık kalmış bir oturuma erişilmesi | M3 | ⚠️ Süreyle sınırlı | Hareketsizlik kilidi: USB takılı olsa bile N dakika giriş olmazsa oturum kilitlenir, açmak PIN ister — bkz. §4.8 |
 | Çözülmüş kopyaların sistem TEMP dizininde kalması | M2 · M3 | ✅ Oraya hiç yazılmaz | Geçici düz metin `data/safezone/`'a gider; çıkışta ve sonraki açılışta imha edilir — bkz. §4.8 |
 
@@ -1514,11 +1522,18 @@ Denetim zincirinin aksine bu kontrol **anahtarlıdır**: GCM tag'i AES-256
 master key altında hesaplanıyor, yani anahtarı olmayan biri dosyayı
 değiştirip hâlâ doğrulanan bir tag üretemez. Tam olarak bu noktada güçlüdür.
 
+**"Anahtarı olmayan" bir KOŞUL ve o koşul oturum kilidi.** Oturum *kilitli*
+iken master key erişilebilir değil ve yukarıdaki cümle yazıldığı gibi
+geçerli. *Kilitsiz* bir oturumda ise anahtar süreç belleğinde ve §3 zaten
+bir bellek dökümünün ona ulaşabileceğini kabul ediyor — oraya ulaşan bir M3
+saldırganı anahtarı elde eder ve bu belgedeki anahtarlı her denetim, bu
+dahil, onunla birlikte düşer. Güç gerçek; o güç kilidin gücü.
+
 Sınırlar:
 
 - **Karar şifresiz veritabanında saklanıyor.** `UPDATE files SET
-  integrity_status = 'ok'` bulguyu siler. *Dosya* taklit edilemez; *onun
-  hakkındaki rapor* edilebilir. Aynı bulgunun denetim kaydındaki karşılığını
+  integrity_status = 'ok'` bulguyu siler. *Dosya*, yukarıdaki koşul altında
+  taklit edilemez; *onun hakkındaki rapor* hiçbir koşul olmadan edilebilir. Aynı bulgunun denetim kaydındaki karşılığını
   silmek daha zordur — o hash zincirinin içinde (§4.6) — tarama bu yüzden
   ikisine birden yazıyor.
 - **Yalnızca veritabanı kaydı olan dosyalar kontrol edilir.** Kaydı silinen
@@ -1869,7 +1884,7 @@ bir geliştirici makinesinin ölçümüne dayanıyor. B-023'teki ClamAV
 | Denetim kaydı kodlaması | Sabit alan sırası, uzunluk önekli UTF-8, `NULL` ile `""` ayrı — deterministik ve kütüphaneden bağımsız |
 | Denetim çıpası | Zincirin ucu `data/audit_anchor.log`'a eklenir (JSON Lines, her satır bir öncekinin SHA-256'sını taşır); yol `HYCLEUS_AUDIT_ANCHOR` ile değiştirilebilir |
 | Bütünlük taraması | Haftalık GCM tag doğrulaması (her `.hcl`) + vault HMAC; akış hâlinde, sabit bellek, düz metin döndürülmez — bkz. §4.7 |
-| PIN saklama | Argon2id hash (asla düz metin); yeni PIN'ler için en az 6 karakter |
+| PIN saklama | Argon2id hash (asla düz metin); yeni PIN'ler için en az 6 karakter — ama geçiş penceresi boyunca giriş ekranı mevcut 4–5 karakterlik bir PIN'i hâlâ kabul ediyor (`LOGIN_MIN_LEN = 4`), yani "en az 6" henüz her hesap için doğru değil. Köprü, kaldırma kriteri ve pencere `BACKLOG.md` / B-040 içinde |
 | Sır saklama | OS anahtar kasası, servis `HYCLEUS`, adlar `share_2:<hwid>` ve `totp_secret` |
 | Sır mühürleme | Yalnızca Windows + TPM 2.0: rastgele 32 baytlık DEK, sır üzerinde AES-256-GCM (AAD = kasa kullanıcı adı), DEK dışa aktarılamayan TPM RSA-2048 anahtarıyla CNG üzerinden sarmalanıyor (PKCS#1 v1.5 — OAEP'i Platform Crypto Provider reddediyor, ölçüldü); `TPM1:` öneki, düşüş GÜRÜLTÜLÜ — bkz. §4.13 |
 | İkinci faktör | TOTP (RFC 6238), 6 hane, ±1 pencere |
