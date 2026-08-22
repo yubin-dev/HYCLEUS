@@ -85,7 +85,7 @@ class BulkActionsMixin:
             f"QMenu {{ background:{T['topbar']}; color:{T['text']};"
             f" border:1px solid {T['border']}; border-radius:8px; padding:4px 0; }}"
             f"QMenu::item {{ padding:9px 22px; font-size:13px; }}"
-            f"QMenu::item:selected {{ background:#EFF6FF; color:#111827; border-radius:4px; }}"
+            f"QMenu::item:selected {{ background:{T['accent_tint']}; color:{T['tint_text']}; border-radius:4px; }}"
             f"QMenu::separator {{ height:1px; background:{T['border']}; margin:4px 10px; }}"
         )
         menu = QMenu(self)

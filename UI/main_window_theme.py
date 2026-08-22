@@ -36,13 +36,46 @@ _ACTIVITY_EVENTS = frozenset({
 
 
 
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import QMenu
+
 from CORE.roles import normalize_role
 
 from UI.main_window_palette import (
     _DARK,
     _LIGHT,
+    _TEAL_GOLD_DARK,
+    _TEAL_GOLD_LIGHT,
+    _AURORA_BOREALIS,
+    _ABYSSAL_BLUE,
+    _GRAPHITE_AMBER,
     _ROLE_BADGE,
 )
+
+
+# ── Tema preset kaydı ─────────────────────────────────────────────────────────
+# `register_theme(key, name, dark, light)` — `light` verilmezse preset yalnızca
+# koyu modda çalışır ve tema düğmesindeki Gündüz/Gece geçişi o preset için
+# devre dışı kalır (bkz. ThemeMixin._toggle_theme). Sıra, tema menüsünde
+# gösterilme sırasıdır.
+_THEMES: dict[str, dict] = {}
+
+
+def register_theme(key: str, name: str, dark: dict[str, str], light: dict[str, str] | None = None) -> None:
+    """Bir tema preset'ini kayda ekler."""
+    _THEMES[key] = {"name": name, "dark": dark, "light": light}
+
+
+def available_themes() -> list[tuple[str, str]]:
+    """Tema menüsü için (key, ad) listesi, kayıt sırasıyla."""
+    return [(key, preset["name"]) for key, preset in _THEMES.items()]
+
+
+register_theme("mavi", "Mavi (Varsayılan)", _DARK, _LIGHT)
+register_theme("teal_gold", "Teal & Gold", _TEAL_GOLD_DARK, _TEAL_GOLD_LIGHT)
+register_theme("aurora_borealis", "Aurora Borealis", _AURORA_BOREALIS)
+register_theme("abyssal_blue", "Abyssal Blue", _ABYSSAL_BLUE)
+register_theme("graphite_amber", "Grafit & Kehribar", _GRAPHITE_AMBER)
 
 
 class ThemeMixin:
@@ -50,15 +83,55 @@ class ThemeMixin:
 
     # ── Tema ──────────────────────────────────────────────────────────────────
 
-    def _toggle_theme(self) -> None:
-        self._dark = not self._dark
-        self._T = _DARK.copy() if self._dark else _LIGHT.copy()
+    def _refresh_after_theme_change(self) -> None:
+        """`_toggle_theme` ve `_set_theme` sonrası ortak tazeleme adımı."""
         self._apply_theme()
         self._reset_drop_hint_style()
         if self._current_tag_id is not None:
             self._load_tag_files(self._current_tag_id)
         else:
             self._load_label(self._current_label)
+
+    def _toggle_theme(self) -> None:
+        preset = _THEMES[self._theme_key]
+        if preset["light"] is None:
+            # Koyu-yalnızca preset — Gündüz/Gece geçişinin bu preset'te
+            # yapacağı bir şey yok.
+            return
+        self._dark = not self._dark
+        self._T = preset["dark"].copy() if self._dark else preset["light"].copy()
+        self._refresh_after_theme_change()
+
+    def _set_theme(self, key: str) -> None:
+        preset = _THEMES[key]
+        self._theme_key = key
+        if preset["light"] is None:
+            self._dark = True
+        self._T = preset["dark"].copy() if self._dark else preset["light"].copy()
+        self._refresh_after_theme_change()
+
+    def _on_theme_menu(self) -> None:
+        T = self._T
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background:{T['topbar']}; color:{T['text']};"
+            f" border:1px solid {T['border']}; border-radius:8px; padding:4px 0; }}"
+            f"QMenu::item {{ padding:9px 22px; font-size:13px; }}"
+            f"QMenu::item:checked {{ font-weight:600; }}"
+            f"QMenu::item:selected {{ background:{T['accent_tint']}; color:{T['tint_text']};"
+            f" border-radius:4px; }}"
+        )
+        actions: dict[QAction, str] = {}
+        for key, name in available_themes():
+            act = menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(key == self._theme_key)
+            actions[act] = key
+        chosen = menu.exec(self._theme_btn.mapToGlobal(
+            self._theme_btn.rect().bottomLeft()
+        ))
+        if chosen is not None and chosen in actions:
+            self._set_theme(actions[chosen])
 
     def _toggle_maximize(self) -> None:
         if self.isMaximized():
@@ -70,14 +143,14 @@ class ThemeMixin:
         T = self._T
         if active:
             return (
-                "QPushButton {"
-                " background: #EFF6FF; color: #2563EB;"
-                " border: none; border-left: 3px solid #2563EB;"
-                " border-radius: 8px; height: 44px;"
-                " padding: 0 20px 0 17px; text-align: left;"
-                " font-size: 14px; font-weight: 600; margin: 2px 12px;"
-                "}"
-                "QPushButton:hover { background: #DBEAFE; }"
+                f"QPushButton {{"
+                f" background: {T['accent_tint']}; color: {T['accent']};"
+                f" border: none; border-left: 3px solid {T['accent']};"
+                f" border-radius: 8px; height: 44px;"
+                f" padding: 0 20px 0 17px; text-align: left;"
+                f" font-size: 14px; font-weight: 600; margin: 2px 12px;"
+                f"}}"
+                f"QPushButton:hover {{ background: {T['accent_tint_hover']}; }}"
             )
         return (
             f"QPushButton {{"
@@ -95,13 +168,13 @@ class ThemeMixin:
         if active:
             return (
                 f"QPushButton {{"
-                f" background: #EFF6FF; color: {color};"
+                f" background: {T['accent_tint']}; color: {color};"
                 f" border: none; border-left: 3px solid {color};"
                 f" border-radius: 8px;"
                 f" padding: 6px 20px 6px 17px; text-align: left;"
                 f" font-size: 13px; font-weight: 600; margin: 1px 12px;"
                 f"}}"
-                f"QPushButton:hover {{ background: #DBEAFE; }}"
+                f"QPushButton:hover {{ background: {T['accent_tint_hover']}; }}"
             )
         return (
             f"QPushButton {{"
@@ -156,8 +229,8 @@ class ThemeMixin:
             }}
             QPushButton#theme_btn:hover {{ background: {T['hover']}; }}
             QLabel#avatar {{
-                background: #2563EB;
-                color: #FFFFFF;
+                background: {T['accent']};
+                color: {T['on_accent']};
                 font-size: 13px;
                 font-weight: 700;
                 border-radius: 16px;
@@ -168,14 +241,14 @@ class ThemeMixin:
                 border-bottom: 1px solid {T['border']};
             }}
             QPushButton#btn_primary {{
-                background: #2563EB;
-                color: #FFFFFF;
+                background: {T['accent']};
+                color: {T['on_accent']};
                 border: none;
                 border-radius: 8px;
                 font-size: 14px;
                 padding: 0 16px;
             }}
-            QPushButton#btn_primary:hover {{ background: #1D4ED8; }}
+            QPushButton#btn_primary:hover {{ background: {T['accent_hover']}; }}
             QPushButton#btn_secondary {{
                 background: transparent;
                 color: {T['nav_text']};
@@ -287,8 +360,8 @@ class ThemeMixin:
             }}
             QTableWidget::item:hover {{ background: {T['row_hover']}; }}
             QTableWidget::item:selected {{
-                background: #EFF6FF;
-                color: #111827;
+                background: {T['accent_tint']};
+                color: {T['tint_text']};
             }}
             QLabel#drop_hint {{
                 color: #9CA3AF;
@@ -307,10 +380,10 @@ class ThemeMixin:
                 margin: 4px 12px 0;
             }}
             QLabel#progress_banner {{
-                color: #FFFFFF;
+                color: {T['on_accent']};
                 font-size: 13px;
                 font-weight: 600;
-                background: #2563EB;
+                background: {T['accent']};
                 border-radius: 8px;
                 padding: 4px 12px;
                 margin: 4px 12px 0;
@@ -329,14 +402,14 @@ class ThemeMixin:
         T = self._T
         if active:
             return (
-                "QPushButton {"
-                " background: #EFF6FF; color: #2563EB;"
-                " border: none; border-left: 3px solid #2563EB;"
-                " border-radius: 6px; height: 34px;"
-                " padding: 0 20px 0 8px; text-align: left;"
-                " font-size: 12px; margin: 1px 12px 1px 24px;"
-                "}"
-                "QPushButton:hover { background: #DBEAFE; }"
+                f"QPushButton {{"
+                f" background: {T['accent_tint']}; color: {T['accent']};"
+                f" border: none; border-left: 3px solid {T['accent']};"
+                f" border-radius: 6px; height: 34px;"
+                f" padding: 0 20px 0 8px; text-align: left;"
+                f" font-size: 12px; margin: 1px 12px 1px 24px;"
+                f"}}"
+                f"QPushButton:hover {{ background: {T['accent_tint_hover']}; }}"
             )
         return (
             f"QPushButton {{"

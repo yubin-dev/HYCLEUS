@@ -2599,3 +2599,61 @@ env:
 run: |
   python tests/fuzz/fuzz_${{ matrix.hedef }}.py -max_total_time="$SURE"
 ```
+
+---
+
+## B-054 — "Mavi" (varsayılan) temanın açık modunda `subtext` kontrastı AA sınırının altında
+
+**Durum:** Açık
+**Öncelik:** Düşük (kozmetik — okunmuyor değil, WCAG AA büyük-metin eşiğinin hafif altında)
+**Bulundu:** 2026-08-22 — tema preset-registry'si turu (`tests/test_tema_kontrasti.py` yazılırken)
+
+`UI/main_window_palette.py::_LIGHT["subtext"]` (`#9CA3AF`) `_LIGHT["bg"]`
+(`#F9FAFB`) üzerinde **2.43:1** kontrast veriyor; WCAG AA'nın büyük
+metin/UI bileşeni eşiği (3:1) bile karşılanmıyor. Bu renk çifti bu
+turdan ÖNCE de aynıydı — yeni preset'ler eklenirken tesadüfen ölçüldü,
+bu turun ürettiği bir bozulma değil.
+
+Düzeltilmedi çünkü bu tur "mavi" preset'ini **birebir** korumayı
+istedi (geriye dönük uyumluluk) — rengi değiştirmek görev kapsamının
+dışına çıkardı. `tests/test_tema_kontrasti.py` bunu bilerek
+`_ONCEDEN_VAR_OLAN_ISTISNALAR` ile atlıyor; sessizce yutmuyor, kaydını
+tutuyor.
+
+### Düzeltme (bu turda uygulanmadı)
+
+`#9CA3AF` yerine biraz daha koyu bir gri (ör. `#6B7280` — zaten
+paletin `gray` rengi) `subtext` için kullanılabilir; `nav_text` gibi
+diğer ikincil metin rollerini etkilemez. Tek satırlık değişiklik ama
+görsel bir karar gerektiriyor (mevcut kullanıcı arayüzü ekran
+görüntüleriyle karşılaştırma isteyebilir) — bu yüzden ayrı bir onay
+turu bekliyor.
+
+---
+
+## B-055 — AdminPanel / GuvenlikView / RecoveryShareDialog tema preset sistemine bağlı değil
+
+**Durum:** Açık
+**Öncelik:** Orta (tutarlılık — okunabilirlik sorunu değil, üç ekran zaten kendi sabit paletleriyle okunabilir)
+**Bulundu:** 2026-08-22 — tema preset-registry'si turu (Claude Design senkronu)
+
+Ana pencere artık 5 preset arasında geçiş yapabiliyor
+(`UI/main_window_theme.py::register_theme`), ama `UI/AdminPanel.py`
+(kendi sabit `QDialog { background: #1e1e2e; color: #cdd6f4; }`
+bloğu), `UI/GuvenlikView.py` ve `UI/RecoveryShareDialog.py` hiçbiri
+`self._T`/`main_window_palette` kullanmıyor — üçü de ortam/sabit
+renklerle çiziliyor. Kullanıcı "Aurora Borealis" ya da "Grafit &
+Kehribar" seçse bile bu üç ekran görünüşte hiç değişmiyor.
+
+Bu, ayrı bir kararla ZATEN kapsam dışı bırakılmıştı: bu üç ekran aynı
+zamanda dialog→slide-over dönüşümünün adayı (AdminPanel `QDialog`,
+ayrı pencere) ve o dönüşüm bilinçli olarak ayrı bir aşamaya
+ertelendi. Bu madde o kararın BACKLOG'daki kalıcı kaydı — konuşma
+geçmişi kaybolsa bile iz kalsın diye.
+
+### Düzeltme (bu turda uygulanmadı)
+
+Dialog→slide-over dönüşümüyle birlikte ele alınması mantıklı: o zaman
+zaten `main_window_layout.py`'nin bir parçası olacaklar ve `self._T`'a
+doğal olarak erişebilecekler. Önce tema sistemini dialog'lara taşıyıp
+sonra mimariyi değiştirmek iki kez iş yapmak anlamına gelebilir.

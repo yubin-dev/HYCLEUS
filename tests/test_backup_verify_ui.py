@@ -645,7 +645,10 @@ def test_menude_madde_var_ve_akisi_tetikliyor(
 
         def __init__(self) -> None:
             super().__init__()
-            self._T = {"topbar": "#fff", "text": "#000", "border": "#ccc"}
+            self._T = {
+                "topbar": "#fff", "text": "#000", "border": "#ccc",
+                "accent_tint": "#eff6ff", "tint_text": "#111827",
+            }
             self._btn_view = QPushButton(self)
             self.cagrildi = 0
 
@@ -686,7 +689,10 @@ def test_GERI_YUKLEME_menude_YOK(qapp, monkeypatch: pytest.MonkeyPatch) -> None:
 
         def __init__(self) -> None:
             super().__init__()
-            self._T = {"topbar": "#fff", "text": "#000", "border": "#ccc"}
+            self._T = {
+                "topbar": "#fff", "text": "#000", "border": "#ccc",
+                "accent_tint": "#eff6ff", "tint_text": "#111827",
+            }
             self._btn_view = QPushButton(self)
 
     _Sahne3()._on_hamburger_menu()

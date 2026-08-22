@@ -248,7 +248,7 @@ class TableMixin:
         name_item.setData(Qt.UserRole + 3, filepath)
         name_item.setData(Qt.UserRole + 4, expires_at)
         if is_hcl:
-            name_item.setForeground(QColor("#2563EB"))
+            name_item.setForeground(QColor(self._T["accent"]))
         self._table.setItem(row, 0, name_item)
 
         # Sütun 1 — etiket pill (setCellWidget)
@@ -410,10 +410,11 @@ class TableMixin:
             return
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
+            T = self._T
             self._drop_hint.setStyleSheet(
-                "QLabel { color: #2563EB; font-size: 13px;"
-                " border: 2px dashed #2563EB; border-radius: 8px;"
-                " background: #EFF6FF; margin: 12px; }"
+                f"QLabel {{ color: {T['accent']}; font-size: 13px;"
+                f" border: 2px dashed {T['accent']}; border-radius: 8px;"
+                f" background: {T['accent_tint']}; margin: 12px; }}"
             )
         else:
             event.ignore()

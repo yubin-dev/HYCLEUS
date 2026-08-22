@@ -510,6 +510,7 @@ class _MenuluSahne(FileActionsMixin, QWidget):
         self._checkouts: dict[int, object] = {}
         self._T = {
             "topbar": "#fff", "text": "#000", "border": "#ccc",
+            "accent_tint": "#eff6ff", "tint_text": "#111827",
         }
         self._table = QTableWidget(1, 1, self)
         oge = QTableWidgetItem("belge")

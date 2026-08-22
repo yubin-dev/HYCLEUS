@@ -112,6 +112,7 @@ class HycleusWindow(
         self._threads: list[QThread]  = []
         self._workers: list[QObject]  = []
         self._dark: bool         = True
+        self._theme_key: str     = "mavi"
 
         self._pool = QThreadPool.globalInstance()
         self._pool.setMaxThreadCount(6)
@@ -348,7 +349,7 @@ class HycleusWindow(
             f"QMenu {{ background:{T['topbar']}; color:{T['text']};"
             f" border:1px solid {T['border']}; border-radius:8px; padding:4px 0; }}"
             f"QMenu::item {{ padding:10px 24px; font-size:13px; }}"
-            f"QMenu::item:selected {{ background:#EFF6FF; color:{T['text']}; border-radius:4px; }}"
+            f"QMenu::item:selected {{ background:{T['accent_tint']}; color:{T['tint_text']}; border-radius:4px; }}"
             f"QMenu::separator {{ height:1px; background:{T['border']}; margin:4px 10px; }}"
         )
         act_audit   = menu.addAction("📋  Denetim Günlüğü")

@@ -102,8 +102,10 @@ class LayoutMixin:
         self._theme_btn.setObjectName("theme_btn")
         self._theme_btn.setFixedSize(36, 36)
         self._theme_btn.setCursor(Qt.PointingHandCursor)
-        self._theme_btn.setToolTip("Gündüz / Gece")
+        self._theme_btn.setToolTip("Sol tık: Gündüz / Gece · Sağ tık: Tema seç")
         self._theme_btn.clicked.connect(self._toggle_theme)
+        self._theme_btn.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._theme_btn.customContextMenuRequested.connect(lambda _pos: self._on_theme_menu())
         lay.addWidget(self._theme_btn)
 
         lay.addSpacing(12)
