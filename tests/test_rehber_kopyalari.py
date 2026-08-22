@@ -125,6 +125,107 @@ def test_uretim_DETERMINIST(tmp_path: Path):
     assert hashlib.sha256(a).hexdigest() == hashlib.sha256(b).hexdigest()
 
 
+# ── Satır sonu: iki platform, tek özet ──────────────────────────────────────
+#
+# CI 71 ve 72'de dört test ubuntu'da düştü, Windows'ta hepsi yeşildi.
+# Ölçülen sebep:
+#
+#     Windows çalışma ağacı : 14210 bayt, 368 CRLF, 13be125c...
+#     git blob (= Linux)    : 13842 bayt,   0 CRLF, 552117f7...
+#
+# `text=auto` deponun içinde LF tutuyor ama Windows'a CRLF veriyor
+# (`.gitattributes` bu tuzağı kabuk betikleri için zaten anlatıyordu).
+# Özet ham baytları imzaladığı için iki ortam hiçbir zaman anlaşamazdı.
+
+
+def test_ozet_SATIR_SONUNDAN_bagimsiz(tmp_path: Path):
+    """Aynı belge, üç farklı satır sonu → aynı özet."""
+    govde = "# Başlık\n\nBir satır.\nİkinci satır.\n"
+    ozetler = set()
+    for ad, ham in (("lf", govde.encode()),
+                    ("crlf", govde.replace("\n", "\r\n").encode()),
+                    ("cr", govde.replace("\n", "\r").encode())):
+        yol = tmp_path / f"{ad}.md"
+        yol.write_bytes(ham)
+        ozetler.add(rehber.kaynak_ozeti(yol))
+    assert len(ozetler) == 1, "satır sonu özeti değiştiriyor — CI 71/72 tekrarı"
+
+
+def test_ozet_GERCEK_degisikligi_HALA_goruyor(tmp_path: Path):
+    """
+    Normalleştirme bir GEVŞETME değil.
+
+    Tek harf, tek boşluk ya da tek satır eklense özet yine değişiyor;
+    yalnızca "aynı belge, farklı satır sonu" durumu ayrışma sayılmıyor.
+    """
+    temel = tmp_path / "t.md"
+    temel.write_bytes(b"# Baslik\n\nGovde.\n")
+    ilk = rehber.kaynak_ozeti(temel)
+    for degisiklik in (b"# Baslik\n\nGovde!\n",      # tek karakter
+                       b"# Baslik\n\nGovde. \n",     # sondaki boşluk
+                       b"# Baslik\n\n\nGovde.\n",    # fazladan satır
+                       b"# Baslik\n\nGovde.",        # eksik son satır sonu
+                       ):
+        temel.write_bytes(degisiklik)
+        assert rehber.kaynak_ozeti(temel) != ilk, f"değişiklik gizlendi: {degisiklik!r}"
+
+
+def test_CRLF_ve_LF_kaynaktan_AYNI_PDF(tmp_path: Path):
+    """
+    İki satır sonundan üretilen PDF'ler BAYT EŞ olmalı.
+
+    `akis()` metni zaten normalleştiriyordu; tek fark gömülü özetti. Yani
+    özet, PDF'in taşımadığı bir özelliği belgeliyordu — bu test o
+    tutarsızlığın geri gelmesini engelliyor.
+    """
+    ham = rehber.KAYNAK.read_bytes().replace(b"\r\n", b"\n")
+    (tmp_path / "lf.md").write_bytes(ham)
+    (tmp_path / "crlf.md").write_bytes(ham.replace(b"\n", b"\r\n"))
+    a = rehber.pdf_uret(tmp_path / "a.pdf", tmp_path / "lf.md").read_bytes()
+    b = rehber.pdf_uret(tmp_path / "b.pdf", tmp_path / "crlf.md").read_bytes()
+    assert a == b, "satır sonu PDF baytlarını değiştiriyor"
+
+
+def test_KAYNAK_dosyasi_calisma_agacinda_LF():
+    """
+    Ortam tarafı da sabitleniyor: `.gitattributes` bu dosyaya `eol=lf`
+    veriyor, yani Windows'ta da LF açılıyor.
+
+    Normalleştirme tek başına yeterdi; bu satır ikinci katman. İkisi ayrı
+    şeyi koruyor: normalleştirme dosyayı depo dışında düzenleyen araçları,
+    `eol=lf` çalışma ağacının kendisini.
+    """
+    ham = rehber.KAYNAK.read_bytes()
+    assert b"\r\n" not in ham, (
+        "docs/kullanici-rehberi.md çalışma ağacında CRLF taşıyor — "
+        ".gitattributes kuralı uygulanmamış. Çözüm: git add --renormalize .")
+
+
+def test_gitattributes_kurali_YERINDE():
+    """Kural silinirse yukarıdaki test bir sonraki temiz klonda düşerdi."""
+    metin = (KOK / ".gitattributes").read_text(encoding="utf-8")
+    assert "docs/kullanici-rehberi.md" in metin
+    assert "eol=lf" in metin.split("docs/kullanici-rehberi.md")[1].split("\n")[0]
+    assert "*.pdf" in metin and "binary" in metin
+
+
+def test_uretim_ozeti_TEK_yerden():
+    """
+    `pdf_uret()` özeti kendisi HESAPLAMAMALI.
+
+    İlk yazımda satır içi bir `sha256(read_bytes())` vardı: doğrulayan
+    taraf normalleştirip üreten taraf normalleştirmeseydi sorun çözülmez,
+    yalnızca yer değiştirirdi.
+    """
+    agac = ast.parse((KOK / "CORE" / "rehber.py").read_text(encoding="utf-8"))
+    govde = next(d for d in ast.walk(agac)
+                 if isinstance(d, ast.FunctionDef) and d.name == "pdf_uret")
+    adlar = {getattr(d.func, "attr", getattr(d.func, "id", ""))
+             for d in ast.walk(govde) if isinstance(d, ast.Call)}
+    assert "sha256" not in adlar, "pdf_uret özeti kendisi hesaplıyor"
+    assert "kaynak_ozeti" in adlar, "pdf_uret özeti ortak fonksiyondan almıyor"
+
+
 def test_pdf_kaynak_ozeti_YABANCI_dosyada_None(tmp_path: Path):
     """Başka bir yerden gelen PDF "güncel" sayılmamalı."""
     sahte = tmp_path / "sahte.pdf"

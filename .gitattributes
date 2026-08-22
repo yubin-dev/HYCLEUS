@@ -12,3 +12,26 @@
 *.sh        text eol=lf
 AppRun      text eol=lf
 *.desktop   text eol=lf
+
+# Kullanıcı rehberi: BAYTLARI İMZALANIYOR, o yüzden HER ZAMAN LF.
+#
+# `docs/kullanici-rehberi.pdf`, üretildiği Markdown'ın SHA-256'sını kendi
+# `/Subject` alanında taşıyor (CORE/rehber.py). Bu dosya Windows çalışma
+# ağacında CRLF'e açıldığı için Windows'ta üretilen özet, Linux'ta
+# hesaplanan özetle TUTMUYORDU — CI 71 ve 72'de dört test bu yüzden düştü:
+#
+#     Windows çalışma ağacı : 14210 bayt, 368 CRLF, 13be125c...
+#     git blob (= Linux)    : 13842 bayt,   0 CRLF, 552117f7...
+#
+# İki katmanlı önlem: özet artık satır sonlarını normalleştiriyor
+# (`CORE/rehber.py::kanonik`) VE dosya iki platformda da aynı biçimde
+# duruyor. Biri tek başına yeterli olurdu ama ikisi ayrı şeyi koruyor:
+# buradaki satır çalışma ağacını, oradaki normalleştirme dosyayı bu depo
+# dışında düzenleyen araçları.
+docs/kullanici-rehberi.md   text eol=lf
+
+# Üretilmiş ikili çıktı — satır sonu normalleştirmesi UYGULANMAMALI.
+# `text=auto` bugün onu ikili sayıyor (sezgisel), ama sezgi bir sözleşme
+# değil: yanılırsa PDF sessizce bozulur ve bozulma yalnızca Windows'ta
+# görünür.
+*.pdf       binary

@@ -129,11 +129,37 @@ class RehberError(RuntimeError):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def kanonik(ham: bytes) -> bytes:
+    """
+    Satır sonlarını LF'e indirger — özet İÇERİĞİ imzalıyor, KODLAMAYI değil.
+
+    Neden gerekli, ve neden bu bir gevşetme DEĞİL
+    ---------------------------------------------
+    `pdf_uret()` metni zaten satır sonundan bağımsız işliyor: `akis()`
+    ilk iş olarak `metin.replace("\\r\\n", "\\n")` yapıyor. Yani CRLF ve LF
+    kaynaklardan üretilen PDF'ler ÖLÇÜLDÜ — aynı uzunlukta ve tek fark
+    gömülü özetin kendisi:
+
+        CRLF kaynaktan  59368 bayt  özet 13be125c...
+        LF   kaynaktan  59368 bayt  özet 552117f7...
+
+    Yani ham baytları imzalamak, PDF'in TAŞIMADIĞI bir özelliği
+    belgeliyordu. Depo Windows'ta geliştirilip Linux'ta koşuyor; git
+    `text=auto` ile içeride LF tutup Windows çalışma ağacına CRLF veriyor
+    (bkz. `.gitattributes`). İki ortam ham baytta hiçbir zaman anlaşamaz.
+
+    Normalleştirme hiçbir gerçek değişikliği gizlemiyor: tek bir harf,
+    boşluk ya da satır eklense özet yine değişiyor. Yalnızca "aynı belge,
+    farklı satır sonu" durumunu ayrışma saymaktan vazgeçiyor.
+    """
+    return ham.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def kaynak_ozeti(kaynak: Path | str | None = None) -> str:
-    """Markdown kaynağının SHA-256'sı (hex)."""
+    """Markdown kaynağının SHA-256'sı (hex) — satır sonundan bağımsız."""
     yol = Path(kaynak) if kaynak else KAYNAK
     try:
-        return hashlib.sha256(yol.read_bytes()).hexdigest()
+        return hashlib.sha256(kanonik(yol.read_bytes())).hexdigest()
     except OSError as exc:
         raise RehberError(f"Rehber kaynağı okunamadı: {exc}") from exc
 
@@ -465,7 +491,11 @@ def pdf_uret(hedef: Path | str | None = None,
         raise RehberError(f"Rehber kaynağı okunamadı: {exc}") from exc
 
     yazi_tipleri_kur()
-    ozet = hashlib.sha256(kaynak_yolu.read_bytes()).hexdigest()
+    # Özet `kaynak_ozeti()`'nden alınıyor, burada YENİDEN hesaplanmıyor.
+    # İlk yazımda satır içi bir `sha256(read_bytes())` vardı: iki kopya, iki
+    # kural. Doğrulayan taraf normalleştirip üreten taraf normalleştirmese
+    # sorun çözülmez, yalnızca yer değiştirirdi.
+    ozet = kaynak_ozeti(kaynak_yolu)
 
     cikti.parent.mkdir(parents=True, exist_ok=True)
     try:

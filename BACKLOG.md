@@ -2438,3 +2438,41 @@ Ve kurulduğunda da yazıyor. Yalnızca sorun varken yazmak, "yazmıyorsa her
 Bu madde istekte "B-045" olarak anılmıştı ama B-045 (görünüm tercihleri
 için kullanıcı başına ayar altyapısı) zaten dolu. Numaralar yeniden
 kullanılmıyor; sıradaki boş numara verildi.
+
+---
+
+## B-050 — PDF bayt karşılaştırması Linux'ta sessizce atlanıyor
+
+**Durum:** Açık
+**Öncelik:** Düşük
+**Bulundu:** 2026-08-22 — CI 71/72 teşhisi
+
+`test_PDF_bayt_bayt_yeniden_uretilebiliyor`, PDF'i üreten reportlab
+sürümü kurulu sürümden farklıysa `pytest.skip` ediyor (bilinçli tasarım —
+bayt yeniden üretilebilirlik sürüme bağlı, bkz. `CORE/rehber.py` başlığı).
+
+### Çıkarım — ölçüm değil
+
+CI 71/72'de gömülü özet ayrışmıştı, yani o test koşsaydı **düşmesi
+gerekirdi**: yeniden üretilen PDF'in `/Subject` alanı farklı olurdu ve
+bayt karşılaştırması tutmazdı. Ubuntu'da dört test düştü, bu beşinci
+düşmedi. Tek tutarlı açıklama: ubuntu runner'ında reportlab sürümü
+farklı ve test atlandı.
+
+Bu bir ÇIKARIM; logu okunamadı (yetkisiz API log vermiyor). Doğrulaması
+kolay: CI çıktısındaki skip sayısı ya da `pip freeze | grep reportlab`.
+
+### Bugünkü maliyet
+
+Gövde denetimi yalnızca Windows'ta koşuyor. Gömülü özet denetimi
+(`test_PDF_kaynakla_GUNCEL`) her iki platformda koşmaya devam ediyor,
+yani PDF'in hangi kaynaktan üretildiği korunuyor; korunmayan şey PDF
+GÖVDESİNİN elle düzenlenmemiş olması.
+
+### Seçenekler
+
+1. `requirements.txt`'te reportlab'ı sabitlemek — testi her yerde
+   çalıştırır ama bir bağımlılık politikası kararı; bu turda alınmadı.
+2. Atlamayı görünür kılmak: CI özetinde skip sayısını raporlamak.
+3. Olduğu gibi bırakmak — Windows asıl hedef platform ve denetim orada
+   koşuyor.
