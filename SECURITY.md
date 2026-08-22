@@ -416,6 +416,42 @@ rotation, re-key deliberately and export a fresh recovery share immediately.
 > undecryptable and invalidates the recovery share. It now requires typing
 > `SIFIRLA` to confirm and points at `--recover` instead.
 
+**Since v2.3.0 the share can also be exported from the Admin Panel, not
+only the CLI — and this is the single most sensitive screen the
+application shows.** Admin Panel → Settings → "Show Recovery Share" asks
+for the vault PIN, then displays the same `build_export()` output — QR
+code and base32 text side by side — that `recover_vault.py --export` has
+always produced. There is exactly one production path; the dialog only
+renders it, and a static-analysis test checks that it never calls the QR
+library itself. Showing the share on screen instead of a terminal opens
+two exposure surfaces a CLI export does not have:
+
+- **Screen capture.** On Windows the window sets `WDA_EXCLUDEFROMCAPTURE`
+  (falling back to `WDA_MONITOR`, which blacks the window out in a
+  capture rather than hiding that something was there) before it is
+  first painted, and the dialog states on screen whether that succeeded.
+  Silence is not an option — the same reasoning §4.13 gives for a TPM
+  fallback applies here: a protection that turns itself off quietly is
+  worse than one that was never built, because the document keeps
+  claiming it. Linux and macOS have no equivalent API and the dialog says
+  so plainly. This gap is **B-049**.
+- **Clipboard.** The "Copy to clipboard" button warns before it copies —
+  a clipboard manager with history (Windows Win+V, third-party tools)
+  can retain the value regardless of anything HYCLEUS does afterwards —
+  and the application clears its own copy 30 seconds later *only if* the
+  clipboard still holds exactly what it wrote. If the user copied
+  something else in the meantime it is left alone; overwriting someone
+  else's clipboard silently would look like data loss, not a safeguard.
+  None of this reaches a clipboard-history tool that already captured
+  the value.
+
+The confirmation checkbox ("I printed this and put it somewhere safe") is
+**not a security control**, and it is not meant to be: it only enables
+the "OK" button, while Esc and the window's own close button work
+regardless. That split is deliberate — a window a user cannot dismiss
+teaches nothing, it only forces a click, which is the lesson **B-003**
+left behind.
+
 ### 4.5 Application-level controls are labelled as such
 
 > **Attacker models:** M2 · M3
@@ -685,6 +721,28 @@ trailer is entirely valid — the stamp is optional and added later. Version
 define one. The trailer format stayed at version `0x01`: the certificate
 chain lives inside the token, so no second copy was added — two lists that
 could disagree would be worse than one.
+
+**Batch stamping trades N signatures for one, and a proof carries the
+rest of the weight.** `CORE/merkle.py` builds a domain-separated Merkle
+tree over many files' `original_sha256` values, so a single TSA
+signature over the root covers all of them; each file then keeps a short
+path from its own leaf to that root instead of its own token. What the
+signature proves does not change — "this hash existed no later than this
+time" — only the cost is shared instead of paid per file. Domain
+separation between leaf and internal-node hashing closes the two classic
+Merkle pitfalls: a forged leaf built from an internal node's own hash,
+and the CVE-2012-2459 duplicate-node ambiguity that let two different
+file sets produce the same root. `verify_merkle_path()` re-walks a
+file's stored path and rejects it outright if that path does not lead to
+the signed root — the same failure mode as an unrecognised signature.
+Every limit already stated in this section applies unchanged to a
+batched stamp: the trust anchor still has to come from outside the file,
+the trailer is still strippable, and the TSA still sees the plaintext
+hash — only the token is shared, not the guarantee. **The batch
+primitive is implemented and tested but, like single-file stamping
+itself, has no caller in the shipped application** — nothing currently
+calls `timestamp_file()` or `timestamp_batch()` outside the test suite,
+so no file in a real vault carries a timestamp yet. See **B-035**.
 
 ### 4.10 Transparent access puts plaintext on disk for as long as you edit
 
@@ -1516,6 +1574,43 @@ hemen ardından yeni kurtarma parçasını dışa aktarın.
 > hâle getirir ve kurtarma parçasını geçersizleştirir. Artık onay için
 > `SIFIRLA` yazılmasını istiyor ve kullanıcıyı `--recover`'a yönlendiriyor.
 
+**v2.3.0'dan itibaren pay yalnızca CLI'dan değil, Yönetici Paneli'nden de
+dışa aktarılabiliyor — ve bu, uygulamanın gösterdiği en hassas ekran.**
+Yönetici Paneli → Ayarlar → "Kurtarma Parçasını Göster" önce vault PIN'ini
+istiyor, sonra `recover_vault.py --export`'un hep ürettiği `build_export()`
+çıktısını — QR kodu ve base32 metni yan yana — gösteriyor. Üretim yolu
+tek; diyalog onu yalnızca GÖSTERİYOR ve bir statik analiz testi QR
+kütüphanesini kendi başına hiç çağırmadığını doğruluyor. Payı bir
+terminal yerine ekranda göstermek, CLI dışa aktarımının taşımadığı iki
+maruziyet yüzeyi açıyor:
+
+- **Ekran yakalama.** Windows'ta pencere ilk boyanmadan önce
+  `WDA_EXCLUDEFROMCAPTURE` bayrağını kuruyor (Win10 2004 öncesinde
+  `WDA_MONITOR`'a düşüyor — bu, yakalamada pencereyi SİYAH gösteriyor,
+  bir şeyin var olduğunu gizlemek yerine), ve diyalog bunun başarılı olup
+  olmadığını ekranda açıkça yazıyor. Sessizlik bir seçenek değil — §4.13'ün
+  TPM düşüşü için verdiği gerekçe burada da geçerli: sessizce kendini
+  kapatan bir koruma, hiç yapılmamış olandan daha kötüdür, çünkü belge
+  onun varlığını iddia etmeye devam eder. Linux ve macOS'ta karşılık
+  gelen bir API yok ve diyalog bunu açıkça söylüyor. Bu boşluk **B-049**
+  olarak kayıtlı.
+- **Pano.** "Panoya Kopyala" düğmesi kopyalamadan ÖNCE uyarıyor — geçmiş
+  tutan bir pano yöneticisi (Windows Win+V, üçüncü taraf araçlar)
+  HYCLEUS'un sonrasında yaptığı hiçbir şeye rağmen değeri saklı
+  tutabiliyor — ve uygulama kendi kopyasını 30 saniye sonra, YALNIZCA
+  pano hâlâ tam olarak yazdığı şeyi tutuyorsa temizliyor. Kullanıcı bu
+  arada başka bir şey kopyaladıysa dokunulmuyor; başkasının panosunu
+  sessizce üzerine yazmak bir güvenlik önlemi değil, veri kaybı gibi
+  görünürdü. Hiçbiri, değeri zaten yakalamış bir pano geçmişi aracına
+  ulaşmıyor.
+
+Onay kutusu ("Bu parçayı yazdırdım ve güvenli bir yere koydum") **bir
+güvenlik kontrolü değildir** ve öyle olması da amaçlanmadı: yalnızca
+"Tamam" düğmesini etkinleştiriyor, Esc ve pencerenin kendi kapatma
+düğmesi her durumda çalışıyor. Bu ayrım bilinçli — kullanıcının
+kapatamadığı bir pencere hiçbir şey öğretmez, yalnızca bir tıklamaya
+zorlar; bu da **B-003**'ün bıraktığı derstir.
+
 ### 4.5 Uygulama seviyesi kontroller böyle etiketlenmiştir
 
 > **Saldırgan modelleri:** M2 · M3
@@ -1782,6 +1877,28 @@ fragman hiç aranmıyor, çünkü o formatta böyle bir şey tanımlı değildi.
 Fragman biçimi `0x01`'de KALDI: sertifika zinciri token'ın içinde olduğu
 için ikinci bir kopya eklenmedi — birbirini tutmayabilecek iki liste, tek
 listeden kötü olurdu.
+
+**Toplu damgalama N imzayı bire indiriyor, ağırlığın geri kalanını bir
+kanıt taşıyor.** `CORE/merkle.py` çok sayıda dosyanın `original_sha256`
+değerleri üzerine alan-ayrımlı bir Merkle ağacı kuruyor, böylece tek bir
+TSA imzası kökü damgalayarak hepsini kapsıyor; her dosya da kendi
+token'ı yerine kendi yaprağından köke giden kısa bir yol tutuyor.
+İmzanın kanıtladığı şey değişmiyor — "bu özet, o tarihte zaten vardı" —
+yalnızca maliyet dosya başına değil paylaşılarak ödeniyor. Yaprak ve iç
+düğüm özetleri arasındaki alan ayrımı iki klasik Merkle tuzağını
+kapatıyor: bir iç düğümün kendi özetinden kurulan sahte bir yaprak, ve
+CVE-2012-2459'un iki farklı yaprak kümesinin aynı kökü üretmesine izin
+veren tek-düğüm belirsizliği. `verify_merkle_path()` bir dosyanın
+kayıtlı yolunu yeniden yürüyor ve o yol imzalanmış köke çıkmıyorsa
+doğrudan reddediyor — tanınmayan bir imzayla aynı başarısızlık biçimi.
+Bu bölümde daha önce söylenen her sınır, toplu bir damgaya da değişmeden
+uygulanıyor: güven kökü hâlâ dosyanın dışından gelmeli, fragman hâlâ
+sökülebilir ve TSA hâlâ düz metnin özetini görüyor — paylaşılan yalnızca
+token, garanti değil. **Toplu ilkel uygulanmış ve test edilmiş ama, tekil
+damgalamanın kendisi gibi, dağıtılan uygulamada hiçbir çağıranı yok** —
+`timestamp_file()`'ı ya da `timestamp_batch()`'i test paketi dışında hiçbir
+şey çağırmıyor, yani gerçek bir kasadaki hiçbir dosya henüz damgalı değil.
+Bkz. **B-035**.
 
 ### 4.10 Şeffaf erişim, düzenlediğiniz sürece düz metni diskte tutuyor
 

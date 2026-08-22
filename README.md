@@ -37,8 +37,9 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | Category | Feature |
 |----------|---------|
 | **Encryption** | AES-256-GCM per-file, unique nonce, AAD-bound to file metadata |
-| **Key Splitting** | Shamir 2-of-3 SSS — share_1 in Argon2id-encrypted vault file, share_2 in OS credential store, share_3 printed as an offline recovery share |
+| **Key Splitting** | Shamir 2-of-3 SSS — share_1 in Argon2id-encrypted vault file, share_2 in OS credential store, share_3 exportable as a one-time recovery share (Admin Panel → Settings, or the CLI) shown as QR + base32 with clipboard auto-clear |
 | **Secret Storage** | `keyring` — Windows DPAPI / macOS Keychain / Linux Secret Service; no plaintext secrets on disk |
+| **TPM Sealing** | Windows + TPM 2.0: secrets are sealed to the chip before reaching the credential store; falls back to the credential store — loudly, never silently — when no TPM is present |
 | **Authentication** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
 | **Hardware Lock** | USB HWID binding — vault locks instantly on USB removal (in-app control; see Security Notes) |
 | **Idle Auto-Lock** | Session locks after N minutes of inactivity even with the USB inserted; PIN required to resume (default 10 min, configurable) |
@@ -48,6 +49,7 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | **Brute-force Defence** | Login rate limit — 5 failures → 30s, escalating to 300s; counter persisted in DB |
 | **Access Control** | RBAC: Administrator / Standard / Read-only roles |
 | **Malware Scan** | Every uploaded file — Windows Defender (`MpCmdRun.exe`) on Windows, ClamAV (`clamdscan`/`clamscan`) elsewhere |
+| **Duplicate Detection** | Before upload, warns if a file's SHA-256 already exists in the vault — not blocking, the decision is logged either way |
 | **File Labels** | General · Critical · Quarantine · Destruction Room |
 | **Destruction TTL** | Configurable auto-delete timer (1 / 6 / 12 / 24 / 48 h) |
 | **Bulk Operations** | Multi-select, bulk tag, bulk move, bulk download with progress |
@@ -56,7 +58,7 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | **Tags** | Color-coded tags, private (admin-only) tags, bulk assignment |
 | **Audit Log** | Every action recorded with user, timestamp, and detail; entries form a SHA-256 hash chain anchored outside the database |
 | **Integrity Sweep** | Weekly background verification of every `.hcl` GCM tag — verification only, plaintext is never assembled |
-| **Trusted Timestamp** | Optional RFC 3161 timestamp over the plaintext hash; verified **fully offline** from the certificate chain inside the token — from the CLI (`--verify-timestamp`) or from the file context menu (**Damgayı Doğrula**) |
+| **Trusted Timestamp** | Optional RFC 3161 timestamp over the plaintext hash; verified **fully offline** from the certificate chain inside the token — from the CLI (`--verify-timestamp`) or from the file context menu (**Damgayı Doğrula**); an organisation's own TSA root can be added in Admin Panel → Settings so the verdict shows as fully trusted, not just valid |
 | **Dark / Light UI** | Full theme support, readable in both modes |
 
 ---
@@ -265,6 +267,13 @@ Administrators have access to:
 
 ### 📁 Project Structure
 
+The tree below comes from reading every file, not from an earlier release
+— `CORE/` alone gained about twenty modules since the `2.0` badge this
+section used to show (TPM sealing, the `.hclx` package, Merkle-batched
+timestamps, recovery-share export, retention/disposal, duplicate
+detection…). Where a module has no menu or CLI entry point yet, the
+comment says so rather than implying otherwise.
+
 ```
 HYCLEUS/
 ├── main.py                   # Entry point
@@ -273,46 +282,108 @@ HYCLEUS/
 ├── requirements-security.txt # semgrep (separate — 57 MB wheel)
 ├── requirements-build.txt    # PyInstaller (packaging only)
 ├── pyproject.toml            # ruff / mypy / bandit config
+├── pytest.ini                # pytest config (markers, warning filters)
 ├── HYCLEUS.spec              # PyInstaller spec — Windows EXE
 ├── HYCLEUS-linux.spec        # PyInstaller spec — Linux (AppImage)
+├── BACKLOG.md                # Dated, numbered findings — never silently fixed or renumbered
+├── CHANGELOG.md               # Consolidated release notes per tag
 ├── packaging/linux/          # AppRun, .desktop, icon, build + smoke test
 ├── packaging/windows/        # EXE build + smoke test (PowerShell)
 ├── .semgrep/hycleus.yml      # Project-specific semgrep rules
-├── .github/workflows/
-│   ├── ci.yml                # Tests, ruff, mypy, bandit, semgrep, AppImage, EXE
-│   └── fuzz.yml              # atheris fuzzing — manually triggered
+├── .github/
+│   ├── scripts/test_summary.py # Turns junit XML into a CI job summary
+│   └── workflows/
+│       ├── ci.yml             # Tests, ruff, mypy, bandit, semgrep, AppImage, EXE
+│       └── fuzz.yml            # atheris fuzzing — manually triggered
 ├── tests/
-│   ├── fuzz/                 # Fuzz targets (crypto container, Shamir)
-│   └── canary_semgrep/       # Deliberately unsafe — proves rules fire
+│   ├── conftest.py            # Shared fixtures (temp DB, temp vault, …)
+│   ├── test_*.py               # ~70 modules — crypto, vault, UI, CI, packaging, doc parity
+│   ├── data/                  # Fixture data (e.g. one real TSA response)
+│   ├── fuzz/                  # Fuzz targets (crypto container, Shamir)
+│   └── canary_semgrep/        # Deliberately unsafe — proves rules fire
 ├── CORE/
-│   ├── version.py            # Single source of the version string
-│   ├── crypto.py             # AES-256-GCM encryption (.hcl format)
-│   ├── paths.py              # data_dir() — EXE-aware path resolution
-│   ├── scanner.py            # Antivirus scan flow (engine-independent)
-│   ├── scanner_backends.py   # Defender / ClamAV backends
-│   ├── scheduler.py          # APScheduler — expired file cleanup
-│   ├── setup_usb.py          # CLI USB registration tool
-│   ├── backup.py             # Encrypted backup + verifiable restore
-│   ├── backup_cli.py         # CLI: --verify / --restore (restore is CLI-only)
-│   ├── checkout.py           # Transparent access (open → edit → re-encrypt)
-│   ├── hwid_probe.py         # PROTOTYPE: cross-platform USB id (not wired in)
-│   ├── timestamp.py          # RFC 3161 trusted timestamps (.hcl trailer)
-│   ├── timestamp_verify.py   # Offline timestamp verification (no network)
-│   ├── timestamp_report.py   # Verification result → plain language (UI)
+│   ├── version.py             # Single source of the version string
+│   ├── crypto.py              # AES-256-GCM encryption (.hcl format)
+│   ├── paths.py                # data_dir() — EXE-aware path resolution
+│   ├── roles.py                # Role comparison — one decision point (B-028/030)
+│   ├── file_queries.py         # SQL for the four file-list views
+│   ├── file_records.py         # Writes an encrypted file's row to the DB
+│   ├── folders.py              # Create / delete / move-to-disposal / assign
+│   ├── export.py               # Bulk decrypt-and-save (single file + ZIP)
+│   ├── duplicates.py           # Pre-upload duplicate detection (SHA-256)
+│   ├── disposal.py             # Where retention meets the Destruction Room
+│   ├── retention.py            # Retention profiles + disposal-date math
+│   ├── expiry.py                # Destruction Room countdown math
+│   ├── scanner.py              # Antivirus scan flow (engine-independent)
+│   ├── scanner_backends.py     # Defender / ClamAV backends
+│   ├── scheduler.py            # APScheduler — expired-file cleanup
+│   ├── scheduled_checks.py     # "last run + gate" pattern shared by scheduled jobs
+│   ├── integrity.py            # Weekly GCM-tag verification sweep
+│   ├── setup_usb.py            # CLI USB registration tool
+│   ├── usb_manager.py          # USB HWID detection (WMI)
+│   ├── hwid_probe.py           # PROTOTYPE: cross-platform USB id (not wired in)
+│   ├── vault_manager.py        # Shamir SSS + key reconstruction
+│   ├── rate_limit.py           # Login lockout, counter persisted in DB
+│   ├── pin_policy.py           # PIN length policy (single source)
+│   ├── pin_rotation.py         # PIN change — single decision + apply point (B-003)
+│   ├── idle_lock.py            # Idle auto-lock (Qt-free, unit-testable)
+│   ├── secret_store.py         # OS credential-store wrapper (keyring)
+│   ├── secret_migration.py     # Moves legacy plaintext secrets into the store
+│   ├── secure_erase.py         # Overwrites a secret's old location after migration
+│   ├── tpm_sealing.py          # TPM 2.0 sealing (Windows/CNG), loud fallback
+│   ├── recovery_share.py       # Shamir share_3 export — QR + base32
+│   ├── recover_vault.py        # CLI: rebuild the vault from the recovery share
+│   ├── session_user.py         # Binds the logged-in USB to a `users` row (B-011)
+│   ├── checkout.py             # Transparent access (open → edit → re-encrypt)
+│   ├── safezone.py             # Temp plaintext workspace, shredded on exit
+│   ├── backup.py                # Encrypted backup + verifiable restore
+│   ├── backup_cli.py            # CLI: --verify / --restore (restore is CLI-only)
+│   ├── backup_reminder.py       # "Have you backed up lately" gate (B-015)
+│   ├── hclx.py                  # `.hclx` signed delivery package — code only, no UI/CLI yet (B-043)
+│   ├── inventory.py             # Retention/disposal inventory report — code only, no UI/CLI yet
+│   ├── timestamp.py             # RFC 3161 trusted timestamps, single-file + Merkle batch
+│   ├── merkle.py                # Domain-separated Merkle tree for batch timestamps
+│   ├── timestamp_verify.py      # Offline timestamp verification (no network)
+│   ├── timestamp_report.py      # Verification result → plain language (UI)
 │   ├── verify_timestamp_cli.py  # CLI: --verify-timestamp <file>
-│   ├── usb_manager.py        # USB HWID detection (WMI)
-│   └── vault_manager.py      # Shamir SSS + key reconstruction
+│   ├── trusted_roots.py         # Organisation's own trusted TSA root store
+│   ├── audit_chain.py           # Audit-log hash chain + external anchor
+│   ├── audit_report.py          # Chain-verification result → report text
+│   ├── rehber.py                # User guide's three access paths, one source
+│   └── console.py               # Windows console encoding fix for non-ASCII CLI output
 ├── DB/
-│   ├── db_manager.py         # SQLite3 singleton, schema bootstrap
-│   └── migrations.py         # Numbered schema-migration ledger (1..21 + future)
+│   ├── db_manager.py          # SQLite3 singleton, schema bootstrap
+│   └── migrations.py          # Numbered schema-migration ledger
 ├── UI/
-│   ├── main_window.py        # Main window, QThreadPool, USB lock overlay
-│   ├── dialog_kit.py         # Shared plumbing for report dialogs
-│   ├── login_dialog.py       # Login / first-run setup (Argon2id + TOTP)
-│   ├── AdminPanel.py         # Admin: registrations, USB mgmt, settings
-│   ├── RegisterDialog.py     # New user registration dialog
-│   ├── TagDialog.py          # Tag assignment (single + bulk mode)
-│   └── ContactDialog.py      # Support / contact dialog
+│   ├── main_window.py          # Main window — setup, role limits, top menu
+│   ├── main_window_layout.py   # Window shell — top bar, sidebar, content area
+│   ├── main_window_theme.py    # Dark / light theme and stylesheet
+│   ├── main_window_tree.py     # Sidebar trees — folders and tags
+│   ├── main_window_table.py    # File table, drag-and-drop, batch workers
+│   ├── main_window_files.py    # Single-file actions (right-click menu)
+│   ├── main_window_bulk.py     # Multi-select actions (bulk right-click menu)
+│   ├── main_window_open.py     # Transparent access + backup create/verify
+│   ├── main_window_lock.py     # USB lock and idle lock overlay
+│   ├── main_window_palette.py  # Shared colours, style constants
+│   ├── login_dialog.py         # Login / first-run setup (Argon2id + TOTP)
+│   ├── GuvenlikView.py         # One tab for all three verifications (timestamp/backup/chain)
+│   ├── security_actions.py     # Shared body for the chain-verify action (two callers)
+│   ├── AdminPanel.py           # Admin: registrations, USB mgmt, settings, recovery share
+│   ├── RegisterDialog.py       # New user registration dialog
+│   ├── TagDialog.py            # Tag assignment (single + bulk mode)
+│   ├── ProfileDialog.py        # Profile + PIN change
+│   ├── ContactDialog.py        # Support / contact dialog
+│   ├── AuditLogDialog.py       # Audit log viewer + TXT export
+│   ├── TimestampDialog.py      # Timestamp verification result (report dialog)
+│   ├── BackupVerifyDialog.py   # Backup verification result (report dialog)
+│   ├── RecoveryShareDialog.py  # One-time recovery-share display — QR + base32
+│   ├── PinRotationDialog.py    # Forced PIN renewal, cannot be closed (B-003)
+│   └── dialog_kit.py           # Shared plumbing for report dialogs
+├── docs/
+│   ├── kullanici-rehberi.md    # User guide — SOURCE COPY (PDF + .hclx copy are built from this)
+│   ├── kullanici-rehberi.pdf   # Built PDF — hash-linked to the source, kept in sync
+│   ├── ui-semasi.md            # UI tree / screen map (design reference)
+│   └── hwid-crossplatform.md   # Notes from the cross-platform HWID prototype
 └── data/                     # Not committed — runtime data only
     ├── hycleus.db            # SQLite database (WAL mode)
     ├── usb_ids.json          # Registered USB HWID map
@@ -372,8 +443,9 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | Kategori | Özellik |
 |----------|---------|
 | **Şifreleme** | AES-256-GCM, dosya başına benzersiz nonce, metadata'ya bağlı AAD |
-| **Anahtar Bölme** | Shamir 2-of-3 SSS — share_1 Argon2id şifreli kasa dosyasında, share_2 OS anahtar kasasında, share_3 çevrimdışı kurtarma parçası olarak basılır |
+| **Anahtar Bölme** | Shamir 2-of-3 SSS — share_1 Argon2id şifreli kasa dosyasında, share_2 OS anahtar kasasında, share_3 tek seferlik kurtarma parçası olarak dışa aktarılabilir (Yönetici Paneli → Ayarlar, ya da komut satırından) — QR + base32, panoda otomatik temizleme ile |
 | **Sır Saklama** | `keyring` — Windows DPAPI / macOS Keychain / Linux Secret Service; diskte düz metin sır yok |
+| **TPM Mühürleme** | Windows + TPM 2.0: sırlar anahtar kasasına ulaşmadan önce yongaya mühürlenir; TPM yoksa anahtar kasasına düşer — sessizce değil, sesli biçimde |
 | **Kimlik Doğrulama** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |
 | **Donanım Kilidi** | USB HWID bağlama — USB çekilince kasa anında kilitlenir (arayüz seviyesi kontrol; bkz. Güvenlik Notları) |
 | **Hareketsizlik Kilidi** | USB takılı olsa bile N dakika hareketsizlikte oturum kilitlenir; devam için PIN gerekir (varsayılan 10 dk, yapılandırılabilir) |
@@ -383,6 +455,7 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | **Kaba Kuvvet Savunması** | Giriş sınırlaması — 5 hatada 30 sn, 300 sn'ye kadar artan; sayaç DB'de kalıcı |
 | **Erişim Kontrolü** | RBAC: Yönetici / Standart / Salt Okunur rolleri |
 | **Zararlı Tarama** | Her yüklenen dosyaya: Windows'ta Windows Defender (`MpCmdRun.exe`), diğer platformlarda ClamAV (`clamdscan`/`clamscan`) |
+| **Tekrar Tespiti** | Yüklemeden önce, dosyanın SHA-256'sı kasada zaten varsa uyarır — engellemez, karar her iki durumda da kayda geçer |
 | **Dosya Etiketleri** | Genel · Kritik · Karantina · İmha Odası |
 | **İmha TTL** | Yapılandırılabilir otomatik silme süresi (1 / 6 / 12 / 24 / 48 saat) |
 | **Toplu İşlemler** | Çoklu seçim, toplu etiket, toplu taşıma, progress'li toplu indirme |
@@ -391,7 +464,7 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | **Etiket Sistemi** | Renkli etiketler, gizli (sadece Yönetici) etiketler, toplu atama |
 | **Denetim Kaydı** | Her işlem kullanıcı, zaman ve detayla kayıt altına alınır; kayıtlar veritabanı dışına çıpalanan bir SHA-256 hash zinciri oluşturur |
 | **Bütünlük Taraması** | Haftalık arka plan taraması her `.hcl` dosyasının GCM tag'ini doğrular — yalnızca doğrulama, düz metin hiç birleştirilmez |
-| **Güvenilir Zaman Damgası** | Düz metin özeti üzerinde opsiyonel RFC 3161 damgası; token'ın içindeki sertifika zinciriyle **tamamen çevrimdışı** doğrulanır — komut satırından (`--verify-timestamp`) ya da dosya sağ tık menüsünden (**Damgayı Doğrula**) |
+| **Güvenilir Zaman Damgası** | Düz metin özeti üzerinde opsiyonel RFC 3161 damgası; token'ın içindeki sertifika zinciriyle **tamamen çevrimdışı** doğrulanır — komut satırından (`--verify-timestamp`) ya da dosya sağ tık menüsünden (**Damgayı Doğrula**); kurumun kendi TSA kökü Yönetici Paneli → Ayarlar'a eklenebilir, karar o zaman "geçerli" değil tam güvenilir görünür |
 | **Karanlık / Açık Tema** | Tam tema desteği, her iki modda da okunabilir |
 
 ---
@@ -602,54 +675,123 @@ Yöneticiler şu özelliklere erişebilir:
 
 ### 📁 Proje Yapısı
 
+Aşağıdaki ağaç her dosya tek tek okunarak çıkarıldı, önceki sürümden
+devralınmadı — bu bölümün eskiden gösterdiği `2.0` rozetinden bu yana
+yalnızca `CORE/` yaklaşık yirmi yeni modül kazandı (TPM mühürleme,
+`.hclx` paketi, Merkle'li toplu damgalama, kurtarma parçası dışa
+aktarımı, saklama/imha, tekrar tespiti…). Bir modülün henüz menüsü ya
+da CLI'ı yoksa yorum bunu olduğu gibi söylüyor, tersini ima etmiyor.
+
 ```
 HYCLEUS/
 ├── main.py                   # Giriş noktası
 ├── requirements.txt
 ├── requirements-dev.txt      # pytest, ruff, mypy, bandit
 ├── requirements-security.txt # semgrep (ayrı — 57 MB tekerlek)
+├── requirements-build.txt    # PyInstaller (yalnızca paketleme)
 ├── pyproject.toml            # ruff / mypy / bandit yapılandırması
-├── .semgrep/hycleus.yml      # Projeye özel semgrep kuralları
-├── .github/workflows/
-│   ├── ci.yml                # Testler, ruff, mypy, bandit, semgrep, AppImage, EXE
-│   └── fuzz.yml              # atheris fuzzing — elle tetiklenir
-├── tests/
-│   ├── fuzz/                 # Fuzz hedefleri (kripto kabı, Shamir)
-│   └── canary_semgrep/       # Bilerek güvensiz — kuralların canlı kanıtı
+├── pytest.ini                # pytest yapılandırması (marker'lar, uyarı filtreleri)
 ├── HYCLEUS.spec              # PyInstaller spec — Windows EXE
 ├── HYCLEUS-linux.spec        # PyInstaller spec — Linux (AppImage)
+├── BACKLOG.md                # Tarihli, numaralı bulgular — sessizce düzeltilmez, numara asla yeniden kullanılmaz
+├── CHANGELOG.md               # Etikete göre konsolide değişiklik günlüğü
 ├── packaging/linux/          # AppRun, .desktop, simge, yapı + duman testi
 ├── packaging/windows/        # EXE yapısı + duman testi (PowerShell)
-├── requirements-build.txt    # PyInstaller (yalnızca paketleme)
+├── .semgrep/hycleus.yml      # Projeye özel semgrep kuralları
+├── .github/
+│   ├── scripts/test_summary.py # junit XML'ini CI iş özetine çevirir
+│   └── workflows/
+│       ├── ci.yml             # Testler, ruff, mypy, bandit, semgrep, AppImage, EXE
+│       └── fuzz.yml            # atheris fuzzing — elle tetiklenir
+├── tests/
+│   ├── conftest.py            # Paylaşılan fixture'lar (geçici DB, geçici vault…)
+│   ├── test_*.py               # ~70 modül — kripto, vault, UI, CI, paketleme, belge-parite
+│   ├── data/                  # Fixture verisi (ör. gerçek bir TSA yanıtı)
+│   ├── fuzz/                  # Fuzz hedefleri (kripto kabı, Shamir)
+│   └── canary_semgrep/        # Bilerek güvensiz — kuralların canlı kanıtı
 ├── CORE/
-│   ├── version.py            # Sürüm dizesinin tek kaynağı
-│   ├── crypto.py             # AES-256-GCM şifreleme (.hcl formatı)
-│   ├── paths.py              # data_dir() — EXE-duyarlı yol çözümü
-│   ├── scanner.py            # Antivirüs tarama akışı (motordan bağımsız)
-│   ├── scanner_backends.py   # Defender / ClamAV arka uçları
-│   ├── scheduler.py          # APScheduler — süresi dolmuş dosya temizliği
-│   ├── setup_usb.py          # CLI USB kayıt aracı
-│   ├── backup.py             # Şifreli yedekleme + doğrulanabilir geri yükleme
-│   ├── backup_cli.py         # CLI: --verify / --restore (geri yükleme yalnızca CLI)
-│   ├── checkout.py           # Şeffaf erişim (aç → düzenle → geri şifrele)
-│   ├── hwid_probe.py         # PROTOTİP: çapraz platform USB kimliği (bağlı değil)
-│   ├── timestamp.py          # RFC 3161 zaman damgası (.hcl fragmanı)
-│   ├── timestamp_verify.py   # Çevrimdışı damga doğrulama (ağ gerekmez)
-│   ├── timestamp_report.py   # Doğrulama sonucu → sade Türkçe (arayüz)
+│   ├── version.py             # Sürüm dizesinin tek kaynağı
+│   ├── crypto.py              # AES-256-GCM şifreleme (.hcl formatı)
+│   ├── paths.py                # data_dir() — EXE-duyarlı yol çözümü
+│   ├── roles.py                # Rol karşılaştırması — tek karar noktası (B-028/030)
+│   ├── file_queries.py         # Dört dosya listesi görünümünün SQL'i
+│   ├── file_records.py         # Şifrelenmiş dosya satırının veritabanına yazılması
+│   ├── folders.py              # Klasör oluşturma / silme / imhaya taşıma / atama
+│   ├── export.py               # Toplu çöz-ve-kaydet (tekil dosya + ZIP)
+│   ├── duplicates.py           # Yükleme öncesi tekrar tespiti (SHA-256)
+│   ├── disposal.py             # Saklama süresi ile İmha Odası'nın birleştiği yer
+│   ├── retention.py            # Saklama profilleri + imha tarihi hesabı
+│   ├── expiry.py                # İmha Odası geri sayım hesabı
+│   ├── scanner.py              # Antivirüs tarama akışı (motordan bağımsız)
+│   ├── scanner_backends.py     # Defender / ClamAV arka uçları
+│   ├── scheduler.py            # APScheduler — süresi dolmuş dosya temizliği
+│   ├── scheduled_checks.py     # Zamanlanmış işlerin paylaştığı "son çalışma + kapı" deseni
+│   ├── integrity.py            # Haftalık GCM tag doğrulama taraması
+│   ├── setup_usb.py            # CLI USB kayıt aracı
+│   ├── usb_manager.py          # USB HWID tespiti (WMI)
+│   ├── hwid_probe.py           # PROTOTİP: çapraz platform USB kimliği (bağlı değil)
+│   ├── vault_manager.py        # Shamir SSS + anahtar birleştirme
+│   ├── rate_limit.py           # Giriş kilidi, sayaç DB'de kalıcı
+│   ├── pin_policy.py           # PIN uzunluk politikası (tek kaynak)
+│   ├── pin_rotation.py         # PIN değişimi — tek karar + uygulama noktası (B-003)
+│   ├── idle_lock.py            # Hareketsizlik kilidi (Qt'siz, test edilebilir)
+│   ├── secret_store.py         # OS anahtar kasası (keyring) sarmalayıcısı
+│   ├── secret_migration.py     # Eski düz metin sırları kasaya taşır
+│   ├── secure_erase.py         # Taşımadan sonra sırrın eski yerinin üzerine yazar
+│   ├── tpm_sealing.py          # TPM 2.0 mühürleme (Windows/CNG), sesli düşüş
+│   ├── recovery_share.py       # Shamir share_3 dışa aktarımı — QR + base32
+│   ├── recover_vault.py        # CLI: kurtarma parçasından vault'u yeniden kurar
+│   ├── session_user.py         # Oturum açan USB'yi bir `users` satırına bağlar (B-011)
+│   ├── checkout.py             # Şeffaf erişim (aç → düzenle → geri şifrele)
+│   ├── safezone.py             # Geçici düz metin alanı, çıkışta imha edilir
+│   ├── backup.py                # Şifreli yedekleme + doğrulanabilir geri yükleme
+│   ├── backup_cli.py            # CLI: --verify / --restore (geri yükleme yalnızca CLI)
+│   ├── backup_reminder.py       # "En son ne zaman yedek aldın" kapısı (B-015)
+│   ├── hclx.py                  # `.hclx` imzalı teslim paketi — yalnızca kod, henüz UI/CLI yok (B-043)
+│   ├── inventory.py             # Saklama/imha envanter raporu — yalnızca kod, henüz UI/CLI yok
+│   ├── timestamp.py             # RFC 3161 zaman damgası, tekil dosya + Merkle toplu
+│   ├── merkle.py                # Toplu damgalama için alan-ayrımlı Merkle ağacı
+│   ├── timestamp_verify.py      # Çevrimdışı damga doğrulama (ağ gerekmez)
+│   ├── timestamp_report.py      # Doğrulama sonucu → sade Türkçe (arayüz)
 │   ├── verify_timestamp_cli.py  # CLI: --verify-timestamp <dosya>
-│   ├── usb_manager.py        # USB HWID tespiti (WMI)
-│   └── vault_manager.py      # Shamir SSS + anahtar birleştirme
+│   ├── trusted_roots.py         # Kurumun kendi güvenilir TSA kök deposu
+│   ├── audit_chain.py           # Denetim kaydı hash zinciri + dış çıpa
+│   ├── audit_report.py          # Zincir doğrulama sonucu → rapor metni
+│   ├── rehber.py                # Kullanım rehberinin üç erişim yolu, tek kaynağı
+│   └── console.py               # Windows konsolunda ASCII-dışı CLI çıktısı düzeltmesi
 ├── DB/
-│   ├── db_manager.py         # SQLite3 singleton, şema kurulumu
-│   └── migrations.py         # Numaralı göç kayıt defteri (1..21 + gelecek)
+│   ├── db_manager.py          # SQLite3 singleton, şema kurulumu
+│   └── migrations.py          # Numaralı göç kayıt defteri
 ├── UI/
-│   ├── main_window.py        # Ana pencere, QThreadPool, USB kilit overlay
-│   ├── dialog_kit.py         # Rapor diyaloglarının ortak tesisatı
-│   ├── login_dialog.py       # Giriş / ilk kurulum (Argon2id + TOTP)
-│   ├── AdminPanel.py         # Yönetici: kayıtlar, USB yönetimi, ayarlar
-│   ├── RegisterDialog.py     # Yeni kullanıcı kayıt diyaloğu
-│   ├── TagDialog.py          # Etiket atama (tekli + toplu mod)
-│   └── ContactDialog.py      # Destek / iletişim diyaloğu
+│   ├── main_window.py          # Ana pencere — kurulum, rol kısıtları, üst menü
+│   ├── main_window_layout.py   # Pencere iskeleti — üst bar, kenar çubuğu, içerik alanı
+│   ├── main_window_theme.py    # Karanlık / açık tema ve stil sayfası
+│   ├── main_window_tree.py     # Kenar çubuğu ağaçları — klasörler ve etiketler
+│   ├── main_window_table.py    # Dosya tablosu, sürükle-bırak, toplu işçiler
+│   ├── main_window_files.py    # Tekil dosya işlemleri (sağ tık menüsü)
+│   ├── main_window_bulk.py     # Çoklu seçim işlemleri (toplu sağ tık menüsü)
+│   ├── main_window_open.py     # Şeffaf erişim + yedek alma/doğrulama
+│   ├── main_window_lock.py     # USB kilidi ve hareketsizlik kilidi overlay'i
+│   ├── main_window_palette.py  # Paylaşılan renkler, stil sabitleri
+│   ├── login_dialog.py         # Giriş / ilk kurulum (Argon2id + TOTP)
+│   ├── GuvenlikView.py         # Üç doğrulama (damga/yedek/zincir) tek sekmede
+│   ├── security_actions.py     # Zincir doğrulama eyleminin iki çağıranlı ortak gövdesi
+│   ├── AdminPanel.py           # Yönetici: kayıtlar, USB yönetimi, ayarlar, kurtarma parçası
+│   ├── RegisterDialog.py       # Yeni kullanıcı kayıt diyaloğu
+│   ├── TagDialog.py            # Etiket atama (tekli + toplu mod)
+│   ├── ProfileDialog.py        # Profil + PIN değiştirme
+│   ├── ContactDialog.py        # Destek / iletişim diyaloğu
+│   ├── AuditLogDialog.py       # Denetim günlüğü görüntüleyici + TXT dışa aktarım
+│   ├── TimestampDialog.py      # Zaman damgası doğrulama sonucu (rapor diyaloğu)
+│   ├── BackupVerifyDialog.py   # Yedek doğrulama sonucu (rapor diyaloğu)
+│   ├── RecoveryShareDialog.py  # Bir kereye mahsus kurtarma parçası gösterimi — QR + base32
+│   ├── PinRotationDialog.py    # Zorunlu PIN yenileme, kapatılamaz (B-003)
+│   └── dialog_kit.py           # Rapor diyaloglarının ortak tesisatı
+├── docs/
+│   ├── kullanici-rehberi.md    # Kullanıcı rehberi — ASIL KOPYA (PDF + .hclx kopyası buradan üretilir)
+│   ├── kullanici-rehberi.pdf   # Üretilmiş PDF — kaynağa hash ile bağlı, senkron tutulur
+│   ├── ui-semasi.md            # UI ağacı / ekran şeması (tasarım referansı)
+│   └── hwid-crossplatform.md   # Çapraz platform HWID prototipinden notlar
 └── data/                     # Git'e gitmez — çalışma zamanı verileri
     ├── hycleus.db            # SQLite veritabanı (WAL modu)
     ├── usb_ids.json          # Kayıtlı USB HWID haritası
