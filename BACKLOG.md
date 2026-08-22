@@ -2476,3 +2476,113 @@ GÖVDESİNİN elle düzenlenmemiş olması.
 2. Atlamayı görünür kılmak: CI özetinde skip sayısını raporlamak.
 3. Olduğu gibi bırakmak — Windows asıl hedef platform ve denetim orada
    koşuyor.
+
+---
+
+## B-051 — bandit B608 dokümante tabanı güncel değil: 13 → 17
+
+**Durum:** Açık — 17'si de incelendi ve GÜVENLİ bulundu, karar bekleniyor
+**Öncelik:** Düşük (bulgu değil, süreç hijyeni)
+**Bulundu:** 2026-08-22 — CLAUDE-SECURITY-RESULTS.md tam depo taraması
+
+`pyproject.toml`'daki `[tool.bandit]` yorumu 2026-08-16 taramasından beri
+"B608 · 13× · f-string ile SQL, hepsi incelendi" diyor. Bu turun ham
+bandit taraması (susturmasız) **17** buldu — dördü 2026-08-16'dan sonra
+eklenmiş:
+
+| Yer | Enterpolasyona giren |
+|---|---|
+| `CORE/audit_chain.py:312,519` | `_SELECT_FIELDS` (modül sabiti) |
+| `DB/migrations.py:452,550` | `LEDGER_TABLE` (modül sabiti) |
+| `CORE/export.py:150` | yalnızca `?` — zaten `# nosemgrep` gerekçeli |
+| `CORE/scheduler.py:103` | yalnızca `?` — zaten `# nosemgrep` gerekçeli |
+| `UI/TagDialog.py:240` | `len(self._file_ids)` (tamsayı) |
+
+Elle doğrulandı: 17'sinin de değerleri `?` ile bağlı, enterpolasyona giren
+yalnızca sabit tanımlayıcılar ya da bir tamsayı. **İstismar edilebilir
+değil** — bu bir güvenlik açığı değil, dokümante sayının koddan geride
+kalması.
+
+`CORE/secure_erase.py:62,74,81` (tablo/sütun DİNAMİK ama tek çağıran sabit
+literal geçiyor) ayrıca doğrulandı, zaten dokümante edilmiş desenin içinde.
+
+### Karar gereken
+
+1. `pyproject.toml` yorumundaki "13×" → "17×" güncellensin ve dört yeni
+   satır aynı titizlikle satır satır listelensin, YA DA
+2. Dört satırı ayrı bir "sonradan eklenenler" bloğu olarak belgelensin.
+
+Kod değişikliği gerekmiyor — yalnızca dokümantasyon. Ayrıntılı tablo:
+`CLAUDE-SECURITY-RESULTS.md`.
+
+---
+
+## B-052 — `CORE/scanner.py`: aynı hata iki çağrıda farklı görünürlükte
+
+**Durum:** Açık
+**Öncelik:** Düşük (gözlemlenebilirlik, istismar edilebilir değil)
+**Bulundu:** 2026-08-22 — CLAUDE-SECURITY-RESULTS.md tam depo taraması
+
+`scan_file()` ve `scan_by_hash()` aynı `_save_to_db()` çağrısını aynı
+şekilde sarmalıyor ama biri logluyor, diğeri sessizce yutuyor:
+
+```python
+# scan_file()  (~satır 117) — GÖRÜNÜR
+except Exception:
+    _log.exception("scan_db_error  file_id=%d", file_id)
+
+# scan_by_hash() (satır 136) — SESSİZ
+except Exception:
+    pass
+```
+
+İstismar edilebilir değil: her iki durumda da yalnızca tarama sonucunun
+quarantine tablosuna YAZILMASI etkileniyor, tarama sonucunun kendisi
+(zaten üretilip çağırana dönen `ScanResult`) etkilenmiyor.
+
+Yine de bu depo tam olarak bu sınıftan bir hatayı önceki bir turda
+yaşadı: `audit_log` FK ihlali `_kaydet()` içinde sessizce yutuluyordu ve
+denetim kayıtları görünmeden kayboluyordu. Aynı fonksiyonun iki çağrı
+yerinin farklı davranması "hangisi doğru davranış" sorusunu açık
+bırakıyor — B-011/roles.py tarzı tek karar noktası burada yok.
+
+### Düzeltme (bu turda uygulanmadı)
+
+`scan_by_hash()`'teki `pass`'i `scan_file()`'daki `_log.exception(...)`
+ile aynı desene getirmek — tek satırlık değişiklik, ama bu tur yalnızca
+rapor.
+
+---
+
+## B-053 — `fuzz.yml`: `workflow_dispatch` girdisi tırnaksız `run:` bloğuna giriyor
+
+**Durum:** Açık
+**Öncelik:** Düşük (sertleştirme — bugün istismar edilebilir bir yol yok)
+**Bulundu:** 2026-08-22 — CLAUDE-SECURITY-RESULTS.md tam depo taraması
+
+```yaml
+python tests/fuzz/fuzz_${{ matrix.hedef }}.py \
+  -max_total_time=${{ inputs.sure }} \
+```
+
+`inputs.sure` (`type: string`, serbest metin) doğrudan `run:` bloğuna
+enjekte ediliyor — klasik GitHub Actions script-injection deseni.
+
+**Ama güven sınırı aşılmıyor:** `fuzz.yml` yalnızca `workflow_dispatch`
+ile tetikleniyor, bu da depoya YAZMA yetkisi gerektiriyor; o yetkiye
+sahip biri zaten dosya değiştirip push edebilir. Depoda ayrıca
+`pull_request_target` ya da `issue_comment` tetikleyicisi YOK — yani
+yetkisiz bir PR'dan gelen script-injection yüzeyi hiç yok. `ci.yml` ve
+`fuzz.yml`'nin tamamı tarandı, `github.event.*` interpolasyonu da yok.
+
+### Düzeltme (bu turda uygulanmadı)
+
+`env:` bloğuna alıp ortam değişkeni olarak kullanmak — savunma derinliği
+için, bugünkü tetikleyici modeliyle acil değil:
+
+```yaml
+env:
+  SURE: ${{ inputs.sure }}
+run: |
+  python tests/fuzz/fuzz_${{ matrix.hedef }}.py -max_total_time="$SURE"
+```
