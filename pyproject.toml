@@ -103,13 +103,37 @@ exclude_dirs = ["tests", "build", "dist", ".venv", "__pycache__"]
 #   B110 · 15× · try/except/pass — hepsi "en iyi çaba" yolları (konsol
 #          yeniden yapılandırma, WMI sondası, keyring erişimi). Bilinçli
 #          desen ama gerçekten geniş; teker teker daraltılmalı → B-018.
-#   B608 · 13× · f-string ile SQL — ON ÜÇÜ DE incelendi, hiçbirinde
-#          kullanıcı girdisi enterpolasyona girmiyor: sabit sütun listeleri
-#          (_FILE_COLUMNS, _ORDER, _EXCLUDE_PRIVATE), sabit tablo demeti
+#   B608 · 17× TOPLAM (13 özgün + 4 sonradan, aşağıya bakın) · f-string
+#          ile SQL — HEPSİ incelendi, hiçbirinde kullanıcı girdisi
+#          enterpolasyona girmiyor: sabit sütun listeleri (_FILE_COLUMNS,
+#          _ORDER, _EXCLUDE_PRIVATE), sabit tablo demeti
 #          (backup.RESTORABLE_TABLES) ve allowlist'ten geçmiş sütun adları
 #          (retention.update_profile). Değerler her yerde `?` ile bağlı.
 #   B603 ·  5× · subprocess, shell=False — hepsi liste biçimi çağrı.
 #   B404 ·  4× · "subprocess import ettin" — bilgi amaçlı, bulgu değil.
+#
+# B608 — 2026-08-22 taramasında EKLENEN 4× (B-051)
+# ---------------------------------------------------
+# Yukarıdaki "13×" 2026-08-16 taramasının sayısıydı ve ADET satırı kendi
+# amacını şöyle tarif ediyordu: "sayı değişirse yeni bir şey girmiş
+# demektir." Sayı gerçekten değişti (13 → 17) ama kimse fark etmedi —
+# dokümantasyon koddan geri kaldı. Bu, B-052'de bulunan hatayla AYNI
+# SINIF: iddia ile gerçek davranış ayrıştı ve ayrışma sessizdi. Bu
+# yüzden dört yeni satır eski listeye anonim eklenmek yerine kendi
+# tarihiyle, ayrı bir blok olarak tutuluyor — bir sonraki taramada
+# "13×" gibi güncelliğini kaybetmiş bir sayıya güvenilmesin.
+#
+#   · CORE/audit_chain.py:312,519 — `_SELECT_FIELDS` (modül sabiti,
+#     `", ".join(FIELD_ORDER)`), kullanıcı girdisi değil.
+#   · DB/migrations.py:452,550 — `LEDGER_TABLE = "schema_migrations"`
+#     (modül sabiti).
+#   · CORE/export.py:150, CORE/scheduler.py:103 — enterpolasyona giren
+#     yalnızca `?` yer tutucuları; ikisi de zaten satırda
+#     `# nosemgrep: python.lang.security.audit.formatted-sql-query` ile
+#     ayrıca gerekçeli.
+#   · UI/TagDialog.py:240 — `len(self._file_ids)`, bir tamsayı.
+#
+# Ayrıntılı tarama kaydı: CLAUDE-SECURITY-RESULTS.md, BACKLOG.md B-051.
 #
 # B607 (kısmi çalıştırılabilir yolu) 2026-08-17'de bu listeden ÇIKARILDI ve
 # depo genelinde açıldı — B-018'in tek gerçek bulgusuydu, üç çağrısı vardı:

@@ -2481,8 +2481,8 @@ GÖVDESİNİN elle düzenlenmemiş olması.
 
 ## B-051 — bandit B608 dokümante tabanı güncel değil: 13 → 17
 
-**Durum:** Açık — 17'si de incelendi ve GÜVENLİ bulundu, karar bekleniyor
-**Öncelik:** Düşük (bulgu değil, süreç hijyeni)
+**Durum:** ÇÖZÜLDÜ — 2026-08-22, `pyproject.toml` güncellendi
+**Öncelik:** —
 **Bulundu:** 2026-08-22 — CLAUDE-SECURITY-RESULTS.md tam depo taraması
 
 `pyproject.toml`'daki `[tool.bandit]` yorumu 2026-08-16 taramasından beri
@@ -2506,14 +2506,27 @@ kalması.
 `CORE/secure_erase.py:62,74,81` (tablo/sütun DİNAMİK ama tek çağıran sabit
 literal geçiyor) ayrıca doğrulandı, zaten dokümante edilmiş desenin içinde.
 
-### Karar gereken
+### Karar — kullanıcı
 
-1. `pyproject.toml` yorumundaki "13×" → "17×" güncellensin ve dört yeni
-   satır aynı titizlikle satır satır listelensin, YA DA
-2. Dört satırı ayrı bir "sonradan eklenenler" bloğu olarak belgelensin.
+> "Dört yeni satırı ayrı belgeleyelim, sayıyı '13×' olarak sabit bırakma
+> — dokümanın koddan geri kalması B-052'deki tutarsızlık deseniyle aynı
+> sınıf, bir sonraki kişi yanlış sayıya güvenir."
 
-Kod değişikliği gerekmiyor — yalnızca dokümantasyon. Ayrıntılı tablo:
-`CLAUDE-SECURITY-RESULTS.md`.
+İki şey birden yapıldı, tek başına hiçbiri yeterli olmazdı:
+
+1. **Üst toplam güncellendi:** `B608 · 13×` → `B608 · 17× TOPLAM (13
+   özgün + 4 sonradan)`. Yalnızca ikinci adımı yapıp üst satırı "13×"te
+   bırakmak, dokümanın kendi içinde çelişmesi demek olurdu — bir sonraki
+   okuyucu hangi sayıya güveneceğini bilemezdi.
+2. **Dört yeni satır AYRI bir blokta, kendi tarihiyle** belgelendi
+   (`pyproject.toml`, "B608 — 2026-08-22 taramasında EKLENEN 4×")  —
+   eski 13'ün açıklamasına (`_FILE_COLUMNS`, `RESTORABLE_TABLES`,
+   `retention.update_profile`) anonim eklenmedi. Böylece bir sonraki
+   tarama "17 neyin toplamı" sorusunu tek bakışta yanıtlayabiliyor.
+
+Dosya/satır listesi ve güvenli olduklarının gerekçesi artık
+`pyproject.toml`'un kendisinde; ayrıntılı tarama kaydı
+`CLAUDE-SECURITY-RESULTS.md`'de değişmeden duruyor.
 
 ---
 
