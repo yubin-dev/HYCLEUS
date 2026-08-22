@@ -45,14 +45,22 @@ Sürüm yükseltirken
 
 Adım 3 unutulursa `tests/test_version.py::test_son_yayin_git_etiketiyle_
 uyusuyor` uyarır (git varsa).
+
+v2.2 NEDEN YOK — 2026-08-22
+----------------------------
+Bu geliştirme döngüsü boyunca `__version__` "2.2.0.dev" idi ve iç
+planlamada da "v2.2" olarak anılıyordu. Etiketleme anında kullanıcı
+doğrudan **v2.3**'e geçmeyi seçti; "2.2" hiçbir zaman etiketlenmedi,
+yayınlanmadı ve kullanıcı adına açıkça atlandı — numaralandırma
+sürekliliği bozulmuyor, yalnızca bir ara adım hiç var olmadı.
 """
 from __future__ import annotations
 
 #: Çalıştırılan kodun sürümü. `.dev` = etiketlenmemiş geliştirme ağacı.
-__version__ = "2.2.0.dev"
+__version__ = "2.3.0"
 
 #: En son yayınlanmış git etiketi — güvenlik düzeltmesi alan sürüm.
-SON_YAYIN = "2.1.2"
+SON_YAYIN = "2.3.0"
 
 #: Uygulama adı; arayüzdeki "HYCLEUS v..." dizelerinin ilk yarısı.
 UYGULAMA_ADI = "HYCLEUS"
