@@ -2604,7 +2604,7 @@ run: |
 
 ## B-054 — "Mavi" (varsayılan) temanın açık modunda `subtext` kontrastı AA sınırının altında
 
-**Durum:** Açık
+**Durum:** KAPANDI (2026-08-24)
 **Öncelik:** Düşük (kozmetik — okunmuyor değil, WCAG AA büyük-metin eşiğinin hafif altında)
 **Bulundu:** 2026-08-22 — tema preset-registry'si turu (`tests/test_tema_kontrasti.py` yazılırken)
 
@@ -2614,20 +2614,35 @@ metin/UI bileşeni eşiği (3:1) bile karşılanmıyor. Bu renk çifti bu
 turdan ÖNCE de aynıydı — yeni preset'ler eklenirken tesadüfen ölçüldü,
 bu turun ürettiği bir bozulma değil.
 
-Düzeltilmedi çünkü bu tur "mavi" preset'ini **birebir** korumayı
+O turda düzeltilmedi çünkü "mavi" preset'ini **birebir** korumayı
 istedi (geriye dönük uyumluluk) — rengi değiştirmek görev kapsamının
 dışına çıkardı. `tests/test_tema_kontrasti.py` bunu bilerek
-`_ONCEDEN_VAR_OLAN_ISTISNALAR` ile atlıyor; sessizce yutmuyor, kaydını
-tutuyor.
+`_ONCEDEN_VAR_OLAN_ISTISNALAR` ile atlıyordu; sessizce yutmuyordu,
+kaydını tutuyordu.
 
-### Düzeltme (bu turda uygulanmadı)
+### Düzeltme — UYGULANDI (2026-08-24)
 
-`#9CA3AF` yerine biraz daha koyu bir gri (ör. `#6B7280` — zaten
-paletin `gray` rengi) `subtext` için kullanılabilir; `nav_text` gibi
-diğer ikincil metin rollerini etkilemez. Tek satırlık değişiklik ama
-görsel bir karar gerektiriyor (mevcut kullanıcı arayüzü ekran
-görüntüleriyle karşılaştırma isteyebilir) — bu yüzden ayrı bir onay
-turu bekliyor.
+`_LIGHT["subtext"]` `#9CA3AF` → `#898F9A`. Aynı gri tonun en yakın
+biraz koyu tonu — hue/doygunluk değişmedi, yalnızca parlaklık AA
+eşiğini geçecek kadar düşürüldü. `accent`, `bg`, `text`'e dokunulmadı;
+"mavi" preset ekran görüntüsü düzeyinde tanınabilir kaldı.
+
+- Öncesi: `subtext`/`bg` = **2.43:1**
+- Sonrası: `subtext`/`bg` = **3.11:1** (eşik: 3.0)
+
+`_ONCEDEN_VAR_OLAN_ISTISNALAR`'dan `("mavi","light","subtext_bg")`
+kaldırıldı — artık istisna değil, gerçek kontrast testinden geçiyor.
+Yeni `test_b054_mavi_acik_subtext_duzeltildi` testi hem yeni değerin
+AA'yı geçtiğini HEM eski değerin (`#9CA3AF`, sabit referans) hâlâ
+AA'nın altında kaldığını doğruluyor — biri subtext'i eski griye
+geri döndürürse bu test (ve genel `test_ikincil_metin_ayirt_edilebilir`)
+düşer. Elle doğrulandı: değer geçici olarak eskiye döndürülüp iki
+testin de beklendiği gibi kırmızı verdiği görüldü.
+
+Not: bu düzeltme `subtext`/`search_bg` (B-057) veya `accent`/`search_bg`
+(B-057) kombinasyonlarını KAPSAMIYOR — search_bg (`#F3F4F6`) bg'den
+(`#F9FAFB`) biraz daha koyu bir yüzey, yeni `#898F9A` orada hâlâ AA'nın
+altında (~2.85:1). B-057 ayrı madde olarak açık kalıyor.
 
 ---
 
@@ -2727,14 +2742,29 @@ sınırının altında çıktı:
 
 B-054 ile aynı gerekçeyle düzeltilmedi: bu tur "mevcut mavi"yi birebir
 korumayı istedi, renk değiştirmek kapsamın dışına çıkardı.
-`tests/test_tema_kontrasti.py::_ONCEDEN_VAR_OLAN_ISTISNALAR` üçünü de
-(B-054'ün `subtext_bg`'si dahil) aynı yerde topluyor.
+`tests/test_tema_kontrasti.py::_ONCEDEN_VAR_OLAN_ISTISNALAR` bu ikisini
+topluyor (B-054'ün `subtext_bg`'si artık burada değil — bkz. altı).
+
+**Güncelleme (2026-08-24):** B-054 kapatıldı, `subtext` `#9CA3AF` →
+`#898F9A` oldu — ama bu ikisini KAPATMADI, yalnızca hafifletti:
+
+- `subtext` / `search_bg` (mavi, açık mod): 2.31:1 → **2.95:1** (hâlâ
+  eşiğin altında, eşiğe çok yakın ama geçmiyor)
+- `accent` / `search_bg` (mavi, koyu mod): değişmedi, `accent`'e hiç
+  dokunulmadı — hâlâ **2.70:1**
+
+Yani aşağıdaki "muhtemelen birden çözer" tahmini YANLIŞ çıktı: B-054
+bilerek en küçük/en yakın düzeltmeyi seçti (yalnızca `bg` eşiğini
+geçecek kadar), `search_bg`'nin biraz daha koyu yüzeyi için yetmedi.
+Bu iki ölçüm hâlâ açık, ayrı bir renk kararı gerektiriyor.
 
 ### Düzeltme (bu turda uygulanmadı)
 
-B-054'ün önerdiği `subtext` düzeltmesi (`#9CA3AF` → `#6B7280`) muhtemelen
-üçünü de birden çözer — `search_bg` mavi'de `hover` ile aynı değeri
-taşıyor (`#F3F4F6` açık / `#2C2C2E` koyu) ve `accent` (`#2563EB`) hiç
-değişmiyor, yalnızca zemin `bg`den `search_bg`'ye kaydığında marjinal
-olan oran daha da düşüyor. Tek bir renk değişikliği (B-054'te önerilen)
-muhtemelen her iki maddeyi de kapatır — ayrı ayrı çözülmemeli.
+`search_bg` üzerinde de AA'yı geçmek için `subtext`'i B-054'tekinden
+daha da koyulaştırmak gerekir (yaklaşık `#7C8797` veya koyusu, bkz.
+B-054'ün commit'indeki hesaplama) — ama bu `bg` üzerindeki mevcut
+görünümü daha da değiştirir. `accent`/`search_bg` ayrı bir problem:
+`accent` (`#2563EB`) hiç dokunulmadan `search_bg`'yi koyulaştırmak
+(veya AdminPanel'in HWID vurgusunu `search_bg` yerine başka bir
+yüzeyde göstermek) gerekir. İkisi de "mevcut mavi"yi birebir koruma
+talimatıyla gerginlik içinde — ayrı bir onay turu bekliyor.

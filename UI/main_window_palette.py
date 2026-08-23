@@ -66,7 +66,10 @@ _LIGHT: dict[str, str] = {
     "on_accent":         "#FFFFFF",
     "tint_text":         "#111827",
     "text":      "#111827",
-    "subtext":   "#9CA3AF",
+    # B-054 (2026-08-24): eskisi #9CA3AF, text/bg kontrastı 2.43:1 idi (AA
+    # eşiği 3.0). Aynı gri tonun en yakın koyu tonuna çekildi — 3.11:1.
+    # accent/bg/text'e dokunulmadı, "mavi" preset tanınabilir kaldı.
+    "subtext":   "#898F9A",
     "nav_text":  "#374151",
     "border":    "#E5E7EB",
     "hover":     "#F3F4F6",

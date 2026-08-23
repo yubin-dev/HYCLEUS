@@ -38,7 +38,7 @@ try:
     from UI.main_window_theme import _THEMES
     from UI import AdminPanel as _AP
     from UI import dialog_kit as _dk
-    from UI.main_window_palette import _DARK, _GRAPHITE_AMBER
+    from UI.main_window_palette import _DARK, _LIGHT, _GRAPHITE_AMBER
 except ImportError as _exc:  # pragma: no cover — ortama bağlı
     pytest.skip(
         f"Qt katmanı bu ortamda yüklenemedi ({_exc}) — testler atlanıyor",
@@ -104,19 +104,20 @@ def test_govde_metni_okunabilir(key, variant, T):
     assert contrast_ratio(T["text"], T["topbar"], T["topbar"]) >= _AA_TEXT, f"{key}/{variant}: text/topbar"
 
 
-# "mavi" (mevcut varsayılan) preset'inin `subtext`/`accent` renkleri bu
-# görevlerden ÖNCE de bu değerlerdeydi ve iki görev de "mevcut mavi"yi
-# geriye dönük uyumluluk için BİREBİR korumayı istedi — sessizce
-# düzeltilmiyor, yalnızca kaydı tutuluyor (B-054, B-057).
+# "mavi" (mevcut varsayılan) preset'inin `accent` rengi bu görevlerden ÖNCE
+# de bu değerdeydi ve iki görev de "mevcut mavi"yi geriye dönük uyumluluk
+# için BİREBİR korumayı istedi — sessizce düzeltilmiyor, yalnızca kaydı
+# tutuluyor (B-057).
 #
-#   subtext/bg          — B-054 (2026-08-22, tema preset-registry turu)
-#   subtext/search_bg    — B-057 (bu tur — search_bg'nin AdminPanel/
-#                           GuvenlikView kartlarında metin yüzeyi olarak
-#                           YENİ kullanımı ortaya çıkardı)
+#   subtext/bg           — B-054 idi, 2026-08-24'te DÜZELTİLDİ (bkz.
+#                           test_b054_mavi_acik_subtext_duzeltildi altta).
+#                           Artık istisna DEĞİL.
+#   subtext/search_bg    — B-057 (search_bg'nin AdminPanel/GuvenlikView
+#                           kartlarında metin yüzeyi olarak YENİ kullanımı
+#                           ortaya çıkardı)
 #   accent/search_bg     — B-057 (aynı sebep — AdminPanel'in kendi HWID
 #                           vurgusu)
 _ONCEDEN_VAR_OLAN_ISTISNALAR = {
-    ("mavi", "light", "subtext_bg"),
     ("mavi", "light", "subtext_search_bg"),
     ("mavi", "dark", "accent_search_bg"),
 }
@@ -131,6 +132,26 @@ def test_ikincil_metin_ayirt_edilebilir(key, variant, T):
     if _istisna_disinda(key, variant, "subtext_bg"):
         assert contrast_ratio(T["subtext"], T["bg"], T["bg"]) >= _AA_MUTED, f"{key}/{variant}: subtext/bg"
     assert contrast_ratio(T["nav_text"], T["sidebar"], T["sidebar"]) >= _AA_MUTED, f"{key}/{variant}: nav_text/sidebar"
+
+
+def test_b054_mavi_acik_subtext_duzeltildi():
+    """B-054: "mavi" açık modun subtext/bg kontrastı artık AA'yı (3.0) geçiyor.
+
+    Eski değer (#9CA3AF, 2.43:1) bilerek burada sabit tutuluyor — biri bu
+    düzeltmeyi geri alırsa (subtext'i eski griye döndürürse) bu test düşer.
+    """
+    yeni = _LIGHT["subtext"]
+    eski = "#9CA3AF"
+    bg = _LIGHT["bg"]
+
+    assert contrast_ratio(yeni, bg, bg) >= _AA_MUTED, (
+        f"mavi/light: subtext({yeni})/bg hâlâ AA'nın altında"
+    )
+    assert contrast_ratio(eski, bg, bg) < _AA_MUTED, (
+        "eski subtext değeri artık AA'yı geçiyor gibi görünüyor — "
+        "bu testin referans değeri güncel değil"
+    )
+    assert yeni != eski, "subtext hâlâ eski (düzeltilmemiş) griye eşit"
 
 
 @pytest.mark.parametrize("key,variant,T", _variant_cases(), ids=lambda v: v if isinstance(v, str) else "")
