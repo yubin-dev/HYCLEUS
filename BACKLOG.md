@@ -2960,3 +2960,238 @@ sormuyor; bilgi kutusu metni hâlâ gerçek davranışla çelişiyor. Bunun
 ciddiyeti bu turla büyük ölçüde AZALDI (en kötü sonuç — onaysız admin
 oluşturma — artık mümkün değil, `_on_register()` her zaman `pending`
 yazıyor), ama metin/davranış uyuşmazlığının kendisi düzeltilmedi.
+
+**Düzeltme notu (2026-08-23, B-058 sınıfı tarama turu):** Bu maddenin
+en üstteki "mevcut davranış" listesindeki 1. kalem — "Takılı USB
+`users` tablosunda zaten kayıtlı mı (evetse reddet)" — YANLIŞTI.
+`login_dialog.py::_on_register()`'ın git geçmişinin TAMAMI tarandı
+(`git log -p`) — bu fonksiyon hiçbir sürümde HWID'i sorgulamamış,
+yalnızca kullanıcı adını sorgulamış. Yani "zararı sınırlayan" ikinci
+katman hiç var olmadı. Bunun gerçek, çok daha ciddi sonucu B-060'ta —
+takılı USB zaten onaylı bir kullanıcıya aitse ne olduğu bu turda ilk
+kez ölçüldü ve tam bir hesap devralma çıktı.
+
+---
+
+## B-060 — Kayıt Ol sekmesinde HWID benzersizlik kontrolü YOK: PIN bilmeden hesap devralma
+
+**Durum:** Açık
+**Öncelik:** Kritik — bu turun en ciddi bulgusu
+**Bulundu:** 2026-08-23 — B-058 sınıfı yetkilendirme/durum-geçiş taraması
+(kullanıcı talebi: "B-058 sınıfı açıkları depo genelinde ara")
+
+`UI/login_dialog.py::_on_register()` ("Kayıt Ol" sekmesi, kimlik
+doğrulaması YAPILMAMIŞ giriş ekranından erişilir) yeni bir kayıt kabul
+etmeden önce yalnızca şunlara bakıyor:
+
+1. kullanıcı adı boş/kısa değil,
+2. PIN politika kurallarına uyuyor ve iki alan eşleşiyor,
+3. `get_usb_hwid()` `None` değil,
+4. **kullanıcı adı** `users` tablosunda tekil.
+
+Takılı USB'nin **HWID'i** `users` veya `usb_tokens` tablosunda zaten
+kayıtlı mı diye HİÇBİR sorgu yok. `git log -p -- UI/login_dialog.py`
+ile tüm geçmiş tarandı — bu kontrol bu dosyanın hiçbir sürümünde
+olmamış (B-058'in bunu "var" sanan eski notu yanlıştı, düzeltmesi
+yukarıda).
+
+Sonrasında çağrılan `CORE.vault_manager.create_vault(hwid, pin, role)`
+da bir varlık kontrolü yapmıyor: `_new_vault_path(hwid)` doğrudan
+`_VAULT_DIR/{hwid}.hclv` yolunu döndürüyor ve `_rewrite_vault()` orayı
+KOŞULSUZ üzerine yazıyor; `_save_usb_token()` da
+`INSERT OR REPLACE INTO usb_tokens (hwid, ...)` kullanıyor — var olan
+kaydı sessizce değiştiriyor. Üstüne `DB/migrations.py::_m07_users_hwid`
+`hwid` sütununu **UNIQUE olmadan** ekliyor, yani aynı HWID için birden
+fazla `users` satırı bir arada durabiliyor.
+
+**Kanıtlanan saldırı zinciri** (PoC:
+`poc_hwid_takeover.py`, depoya YAZILMADI — yalnızca doğrulama amaçlı
+çalıştırıldı, kod tabanında hiçbir değişiklik yok):
+
+1. Kurban zaten kayıtlı ve onaylı: `hwid=V`, PIN bilinmiyor,
+   `status='approved'`.
+2. Saldırgan bu USB'ye (V) fiziksel erişim sağlar — **PIN'i bilmesine
+   gerek YOK**. Giriş ekranından "Kayıt Ol"a geçer, yeni bir kullanıcı
+   adı ve kendi seçtiği bir PIN girer, kaydı gönderir.
+3. `create_vault(V, saldirgan_pin, "Standart")` hiçbir engelle
+   karşılaşmadan çalışır ve kurbanın vault dosyasını + `usb_tokens`
+   kaydını SESSİZCE ÜZERİNE YAZAR. Kurbanın eski PIN'i artık vault'u
+   AÇMIYOR.
+4. `db.execute(INSERT INTO users ... VALUES (..., 'pending', V))`
+   BAŞARIYLA çalışır (UNIQUE yok) — artık aynı HWID için iki satır var:
+   kurbanınki (`approved`) ve saldırganınki (`pending`).
+5. Saldırgan aynı USB ile "Giriş Yap"a geçer. `open_vault(V,
+   saldirgan_pin)` kendi PIN'iyle açılır (vault zaten onun). `_on_login()`
+   dakiTEK yetki kapısı: `SELECT status FROM users WHERE hwid = ?`
+   + `fetchone()` — `ORDER BY` YOK. Sorgu iki satırdan HANGİSİNİ
+   döndüreceğini garanti etmiyor; ölçülen SQLite davranışında (index
+   yok, tam tablo taraması) İLK eklenen satır (kurbanın `approved`
+   satırı) dönüyor. Sonuç: `pending` kontrolü hiç tetiklenmiyor, giriş
+   BAŞARILI.
+6. `main.py`'nin çağırdığı `sync_session_user(db, hwid=V, role=...)`
+   `ORDER BY id LIMIT 1` ile YİNE kurbanın (en eski) satırını buluyor —
+   oturum kurbanın `user_id`/`username`'i ile eşleniyor. Saldırgan artık
+   kurbanın kimliğiyle, kurbanın klasör sahipliğiyle, `approved`
+   statüsüyle sistemde.
+
+Ölçülen sonuç (`poc_hwid_takeover.py` çıktısı): kurbanın eski PIN'i
+vault'u açamıyor, saldırganın PIN'i açıyor, DB satırı
+`status='approved'` kalıyor, giriş engellenmiyor.
+
+**Kapsam/sınırlama:** "Kayıt Ol" sekmesinin rol seçimi yalnızca
+Standart/Salt Okunur sunuyor (bkz. `_SETUP_ROLES` değil,
+`self._reg_role.addItems(["Standart","Salt Okunur"])`), yani bu yolla
+doğrudan `role='admin'` üretilemiyor — ama kurbanın KENDİ rolü/kimliği
+zaten `admin` olabilir; saldırgan o durumda `sync_session_user()`'ın
+"mevcut satırı bul" dalına düşer ve DB'deki `role` sütunu HİÇ
+değişmez (yalnızca `last_login` güncellenir) — yani kurban zaten
+admin ise saldırgan onun ADMIN kimliğini de devralır. Bu, adım 6'daki
+`ORDER BY id LIMIT 1` bulgusunun doğal sonucu.
+
+TOTP hâlâ GLOBAL bir sır olduğundan (B-059) ve makineye zaten fiziksel
+erişimi olan bir saldırgan onu da elde edebileceğinden, TOTP bu
+zincirde ek bir engel oluşturmuyor.
+
+`UI/AdminPanel.py` üzerinden açılan `RegisterDialog.py` bu açığa KAPALI
+— `_on_detect()` (satır ~314) yeni HWID'i `usb_tokens` tablosunda arar
+ve zaten kayıtlıysa formu devre dışı bırakır. Yani düzeltme deseni
+depoda zaten var, yalnızca `login_dialog.py`'nin bağımsız
+reimplementasyonuna hiç taşınmamış — bu projenin kendi "iki çağıran,
+tek gövde" ilkesinin ihlali (iki farklı gövde, biri eksik).
+
+### Düzeltme (bu turda uygulanmadı — yalnızca yön)
+
+- `_on_register()`'ın en başına `RegisterDialog._on_detect()`'teki
+  gibi bir `SELECT hwid FROM usb_tokens WHERE hwid = ?` (ya da
+  `users`) kontrolü eklenmeli — zaten kayıtlı bir HWID sessizce
+  üzerine yazılmamalı.
+- `create_vault()`/`_save_usb_token()` seviyesinde de bir savunma
+  katmanı düşünülebilir (B-058'in "tek kontrol, iki bağımsız nokta"
+  desenine benzer) — çağıran tarafın kontrolü atlaması ihtimaline
+  karşı.
+- `users.hwid`'e UNIQUE kısıtı eklemek ayrı, daha büyük bir migration
+  (mevcut kurulumlarda zaten çakışan satır olup olmadığı önce
+  denetlenmeli) ama kök nedenin bir parçası: bu kısıt olmadan
+  `_on_login()`'daki `fetchone()` sorgusu tanım gereği belirsiz.
+- `_on_login()`'daki pending kontrolü `ORDER BY id` eksikliğinden
+  bağımsız olarak da kırılgan; birden fazla satır ihtimali
+  engellenirse bu sorgunun kendisi de düzelir.
+
+---
+
+## B-061 — Kayıt akışı atomik değil: create_vault() ile users INSERT'i arasında kesinti, onaysız 'approved' üretir
+
+**Durum:** Açık
+**Öncelik:** Yüksek
+**Bulundu:** 2026-08-23 — B-058 sınıfı yetkilendirme/durum-geçiş taraması
+
+Hem `UI/login_dialog.py::_on_register()` hem `UI/RegisterDialog.py::_on_save()`
+aynı iki adımlı, ATOMİK OLMAYAN deseni bağımsız olarak tekrarlıyor:
+
+```
+create_vault(hwid, pin, role)                    # (1) disk + usb_tokens
+db.execute("INSERT INTO users ... 'pending' ...") # (2) ayrı, sonraki commit
+```
+
+`create_vault()` kendi içinde `_save_usb_token()` ile `usb_tokens`
+tablosuna YAZAR VE COMMIT EDER (`DBManager.execute()` her çağrıda
+`conn.commit()` çağırıyor — `DB/db_manager.py:472`); `users` INSERT'i
+TAMAMEN AYRI, sonraki bir `db.execute()` çağrısı. İkisini saran bir
+transaction yok. (1) başarılı olup (2) hiç çalışmadan araya bir
+kesinti girerse (çökme, güç kesintisi, beklenmeyen `Exception`, USB'nin
+erken çıkarılması) diskte GERÇEK bir vault dosyası + `usb_tokens`
+kaydı kalıyor ama `users` tablosunda o HWID için HİÇBİR satır yok.
+
+Bu, tam olarak `CORE/session_user.py::sync_session_user()`'ın
+"vault'u olup `users` kaydı olmayan oturumlar GERÇEK" varsayımıyla
+(DEV_MODE ve kayıt-akışı-öncesi vault'lar için yazılmış, bkz. modül
+docstring'i) çakışıyor: o HWID bir sonraki girişte `open_vault()`'u
+BAŞARIYLA geçiyor (vault gerçek), `_on_login()`'daki pending kontrolü
+`row is None` olduğu için hiç tetiklenmiyor, ve `main.py`'nin çağırdığı
+`sync_session_user()` "satır yok → vault oturumu için oluştur" dalına
+düşüp doğrudan `status='approved'` bir satır YAZIYOR — B-058'in kök
+nedeniyle (kurulum sihirbazının aynı hatası) AYNI SONUCA, farklı bir
+tetikleyiciden (kasıtlı sihirbaz çağrısı yerine, sıradan kayıt
+akışındaki bir kesinti) ulaşıyor.
+
+**Kanıtlandı** (PoC: `poc_torn_write.py`, depoya YAZILMADI — yalnızca
+doğrulama amaçlı çalıştırıldı): sistemde zaten onaylı bir admin varken,
+`create_vault()` çağrısı yapılıp `users` INSERT'i BİLEREK atlanınca,
+o HWID'in bir sonraki "girişi" `status='approved'`, `role='user'`
+üretiyor — hiçbir onay adımı yaşanmadan.
+
+**Kapsam/sınırlama:** Bu, B-060'ın aksine fiziksel HWID çakışması
+GEREKTİRMİYOR — kendi (gerçek, ilk kez görülen) USB'siyle kayıt olan
+sıradan bir kullanıcının kaydı yarıda kesilirse de aynı sonuç oluşuyor.
+Tetiklenme ihtimali B-060'tan daha düşük (kasıtlı sömürü için ya bir
+çökme/kesinti ya da DB hatası indüklemek gerekir) ama TAMAMEN
+saldırgan kontrolü dışında da (gerçek bir güç kesintisi, uygulama
+çökmesi) kendiliğinden gerçekleşebilir — üstelik iki bağımsız dosyada
+(`login_dialog.py`, `RegisterDialog.py`) aynı hata tekrarlanmış.
+
+### Düzeltme (bu turda uygulanmadı — yalnızca yön)
+
+- İki yazımı tek bir transaction'a almak SQLite/`sqlite3` seviyesinde
+  mümkün değil çünkü `create_vault()` dosya sistemine de yazıyor
+  (dosya + DB birlikte atomik yapılamaz) — ama en azından `users`
+  INSERT'i BAŞARISIZ olursa vault dosyasını/`usb_tokens` kaydını geri
+  almak (telafi/"compensating action") mümkün.
+- Alternatif: `sync_session_user()`'ın "satır yok → oluştur, approved
+  yaz" varsayımını sıkılaştırmak — yalnızca DEV_MODE'da veya açıkça
+  işaretli "kayıt-akışı-öncesi" vault'larda bu dala izin vermek,
+  normal kayıt akışından sonra satırsız bir vault'u `pending` gibi
+  ele almak (B-058'in guard desenine benzer bir "bu duruma hiç
+  düşülmemeli" kontrolü).
+- Asgari: `_on_register()`/`_on_save()`'de `users` INSERT'i
+  BAŞARISIZ olursa (except bloğu) az önce yazılan vault dosyasını
+  silmeyi/`usb_tokens` kaydını geri almayı denemek — en azından
+  KASITLI OLMAYAN çökme senaryosunda kesinti sonrası "yarım" bir HWID
+  bırakmamak.
+
+---
+
+## B-062 — ContactDialog: rol ayrımı yok + `auth_codes` üretiliyor ama hiçbir yerde doğrulanmıyor
+
+**Durum:** Açık
+**Öncelik:** Düşük — bilgi ifşası + ölü kod, doğrudan yetki yükseltmesi DEĞİL
+**Bulundu:** 2026-08-23 — B-058 sınıfı yetkilendirme/durum-geçiş taraması
+(taramanın kapsamı dışında ama giderken görüldü)
+
+`UI/ContactDialog.py`, `main_window.py::_on_open_contact()` üzerinden
+AÇILIYOR ve bu çağrı `AdminPanel` gibi bir `is_admin_role()` kontrolüne
+sahip DEĞİL — Standart/Salt Okunur dahil HERHANGİ bir oturum açabiliyor.
+Diyalog `_load_users()` ile `status='approved'` TÜM kullanıcıları
+(kullanıcı adı + rol) listeliyor ve `_on_generate_code()` ile SEÇİLEN
+HERHANGİ BİR kullanıcı (yalnızca kendisi değil) için `auth_codes`
+tablosuna 8 haneli bir kod yazıyor.
+
+Bu iki şey kendi başına bir yetki yükseltmesi değil çünkü:
+`auth_codes` tablosu depo genelinde TARANDI (`grep -rn "auth_codes"`,
+`FROM auth_codes`) — hiçbir yerde bu kod OKUNUP DOĞRULANMIYOR; giriş
+akışının (`login_dialog.py`) hiçbir dalı bu tabloya bakmıyor.
+`CORE/backup.py::EXCLUDED_TABLES` onu "geçici durum" diye yedeğin
+dışında tutuyor. Yani şu an bu ölü/yarım bir özellik gibi görünüyor —
+muhtemelen bir destek hattı çalışanının telefonda okuyacağı bir kod
+üretmek için tasarlanmış ama doğrulama tarafı hiç yazılmamış.
+
+Yine de iki gerçek sorun var: (1) herhangi bir düşük yetkili kullanıcı
+sistemdeki TÜM onaylı kullanıcıların adını ve rolünü görebiliyor
+(bilgi ifşası — küçük, güvenilir bir kurulum için önemsiz olabilir ama
+belgelenen tehdit modeliyle karşılaştırılmalı), (2) eğer `auth_codes`
+ileride bir doğrulama yoluna bağlanırsa (ör. bir "PIN unuttum" akışı),
+BUGÜNKÜ hâliyle rol kontrolü olmadığı için herhangi bir kullanıcı
+BAŞKA bir kullanıcı (potansiyel olarak bir admin) için kod üretebilir
+hale gelir — o türden bir bağlama YAPILMADAN ÖNCE bu dosyaya bir rol
+kapısı eklenmesi gerekir.
+
+### Düzeltme (bu turda uygulanmadı — yalnızca yön)
+
+- Kısa vadede: bu özelliğin gerçekten kullanılıp kullanılmadığını
+  netleştirmek (ölü kodsa kaldırmak, canlıysa `is_admin_role()` gibi
+  bir kapı eklemek ve listeyi "yalnızca kendisi" ile sınırlamak).
+- `auth_codes` bir doğrulama yoluna bağlanacaksa, üretim tarafında da
+  "kim kimin için kod üretebilir" sorusu B-058/B-060'daki gibi net
+  yanıtlanmalı — üretmek yetmiyor, doğru ÖN KOŞUL altında üretmek
+  gerekiyor.
+
+---
