@@ -87,6 +87,11 @@ class ThemeMixin:
         """`_toggle_theme` ve `_set_theme` sonrası ortak tazeleme adımı."""
         self._apply_theme()
         self._reset_drop_hint_style()
+        # Slide-over paneli `central_root`'un DIŞINDA (bkz.
+        # `main_window_layout.py::_SlideOverPanel.stil_uygula`) — yukarıdaki
+        # `_apply_theme()`'in kaskadı ona ulaşmıyor, elle tazelenmesi gerekiyor.
+        if getattr(self, "_slide_over", None) is not None:
+            self._slide_over.stil_uygula(self._T)
         if self._current_tag_id is not None:
             self._load_tag_files(self._current_tag_id)
         else:

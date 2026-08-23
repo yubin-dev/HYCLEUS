@@ -28,6 +28,15 @@ hep aynı görünüyordu. `main_window_theme.py`'nin preset-registry'si
 literal hex okuyordu. Şimdi ikisi de kayıtlı token sözlüğünü (`self._T`)
 parametre olarak alan FONKSİYON — ikinci bir renk yolu açmadan tek
 noktadan çözülüyor.
+
+Neden kök seçici `QDialog` değil `QWidget#rapor_disi_govde` (slide-over turu)
+------------------------------------------------------------------------------
+`TimestampDialog`/`BackupVerifyDialog` artık `QDialog` DEĞİL — ayrı bir
+pencere açmak yerine `main_window_layout.py`'nin slide-over paneline
+YERLEŞİYORLAR. `QDialog {...}` seçicisi artık hiçbir şeye uymaz ve arka
+plan/rengi SESSİZCE uygulanmaz olurdu. İkisi de `__init__`'te
+`self.setObjectName("rapor_disi_govde")` çağırıyor; iç kaydırma alanının
+`objectName("govde")`'siyle (bkz. `_build_ui`) ÇAKIŞMASIN diye ayrı ad.
 """
 from __future__ import annotations
 
@@ -43,7 +52,7 @@ def rapor_stili(T: dict[str, str]) -> str:
     kullanıldı.
     """
     return f"""
-QDialog  {{ background: {T['bg']}; color: {T['text']}; }}
+QWidget#rapor_disi_govde {{ background: {T['bg']}; color: {T['text']}; }}
 QLabel   {{ color: {T['text']}; background: transparent; }}
 QLabel#dosya    {{ color: {T['subtext']}; font-size: 11px; }}
 QLabel#simge    {{ font-size: 26px; }}

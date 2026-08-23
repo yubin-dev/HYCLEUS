@@ -436,4 +436,5 @@ class BackupMixin:
         except Exception as exc:  # pragma: no cover — kayıt, sonucu engellemez
             _log.warning("backup_verify_log_failed  exc=%s", exc)
 
-        BackupVerifyDialog(rapor, yedek, parent=self, sade=sade, T=self._T).exec()
+        icerik = BackupVerifyDialog(rapor, yedek, sade=sade, T=self._T)
+        self._open_slide_over(f"Yedek Doğrula · {yedek.name}", icerik)

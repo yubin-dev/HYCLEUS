@@ -113,14 +113,17 @@ def _diyalog_engelle(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
 
 @pytest.fixture(autouse=True)
 def _diyalogu_acma(monkeypatch: pytest.MonkeyPatch) -> list[BackupVerifyDialog]:
-    """Diyalog KURULSUN ama modal döngüye girmesin."""
+    """
+    `HycleusWindow._open_slide_over()`'ı yakalar (slide-over turu — eskiden
+    `BackupVerifyDialog.exec()` yamalıydı, artık `.exec()` yok çünkü
+    diyalog `QDialog` değil `QWidget`). İçerik KURULSUN, yalnızca GÖRÜNMESİN.
+    """
     acilanlar: list[BackupVerifyDialog] = []
 
-    def _exec(self):
-        acilanlar.append(self)
-        return 1
+    def _ac(self, baslik, icerik):
+        acilanlar.append(icerik)
 
-    monkeypatch.setattr(BackupVerifyDialog, "exec", _exec)
+    monkeypatch.setattr(_Sahne, "_open_slide_over", _ac)
     return acilanlar
 
 
@@ -183,6 +186,11 @@ class _Sahne(BackupMixin, QWidget):
         self._hwid = _HWID
         self._user_id = _USER
         self._T = _DARK
+
+    def _open_slide_over(self, baslik: str, icerik) -> None:  # pragma: no cover — fixture değiştirir
+        """Gerçek mekanizma `UI/main_window_layout.py::LayoutMixin`'de —
+        `_diyalogu_acma` fixture'ı bunu yamalıyor."""
+        raise NotImplementedError
 
 
 @pytest.fixture

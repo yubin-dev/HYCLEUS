@@ -15,8 +15,12 @@ import logging
 _log = logging.getLogger("hycleus.ui")
 
 from PySide6.QtCore import (
+    QEasingCurve,
     QEvent,
+    QPropertyAnimation,
+    QRect,
     Qt,
+    Signal,
 )
 
 # Hareketsizlik sayacını sıfırlayan olaylar. Yalnızca GERÇEK kullanıcı
@@ -54,6 +58,98 @@ from UI.GuvenlikView import SAYFA_ADI as _GUVENLIK_SAYFA_ADI
 from UI.main_window_palette import (
     _SIDEBAR_NAV,
 )
+
+
+#: Slide-over panelinin hedef genişliği. Pencere bundan darsa (testlerde
+#: `.resize()` hiç çağrılmamışsa, ya da gerçekten dar bir ekranda) panel
+#: pencere genişliğine düşer — bkz. `LayoutMixin._slide_over_genislik()`.
+_SLIDE_OVER_GENISLIK = 440
+
+
+class _SlideOverPanel(QFrame):
+    """
+    Doğrulama/ayar ekranlarının ORTAK gövdesi (tasarım brief'i: "doğrulama
+    ve ayar ekranları slide-over panel veya inline sekme olarak açılır,
+    yeni pencere açmaz").
+
+    Bu sınıf o panelin TEK uygulaması — her ekran kendi pencere/diyalog
+    çözümünü yazmasın diye. Yalnızca ÇERÇEVE burada: başlık çubuğu, kapat
+    düğmesi, içerik yuvası. Doğrulama/ayar MANTIĞI yok; `TimestampDialog`,
+    `BackupVerifyDialog` gibi içerik widget'ları kendi dosyalarında kalıp
+    yalnızca buraya YERLEŞİYOR (bkz. `LayoutMixin._open_slide_over`).
+    """
+
+    kapandi = Signal()
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("slide_over_panel")
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._icerik: QWidget | None = None
+
+        dis = QVBoxLayout(self)
+        dis.setContentsMargins(0, 0, 0, 0)
+        dis.setSpacing(0)
+
+        baslik_cubugu = QFrame()
+        baslik_cubugu.setObjectName("slide_over_baslik_cubugu")
+        baslik_cubugu.setFixedHeight(52)
+        bc = QHBoxLayout(baslik_cubugu)
+        bc.setContentsMargins(20, 0, 12, 0)
+        bc.setSpacing(8)
+
+        self._baslik_etiketi = QLabel()
+        self._baslik_etiketi.setObjectName("slide_over_baslik_etiketi")
+        bc.addWidget(self._baslik_etiketi, 1)
+
+        kapat_btn = QPushButton("✕")
+        kapat_btn.setObjectName("slide_over_kapat")
+        kapat_btn.setFixedSize(32, 32)
+        kapat_btn.setCursor(Qt.PointingHandCursor)
+        kapat_btn.clicked.connect(self.kapandi.emit)
+        bc.addWidget(kapat_btn)
+
+        dis.addWidget(baslik_cubugu)
+
+        self._icerik_yeri = QVBoxLayout()
+        self._icerik_yeri.setContentsMargins(0, 0, 0, 0)
+        self._icerik_yeri.setSpacing(0)
+        dis.addLayout(self._icerik_yeri, 1)
+
+    def baslik_ayarla(self, metin: str) -> None:
+        self._baslik_etiketi.setText(metin)
+
+    def icerik_ayarla(self, icerik: QWidget) -> QWidget | None:
+        """Eski içeriği yuvadan çıkarır, yeniyi yerleştirir — eskisini döndürür."""
+        eski = self._icerik
+        if eski is not None:
+            self._icerik_yeri.removeWidget(eski)
+            eski.setParent(None)
+        self._icerik = icerik
+        self._icerik_yeri.addWidget(icerik)
+        return eski
+
+    def stil_uygula(self, T: dict[str, str]) -> None:
+        """
+        Panel `central_root`'un DIŞINDA (bkz. `LayoutMixin._open_slide_over`
+        docstring'i) — tema QSS kaskadı (`main_window_theme.py::_apply_theme`,
+        yalnızca `centralWidget()`'a uygulanıyor) buraya ULAŞMIYOR.
+        `UI/main_window_lock.py::_LockOverlay` ile aynı durum: kendi
+        stilini kendisi taşıyor.
+        """
+        self.setStyleSheet(
+            f"QFrame#slide_over_panel {{ background: {T['sidebar']};"
+            f" border-left: 1px solid {T['border']}; }}"
+            f"QFrame#slide_over_baslik_cubugu {{ background: {T['topbar']};"
+            f" border-bottom: 1px solid {T['border']}; }}"
+            f"QLabel#slide_over_baslik_etiketi {{ color: {T['text']};"
+            f" font-size: 14px; font-weight: bold; background: transparent; }}"
+            f"QPushButton#slide_over_kapat {{ background: transparent;"
+            f" color: {T['subtext']}; border: none; border-radius: 6px;"
+            f" font-size: 14px; }}"
+            f"QPushButton#slide_over_kapat:hover {{ background: {T['hover']};"
+            f" color: {T['text']}; }}"
+        )
 
 
 class LayoutMixin:
@@ -409,4 +505,163 @@ class LayoutMixin:
         lay.addWidget(self._drop_hint)
 
         return frame
+
+    # ── Slide-over paneli — doğrulama/ayar ekranlarının ORTAK mekanizması ──────
+    #
+    # Tasarım brief'i: "doğrulama ve ayar ekranları slide-over panel veya
+    # inline sekme olarak açılır, yeni pencere açmaz." Bu turda YALNIZCA
+    # `TimestampDialog` ve `BackupVerifyDialog` buraya taşındı.
+    #
+    # AdminPanel BİLEREK dışarıda: üç sekmeli, en karmaşık ekran, kendi
+    # turunu hak ediyor. `RecoveryShareDialog` BİLEREK modal KALIYOR — tek
+    # gösterimlik, dikkat gerektiren bir akış; slide-over'a taşımak
+    # "yanlışlıkla kapatma" riskini artırırdı (tasarım brief'i Karar 4 de
+    # onu modal tarif ediyor).
+
+    def _ensure_slide_over(self) -> None:
+        """Panel/scrim'i TEMBEL kurar — hiçbir ekran açılmadıysa hiç var olmazlar."""
+        if getattr(self, "_slide_over", None) is not None:
+            return
+
+        # `panel.isVisible()` GÜVENİLMEZ: ana pencere henüz `.show()`
+        # edilmediyse (kurulum sırası, testler) tüm alt widget'lar `False`
+        # döner — `main_window_lock.py::LockMixin`'in `self._overlay.isVisible()`
+        # yerine `self._locked` bool'u tutmasıyla AYNI sebep. Açık/kapalı
+        # durumu kendi bayrağımızla tutuyoruz.
+        self._slide_over_open: bool = False
+
+        # Avatar düğmesiyle AYNI desen (bkz. `_make_top_bar`): tek tıklamalık
+        # bir davranış için ayrı bir sınıf açmak yerine örnek metoda atama.
+        self._slide_over_scrim = QWidget(self)
+        self._slide_over_scrim.setObjectName("slide_over_scrim")
+        self._slide_over_scrim.setStyleSheet("background: rgba(0, 0, 0, 0.35);")
+        self._slide_over_scrim.setVisible(False)
+        self._slide_over_scrim.mousePressEvent = lambda _e: self._close_slide_over()
+
+        self._slide_over = _SlideOverPanel(self)
+        self._slide_over.setVisible(False)
+        self._slide_over.kapandi.connect(self._close_slide_over)
+        if hasattr(self, "_T"):
+            self._slide_over.stil_uygula(self._T)
+
+        self._slide_over_anim = QPropertyAnimation(self._slide_over, b"geometry", self)
+        self._slide_over_anim.setDuration(180)
+        self._slide_over_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _slide_over_acik(self) -> bool:
+        """
+        `main_window_lock.py::LockMixin._unlock()`'un da sorduğu soru: panel
+        şu an ekranda mı. İKİ ayrı sistem `centralWidget()`'ı devre dışı
+        bırakıyor (kilit ve bu panel) — biri kapanırken diğerinin hâlâ açık
+        olup olmadığını bilmesi gerekiyor, yoksa biri diğerinin korumasını
+        (ya da engelini) sessizce kaldırır.
+        """
+        return getattr(self, "_slide_over_open", False)
+
+    def _slide_over_genislik(self) -> int:
+        return min(_SLIDE_OVER_GENISLIK, max(240, self.width()))
+
+    def _konumla_slide_over(self) -> None:
+        """Pencere yeniden boyutlanınca panel/scrim'i yeniden yerleştirir."""
+        if not self._slide_over_acik():
+            return
+        self._slide_over_scrim.setGeometry(self.rect())
+        genislik = self._slide_over_genislik()
+        self._slide_over.setGeometry(self.width() - genislik, 0, genislik, self.height())
+
+    def _open_slide_over(self, baslik: str, icerik: QWidget) -> None:
+        """
+        Doğrulama/ayar ekranlarının AÇILDIĞI TEK yer.
+
+        `icerik` zaten kurulmuş bir `QWidget` — kendi penceresini AÇMAZ,
+        yalnızca burada GÖRÜNÜR olur. `icerik`'in bir `kapat_istendi`
+        sinyali varsa (`TimestampDialog`, `BackupVerifyDialog`) otomatik
+        bağlanır: içeriğin kendi "Kapat" düğmesi de paneli kapatabilsin diye.
+
+        Ana pencere etkileşimi `centralWidget().setEnabled(False)` ile
+        kilitleniyor. Panel/scrim `self`'İN DOĞRUDAN çocuğu — `central`'ın
+        değil — o yüzden devre dışı bırakma panelin/scrim'in KENDİSİNİ
+        etkilemiyor. Bu, aynı `centralWidget`'ı kilit mekanizmasıyla
+        (`main_window_lock.py`) PAYLAŞTIĞI anlamına geliyor; hangisinin ne
+        zaman geri AÇACAĞI `_slide_over_acik()` / `self._locked` ile
+        karşılıklı kontrol ediliyor (bkz. `_close_slide_over` ve
+        `LockMixin._unlock`) — aksi hâlde biri diğerinin kilidini/panelini
+        sessizce açardı.
+
+        Kilit AKTİFKEN hiç çağrılmaz: central devre dışıyken kullanıcı bu
+        metoda giden hiçbir düğmeye (sağ tık menüsü, Güvenlik sekmesi)
+        zaten tıklayamıyor. Yine de tek satırlık bir koruma var — z-sırası
+        yarışına (panel, kilit örtüsünün ÜSTÜNE çıkar) hiç girmesin diye.
+        """
+        if getattr(self, "_locked", False):
+            return
+
+        self._ensure_slide_over()
+        eski = self._slide_over.icerik_ayarla(icerik)
+        if eski is not None:
+            eski.deleteLater()
+        self._slide_over.baslik_ayarla(baslik)
+
+        kapat_istendi = getattr(icerik, "kapat_istendi", None)
+        if kapat_istendi is not None:
+            kapat_istendi.connect(self._close_slide_over)
+
+        central = self.centralWidget()
+        if central is not None:
+            central.setEnabled(False)
+
+        genislik = self._slide_over_genislik()
+        self._slide_over_scrim.setGeometry(self.rect())
+        self._slide_over_scrim.setVisible(True)
+        self._slide_over_scrim.raise_()
+
+        baslangic = QRect(self.width(), 0, genislik, self.height())
+        bitis = QRect(self.width() - genislik, 0, genislik, self.height())
+        self._slide_over.setGeometry(baslangic)
+        self._slide_over.setVisible(True)
+        self._slide_over.raise_()
+        self._slide_over.setFocus()
+
+        self._slide_over_anim.stop()
+        self._slide_over_anim.setStartValue(baslangic)
+        self._slide_over_anim.setEndValue(bitis)
+        self._slide_over_anim.start()
+        self._slide_over_open = True
+
+    def _close_slide_over(self) -> None:
+        if not self._slide_over_acik():
+            return
+        self._slide_over_open = False
+        self._slide_over_anim.stop()
+        self._slide_over.setVisible(False)
+        self._slide_over_scrim.setVisible(False)
+
+        # Kilit hâlâ AKTİFSE (USB/hareketsizlik) central'ı AÇMA — o korumayı
+        # `LockMixin._unlock()` yönetiyor, burası kaldırmıyor (bkz.
+        # `_open_slide_over` docstring'i).
+        central = self.centralWidget()
+        if central is not None and not getattr(self, "_locked", False):
+            central.setEnabled(True)
+
+    def eventFilter(self, obj, event):
+        """
+        Uygulama genelinde Esc'i yakalar — panel açıksa kapatır.
+
+        `main_window_lock.py::LockMixin.eventFilter` ile AYNI tek filtre
+        zincirine kurulu (bkz. `main_window.py`'deki tek
+        `installEventFilter` çağrısı ve sınıfın MRO sırası). Olay
+        YUTULMUYOR — yalnızca kapatıp `super()`'a devrediyor, hareketsizlik
+        sayacı Esc'i yine ETKİNLİK olarak görsün diye.
+        """
+        if (
+            event.type() == QEvent.KeyPress
+            and event.key() == Qt.Key_Escape
+            and self._slide_over_acik()
+        ):
+            self._close_slide_over()
+        return super().eventFilter(obj, event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._konumla_slide_over()
 

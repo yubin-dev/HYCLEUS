@@ -104,20 +104,20 @@ def _diyalog_engelle(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
 @pytest.fixture(autouse=True)
 def _diyalogu_acma(monkeypatch: pytest.MonkeyPatch) -> list[TimestampDialog]:
     """
-    `TimestampDialog.exec()`'i yakalar — kurulmasına izin var, MODAL
-    döngüye girmesine yok.
+    `HycleusWindow._open_slide_over()`'ı yakalar (slide-over turu — eskiden
+    `TimestampDialog.exec()` yamalıydı, artık `.exec()` yok çünkü diyalog
+    `QDialog` değil `QWidget`).
 
-    Diyaloğun gerçekten kurulması önemli: kurulum sırasında düşen bir
-    hata (eksik alan, None erişimi) ancak böyle yakalanır. `exec()`
-    yamalanmasaydı test asılırdı.
+    İçeriğin gerçekten kurulmuş olması önemli: kurulum sırasında düşen bir
+    hata (eksik alan, None erişimi) ancak böyle yakalanır — panele hiç
+    erişilmeseydi test asılmazdı ama hata da sessizce kaybolurdu.
     """
     acilanlar: list[TimestampDialog] = []
 
-    def _exec(self):
-        acilanlar.append(self)
-        return 1
+    def _ac(self, baslik, icerik):
+        acilanlar.append(icerik)
 
-    monkeypatch.setattr(TimestampDialog, "exec", _exec)
+    monkeypatch.setattr(_Sahne, "_open_slide_over", _ac)
     return acilanlar
 
 
@@ -153,6 +153,12 @@ class _Sahne(FileActionsMixin, QWidget):
         self._hwid = _HWID
         self._role = "Yönetici"
         self._T = _DARK
+
+    def _open_slide_over(self, baslik: str, icerik) -> None:  # pragma: no cover — fixture değiştirir
+        """Gerçek mekanizma `UI/main_window_layout.py::LayoutMixin`'de —
+        burada YOK, çünkü bu sahne yalnızca `_on_ctx_verify_timestamp`'in
+        dokunduğu yüzeyi taşıyor. `_diyalogu_acma` fixture'ı bunu yamalıyor."""
+        raise NotImplementedError
 
 
 @pytest.fixture

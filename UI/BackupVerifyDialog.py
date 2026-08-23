@@ -38,15 +38,23 @@ gösterilmediğini şart koşuyor. Yeni bir alan eklendiğinde test düşer.
 Sebebi somut: `manifest_mismatch` sessizce atlanırsa kullanıcı
 "değiştirilmiş manifesto" uyarısını hiç görmez ve yedeği sağlam sanır.
 Bir doğrulama ekranının söylemediği şey, söylediği kadar önemli.
+
+Neden artık `QDialog` DEĞİL (slide-over turu)
+-----------------------------------------------
+`UI/TimestampDialog.py` ile AYNI değişiklik, AYNI gerekçeyle: tasarım
+brief'i doğrulama ekranlarının slide-over panelde açılmasını, yeni
+pencere açmamasını istiyor. `main_window_open.py::_on_verify_backup()`
+artık `.exec()` yerine `HycleusWindow._open_slide_over()`'a veriyor
+(`UI/main_window_layout.py`). "Kapat" düğmesi `kapat_istendi` sinyalini
+yayıyor; `accept()` yok artık.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -119,8 +127,12 @@ _PROBLEM_LISTELERI: tuple[tuple[str, str, str], ...] = (
 )
 
 
-class BackupVerifyDialog(QDialog):
+class BackupVerifyDialog(QWidget):
     """Bir yedek doğrulamasının sonucunu gösterir."""
+
+    #: "Kapat" düğmesine basıldı — paneli kapatan taraf buna bağlanır
+    #: (bkz. `LayoutMixin._open_slide_over`). Eskiden `QDialog.accept()`.
+    kapat_istendi = Signal()
 
     def __init__(self, rapor: VerifyReport, yedek_dizini: Path, parent=None,
                  *, sade: bool = False, T: dict[str, str] | None = None) -> None:
@@ -144,9 +156,9 @@ class BackupVerifyDialog(QDialog):
         self._dizin = Path(yedek_dizini)
         self._durum = durum_of(rapor)
 
+        self.setObjectName("rapor_disi_govde")
         self.setWindowTitle(f"HYCLEUS — Yedek Doğrulama · {self._dizin.name}")
         self.setMinimumWidth(560)
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setStyleSheet(rapor_stili(self._T))
         self._build_ui()
 
@@ -366,7 +378,7 @@ class BackupVerifyDialog(QDialog):
         kapat = QPushButton("Kapat")
         kapat.setObjectName("primary_btn")
         kapat.setDefault(True)
-        kapat.clicked.connect(self.accept)
+        kapat.clicked.connect(self.kapat_istendi.emit)
         satir.addWidget(kapat)
         return sarici
 

@@ -249,7 +249,8 @@ class FileActionsMixin:
         except Exception as exc:  # pragma: no cover — kayıt, sonucu engellemez
             _log.warning("timestamp_verify_log_failed  exc=%s", exc)
 
-        TimestampDialog(sonuc, path.name, parent=self, sade=sade, T=self._T).exec()
+        icerik = TimestampDialog(sonuc, path.name, sade=sade, T=self._T)
+        self._open_slide_over(f"Damga Doğrulama · {path.name}", icerik)
 
     def _on_ctx_download(self, file_id: int | None, filepath: str | None) -> None:
         if not filepath:

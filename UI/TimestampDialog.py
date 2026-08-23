@@ -33,13 +33,26 @@ sürüyor ve süre dosya boyutundan BAĞIMSIZ — `read_trailer()` ile
 erişimi de yok. Bir iş parçacığı burada ölçülebilir hiçbir şey
 kazandırmaz, karşılığında iptal/yaşam süresi yönetimi getirirdi
 (`_ScanWorker`'ın taşıdığı yük).
+
+Neden artık `QDialog` DEĞİL (slide-over turu)
+-----------------------------------------------
+Tasarım brief'i: "doğrulama ve ayar ekranları slide-over panel olarak
+açılır, yeni pencere açmaz." Bu ekran kendi `QDialog` penceresini
+AÇMIYOR artık — `main_window_files.py::_on_ctx_verify_timestamp()`
+kurup `HycleusWindow._open_slide_over()`'a veriyor
+(`UI/main_window_layout.py`). `QWidget`'a düşmek `exec()`/`accept()`'i
+KALDIRDI; "Kapat" düğmesi artık `kapat_istendi` sinyalini yayıyor,
+paneli kapatan taraf (`_open_slide_over`) buna otomatik bağlanıyor.
+`setWindowTitle()`/`windowTitle()` bilerek KORUNDU — QWidget'ta da
+çalışıyor ve testler bunu okuyor; panel başlığı ayrıca dışarıdan
+(`_open_slide_over(baslik, ...)`) veriliyor, ikisi farklı amaçlara hizmet
+ediyor.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -91,8 +104,12 @@ def _seviye_gorunum(T: dict[str, str]) -> dict[str, tuple[str, str]]:
         SEVIYE_BILGI:     ("ℹ", T["accent"]),
     }
 
-class TimestampDialog(QDialog):
+class TimestampDialog(QWidget):
     """Bir dosyanın zaman damgası doğrulama sonucunu gösterir."""
+
+    #: "Kapat" düğmesine basıldı — paneli kapatan taraf buna bağlanır
+    #: (bkz. `LayoutMixin._open_slide_over`). Eskiden `QDialog.accept()`.
+    kapat_istendi = Signal()
 
     def __init__(
         self,
@@ -135,9 +152,9 @@ class TimestampDialog(QDialog):
         self._notlar: list[Aciklama] = notlar(sonuc)
         self._detaylar: list[tuple[str, str]] = detaylar(sonuc)
 
+        self.setObjectName("rapor_disi_govde")
         self.setWindowTitle(f"HYCLEUS — Damga Doğrulama · {dosya_adi}")
         self.setMinimumWidth(520)
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setStyleSheet(rapor_stili(self._T))
         self._build_ui()
 
@@ -288,7 +305,7 @@ class TimestampDialog(QDialog):
         kapat = QPushButton("Kapat")
         kapat.setObjectName("primary_btn")
         kapat.setDefault(True)
-        kapat.clicked.connect(self.accept)
+        kapat.clicked.connect(self.kapat_istendi.emit)
         satir.addWidget(kapat)
         return sarici
 

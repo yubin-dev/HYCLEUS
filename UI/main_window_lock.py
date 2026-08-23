@@ -265,7 +265,11 @@ class LockMixin:
             self._overlay.set_message(title, sub)
             return
         self._locked = False
-        self.centralWidget().setEnabled(True)
+        # Slide-over paneli (main_window_layout.py) hâlâ AÇIKSA central'ı
+        # AÇMA — o kilidi panel yönetiyor, burası kaldırmaz. `_slide_over_acik`
+        # yoksa (panel mekanizması hiç kurulmadıysa) `getattr` False'a düşer.
+        if not getattr(self, "_slide_over_acik", lambda: False)():
+            self.centralWidget().setEnabled(True)
         self.centralWidget().setGraphicsEffect(None)
         self._overlay.hide()
 

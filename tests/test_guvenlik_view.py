@@ -125,6 +125,11 @@ class _Pencere(FileActionsMixin, QWidget):
     def _on_verify_backup(self, *, sade: bool = False) -> None:
         self.yedek_cagrilari.append({"sade": sade})
 
+    def _open_slide_over(self, baslik: str, icerik) -> None:  # pragma: no cover — fixture değiştirir
+        """Gerçek mekanizma `UI/main_window_layout.py::LayoutMixin`'de —
+        `acilan` fixture'ı bunu yamalıyor."""
+        raise NotImplementedError
+
 
 @pytest.fixture
 def pencere(qapp) -> _Pencere:  # type: ignore[no-untyped-def]
@@ -149,16 +154,19 @@ def damgali(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def acilan(monkeypatch: pytest.MonkeyPatch) -> list:  # type: ignore[type-arg]
-    """`TimestampDialog.exec` yamalı — açılan diyaloglar toplanıyor."""
+    """
+    `_Pencere._open_slide_over()` yamalı — açılan içerikler toplanıyor
+    (slide-over turu — eskiden `TimestampDialog.exec` yamalıydı, artık
+    `.exec()` yok çünkü diyalog `QDialog` değil `QWidget`).
+    """
     from UI.TimestampDialog import TimestampDialog
 
     kutu: list[TimestampDialog] = []
 
-    def _exec(self):  # type: ignore[no-untyped-def]
-        kutu.append(self)
-        return 1
+    def _ac(self, baslik, icerik):  # type: ignore[no-untyped-def]
+        kutu.append(icerik)
 
-    monkeypatch.setattr(TimestampDialog, "exec", _exec)
+    monkeypatch.setattr(_Pencere, "_open_slide_over", _ac)
     return kutu
 
 
