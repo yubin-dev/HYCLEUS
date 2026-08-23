@@ -65,6 +65,7 @@ try:
         GuvenlikView,
     )
     from UI.main_window_files import FileActionsMixin
+    from UI.main_window_palette import _DARK
 except ImportError as _exc:  # pragma: no cover — ortama bağlı
     pytest.skip(
         f"Qt katmanı bu ortamda yüklenemedi ({_exc}) — testler atlanıyor",
@@ -118,6 +119,7 @@ class _Pencere(FileActionsMixin, QWidget):
         super().__init__()
         self._hwid = _HWID
         self._role = "Yönetici"
+        self._T = _DARK
         self.yedek_cagrilari: list[dict] = []
 
     def _on_verify_backup(self, *, sade: bool = False) -> None:

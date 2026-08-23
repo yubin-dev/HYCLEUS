@@ -32,7 +32,8 @@ try:
     from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
     from UI.main_window_files import FileActionsMixin
-    from UI.TimestampDialog import _SEVIYE_GORUNUM, TimestampDialog
+    from UI.main_window_palette import _DARK
+    from UI.TimestampDialog import _seviye_gorunum, TimestampDialog
 except ImportError as _exc:  # pragma: no cover — ortama bağlı
     pytest.skip(
         f"Qt katmanı bu ortamda yüklenemedi ({_exc}) — testler atlanıyor",
@@ -43,6 +44,11 @@ from CORE import crypto, timestamp_report as tr
 from CORE.crypto import encrypt_file, generate_key
 from CORE.timestamp import TimestampInfo, attach_trailer, timestamp_file
 from CORE.timestamp_verify import TimestampVerification, verify_timestamp
+
+#: Testler tek bir sabit paletle çalışıyor — B-055'ten sonra görünüm
+#: T'ye göre değişiyor ama "her seviyenin bir görünümü var mı" sorusu
+#: hangi preset seçili olduğundan bağımsız.
+_SEVIYE_GORUNUM = _seviye_gorunum(_DARK)
 
 _USER = 41
 _HWID = "TEST-HWID-TS-UI"
@@ -146,6 +152,7 @@ class _Sahne(FileActionsMixin, QWidget):
         super().__init__()
         self._hwid = _HWID
         self._role = "Yönetici"
+        self._T = _DARK
 
 
 @pytest.fixture

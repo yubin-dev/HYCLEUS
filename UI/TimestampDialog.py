@@ -64,27 +64,32 @@ from CORE.timestamp_report import (
 )
 from CORE.timestamp_verify import TimestampVerification
 from UI.dialog_kit import (
-    RAPOR_STILI,
-    VARSAYILAN_GORUNUM,
+    rapor_stili,
+    varsayilan_gorunum,
     ayrac as _sep,
     kutu as _kutu,
     sarmali as _sarmali,
 )
+from UI.main_window_palette import _DARK
 
-#: Seviye → (simge, renk). Renk kararı burada, ANLAM kararı
-#: `CORE/timestamp_report.py`'de — biri arayüz tercihi, diğeri değil.
-#:
-#: `okunamadi` ile `gecersiz` FARKLI renkte: "kontrol edemedim" ile "damga
-#: sahte" aynı şey değil ve ikisini tek kırmızıya toplamak, aktarımda
-#: zarar görmüş sağlam bir dosyayı kurcalanmış gibi gösterirdi.
-_SEVIYE_GORUNUM: dict[str, tuple[str, str]] = {
-    SEVIYE_GECERLI:   ("✔", "#a6e3a1"),
-    SEVIYE_GECERSIZ:  ("✖", "#f38ba8"),
-    SEVIYE_DAMGASIZ:  ("🕓", "#a6adc8"),
-    SEVIYE_OKUNAMADI: ("⚠", "#fab387"),
-    SEVIYE_UYARI:     ("⚠", "#f9e2af"),
-    SEVIYE_BILGI:     ("ℹ", "#89b4fa"),
-}
+
+def _seviye_gorunum(T: dict[str, str]) -> dict[str, tuple[str, str]]:
+    """Seviye → (simge, renk). Renk kararı burada, ANLAM kararı
+    `CORE/timestamp_report.py`'de — biri arayüz tercihi, diğeri değil.
+
+    `okunamadi` ile `uyari` AYNI tonu (`T['yellow']`) paylaşıyor: kayıtlı
+    token sözlüğünde tek bir "sarı/turuncu" var (B-055) — ikisini ayıran
+    ayrı bir token icat etmek yerine simge farkına (ikisi de "⚠") ve metne
+    bırakıldı, `CORE/timestamp_report.py`'nin ANLAM ayrımı bozulmuyor.
+    """
+    return {
+        SEVIYE_GECERLI:   ("✔", T["green"]),
+        SEVIYE_GECERSIZ:  ("✖", T["red"]),
+        SEVIYE_DAMGASIZ:  ("🕓", T["subtext"]),
+        SEVIYE_OKUNAMADI: ("⚠", T["yellow"]),
+        SEVIYE_UYARI:     ("⚠", T["yellow"]),
+        SEVIYE_BILGI:     ("ℹ", T["accent"]),
+    }
 
 class TimestampDialog(QDialog):
     """Bir dosyanın zaman damgası doğrulama sonucunu gösterir."""
@@ -96,6 +101,7 @@ class TimestampDialog(QDialog):
         parent=None,
         *,
         sade: bool = False,
+        T: dict[str, str] | None = None,
     ) -> None:
         """
         Args:
@@ -113,9 +119,15 @@ class TimestampDialog(QDialog):
                 bir ayrıntı değil, sonucun eyleme dönüşen yarısı
                 ("bu dosyayı tarih kanıtı olarak KULLANMAYIN" gibi).
                 Gizlemek, sade modu varsayılandan daha TEHLİKELİ yapardı.
+            T: Çağıranın aktif tema token sözlüğü (`HycleusWindow._T`).
+                Verilmezse varsayılan "mavi" koyu palete düşer — yalnızca
+                testlerin/bağımsız çağrıların çökmemesi için, üretimde
+                çağıran (`main_window_files.py`) her zaman kendi `self._T`'ını
+                geçiriyor.
         """
         super().__init__(parent)
         self._sade = sade
+        self._T: dict[str, str] = T if T is not None else _DARK
         self._gelismis: list[QWidget] = []
         self._sonuc = sonuc
         self._dosya_adi = dosya_adi
@@ -126,7 +138,7 @@ class TimestampDialog(QDialog):
         self.setWindowTitle(f"HYCLEUS — Damga Doğrulama · {dosya_adi}")
         self.setMinimumWidth(520)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setStyleSheet(RAPOR_STILI)
+        self.setStyleSheet(rapor_stili(self._T))
         self._build_ui()
 
     # ── Kurulum ───────────────────────────────────────────────────────────────
@@ -174,8 +186,8 @@ class TimestampDialog(QDialog):
         dis.addWidget(self._alt_cubuk())
 
     def _baslik_bloku(self) -> QWidget:
-        simge_metni, renk = _SEVIYE_GORUNUM.get(
-            self._mesaj.seviye, VARSAYILAN_GORUNUM
+        simge_metni, renk = _seviye_gorunum(self._T).get(
+            self._mesaj.seviye, varsayilan_gorunum(self._T)
         )
         sarici = QWidget()
         satir = QHBoxLayout(sarici)
@@ -220,7 +232,9 @@ class TimestampDialog(QDialog):
         return cikti
 
     def _not_bloku(self, mesaj: Aciklama) -> QWidget:
-        simge_metni, renk = _SEVIYE_GORUNUM.get(mesaj.seviye, VARSAYILAN_GORUNUM)
+        simge_metni, renk = _seviye_gorunum(self._T).get(
+            mesaj.seviye, varsayilan_gorunum(self._T)
+        )
         icerik: list[QWidget] = []
         baslik = _sarmali(f"{simge_metni}  {mesaj.baslik}", "not_bas")
         baslik.setStyleSheet(f"color:{renk};")

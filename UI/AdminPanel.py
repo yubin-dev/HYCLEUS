@@ -47,50 +47,70 @@ from CORE.vault_manager import (
     has_recovery_share,
 )
 from DB.db_manager import DBManager
+from UI.main_window_palette import _DARK
 
 _ROLES = ["Yönetici", "Standart", "Salt Okunur"]
 
-_STYLE = """
-QDialog { background: #1e1e2e; color: #cdd6f4; }
-QLabel  { color: #cdd6f4; }
-QTableWidget {
-    background: #181825;
-    color: #cdd6f4;
-    gridline-color: #313244;
-    border: 1px solid #313244;
+
+def _stil(T: dict[str, str]) -> str:
+    """Panelin ana stil sayfası — kayıtlı tema token'larından (B-055).
+
+    Önceden sabit bir Catppuccin-Mocha paletiydi; preset değişince bu
+    panel hiç değişmiyordu. Yeni bir token İCAT EDİLMEDİ.
+    """
+    return f"""
+QDialog {{ background: {T['bg']}; color: {T['text']}; }}
+QLabel  {{ color: {T['text']}; }}
+QTableWidget {{
+    background: {T['search_bg']};
+    color: {T['text']};
+    gridline-color: {T['border']};
+    border: 1px solid {T['border']};
     border-radius: 4px;
     font-size: 12px;
-}
-QTableWidget::item:selected { background: #313244; }
-QHeaderView::section {
-    background: #1e1e2e;
-    color: #89b4fa;
+}}
+QTableWidget::item:selected {{ background: {T['accent_tint']}; }}
+QHeaderView::section {{
+    background: {T['bg']};
+    color: {T['accent']};
     border: none;
-    border-bottom: 1px solid #313244;
+    border-bottom: 1px solid {T['border']};
     padding: 4px 8px;
     font-weight: 600;
     font-size: 12px;
-}
+}}
 """
 
-_BTN = (
-    "QPushButton{color:#cdd6f4;background:#313244;border:none;"
-    "border-radius:6px;padding:5px 14px;font-size:12px;}"
-    "QPushButton:hover{background:#45475a;}"
-    "QPushButton:disabled{color:#45475a;background:#1e1e2e;border:none;}"
-)
-_BTN_DANGER = (
-    "QPushButton{color:#f38ba8;background:#2d1818;border:1px solid #3d2020;"
-    "border-radius:6px;padding:5px 14px;font-size:12px;}"
-    "QPushButton:hover{background:#3d2020;}"
-    "QPushButton:disabled{color:#45475a;background:#1e1e2e;border:1px solid #313244;}"
-)
-_BTN_SUCCESS = (
-    "QPushButton{color:#a6e3a1;background:#1a2d1a;border:1px solid #2a3d2a;"
-    "border-radius:6px;padding:5px 14px;font-size:12px;}"
-    "QPushButton:hover{background:#2a3d2a;}"
-    "QPushButton:disabled{color:#45475a;background:#1e1e2e;border:1px solid #313244;}"
-)
+
+def _btn_stil(T: dict[str, str]) -> str:
+    return (
+        f"QPushButton{{color:{T['text']};background:{T['hover']};border:none;"
+        f"border-radius:6px;padding:5px 14px;font-size:12px;}}"
+        f"QPushButton:hover{{background:{T['row_hover']};}}"
+        f"QPushButton:disabled{{color:{T['gray']};background:{T['bg']};border:none;}}"
+    )
+
+
+def _btn_danger_stil(T: dict[str, str]) -> str:
+    return (
+        f"QPushButton{{color:{T['red']};background:{T['red_tint']};"
+        f"border:1px solid {T['red']};"
+        f"border-radius:6px;padding:5px 14px;font-size:12px;}}"
+        f"QPushButton:hover{{background:{T['red_tint']};}}"
+        f"QPushButton:disabled{{color:{T['gray']};background:{T['bg']};"
+        f"border:1px solid {T['border']};}}"
+    )
+
+
+def _btn_success_stil(T: dict[str, str]) -> str:
+    return (
+        f"QPushButton{{color:{T['green']};background:{T['green_tint']};"
+        f"border:1px solid {T['green']};"
+        f"border-radius:6px;padding:5px 14px;font-size:12px;}}"
+        f"QPushButton:hover{{background:{T['green_tint']};}}"
+        f"QPushButton:disabled{{color:{T['gray']};background:{T['bg']};"
+        f"border:1px solid {T['border']};}}"
+    )
 
 # Qt.UserRole slots for column-0 items
 _ROLE_HWID        = Qt.UserRole          # str  — tam HWID
@@ -98,12 +118,19 @@ _ROLE_BLACKLISTED = Qt.UserRole + 1      # bool — kara liste durumu
 
 
 class AdminPanel(QDialog):
-    def __init__(self, current_hwid: str, role: str = "Yönetici", parent=None) -> None:
+    def __init__(self, current_hwid: str, role: str = "Yönetici", parent=None,
+                 *, T: dict[str, str] | None = None) -> None:
+        """
+        Args:
+            T: Çağıranın aktif tema token sözlüğü (`HycleusWindow._T`).
+                Verilmezse varsayılan "mavi" koyu palete düşer.
+        """
         super().__init__(parent)
         self._current_hwid = current_hwid
         self._caller_role  = role
+        self._T: dict[str, str] = T if T is not None else _DARK
         self.setWindowTitle("HYCLEUS — USB Yönetim Paneli")
-        self.setStyleSheet(_STYLE)
+        self.setStyleSheet(_stil(self._T))
 
         if not is_admin_role(role):
             self.setFixedSize(360, 120)
@@ -112,10 +139,10 @@ class AdminPanel(QDialog):
             lay.setSpacing(16)
             lbl = QLabel("Bu alana erişim yetkiniz yok.")
             lbl.setAlignment(Qt.AlignCenter)
-            lbl.setStyleSheet("color:#f38ba8; font-size:13px;")
+            lbl.setStyleSheet(f"color:{self._T['red']}; font-size:13px;")
             lay.addWidget(lbl)
             btn = QPushButton("Kapat")
-            btn.setStyleSheet(_BTN)
+            btn.setStyleSheet(_btn_stil(self._T))
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(self.reject)
             lay.addWidget(btn)
@@ -138,16 +165,11 @@ class AdminPanel(QDialog):
 
         title = QLabel("USB Yönetim Paneli")
         title.setFont(QFont("Arial", 13, QFont.Bold))
-        title.setStyleSheet("color:#cdd6f4; margin-bottom:2px;")
+        title.setStyleSheet(f"color:{self._T['text']}; margin-bottom:2px;")
         root.addWidget(title)
 
         tabs = QTabWidget()
-        tabs.setStyleSheet(
-            "QTabWidget::pane{border:1px solid #313244;border-radius:4px;}"
-            "QTabBar::tab{background:#1e1e2e;color:#a6adc8;padding:6px 18px;"
-            "border:1px solid #313244;border-bottom:none;border-radius:4px 4px 0 0;}"
-            "QTabBar::tab:selected{background:#313244;color:#cdd6f4;}"
-        )
+        tabs.setStyleSheet(self._tab_stili())
 
         # Sekme 1 — USB Tokenlar
         usb_page = QWidget()
@@ -213,6 +235,51 @@ class AdminPanel(QDialog):
 
         root.addWidget(tabs)
 
+    # ── Paylaşılan stil parçaları ─────────────────────────────────────────────
+    #
+    # Ayarlar sekmesindeki üç combo (mod/TTL/hareketsizlik) ve dört bölüm
+    # başlığı birebir aynı QSS'i tekrar ediyordu. Tek yerde tutmak hem
+    # B-055'in "ikinci bir renk yolu açma" kuralına uyuyor hem de dördünün
+    # zamanla ayrışmasını önlüyor.
+
+    def _tab_stili(self) -> str:
+        T = self._T
+        return (
+            f"QTabWidget::pane{{border:1px solid {T['border']};border-radius:4px;}}"
+            f"QTabBar::tab{{background:{T['bg']};color:{T['subtext']};padding:6px 18px;"
+            f"border:1px solid {T['border']};border-bottom:none;"
+            f"border-radius:4px 4px 0 0;}}"
+            f"QTabBar::tab:selected{{background:{T['border']};color:{T['text']};}}"
+        )
+
+    def _combo_stili(self) -> str:
+        T = self._T
+        return (
+            f"QComboBox{{background:{T['hover']};color:{T['text']};"
+            f"border:1px solid {T['border']};"
+            f"border-radius:6px;padding:5px 10px;font-size:12px;}}"
+            f"QComboBox::drop-down{{border:none;width:20px;}}"
+            f"QComboBox QAbstractItemView{{background:{T['hover']};color:{T['text']};"
+            f"border:1px solid {T['border']};"
+            f"selection-background-color:{T['row_hover']};}}"
+        )
+
+    def _bolum_baslik_stili(self) -> str:
+        return f"color:{self._T['accent']}; font-size:12px; font-weight:600;"
+
+    def _ipucu_stili(self) -> str:
+        return f"color:{self._T['subtext']}; font-size:12px;"
+
+    def _liste_stili(self) -> str:
+        T = self._T
+        return (
+            f"QListWidget{{background:{T['hover']};color:{T['text']};"
+            f"border:1px solid {T['border']};"
+            f"border-radius:6px;font-size:12px;}}"
+            f"QListWidget::item{{padding:4px 8px;}}"
+            f"QListWidget::item:selected{{background:{T['row_hover']};}}"
+        )
+
     def _make_table(self) -> QTableWidget:
         self._table = QTableWidget(0, 5)
         self._table.setHorizontalHeaderLabels(
@@ -236,21 +303,21 @@ class AdminPanel(QDialog):
         bar.setSpacing(8)
 
         self._btn_blacklist = QPushButton("Kara Listeye Al")
-        self._btn_blacklist.setStyleSheet(_BTN_DANGER)
+        self._btn_blacklist.setStyleSheet(_btn_danger_stil(self._T))
         self._btn_blacklist.setCursor(Qt.PointingHandCursor)
         self._btn_blacklist.setEnabled(False)
         self._btn_blacklist.clicked.connect(self._on_toggle_blacklist)
         bar.addWidget(self._btn_blacklist)
 
         self._btn_role = QPushButton("Rolü Değiştir")
-        self._btn_role.setStyleSheet(_BTN)
+        self._btn_role.setStyleSheet(_btn_stil(self._T))
         self._btn_role.setCursor(Qt.PointingHandCursor)
         self._btn_role.setEnabled(False)
         self._btn_role.clicked.connect(self._on_change_role)
         bar.addWidget(self._btn_role)
 
         self._btn_delete = QPushButton("Sil")
-        self._btn_delete.setStyleSheet(_BTN_DANGER)
+        self._btn_delete.setStyleSheet(_btn_danger_stil(self._T))
         self._btn_delete.setCursor(Qt.PointingHandCursor)
         self._btn_delete.setEnabled(False)
         self._btn_delete.clicked.connect(self._on_delete)
@@ -263,13 +330,13 @@ class AdminPanel(QDialog):
         # BAKABİLİYORSA işe yarar. Yetki kontrolü ayrıca gerekmiyor: bu panel
         # `role != "Yönetici"` ise hiç kurulmuyor (bkz. __init__).
         self._btn_chain = QPushButton("Zinciri Doğrula")
-        self._btn_chain.setStyleSheet(_BTN)
+        self._btn_chain.setStyleSheet(_btn_stil(self._T))
         self._btn_chain.setCursor(Qt.PointingHandCursor)
         self._btn_chain.clicked.connect(self._on_verify_chain)
         bar.addWidget(self._btn_chain)
 
         btn_refresh = QPushButton("Yenile")
-        btn_refresh.setStyleSheet(_BTN)
+        btn_refresh.setStyleSheet(_btn_stil(self._T))
         btn_refresh.setCursor(Qt.PointingHandCursor)
         btn_refresh.clicked.connect(self._load)
         bar.addWidget(btn_refresh)
@@ -335,7 +402,7 @@ class AdminPanel(QDialog):
             hwid_item.setData(_ROLE_HWID, hwid)
             hwid_item.setData(_ROLE_BLACKLISTED, blacklisted)
             if hwid == self._current_hwid:
-                hwid_item.setForeground(QColor("#89b4fa"))
+                hwid_item.setForeground(QColor(self._T["accent"]))
             self._table.setItem(r, 0, hwid_item)
 
             # Col 1 — Token ID (short)
@@ -353,7 +420,7 @@ class AdminPanel(QDialog):
             # Col 4 — Durum
             status_item = QTableWidgetItem("Kara Liste" if blacklisted else "Aktif")
             status_item.setForeground(
-                QColor("#f38ba8" if blacklisted else "#a6e3a1")
+                QColor(self._T["red"] if blacklisted else self._T["green"])
             )
             self._table.setItem(r, 4, status_item)
 
@@ -392,7 +459,7 @@ class AdminPanel(QDialog):
             self._btn_role.setEnabled(False)
             self._btn_delete.setEnabled(False)
             self._btn_blacklist.setText("Kara Listeye Al")
-            self._btn_blacklist.setStyleSheet(_BTN_DANGER)
+            self._btn_blacklist.setStyleSheet(_btn_danger_stil(self._T))
             return
 
         row        = selected[0].row()
@@ -404,10 +471,10 @@ class AdminPanel(QDialog):
         # Kara liste butonu — metin ve stil blacklisted durumuna göre değişir
         if blacklisted:
             self._btn_blacklist.setText("Kara Listeden Çıkar")
-            self._btn_blacklist.setStyleSheet(_BTN_SUCCESS)
+            self._btn_blacklist.setStyleSheet(_btn_success_stil(self._T))
         else:
             self._btn_blacklist.setText("Kara Listeye Al")
-            self._btn_blacklist.setStyleSheet(_BTN_DANGER)
+            self._btn_blacklist.setStyleSheet(_btn_danger_stil(self._T))
 
         # Aktif USB kara listeye alınamaz / silinemez
         self._btn_blacklist.setEnabled(not is_self)
@@ -640,21 +707,21 @@ class AdminPanel(QDialog):
         bar.setSpacing(8)
 
         self._btn_approve = QPushButton("✓  Onayla")
-        self._btn_approve.setStyleSheet(_BTN_SUCCESS)
+        self._btn_approve.setStyleSheet(_btn_success_stil(self._T))
         self._btn_approve.setCursor(Qt.PointingHandCursor)
         self._btn_approve.setEnabled(False)
         self._btn_approve.clicked.connect(self._on_approve)
         bar.addWidget(self._btn_approve)
 
         self._btn_reject = QPushButton("✕  Reddet")
-        self._btn_reject.setStyleSheet(_BTN_DANGER)
+        self._btn_reject.setStyleSheet(_btn_danger_stil(self._T))
         self._btn_reject.setCursor(Qt.PointingHandCursor)
         self._btn_reject.setEnabled(False)
         self._btn_reject.clicked.connect(self._on_reject)
         bar.addWidget(self._btn_reject)
 
         btn_new = QPushButton("＋  Yeni Kullanıcı Kaydet")
-        btn_new.setStyleSheet(_BTN)
+        btn_new.setStyleSheet(_btn_stil(self._T))
         btn_new.setCursor(Qt.PointingHandCursor)
         btn_new.clicked.connect(self._on_new_user)
         bar.addWidget(btn_new)
@@ -662,7 +729,7 @@ class AdminPanel(QDialog):
         bar.addStretch()
 
         btn_refresh = QPushButton("Yenile")
-        btn_refresh.setStyleSheet(_BTN)
+        btn_refresh.setStyleSheet(_btn_stil(self._T))
         btn_refresh.setCursor(Qt.PointingHandCursor)
         btn_refresh.clicked.connect(self._load_pending)
         bar.addWidget(btn_refresh)
@@ -814,17 +881,17 @@ class AdminPanel(QDialog):
         lay.setSpacing(14)
 
         header = QLabel("Sistem Ayarları")
-        header.setStyleSheet("color:#cdd6f4; font-size:13px; font-weight:bold;")
+        header.setStyleSheet(f"color:{self._T['text']}; font-size:13px; font-weight:bold;")
         lay.addWidget(header)
 
         sep = QLabel()
         sep.setFixedHeight(1)
-        sep.setStyleSheet("background:#313244;")
+        sep.setStyleSheet(f"background:{self._T['border']};")
         lay.addWidget(sep)
 
         # ── Görünüm modu (Bireysel/Kurumsal) ───────────────────────────────
         mode_lbl = QLabel("Görünüm modu")
-        mode_lbl.setStyleSheet("color:#89b4fa; font-size:12px; font-weight:600;")
+        mode_lbl.setStyleSheet(self._bolum_baslik_stili())
         lay.addWidget(mode_lbl)
 
         mode_row = QHBoxLayout()
@@ -834,13 +901,7 @@ class AdminPanel(QDialog):
         self._mode_combo.addItem("Kurumsal", KURUMSAL)
         self._mode_combo.addItem("Bireysel", BIREYSEL)
         self._mode_combo.setFixedWidth(110)
-        self._mode_combo.setStyleSheet(
-            "QComboBox{background:#313244;color:#cdd6f4;border:1px solid #45475a;"
-            "border-radius:6px;padding:5px 10px;font-size:12px;}"
-            "QComboBox::drop-down{border:none;width:20px;}"
-            "QComboBox QAbstractItemView{background:#313244;color:#cdd6f4;"
-            "border:1px solid #45475a;selection-background-color:#45475a;}"
-        )
+        self._mode_combo.setStyleSheet(self._combo_stili())
         mode_row.addWidget(self._mode_combo)
 
         mode_hint = QLabel(
@@ -849,12 +910,12 @@ class AdminPanel(QDialog):
             "görünüm."
         )
         mode_hint.setWordWrap(True)
-        mode_hint.setStyleSheet("color:#a6adc8; font-size:12px;")
+        mode_hint.setStyleSheet(self._ipucu_stili())
         mode_row.addWidget(mode_hint, 1)
         lay.addLayout(mode_row)
 
         ttl_lbl = QLabel("İmha Odası varsayılan TTL süresi")
-        ttl_lbl.setStyleSheet("color:#89b4fa; font-size:12px; font-weight:600;")
+        ttl_lbl.setStyleSheet(self._bolum_baslik_stili())
         lay.addWidget(ttl_lbl)
 
         row = QHBoxLayout()
@@ -864,24 +925,18 @@ class AdminPanel(QDialog):
         for h in self._TTL_OPTIONS:
             self._ttl_combo.addItem(f"{h} saat", h)
         self._ttl_combo.setFixedWidth(110)
-        self._ttl_combo.setStyleSheet(
-            "QComboBox{background:#313244;color:#cdd6f4;border:1px solid #45475a;"
-            "border-radius:6px;padding:5px 10px;font-size:12px;}"
-            "QComboBox::drop-down{border:none;width:20px;}"
-            "QComboBox QAbstractItemView{background:#313244;color:#cdd6f4;"
-            "border:1px solid #45475a;selection-background-color:#45475a;}"
-        )
+        self._ttl_combo.setStyleSheet(self._combo_stili())
         row.addWidget(self._ttl_combo)
 
         hint = QLabel("sonra İmha Odası'ndaki dosyalar otomatik silinir")
-        hint.setStyleSheet("color:#a6adc8; font-size:12px;")
+        hint.setStyleSheet(self._ipucu_stili())
         row.addWidget(hint)
         row.addStretch()
         lay.addLayout(row)
 
         # ── Hareketsizlik kilidi ──────────────────────────────────────────
         idle_lbl = QLabel("Hareketsizlik kilidi")
-        idle_lbl.setStyleSheet("color:#89b4fa; font-size:12px; font-weight:600;")
+        idle_lbl.setStyleSheet(self._bolum_baslik_stili())
         lay.addWidget(idle_lbl)
 
         idle_row = QHBoxLayout()
@@ -891,23 +946,17 @@ class AdminPanel(QDialog):
         for m in IDLE_OPTIONS:
             self._idle_combo.addItem("Kapalı" if m == IDLE_DISABLED else f"{m} dakika", m)
         self._idle_combo.setFixedWidth(110)
-        self._idle_combo.setStyleSheet(
-            "QComboBox{background:#313244;color:#cdd6f4;border:1px solid #45475a;"
-            "border-radius:6px;padding:5px 10px;font-size:12px;}"
-            "QComboBox::drop-down{border:none;width:20px;}"
-            "QComboBox QAbstractItemView{background:#313244;color:#cdd6f4;"
-            "border:1px solid #45475a;selection-background-color:#45475a;}"
-        )
+        self._idle_combo.setStyleSheet(self._combo_stili())
         idle_row.addWidget(self._idle_combo)
 
         idle_hint = QLabel("hareketsizlikten sonra oturum kilitlenir (USB takılı olsa bile)")
-        idle_hint.setStyleSheet("color:#a6adc8; font-size:12px;")
+        idle_hint.setStyleSheet(self._ipucu_stili())
         idle_row.addWidget(idle_hint)
         idle_row.addStretch()
         lay.addLayout(idle_row)
 
         btn_save = QPushButton("Kaydet")
-        btn_save.setStyleSheet(_BTN_SUCCESS)
+        btn_save.setStyleSheet(_btn_success_stil(self._T))
         btn_save.setCursor(Qt.PointingHandCursor)
         btn_save.setFixedWidth(100)
         btn_save.clicked.connect(self._on_save_settings)
@@ -936,7 +985,7 @@ class AdminPanel(QDialog):
         lay.setSpacing(8)
 
         baslik = QLabel("Kurtarma parçası")
-        baslik.setStyleSheet("color:#89b4fa; font-size:12px; font-weight:600;")
+        baslik.setStyleSheet(self._bolum_baslik_stili())
         lay.addWidget(baslik)
 
         ipucu = QLabel(
@@ -945,12 +994,12 @@ class AdminPanel(QDialog):
             "olarak saklayın."
         )
         ipucu.setWordWrap(True)
-        ipucu.setStyleSheet("color:#a6adc8; font-size:12px;")
+        ipucu.setStyleSheet(self._ipucu_stili())
         lay.addWidget(ipucu)
 
         btn = QPushButton("Kurtarma Parçasını Göster…")
         btn.setObjectName("admin_btn_kurtarma")
-        btn.setStyleSheet(_BTN_DANGER)
+        btn.setStyleSheet(_btn_danger_stil(self._T))
         btn.setCursor(Qt.PointingHandCursor)
         btn.setFixedWidth(230)
         btn.clicked.connect(self._on_kurtarma_parcasi)
@@ -1001,7 +1050,7 @@ class AdminPanel(QDialog):
         try:
             disa_aktarim = build_export(share_3)
             try:
-                RecoveryShareDialog(disa_aktarim, self).exec()
+                RecoveryShareDialog(disa_aktarim, self, T=self._T).exec()
             finally:
                 del disa_aktarim
         finally:
@@ -1025,7 +1074,7 @@ class AdminPanel(QDialog):
         lay.setSpacing(8)
 
         baslik = QLabel("Güvenilir zaman damgası kökleri")
-        baslik.setStyleSheet("color:#89b4fa; font-size:12px; font-weight:600;")
+        baslik.setStyleSheet(self._bolum_baslik_stili())
         lay.addWidget(baslik)
 
         ipucu = QLabel(
@@ -1033,30 +1082,25 @@ class AdminPanel(QDialog):
             "«geçerli — ama kurum doğrulanmadı» olarak gösterilir."
         )
         ipucu.setWordWrap(True)
-        ipucu.setStyleSheet("color:#a6adc8; font-size:12px;")
+        ipucu.setStyleSheet(self._ipucu_stili())
         lay.addWidget(ipucu)
 
         self._tsa_liste = QListWidget()
         self._tsa_liste.setFixedHeight(96)
-        self._tsa_liste.setStyleSheet(
-            "QListWidget{background:#313244;color:#cdd6f4;border:1px solid #45475a;"
-            "border-radius:6px;font-size:12px;}"
-            "QListWidget::item{padding:4px 8px;}"
-            "QListWidget::item:selected{background:#45475a;}"
-        )
+        self._tsa_liste.setStyleSheet(self._liste_stili())
         lay.addWidget(self._tsa_liste)
 
         satir = QHBoxLayout()
         satir.setSpacing(10)
         btn_ekle = QPushButton("Kök Ekle…")
-        btn_ekle.setStyleSheet(_BTN_SUCCESS)
+        btn_ekle.setStyleSheet(_btn_success_stil(self._T))
         btn_ekle.setCursor(Qt.PointingHandCursor)
         btn_ekle.setFixedWidth(120)
         btn_ekle.clicked.connect(self._on_tsa_kok_ekle)
         satir.addWidget(btn_ekle)
 
         self._btn_tsa_sil = QPushButton("Kaldır")
-        self._btn_tsa_sil.setStyleSheet(_BTN_DANGER)
+        self._btn_tsa_sil.setStyleSheet(_btn_danger_stil(self._T))
         self._btn_tsa_sil.setCursor(Qt.PointingHandCursor)
         self._btn_tsa_sil.setFixedWidth(100)
         # Başlangıç durumu BURADA verilmiyor: `_tsa_yukle()` her yüklemede

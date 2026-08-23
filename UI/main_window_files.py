@@ -249,7 +249,7 @@ class FileActionsMixin:
         except Exception as exc:  # pragma: no cover — kayıt, sonucu engellemez
             _log.warning("timestamp_verify_log_failed  exc=%s", exc)
 
-        TimestampDialog(sonuc, path.name, parent=self, sade=sade).exec()
+        TimestampDialog(sonuc, path.name, parent=self, sade=sade, T=self._T).exec()
 
     def _on_ctx_download(self, file_id: int | None, filepath: str | None) -> None:
         if not filepath:

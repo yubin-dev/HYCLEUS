@@ -58,12 +58,13 @@ from PySide6.QtWidgets import (
 
 from CORE.backup import VerifyReport
 from UI.dialog_kit import (
-    RAPOR_STILI,
-    VARSAYILAN_GORUNUM,
+    rapor_stili,
+    varsayilan_gorunum,
     ayrac,
     kutu,
     sarmali,
 )
+from UI.main_window_palette import _DARK
 
 #: En fazla kaç dosya adı listelenecek. Kalanı "… ve N tane daha".
 #: CLI'daki sınırla aynı (`backup_cli.py::_cmd_verify`).
@@ -79,12 +80,20 @@ DURUM_KUSURLU = "kusurlu"
 DURUM_OKUNAMADI = "okunamadi"
 DURUM_IPTAL = "iptal"
 
-_DURUM_GORUNUM: dict[str, tuple[str, str]] = {
-    DURUM_SAGLAM:    ("✔", "#a6e3a1"),
-    DURUM_KUSURLU:   ("✖", "#f38ba8"),
-    DURUM_OKUNAMADI: ("⚠", "#fab387"),
-    DURUM_IPTAL:     ("⏸", "#f9e2af"),
-}
+
+def _durum_gorunum(T: dict[str, str]) -> dict[str, tuple[str, str]]:
+    """Dört ayrı durum, dört ayrı renk (`test_dort_durum_dort_ayri_renk`).
+
+    `iptal` bilerek `T['gray']` — "yarıda kesildi" bir uyarı değil, nötr
+    bir durum (⏸ simgesi de bunu yansıtıyor); `okunamadi` gerçek bir
+    uyarı olduğu için `T['yellow']`'da kalıyor.
+    """
+    return {
+        DURUM_SAGLAM:    ("✔", T["green"]),
+        DURUM_KUSURLU:   ("✖", T["red"]),
+        DURUM_OKUNAMADI: ("⚠", T["yellow"]),
+        DURUM_IPTAL:     ("⏸", T["gray"]),
+    }
 
 #: Problem listeleri: (`VerifyReport` alanı, başlık, ne anlama geldiği).
 #:
@@ -114,7 +123,7 @@ class BackupVerifyDialog(QDialog):
     """Bir yedek doğrulamasının sonucunu gösterir."""
 
     def __init__(self, rapor: VerifyReport, yedek_dizini: Path, parent=None,
-                 *, sade: bool = False) -> None:
+                 *, sade: bool = False, T: dict[str, str] | None = None) -> None:
         """
         Args:
             sade: `True` ise yalnızca simge, başlık ve tek cümlelik özet
@@ -124,8 +133,11 @@ class BackupVerifyDialog(QDialog):
                 `UI/TimestampDialog.py` ile AYNI kural: gizleniyor,
                 silinmiyor — "Basit" ikinci bir metin kümesi değil, aynı
                 içeriğin bir görünümü.
+            T: Çağıranın aktif tema token sözlüğü (`HycleusWindow._T`).
+                Verilmezse varsayılan "mavi" koyu palete düşer.
         """
         self._sade = sade
+        self._T: dict[str, str] = T if T is not None else _DARK
         self._gelismis: list[QWidget] = []
         super().__init__(parent)
         self._rapor = rapor
@@ -135,7 +147,7 @@ class BackupVerifyDialog(QDialog):
         self.setWindowTitle(f"HYCLEUS — Yedek Doğrulama · {self._dizin.name}")
         self.setMinimumWidth(560)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setStyleSheet(RAPOR_STILI)
+        self.setStyleSheet(rapor_stili(self._T))
         self._build_ui()
 
     # ── Kurulum ───────────────────────────────────────────────────────────────
@@ -172,7 +184,9 @@ class BackupVerifyDialog(QDialog):
         dis.addWidget(self._alt_cubuk())
 
     def _baslik_bloku(self) -> QWidget:
-        simge_metni, renk = _DURUM_GORUNUM.get(self._durum, VARSAYILAN_GORUNUM)
+        simge_metni, renk = _durum_gorunum(self._T).get(
+            self._durum, varsayilan_gorunum(self._T)
+        )
         sarici = QWidget()
         satir = QHBoxLayout(sarici)
         satir.setContentsMargins(0, 0, 0, 0)
@@ -221,7 +235,7 @@ class BackupVerifyDialog(QDialog):
             if not adlar:
                 continue
             icerik = [
-                self._renkli_baslik(f"✖  {baslik}  ({len(adlar)})", "#f38ba8"),
+                self._renkli_baslik(f"✖  {baslik}  ({len(adlar)})", self._T["red"]),
                 sarmali(aciklama, "not_gov"),
             ]
             icerik += [sarmali(f"   • {ad}", "not_gov") for ad in adlar[:_LISTE_SINIRI]]
@@ -234,7 +248,7 @@ class BackupVerifyDialog(QDialog):
 
         if self._rapor.manifest_mismatch:
             kutular.append(kutu([
-                self._renkli_baslik("✖  İçerik listesi uyuşmuyor", "#f38ba8"),
+                self._renkli_baslik("✖  İçerik listesi uyuşmuyor", self._T["red"]),
                 sarmali(
                     "Yedeğin düz metin içerik listesi, şifreli kopyasıyla "
                     "aynı şeyi söylemiyor. Liste yedek alındıktan sonra "
@@ -246,7 +260,7 @@ class BackupVerifyDialog(QDialog):
 
         if self._rapor.error:
             kutular.append(kutu([
-                self._renkli_baslik("⚠  Yedek okunamadı", "#fab387"),
+                self._renkli_baslik("⚠  Yedek okunamadı", self._T["yellow"]),
                 sarmali(
                     "Yedek dizini açılamadı, dolayısıyla sağlam olup "
                     "olmadığı SÖYLENEMEZ. Bu, yedeğin bozuk olduğu "
@@ -257,7 +271,7 @@ class BackupVerifyDialog(QDialog):
 
         if self._rapor.cancelled:
             kutular.append(kutu([
-                self._renkli_baslik("⏸  Doğrulama yarıda kesildi", "#f9e2af"),
+                self._renkli_baslik("⏸  Doğrulama yarıda kesildi", self._T["gray"]),
                 sarmali(
                     "Bakılmayan dosyalar hakkında hiçbir şey bilinmiyor. "
                     "Sonuç, taranan kısım için bile 'sağlam' sayılmıyor — "
@@ -278,7 +292,7 @@ class BackupVerifyDialog(QDialog):
             icerik: list[QWidget] = [
                 self._renkli_baslik(
                     f"ℹ  Listede olmayan {len(self._rapor.extra)} fazladan dosya",
-                    "#89b4fa",
+                    self._T["accent"],
                 ),
                 sarmali(
                     "Yedek dizininde, içerik listesinde yazmayan dosyalar "
@@ -300,7 +314,7 @@ class BackupVerifyDialog(QDialog):
 
         if self._rapor.ok and not self._rapor.deep:
             kutular.append(kutu([
-                self._renkli_baslik("ℹ  Bu hızlı bir kontroldü", "#89b4fa"),
+                self._renkli_baslik("ℹ  Bu hızlı bir kontroldü", self._T["accent"]),
                 sarmali(
                     "Dosyaların boyutu ve özeti karşılaştırıldı; bütünlük "
                     "mühürleri açılmadı. Tam kontrol için doğrulamayı "

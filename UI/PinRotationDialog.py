@@ -59,7 +59,8 @@ from PySide6.QtWidgets import (
 
 from CORE.pin_policy import PIN_MIN_LEN
 from CORE.pin_rotation import PinRotationError, rotate_pin
-from UI.dialog_kit import RAPOR_STILI, ayrac, kutu, sarmali
+from UI.dialog_kit import rapor_stili, ayrac, kutu, sarmali
+from UI.main_window_palette import _DARK
 
 _EK_STIL = """
 QLineEdit {
@@ -98,7 +99,13 @@ class PinRotationDialog(QDialog):
         self.setMinimumWidth(460)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setModal(True)
-        self.setStyleSheet(RAPOR_STILI + _EK_STIL)
+        # `login_dialog.py`'nin giriş akışında açılıyor — henüz bir
+        # HycleusWindow (dolayısıyla bir `self._T`) yok. Tema seçimi bir
+        # kurulum ayarı, giriş ekranının kendisi hiç tema-farkında değil
+        # (login_dialog.py sabit mavi — bkz. B-055 raporu). Bu yüzden
+        # burada sabit "mavi" koyu palet kullanılıyor; giriş akışının
+        # tamamının temalanması ayrı, daha büyük bir iş.
+        self.setStyleSheet(rapor_stili(_DARK) + _EK_STIL)
         self._build_ui()
 
     # ── Kurulum ───────────────────────────────────────────────────────────────

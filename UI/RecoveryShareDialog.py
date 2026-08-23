@@ -89,6 +89,7 @@ from PySide6.QtWidgets import (
 )
 
 from CORE.recovery_share import RecoveryExport
+from UI.main_window_palette import _DARK
 
 _log = logging.getLogger(__name__)
 
@@ -163,19 +164,30 @@ class RecoveryShareDialog(QDialog):
         pano_saniye: otomatik pano temizleme süresi. Testler için
             kısaltılabilir; varsayılanı değiştirmek için buraya değil
             `PANO_TEMIZLEME_SN`'e dokunun.
+        T: Çağıranın aktif tema token sözlüğü (`HycleusWindow._T`).
+            Verilmezse varsayılan "mavi" koyu palete düşer.
     """
 
     def __init__(self, disa_aktarim: RecoveryExport, parent: Any = None, *,
-                 pano_saniye: int = PANO_TEMIZLEME_SN) -> None:
+                 pano_saniye: int = PANO_TEMIZLEME_SN,
+                 T: dict[str, str] | None = None) -> None:
         super().__init__(parent)
         self._export = disa_aktarim
         self._pano_saniye = pano_saniye
         self._kalan = 0
         self._pano_zamanlayici: QTimer | None = None
+        self._T: dict[str, str] = T if T is not None else _DARK
 
         self.setWindowTitle("HYCLEUS — Kurtarma Parçası")
         self.setModal(True)
         self.setMinimumWidth(760)
+        # B-055: önceden tamamen sabit (Tailwind-benzeri açık renkler),
+        # tema preset'i hiç etkilemiyordu. Yeni bir token İCAT EDİLMEDİ.
+        self.setStyleSheet(
+            f"QDialog {{ background: {self._T['bg']}; color: {self._T['text']}; }}"
+            f"QLabel {{ color: {self._T['text']}; }}"
+            f"QCheckBox {{ color: {self._T['text']}; }}"
+        )
 
         # Koruma, pencere GÖSTERİLMEDEN kuruluyor: `winId()` burada
         # yerli pencereyi zorluyor ve bayrak ilk boyamadan önce yerleşiyor.
@@ -210,8 +222,8 @@ class RecoveryShareDialog(QDialog):
         etiket.setObjectName("kurtarma_koruma_durumu")
         etiket.setWordWrap(True)
         etiket.setStyleSheet(
-            "color:#166534; font-size:12px;" if self._koruma_var
-            else "color:#B45309; font-size:12px; font-weight:600;")
+            f"color:{self._T['green']}; font-size:12px;" if self._koruma_var
+            else f"color:{self._T['yellow']}; font-size:12px; font-weight:600;")
         return etiket
 
     def _uyari_bloku(self) -> QWidget:
@@ -221,8 +233,9 @@ class RecoveryShareDialog(QDialog):
         etiket.setWordWrap(True)
         etiket.setTextInteractionFlags(Qt.TextSelectableByMouse)
         etiket.setStyleSheet(
-            "background:#FEF2F2; color:#7F1D1D; border:1px solid #FCA5A5;"
-            "border-radius:8px; padding:10px 12px; font-size:12px;")
+            f"background:{self._T['red_tint']}; color:{self._T['red']};"
+            f"border:1px solid {self._T['red']};"
+            f"border-radius:8px; padding:10px 12px; font-size:12px;")
         return etiket
 
     def _govde(self) -> QHBoxLayout:
@@ -262,8 +275,8 @@ class RecoveryShareDialog(QDialog):
             yok.setAlignment(Qt.AlignCenter)
             yok.setFixedSize(260, 260)
             yok.setStyleSheet(
-                "border:1px dashed #9CA3AF; border-radius:8px; color:#6B7280;"
-                "font-size:12px;")
+                f"border:1px dashed {self._T['border']}; border-radius:8px;"
+                f"color:{self._T['subtext']}; font-size:12px;")
             lay.addWidget(yok)
 
         lay.addStretch()
@@ -284,9 +297,10 @@ class RecoveryShareDialog(QDialog):
         self._metin.setReadOnly(True)
         self._metin.setFixedHeight(260)
         self._metin.setStyleSheet(
-            "QPlainTextEdit{background:#F9FAFB; border:1px solid #D1D5DB;"
-            "border-radius:8px; padding:10px; font-family:Consolas,monospace;"
-            "font-size:14px; letter-spacing:1px;}")
+            f"QPlainTextEdit{{background:{self._T['search_bg']};"
+            f"color:{self._T['text']}; border:1px solid {self._T['border']};"
+            f"border-radius:8px; padding:10px; font-family:Consolas,monospace;"
+            f"font-size:14px; letter-spacing:1px;}}")
         lay.addWidget(self._metin)
         return kutu
 
@@ -304,7 +318,7 @@ class RecoveryShareDialog(QDialog):
 
         self._pano_durum = QLabel("")
         self._pano_durum.setObjectName("kurtarma_pano_durum")
-        self._pano_durum.setStyleSheet("color:#B45309; font-size:12px;")
+        self._pano_durum.setStyleSheet(f"color:{self._T['yellow']}; font-size:12px;")
         lay.addWidget(self._pano_durum)
         lay.addStretch()
         return kutu

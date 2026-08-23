@@ -340,7 +340,7 @@ class HycleusWindow(
         if not is_admin_role(self._role):
             QMessageBox.warning(self, "Erişim Reddedildi", "Bu alana erişim yetkiniz yok.")
             return
-        AdminPanel(current_hwid=self._hwid, role=self._role, parent=self).exec()
+        AdminPanel(current_hwid=self._hwid, role=self._role, parent=self, T=self._T).exec()
 
     def _on_open_contact(self) -> None:
         from UI.ContactDialog import ContactDialog

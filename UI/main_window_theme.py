@@ -388,6 +388,35 @@ class ThemeMixin:
                 padding: 4px 12px;
                 margin: 4px 12px 0;
             }}
+
+            /* Güvenlik sekmesi (UI/GuvenlikView.py) — B-055. Bu sayfa hiç
+               kendi setStyleSheet() çağırmıyor, tamamı buradan cascade
+               ediyor (main_window_table.py/tree.py ile aynı desen). */
+            QWidget#guvenlik_view {{ background: {T['bg']}; }}
+            QWidget#guvenlik_view QLabel {{ color: {T['text']}; }}
+            QLabel#guvenlik_aciklama,
+            QLabel#guvenlik_mod_ipucu,
+            QLabel#guvenlik_kart_aciklama {{ color: {T['subtext']}; }}
+            QFrame#guvenlik_ayrac {{
+                background: {T['border']};
+                border: none;
+                max-height: 1px;
+            }}
+            QFrame#guvenlik_kart {{
+                background: {T['search_bg']};
+                border: 1px solid {T['border']};
+                border-radius: 8px;
+            }}
+            QWidget#guvenlik_view QCheckBox {{ color: {T['text']}; }}
+            QWidget#guvenlik_view QPushButton {{
+                background: {T['hover']};
+                color: {T['text']};
+                border: none;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-size: 12px;
+            }}
+            QWidget#guvenlik_view QPushButton:hover {{ background: {T['row_hover']}; }}
         """
 
         self.centralWidget().setStyleSheet(qss)

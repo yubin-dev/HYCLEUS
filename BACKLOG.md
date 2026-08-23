@@ -2633,7 +2633,7 @@ turu bekliyor.
 
 ## B-055 — AdminPanel / GuvenlikView / RecoveryShareDialog tema preset sistemine bağlı değil
 
-**Durum:** Açık
+**Durum:** KAPANDI — 2026-08-22 (aynı gün açılıp aynı gün kapandı)
 **Öncelik:** Orta (tutarlılık — okunabilirlik sorunu değil, üç ekran zaten kendi sabit paletleriyle okunabilir)
 **Bulundu:** 2026-08-22 — tema preset-registry'si turu (Claude Design senkronu)
 
@@ -2651,12 +2651,27 @@ ayrı pencere) ve o dönüşüm bilinçli olarak ayrı bir aşamaya
 ertelendi. Bu madde o kararın BACKLOG'daki kalıcı kaydı — konuşma
 geçmişi kaybolsa bile iz kalsın diye.
 
-### Düzeltme (bu turda uygulanmadı)
+### Düzeltme — UYGULANDI (aynı gün)
 
-Dialog→slide-over dönüşümüyle birlikte ele alınması mantıklı: o zaman
-zaten `main_window_layout.py`'nin bir parçası olacaklar ve `self._T`'a
-doğal olarak erişebilecekler. Önce tema sistemini dialog'lara taşıyıp
-sonra mimariyi değiştirmek iki kez iş yapmak anlamına gelebilir.
+Beklenenden erken ele alındı: dialog→slide-over dönüşümü BEKLENMEDEN
+üçü de `self._T`'a bağlandı — mimari değişmeden de mümkün olduğu
+ortaya çıktı (AdminPanel/RecoveryShareDialog `T` parametresi alıyor,
+GuvenlikView `main_window_theme.py`'nin merkezi QSS'inden cascade
+ediyor). İki yeni token eklendi (`red_tint`, `green_tint`, 5 preset'in
+hepsinde tanımlı). `UI/dialog_kit.py`'nin `RAPOR_STILI`/
+`VARSAYILAN_GORUNUM` sabitleri de aynı turda fonksiyona çevrildi —
+TimestampDialog/BackupVerifyDialog/PinRotationDialog'un üçü de tek
+kaynaktan besleniyordu, ikisi düzeltilip biri (dialog_kit tüketicisi
+olduğu için) sessizce bozulmasın diye üçü de güncellendi.
+
+`tests/test_tema_kontrasti.py` genişletildi: gerçek preset değerleriyle
+WCAG AA + "iki farklı preset'le çağrılan stil fonksiyonu FARKLI çıktı
+üretmeli" mutasyon kanıtı (AdminPanel'in `_stil`/`_btn_stil`/instance
+metotları, `dialog_kit.rapor_stili`, gerçek `AdminPanel`/
+`RecoveryShareDialog`/`HycleusWindow` nesneleri üzerinden).
+
+Dialog→slide-over dönüşümü hâlâ AYRI, ele alınmadı — bu madde yalnızca
+renk/tema bağlanmasını kapsıyordu.
 
 ---
 
@@ -2688,3 +2703,38 @@ ders: sayı çürüyor, ölçen kod çürümüyor. İkincisi daha kalıcı ama
 README'nin "Verifying a build without a GUI" örneğini yeniden yazmayı
 gerektiriyor; bu tur yalnızca `CORE.app_mode`'u listeye ekledi, belge
 turunun kapsamı değildi.
+
+---
+
+## B-057 — "Mavi" temasının `subtext`/`accent` renkleri search_bg üzerinde de AA sınırının altında
+
+**Durum:** Açık
+**Öncelik:** Düşük (kozmetik — B-054 ile aynı sınıf, aynı gerekçeyle düzeltilmedi)
+**Bulundu:** 2026-08-22 — B-055 turu, `tests/test_tema_kontrasti.py`'yi
+AdminPanel/GuvenlikView/RecoveryShareDialog'u kapsayacak şekilde
+genişletirken
+
+B-054, "mavi" temasının `subtext` renginin (`#9CA3AF`) kendi `bg`sine
+karşı AA'nın altında olduğunu kaydetmişti. B-055 aynı `search_bg`
+token'ını (önceden yalnızca arama çubuğu gibi dar bir girdi kutusunda
+kullanılıyordu) AdminPanel'in tablosu ve GuvenlikView'in kartları için
+"metin taşıyan bir yüzey" olarak YENİDEN kullanınca, iki ölçüm daha AA
+sınırının altında çıktı:
+
+- `subtext` / `search_bg` (mavi, açık mod) — **2.31:1**
+- `accent` / `search_bg` (mavi, koyu mod) — **2.70:1** (AdminPanel'in
+  kendi HWID satırını vurgulaması bu zeminde metin olarak yazılıyor)
+
+B-054 ile aynı gerekçeyle düzeltilmedi: bu tur "mevcut mavi"yi birebir
+korumayı istedi, renk değiştirmek kapsamın dışına çıkardı.
+`tests/test_tema_kontrasti.py::_ONCEDEN_VAR_OLAN_ISTISNALAR` üçünü de
+(B-054'ün `subtext_bg`'si dahil) aynı yerde topluyor.
+
+### Düzeltme (bu turda uygulanmadı)
+
+B-054'ün önerdiği `subtext` düzeltmesi (`#9CA3AF` → `#6B7280`) muhtemelen
+üçünü de birden çözer — `search_bg` mavi'de `hover` ile aynı değeri
+taşıyor (`#F3F4F6` açık / `#2C2C2E` koyu) ve `accent` (`#2563EB`) hiç
+değişmiyor, yalnızca zemin `bg`den `search_bg`'ye kaydığında marjinal
+olan oran daha da düşüyor. Tek bir renk değişikliği (B-054'te önerilen)
+muhtemelen her iki maddeyi de kapatır — ayrı ayrı çözülmemeli.

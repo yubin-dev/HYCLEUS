@@ -19,52 +19,69 @@ Ortak bir sabit kümesi, her iki tarafa diğerinin sözcüklerini
 taşıtırdı — ve "bu seviye burada kullanılmıyor" istisnaları başlardı.
 
 Paylaşılan şey biçim; anlam paylaşılmıyor.
+
+Neden RAPOR_STILI/VARSAYILAN_GORUNUM artık SABİT DEĞİL (B-055)
+----------------------------------------------------------------
+Sabit bir Catppuccin-Mocha paletiydi — hangi tema seçili olursa olsun
+hep aynı görünüyordu. `main_window_theme.py`'nin preset-registry'si
+(75c6ddd) bu üç diyaloğu hiç etkilemiyordu, çünkü ikisi de token değil
+literal hex okuyordu. Şimdi ikisi de kayıtlı token sözlüğünü (`self._T`)
+parametre olarak alan FONKSİYON — ikinci bir renk yolu açmadan tek
+noktadan çözülüyor.
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
-#: Rapor diyaloglarının ortak stil sayfası.
-#:
-#: Renk paleti `UI/TagDialog.py` ile aynı aileden; uygulamanın diyalogları
-#: tek bir görsel dil konuşuyor.
-RAPOR_STILI = """
-QDialog  { background: #1e1e2e; color: #cdd6f4; }
-QLabel   { color: #cdd6f4; background: transparent; }
-QLabel#dosya    { color: #a6adc8; font-size: 11px; }
-QLabel#simge    { font-size: 26px; }
-QLabel#baslik   { font-size: 15px; font-weight: bold; }
-QLabel#ozet     { color: #cdd6f4; font-size: 12px; }
-QLabel#oneri    { color: #f9e2af; font-size: 12px; }
-QLabel#not_bas  { font-size: 12px; font-weight: bold; }
-QLabel#not_gov  { color: #a6adc8; font-size: 11px; }
-QLabel#alan_ad  { color: #a6adc8; font-size: 11px; }
-QLabel#alan_dgr { color: #cdd6f4; font-size: 12px; font-weight: bold; }
-QFrame#sep      { background: #313244; max-height: 1px; }
-QFrame#kutu     { background: #181825; border: 1px solid #313244; border-radius: 6px; }
-QScrollArea     { background: #1e1e2e; border: none; }
-QWidget#govde   { background: #1e1e2e; }
-QTextEdit#teknik {
-    background: #11111b; color: #a6adc8;
-    border: 1px solid #313244; border-radius: 6px;
+
+def rapor_stili(T: dict[str, str]) -> str:
+    """Rapor diyaloglarının ortak stil sayfası — kayıtlı tema token'larından.
+
+    `T`, `UI/main_window_palette.py`'deki preset sözlüklerinden biri
+    (`self._T`). Yeni bir token İCAT EDİLMEDİ — yalnızca var olanlar
+    kullanıldı.
+    """
+    return f"""
+QDialog  {{ background: {T['bg']}; color: {T['text']}; }}
+QLabel   {{ color: {T['text']}; background: transparent; }}
+QLabel#dosya    {{ color: {T['subtext']}; font-size: 11px; }}
+QLabel#simge    {{ font-size: 26px; }}
+QLabel#baslik   {{ font-size: 15px; font-weight: bold; }}
+QLabel#ozet     {{ color: {T['text']}; font-size: 12px; }}
+QLabel#oneri    {{ color: {T['yellow']}; font-size: 12px; }}
+QLabel#not_bas  {{ font-size: 12px; font-weight: bold; }}
+QLabel#not_gov  {{ color: {T['subtext']}; font-size: 11px; }}
+QLabel#alan_ad  {{ color: {T['subtext']}; font-size: 11px; }}
+QLabel#alan_dgr {{ color: {T['text']}; font-size: 12px; font-weight: bold; }}
+QFrame#sep      {{ background: {T['border']}; max-height: 1px; }}
+QFrame#kutu     {{ background: {T['search_bg']}; border: 1px solid {T['border']}; border-radius: 6px; }}
+QScrollArea     {{ background: {T['bg']}; border: none; }}
+QWidget#govde   {{ background: {T['bg']}; }}
+QTextEdit#teknik {{
+    background: {T['bg']}; color: {T['subtext']};
+    border: 1px solid {T['border']}; border-radius: 6px;
     font-family: Consolas, monospace; font-size: 11px;
-}
-QPushButton#primary_btn {
-    background: #89b4fa; color: #1e1e2e; border: none;
+}}
+QPushButton#primary_btn {{
+    background: {T['accent']}; color: {T['on_accent']}; border: none;
     border-radius: 6px; padding: 9px 22px; font-size: 13px; font-weight: bold;
-}
-QPushButton#primary_btn:hover { background: #b4d0ff; }
-QPushButton#flat_btn {
-    background: #313244; color: #cdd6f4; border: none;
+}}
+QPushButton#primary_btn:hover {{ background: {T['accent_hover']}; }}
+QPushButton#flat_btn {{
+    background: {T['hover']}; color: {T['text']}; border: none;
     border-radius: 6px; padding: 7px 14px; font-size: 12px;
-}
-QPushButton#flat_btn:hover { background: #45475a; }
+}}
+QPushButton#flat_btn:hover {{ background: {T['row_hover']}; }}
 """
 
-#: Seviyesi bilinmeyen bir mesajın görünümü. Diyalogların çökmemesi için
-#: var; eksiksizlik denetimleri erişilmez olmasını sağlıyor.
-VARSAYILAN_GORUNUM: tuple[str, str] = ("•", "#a6adc8")
+
+def varsayilan_gorunum(T: dict[str, str]) -> tuple[str, str]:
+    """Seviyesi bilinmeyen bir mesajın görünümü — diyalogların çökmemesi için.
+
+    Eksiksizlik denetimleri erişilmez olmasını sağlıyor.
+    """
+    return ("•", T["subtext"])
 
 
 def ayrac() -> QFrame:
@@ -104,4 +121,4 @@ def kutu(icerik: list[QWidget]) -> QFrame:
     return cerceve
 
 
-__all__ = ["RAPOR_STILI", "VARSAYILAN_GORUNUM", "ayrac", "kutu", "sarmali"]
+__all__ = ["rapor_stili", "varsayilan_gorunum", "ayrac", "kutu", "sarmali"]

@@ -47,11 +47,12 @@ try:
         DURUM_OKUNAMADI,
         DURUM_SAGLAM,
         BackupVerifyDialog,
-        _DURUM_GORUNUM,
+        _durum_gorunum,
         _LISTE_SINIRI,
         durum_of,
     )
     from UI.main_window_open import BackupMixin
+    from UI.main_window_palette import _DARK
 except ImportError as _exc:  # pragma: no cover — ortama bağlı
     pytest.skip(
         f"Qt katmanı bu ortamda yüklenemedi ({_exc}) — testler atlanıyor",
@@ -61,6 +62,10 @@ except ImportError as _exc:  # pragma: no cover — ortama bağlı
 from CORE import crypto
 from CORE.backup import VerifyReport, create_backup, verify_backup
 from CORE.crypto import encrypt_file, generate_key
+
+#: B-055'ten sonra görünüm T'ye göre değişiyor; testler tek bir sabit
+#: paletle çalışıyor.
+_DURUM_GORUNUM = _durum_gorunum(_DARK)
 
 _USER = 3
 _HWID = "TEST-HWID-BKUI"
@@ -177,6 +182,7 @@ class _Sahne(BackupMixin, QWidget):
         self._key = key
         self._hwid = _HWID
         self._user_id = _USER
+        self._T = _DARK
 
 
 @pytest.fixture
