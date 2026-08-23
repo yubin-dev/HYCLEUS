@@ -2768,3 +2768,59 @@ görünümü daha da değiştirir. `accent`/`search_bg` ayrı bir problem:
 (veya AdminPanel'in HWID vurgusunu `search_bg` yerine başka bir
 yüzeyde göstermek) gerekir. İkisi de "mevcut mavi"yi birebir koruma
 talimatıyla gerginlik içinde — ayrı bir onay turu bekliyor.
+
+---
+
+## B-058 — Giriş ekranındaki self-servis kayıt, YÖNETİCİ USB'sini hiç doğrulamıyor
+
+**Durum:** Açık
+**Öncelik:** Orta (kimlik doğrulama gerektirmiyor ama giriş 'pending' durumda engelli — bkz. aşağı)
+**Bulundu:** 2026-08-24 — kayıt ekranının mod'a göre ayrılması turu,
+`UI/login_dialog.py::_on_register()` okunurken
+
+`UI/login_dialog.py`'nin "Kayıt Ol" sekmesi (giriş ekranı, HENÜZ
+kimlik doğrulanmamış) "Kayıt için Yönetici USB'si takılı olmalıdır"
+bilgi kutusu gösteriyor ve "Yönetici USB: Bağlı / Bekleniyor" durumunu
+(`current == self._hwid`) yazıyor — ama bu kontrol yalnızca GÖRÜNTÜ.
+`_reg_btn` bu duruma göre hiç `setEnabled(False)` olmuyor ve
+`_on_register()` yalnızca şunu kontrol ediyor:
+
+1. Takılı USB `users` tablosunda zaten kayıtlı mı (evetse reddet),
+2. kullanıcı adı benzersiz mi.
+
+Takılı USB'nin GERÇEKTEN bir yöneticiye ait olup olmadığı hiç
+sorulmuyor — herhangi bir boş/yeni USB ile giriş ekranından, HİÇBİR
+kimlik doğrulaması yapmadan, `create_vault()` (gerçek kripto malzemesi
++ keyring yazımı) tetiklenip `users` tablosuna `status='pending'` bir
+satır eklenebiliyor.
+
+Ciddiyeti sınırlayan şey: `status='pending'` girişi `_on_login()`da
+engelliyor (satır 854 — "Hesabınız yönetici onayı bekliyor"), yani bu
+tek başına bir yetki yükseltmesi DEĞİL. Yine de: (a) gerçek vault
+dosyası + keyring kaydı oluşuyor (kimliği doğrulanmamış biri tarafından
+tetiklenen disk/kasa yazımı), (b) bilgi kutusunun iddiası ("yönetici
+USB'si takılı olmalı") koddaki gerçek davranışla ÇELİŞİYOR — kullanıcıyı
+var olmayan bir kontrole inandırıyor, tıpkı bu turda kaçınılan "sahte
+doğrulama" riski gibi.
+
+`UI/AdminPanel.py`'den açılan `RegisterDialog.py`'de aynı desen var
+ama ORADA zararsız: o ekrana ulaşmak zaten oturum açmış bir yöneticiyi
+gerektiriyor (AdminPanel rol kontrolü), yani "admin USB" ayrıca
+doğrulanmasa da çağıran taraf zaten yönetici. Giriş ekranındaki kopya
+bu ön koşula sahip DEĞİL — orası tam olarak kimliği doğrulanmamış
+tarafın erişebildiği tek yer.
+
+Bu turda düzeltilmedi: kapsam mockup'ın kurumsal alanlarının mod'a
+göre gizlenmesiydi, bu ayrı bir kimlik doğrulama boşluğu.
+
+### Düzeltme (bu turda uygulanmadı)
+
+En basit seçenek: bilgi kutusunun iddiasını gerçek davranışla
+eşleştirmek — ya `_reg_btn`'i `current == self._hwid` DEĞİLKEN devre
+dışı bırakmak (ama bu, giriş ekranından self-servis kaydı fiilen
+İMKANSIZ kılar — çünkü kayıt olan kişinin USB'si TANIM GEREĞİ henüz bir
+yöneticiye ait DEĞİL), ya da metni gerçeğe uydurmak ("bu USB ile bir
+hesap oluşturulacak, bir yönetici onaylayana kadar giriş yapamazsınız"
+gibi, "yönetici USB'si" iddiasını kaldırarak). İkinci seçenek daha
+tutarlı: akışın kendisi zaten "kimse doğrulamadı, onay bekliyor" modeli
+üzerine kurulu, metnin yalan söylememesi yeterli.
