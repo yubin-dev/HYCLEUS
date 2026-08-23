@@ -2774,7 +2774,8 @@ talimatıyla gerginlik içinde — ayrı bir onay turu bekliyor.
 ## B-058 — Giriş ekranındaki self-servis kayıt, YÖNETİCİ USB'sini hiç doğrulamıyor
 
 **Durum:** Açık
-**Öncelik:** Orta (kimlik doğrulama gerektirmiyor ama giriş 'pending' durumda engelli — bkz. aşağı)
+**Öncelik:** Yüksek (2026-08-24 güncellemesiyle yükseltildi — bkz. aşağı:
+onaysız `role='admin'` hesabı + tüm kullanıcıların TOTP'sini bozan yan etki)
 **Bulundu:** 2026-08-24 — kayıt ekranının mod'a göre ayrılması turu,
 `UI/login_dialog.py::_on_register()` okunurken
 
@@ -2824,3 +2825,85 @@ hesap oluşturulacak, bir yönetici onaylayana kadar giriş yapamazsınız"
 gibi, "yönetici USB'si" iddiasını kaldırarak). İkinci seçenek daha
 tutarlı: akışın kendisi zaten "kimse doğrulamadı, onay bekliyor" modeli
 üzerine kurulu, metnin yalan söylememesi yeterli.
+
+**Güncelleme (2026-08-24) — ilk admin nasıl oluşuyor, ve asıl bulgu daha ciddi**
+
+Yukarıdaki analiz "Kayıt Ol" sekmesinin `_on_register()`'ını konu alıyordu.
+Bu turda soru genişletildi: taze bir kurulumda (users tablosu boş) ilk
+kayıt "Kayıt Ol"dan mı geçiyor, ve öyleyse onu kim onaylıyor? Ölçüldü
+(`tests/test_b058_ilk_kurulum.py`, 3 test, hepsi GEÇTİ):
+
+1. **İlk kullanıcı "Kayıt Ol"dan HİÇ geçmiyor.** TOTP sırrı yokken
+   (`CORE.secret_store.load_totp_secret() is None`) `LoginDialog`
+   `_build_main_ui()` (Giriş/Kayıt sekmeleri) DEĞİL, `_build_setup_ui()`
+   ("İlk Kurulum" sihirbazı) açıyor. O sihirbaz `users` tablosuna HİÇ
+   dokunmuyor — satırı `main.py`'nin `dialog.exec()` SONRASI çağırdığı
+   `sync_session_user()` (`CORE/session_user.py`) yazıyor, doğrudan
+   `status='approved'`, `role='admin'` ile. Yani "ilk kullanıcı da
+   pending düşer, onaylayacak kimse yoktur" korkusu ASILSIZ — ilk
+   kullanıcı otomatik onaylı. Bu, görevin 1. sorusuna (a) cevabı.
+
+2. **Ama bu yol "İLK" ile SINIRLI DEĞİL — asıl bulgu bu.** `_first_run`
+   hesabı (`main.py` + `login_dialog.py`) iki şeye bakıyor: TOTP sırrının
+   varlığı (**GLOBAL** — tek bir `keyring` girdisi,
+   `CORE/secret_store.py::TOTP_USERNAME`) VE vault dosyasının varlığı
+   (**HWID BAŞINA**, `CORE/vault_manager.py::_read_vault_path`). Sır BİR
+   KEZ kaydedildikten SONRA bile, DAHA ÖNCE HİÇ GÖRÜLMEMİŞ herhangi bir
+   USB takıldığında (o HWID için vault dosyası yok) `_first_run` YİNE
+   `True` çıkıyor. Sonuç: kurulu bir sistemde ikinci/üçüncü/n'inci bir
+   USB, "Kayıt Ol" (pending onay) sekmesine değil, İLK KURULUM
+   SİHİRBAZINA yeniden düşüyor — rolü SERBEST seçtiriyor (varsayılan
+   "Yönetici", işaretli geliyor) ve `_on_setup_confirm()` `status='pending'`
+   yazmıyor, `sync_session_user()` üzerinden yine doğrudan `'approved'`
+   üretiyor. **"Kayıt Ol" sekmesinin `status='pending'` yazan tek satırı,
+   yalnızca ZATEN bir vault'u olan (yani daha önce bu yoldan ya da
+   RegisterDialog'dan geçmiş) bir HWID için çalışabiliyor** — gerçekten
+   yeni, hiç görülmemiş bir USB o kod yoluna hiç uğramıyor.
+
+3. **Yan etki: paylaşılan TOTP sırrı EZİLİYOR.** `_on_setup_confirm()`
+   sonunda her zaman `_save_secret(self._secret)` çağrılıyor —
+   `self._secret` o oturum için `pyotp.random_base32()` ile TAZE
+   üretilmiş bir değer. TOTP sırrı global olduğundan, ikinci bir USB'nin
+   İlk Kurulum'dan geçmesi TÜM MEVCUT kullanıcıların paylaştığı sırrı
+   değiştiriyor — ilk kullanıcının authenticator uygulaması o andan
+   itibaren geçerli kod ÜRETMEZ HALE geliyor (test 3 bunu `pyotp` ile
+   doğrudan doğruluyor: eski sırla üretilen kod, yeni sırla artık
+   GEÇERSİZ).
+
+Bu üçü birlikte: kurulu bir HYCLEUS makinesine daha önce hiç
+kullanılmamış bir USB takan biri, HİÇBİR onay olmadan `status='approved'`
+`role='admin'` bir hesap açabiliyor VE bunu yaparken mevcut tüm
+kullanıcıların TOTP'sini kalıcı olarak bozuyor. Bu ne salt "(a)" ne salt
+"(b)" — ilk kullanıcı gerçekten otomatik onaylanıyor (a'ya benziyor) ama
+"onaysız admin oluşturma" sorunu İLK kullanıcıyla SINIRLI değil, sistemin
+ÖMRÜ boyunca her yeni USB için tekrarlıyor. **Prompt 1'in ("İlk kurulum
+sihirbazına yeni soru eklenmeyecek") kararıyla doğrudan GERİLİM
+içinde**: bu bulgunun akla gelen düzeltmelerinin çoğu (aşağı bakınız)
+sihirbaza bir soru/kontrol eklemeyi gerektiriyor — karar kullanıcıya
+bırakılıyor, bu turda hiçbir kod yazılmadı.
+
+### Düzeltme (bu turda uygulanmadı — yalnızca seçenekler)
+
+Görev, var olan İKİ giriş noktasından (RegisterDialog / login_dialog'un
+Kayıt Ol'u) birine bağlanmayı, ÜÇÜNCÜ bir yol açılmamasını istiyor. İkisi
+de zaten `status='pending'` yazıyor — asıl sorun onlara hiç UĞRANMAMASI.
+Olası yönler (hiçbiri uygulanmadı):
+
+- **`_first_run`ı "gerçekten hiç kurulmamış" ile "bu HWID'i hiç görmedim"
+  ayırt edecek şekilde yeniden tanımla** — ör. `users` tablosunda HİÇ
+  satır yoksa gerçek ilk kurulum, satır VARSA (TOTP sırrı zaten
+  kaydedilmiş) yeni bir HWID İlk Kurulum'a değil "Kayıt Ol"a
+  yönlendirilsin. Bu, Prompt 1'in sihirbaza soru eklenmemesi kararını
+  BOZMAZ (sihirbazın kendisi değişmiyor, sihirbaza NE ZAMAN
+  girildiğinin kararı değişiyor) — ama `main.py` + `login_dialog.py`nin
+  iki ayrı `_first_run` hesaplamasının İKİSİNİN de güncellenmesi
+  gerekir (bkz. "iki kopya" riskine bu depronun hassasiyeti).
+- **TOTP sırrını HWID başına yap** (şu an global) — hem bu ezilme yan
+  etkisini hem de "herkesin authenticator kodu aynı" tuhaflığını
+  çözer, ama bu daha büyük bir migration (mevcut kullanıcıların QR'ı
+  yeniden taranması gerekir).
+- Asgari/acil önlem: `_on_setup_confirm()`'ün `users` tablosu BOŞ
+  DEĞİLKEN çağrılmasını engellemek (bir tür kapı) — sihirbaza soru
+  EKLEMEZ, yalnızca YOLU kapatır; ikinci bir USB için akış "Kayıt Ol"a
+  DÜŞMEZ hâlâ, yalnızca sihirbaza da düşemez hâle gelir (kilitli kalır)
+  — bu da kendi başına bir kullanılabilirlik sorunu, ayrı bir karar.
