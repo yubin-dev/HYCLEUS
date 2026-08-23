@@ -358,6 +358,19 @@ def _m21_audit_log_entry_hash(conn: sqlite3.Connection) -> None:
     sutun_ekle(conn, "audit_log", "entry_hash TEXT")
 
 
+def _m22_settings_app_mode(conn: sqlite3.Connection) -> None:
+    # Bireysel/Kurumsal görünüm modu (CORE/app_mode.py) — YALNIZCA UI
+    # filtresi, RBAC değil. Varsayılan KURUMSAL: var olan kurulumlar
+    # hiçbir şey gizlenmemiş hâliyle devam eder, mod BİLİNÇLİ olarak
+    # Bireysel'e geçirilmeli.
+    #
+    # Bu, TEMEL_SURUM'un (21) ÜSTÜNDEKİ ilk göç — 1..21'in aksine
+    # `senkronize()` bunu GERÇEKTEN çalıştırır (bkz. modül docstring'i).
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('app_mode', 'kurumsal')"
+    )
+
+
 #: Numaralı, SIRALI, değişmez göç listesi. Sıra anlamlıdır: 11 numara
 #: `folders` tablosuna referans veriyor, yani 10'dan sonra gelmek ZORUNDA.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -430,9 +443,13 @@ MIGRATIONS: tuple[Migration, ...] = (
               "Denetim kaydı hash zinciri sütunu. Öncesindeki satırlarda "
               "NULL kalır ve zincire dahil edilmez.",
               _m21_audit_log_entry_hash),
-    # ── v3.0 buradan devam edecek ──────────────────────────────────────────
-    # Migration(22, "tpm-...", "...", _m22_...),
-    # Migration(23, "hclx-...", "...", _m23_...),
+    # ── TEMEL_SURUM (21) ÜSTÜ — buradan itibaren GERÇEKTEN çalışır ─────────
+    Migration(22, "settings-app-mode",
+              "Bireysel/Kurumsal görünüm modu ayarı (CORE/app_mode.py). "
+              "Yalnızca UI filtresi, RBAC değil; varsayılan kurumsal.",
+              _m22_settings_app_mode),
+    # Migration(23, "tpm-...", "...", _m23_...),
+    # Migration(24, "hclx-...", "...", _m24_...),
 )
 
 

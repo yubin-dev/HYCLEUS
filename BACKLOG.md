@@ -2657,3 +2657,34 @@ Dialog→slide-over dönüşümüyle birlikte ele alınması mantıklı: o zaman
 zaten `main_window_layout.py`'nin bir parçası olacaklar ve `self._T`'a
 doğal olarak erişebilecekler. Önce tema sistemini dialog'lara taşıyıp
 sonra mimariyi değiştirmek iki kez iş yapmak anlamına gelebilir.
+
+---
+
+## B-056 — README'nin `--selftest` modül sayısı zaten yanlıştı, bu turdan önce de
+
+**Durum:** Açık
+**Öncelik:** Düşük (kozmetik — `--selftest` kendi doğru sayısını basıyor, README'ninki yalnızca örnek metin)
+**Bulundu:** 2026-08-22 — Bireysel/Kurumsal mod turu, `CORE/app_mode.py`'yi
+`main.py::_SELFTEST_MODULLERI`'ye eklerken
+
+README.md (EN+TR) "57 on Windows — 53 plus the wmi/pywin32 group" diyor.
+Ölçüldü: bu turdan ÖNCEKİ commit'te (`git stash` ile) gerçek sayı
+**61 (Windows dışı) / 65 (Windows)** idi — 53/57 hiçbir zaman doğru
+değildi, bu tur bunu bozmadı, yalnızca fark etti.
+
+`CORE.app_mode` eklendikten sonra gerçek sayı **62 / 66**. Sayı elle
+tutulan bir liste (`_SELFTEST_MODULLERI` + `_SELFTEST_UCUNCU_TARAF` +
+platform grubu) olduğu için her yeni modülde tekrar kayacak —
+`tests/test_packaging.py::test_selftest_listesi_depodaki_her_modulu_
+kapsiyor` listenin EKSİKSİZ olduğunu zorluyor ama README'deki SAYIYI
+hiç doğrulamıyor.
+
+### Düzeltme (bu turda uygulanmadı)
+
+İki seçenek: (1) README'deki sayıyı 62/66'ya güncellemek — ama her yeni
+modülde yine eskiyecek; (2) sabit sayıyı README'den tamamen kaldırıp
+"`--selftest` kendi güncel sayısını basar" demek — B-052-sınıfı bir
+ders: sayı çürüyor, ölçen kod çürümüyor. İkincisi daha kalıcı ama
+README'nin "Verifying a build without a GUI" örneğini yeniden yazmayı
+gerektiriyor; bu tur yalnızca `CORE.app_mode`'u listeye ekledi, belge
+turunun kapsamı değildi.

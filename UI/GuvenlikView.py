@@ -125,8 +125,8 @@ class GuvenlikView(QWidget):
         lay.addWidget(baslik)
 
         aciklama = QLabel(
-            "Bu üç kontrol hiçbir dosyayı değiştirmiyor, ağa çıkmıyor ve "
-            "yalnızca sonucu denetim kaydına yazıyor."
+            "Bu üç kontrol hiçbir dosyayı değiştirmiyor; üçü de tek ekranda, "
+            "ayrı pencere açmadan doğrulanır ve sonucu denetim kaydına yazar."
         )
         aciklama.setWordWrap(True)
         aciklama.setObjectName("guvenlik_aciklama")

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 
+from CORE.app_mode import KURUMSAL, get_app_mode, is_bireysel
 from CORE.file_queries import (
     files_by_label,
     search_files,
@@ -113,6 +114,14 @@ class HycleusWindow(
         self._workers: list[QObject]  = []
         self._dark: bool         = True
         self._theme_key: str     = "mavi"
+        # Bireysel/Kurumsal — YALNIZCA görünürlük filtresi, bkz. CORE/app_mode.py.
+        # DB henüz bağlı değilse (beklenmeyen sıralama) KURUMSAL'a düş:
+        # hiçbir şey gizlenmemiş hâl, sessiz bir kısıtlama değil.
+        try:
+            self._app_mode: str = get_app_mode(DBManager())
+        except Exception as exc:
+            _log.warning("app_mode_okunamadi  exc=%s — varsayilan KURUMSAL", exc)
+            self._app_mode = KURUMSAL
 
         self._pool = QThreadPool.globalInstance()
         self._pool.setMaxThreadCount(6)
@@ -216,6 +225,18 @@ class HycleusWindow(
             _w.setVisible(is_admin)
             _w.setEnabled(is_admin)
 
+        # ── Bireysel mod: yalnızca "YÖNETİCİ" başlığı gizlenir ───────────
+        #
+        # Tek kullanıcı zaten admin — başlık altındaki düğmeler (USB
+        # Yönetimi dahil) KALIR, yalnızca başlık metni anlamsız. Bu bir
+        # RBAC kararı DEĞİL (CORE/app_mode.py hiçbir rolü değiştirmiyor):
+        # is_admin yukarıda zaten karar verdi, burada yalnızca is_admin
+        # zaten True olan bir görünürlüğü DAHA DA daraltıyoruz — asla
+        # genişletmiyoruz (salt okunur/standart rolde bu satır hiç
+        # çalışmaz, çünkü is_admin zaten False).
+        if is_admin and is_bireysel(self._app_mode):
+            self._admin_label.setVisible(False)
+
         # ── Yazma/düzenleme işlemleri: Salt Okunur'da tamamen kapalı ─────
         self.setAcceptDrops(can_write)
         for _w in (self._drop_hint, self._btn_add_file, self._btn_add_folder,
@@ -245,6 +266,18 @@ class HycleusWindow(
             _kritik.setEnabled(can_write)
 
         self._role_badge.setText(display_role(self._role))
+
+    def reload_app_mode(self) -> None:
+        """Ayar değiştiğinde AdminPanel bunu çağırır — yeniden başlatma gerekmesin.
+
+        `main_window_lock.py::reload_idle_timeout` ile aynı desen.
+        """
+        try:
+            self._app_mode = get_app_mode(DBManager())
+        except Exception as exc:
+            _log.warning("app_mode_okunamadi  exc=%s", exc)
+            return
+        self._apply_role_restrictions()
 
     # ── Action bar işlemleri ──────────────────────────────────────────────────
 

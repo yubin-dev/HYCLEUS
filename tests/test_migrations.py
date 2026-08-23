@@ -228,8 +228,15 @@ def test_temel_gocler_CALISTIRILMADAN_damgalanıyor(gercek_db) -> None:
     """
     Bu turun sözü: davranış değişmiyor. Temel göçler yeniden koşsaydı
     boot yolu değişmiş olurdu.
+
+    Yalnızca 1..TEMEL_SURUM'a bakıyor: TEMEL_SURUM üstü (bkz. Migration 22)
+    GERÇEKTEN çalışır ve 'gocmen' damgalanır — bu, iskeletin sözünün AYNI
+    kısmı, ihlali değil.
     """
-    kaynaklar = {kaynak for _n, _a, _t, kaynak in M.durum(gercek_db.conn)}
+    kaynaklar = {
+        kaynak for numara, _a, _t, kaynak in M.durum(gercek_db.conn)
+        if numara <= M.TEMEL_SURUM
+    }
     assert kaynaklar == {"temel"}, (
         f"Temel göçler 'gocmen' olarak işaretlenmiş — çalıştırılmışlar: {kaynaklar}"
     )
@@ -247,7 +254,9 @@ def test_temel_gocler_GERCEKTEN_cagrilmiyor(
     şema aynı kalıyor — fark yalnızca çağrılıp çağrılmadıklarında.
 
     Burada doğrudan o soruluyor: `_apply_schema()` sırasında hiçbir temel
-    göç fonksiyonu çağrılmamalı.
+    (1..TEMEL_SURUM) göç fonksiyonu çağrılmamalı. TEMEL_SURUM üstü (bkz.
+    Migration 22) burada da GERÇEKTEN çağrılır — o ayrı bir sözün konusu,
+    ihlal değil.
     """
     cagrilanlar: list[int] = []
 
@@ -266,8 +275,9 @@ def test_temel_gocler_GERCEKTEN_cagrilmiyor(
     db = DBManager(tmp_path / "izlenen.db")
     db.connect(hwid="TEST-HWID-MIG")
     try:
-        assert cagrilanlar == [], (
-            f"Temel göçler çalıştırıldı: {cagrilanlar}. Bu tur davranışı "
+        temel_cagrilanlar = [n for n in cagrilanlar if n <= M.TEMEL_SURUM]
+        assert temel_cagrilanlar == [], (
+            f"Temel göçler çalıştırıldı: {temel_cagrilanlar}. Bu tur davranışı "
             "değiştirmemeliydi — `_apply_schema()` şemayı zaten kuruyor."
         )
     finally:
@@ -311,17 +321,22 @@ def test_defter_zaman_damgasi_yaziyor(gercek_db) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+#: Testin kendi göçleri için, gerçek numaralarla (bkz. Migration 22 — artık
+#: gerçekten var) hiç çakışmayacak, açıkça sahte bir aralık.
+_SAHTE_NO = 9001
+
+
 @pytest.fixture
 def sahte_goc(monkeypatch: pytest.MonkeyPatch):
-    """Listenin sonuna 22 numaralı bir göç ekler — v3.0'ın provası."""
+    """Listenin sonuna sahte numaralı bir göç ekler — v3.0'ın provası."""
     calisti: list[int] = []
 
-    def _m22(conn: sqlite3.Connection) -> None:
-        calisti.append(22)
+    def _m(conn: sqlite3.Connection) -> None:
+        calisti.append(_SAHTE_NO)
         conn.execute("CREATE TABLE IF NOT EXISTS tpm_anahtarlari (id INTEGER PRIMARY KEY)")
 
-    goc = M.Migration(22, "tpm-anahtarlari",
-                      "v3.0 provası — TPM ile korunan anahtar kayıtları.", _m22)
+    goc = M.Migration(_SAHTE_NO, "tpm-anahtarlari",
+                      "v3.0 provası — TPM ile korunan anahtar kayıtları.", _m)
     monkeypatch.setattr(M, "MIGRATIONS", (*M.MIGRATIONS, goc))
     return calisti
 
@@ -330,21 +345,20 @@ def test_TEMEL_SURUM_ustundeki_goc_GERCEKTEN_calisiyor(
     tmp_path: Path, sahte_goc,
 ) -> None:
     """
-    İskeletin asıl işi. 22 numaralı göç damgalanmakla kalmamalı,
-    uygulanmalı.
+    İskeletin asıl işi. Sahte göç damgalanmakla kalmamalı, uygulanmalı.
     """
     DBManager._instance = None  # type: ignore[attr-defined]
     db = DBManager(tmp_path / "v3.db")
     db.connect(hwid="TEST-HWID-MIG")
     try:
-        assert sahte_goc == [22], "22 numaralı göç hiç çalışmadı"
+        assert sahte_goc == [_SAHTE_NO], "Sahte göç hiç çalışmadı"
         tablolar = {
             r[0] for r in db.conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")
         }
         assert "tpm_anahtarlari" in tablolar
         kaynak = {n: k for n, _a, _t, k in M.durum(db.conn)}
-        assert kaynak[22] == "gocmen", "Yeni göç 'temel' diye damgalanmış"
+        assert kaynak[_SAHTE_NO] == "gocmen", "Yeni göç 'temel' diye damgalanmış"
         assert kaynak[21] == "temel"
     finally:
         db.close()
@@ -364,16 +378,16 @@ def test_yeni_goc_IKINCI_acilista_tekrar_calismiyor(
         db.connect(hwid="TEST-HWID-MIG")
         db.close()
     DBManager._instance = None  # type: ignore[attr-defined]
-    assert sahte_goc == [22], f"Göç {len(sahte_goc)} kez çalıştı"
+    assert sahte_goc == [_SAHTE_NO], f"Göç {len(sahte_goc)} kez çalıştı"
 
 
 def test_dusen_bir_goc_ONCEKILERI_geri_almiyor(
     bos_conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    Her göç kendi işleminde. Hepsi tek işlemde olsaydı, 22 başarılıyken
-    23'ün düşmesi 22'yi de geri alır ve her açılış aynı yerden yeniden
-    düşerdi — kurulum kalıcı olarak kırılırdı.
+    Her göç kendi işleminde. Hepsi tek işlemde olsaydı, ilk sahte göç
+    başarılıyken ikincisinin düşmesi ilkini de geri alır ve her açılış
+    aynı yerden yeniden düşerdi — kurulum kalıcı olarak kırılırdı.
     """
     def _iyi(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE TABLE IF NOT EXISTS iyi_tablo (id INTEGER PRIMARY KEY)")
@@ -383,16 +397,16 @@ def test_dusen_bir_goc_ONCEKILERI_geri_almiyor(
 
     monkeypatch.setattr(M, "MIGRATIONS", (
         *M.MIGRATIONS,
-        M.Migration(22, "iyi", "Başarılı olacak göç — kalıcı olmalı.", _iyi),
-        M.Migration(23, "kotu", "Kasten düşen göç — sonrakini engellemeli.", _kotu),
+        M.Migration(9001, "iyi", "Başarılı olacak göç — kalıcı olmalı.", _iyi),
+        M.Migration(9002, "kotu", "Kasten düşen göç — sonrakini engellemeli.", _kotu),
     ))
 
     with pytest.raises(sqlite3.OperationalError):
         M.sifirdan_kur(bos_conn)
 
     # sifirdan_kur() sonda commit ediyor; düşen çağrıda o commit hiç
-    # çalışmadı. Yine de 22'nin ETKİSİ bağlantıda görünür olmalı ve
-    # senkronize() ile yeniden denendiğinde tekrar uygulanmalı.
+    # çalışmadı. Yine de ilk sahte göçün ETKİSİ bağlantıda görünür olmalı
+    # ve senkronize() ile yeniden denendiğinde tekrar uygulanmalı.
     tablolar = {
         r[0] for r in bos_conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")
@@ -412,9 +426,16 @@ def test_basarili_goc_DISKTE_kaliyor_sonraki_dusse_bile(
     bağlantıda kalıyordu ve commit edilmemiş değişiklikler orada
     görünüyor.
 
-    Toplu commit'in gerçek bedeli şu: 22 başarılı, 23 düştü → 22 de geri
-    alınır ve HER açılış aynı yerden yeniden düşer. Kurulum kalıcı olarak
-    kırılır ve günlükte yalnızca 23'ün hatası görünür.
+    Toplu commit'in gerçek bedeli şu: ilk sahte göç başarılı, ikincisi
+    düştü → ilki de geri alınır ve HER açılış aynı yerden yeniden düşer.
+    Kurulum kalıcı olarak kırılır ve günlükte yalnızca ikincinin hatası
+    görünür.
+
+    NOT: bu test `senkronize()`'ı BOŞ (şemasız) bir bağlantıda çağırıyor
+    — TEMEL_SURUM üstü göçler (Migration 22 dahil) gerçek şemaya ihtiyaç
+    duyduğu için burada sahte numaralar TEMEL_SURUM'un çok üstünde
+    seçildi; gerçek Migration 22 bu bağlantıda `settings` tablosu
+    olmadan zaten patlardı — testin ölçmek istediği şey bu değil.
     """
     def _iyi(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE TABLE IF NOT EXISTS kalici_tablo (id INTEGER PRIMARY KEY)")
@@ -422,10 +443,11 @@ def test_basarili_goc_DISKTE_kaliyor_sonraki_dusse_bile(
     def _kotu(_conn: sqlite3.Connection) -> None:
         raise sqlite3.OperationalError("kasten düşürüldü")
 
-    monkeypatch.setattr(M, "MIGRATIONS", (
-        *M.MIGRATIONS,
-        M.Migration(22, "kalici", "Başarılı; diskte kalmalı.", _iyi),
-        M.Migration(23, "dusen", "Kasten düşen göç.", _kotu),
+    monkeypatch.setattr(M, "MIGRATIONS", tuple(
+        g for g in M.MIGRATIONS if g.numara <= M.TEMEL_SURUM
+    ) + (
+        M.Migration(9001, "kalici", "Başarılı; diskte kalmalı.", _iyi),
+        M.Migration(9002, "dusen", "Kasten düşen göç.", _kotu),
     ))
 
     yol = tmp_path / "islem.db"
@@ -448,8 +470,8 @@ def test_basarili_goc_DISKTE_kaliyor_sonraki_dusse_bile(
         )
         damgali = {r[0] for r in conn2.execute(
             f"SELECT numara FROM {M.LEDGER_TABLE}")}
-        assert 22 in damgali, "Başarılı göç deftere kalıcı yazılmamış"
-        assert 23 not in damgali, "Düşen göç uygulanmış gibi damgalanmış"
+        assert 9001 in damgali, "Başarılı göç deftere kalıcı yazılmamış"
+        assert 9002 not in damgali, "Düşen göç uygulanmış gibi damgalanmış"
     finally:
         conn2.close()
 
@@ -458,8 +480,15 @@ def test_senkronize_dusen_gocten_SONRAKILERI_denemiyor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    Sıra anlamlı: 23 düştüyse 24 çalıştırılmamalı. 24, 23'ün eklediği bir
-    sütuna dayanıyor olabilir ve sessizce bozuk bir şema üretirdi.
+    Sıra anlamlı: bir göç düştüyse sonraki çalıştırılmamalı. Sonraki,
+    düşenin eklediği bir sütuna dayanıyor olabilir ve sessizce bozuk bir
+    şema üretirdi.
+
+    `senkronize()` `_temeli_damgala()` ile 1..TEMEL_SURUM'u ÇALIŞTIRMADAN
+    damgaladığı için bu bağlantıda gerçek şema hiç kurulmuyor — gerçek
+    Migration 22 (`settings` tablosuna yazıyor) burada zaten patlardı.
+    Testin ölçtüğü şey o değil, bu yüzden sahte göçler TEMEL_SURUM
+    üstündeki gerçek göçlerin YERİNE geçiyor, yanına değil.
     """
     ucuncu: list[int] = []
 
@@ -467,12 +496,13 @@ def test_senkronize_dusen_gocten_SONRAKILERI_denemiyor(
         raise sqlite3.OperationalError("kasten düşürüldü")
 
     def _sonraki(_conn: sqlite3.Connection) -> None:
-        ucuncu.append(24)
+        ucuncu.append(9002)
 
-    monkeypatch.setattr(M, "MIGRATIONS", (
-        *M.MIGRATIONS,
-        M.Migration(22, "kotu", "Kasten düşen göç.", _kotu),
-        M.Migration(23, "sonraki", "Düşenden sonrakine geçilmemeli.", _sonraki),
+    monkeypatch.setattr(M, "MIGRATIONS", tuple(
+        g for g in M.MIGRATIONS if g.numara <= M.TEMEL_SURUM
+    ) + (
+        M.Migration(9001, "kotu", "Kasten düşen göç.", _kotu),
+        M.Migration(9002, "sonraki", "Düşenden sonrakine geçilmemeli.", _sonraki),
     ))
 
     conn = sqlite3.connect(":memory:")

@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from CORE.app_mode import BIREYSEL, KURUMSAL, get_app_mode, set_app_mode
 from CORE.roles import is_admin_role
 from CORE.idle_lock import (
     DEFAULT_IDLE_MINUTES,
@@ -158,16 +159,26 @@ class AdminPanel(QDialog):
         tabs.addTab(usb_page, "USB Tokenlar")
 
         # Sekme 2 — Bekleyen Kayıtlar
+        #
+        # Bireysel modda GİZLENİR (bkz. _apply_mode_visibility) — tek
+        # kullanıcı zaten admin, başkasının onayını bekleyen bir kayıt
+        # akışı anlamsız. Gizlemek SİLMEK değil: sekme, widget'ları ve
+        # `_on_approve`/`_on_reject` hâlâ burada, yalnızca sekme çubuğunda
+        # görünmüyor. Kurumsal'a dönünce ya da biri yine de kaydolursa
+        # (akış modu bilmiyor, LoginDialog'dan tetikleniyor) hiçbir şey
+        # kaybolmadan ortaya çıkar.
         pending_page = QWidget()
         pending_layout = QVBoxLayout(pending_page)
         pending_layout.setContentsMargins(0, 8, 0, 0)
         pending_layout.setSpacing(8)
         pending_layout.addWidget(self._make_pending_table())
         pending_layout.addLayout(self._make_pending_btn_bar())
-        tabs.addTab(pending_page, "Bekleyen Kayıtlar")
+        self._pending_tab_index = tabs.addTab(pending_page, "Bekleyen Kayıtlar")
 
         # Sekme 3 — Ayarlar
         tabs.addTab(self._make_settings_page(), "Ayarlar")
+
+        self._tabs = tabs
 
         # ÖNERİ (uygulanmadı) — Sekme 4: "Saklama Envanteri"
         #
@@ -811,6 +822,37 @@ class AdminPanel(QDialog):
         sep.setStyleSheet("background:#313244;")
         lay.addWidget(sep)
 
+        # ── Görünüm modu (Bireysel/Kurumsal) ───────────────────────────────
+        mode_lbl = QLabel("Görünüm modu")
+        mode_lbl.setStyleSheet("color:#89b4fa; font-size:12px; font-weight:600;")
+        lay.addWidget(mode_lbl)
+
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(10)
+
+        self._mode_combo = QComboBox()
+        self._mode_combo.addItem("Kurumsal", KURUMSAL)
+        self._mode_combo.addItem("Bireysel", BIREYSEL)
+        self._mode_combo.setFixedWidth(110)
+        self._mode_combo.setStyleSheet(
+            "QComboBox{background:#313244;color:#cdd6f4;border:1px solid #45475a;"
+            "border-radius:6px;padding:5px 10px;font-size:12px;}"
+            "QComboBox::drop-down{border:none;width:20px;}"
+            "QComboBox QAbstractItemView{background:#313244;color:#cdd6f4;"
+            "border:1px solid #45475a;selection-background-color:#45475a;}"
+        )
+        mode_row.addWidget(self._mode_combo)
+
+        mode_hint = QLabel(
+            "Bireysel: \"Bekleyen Kayıtlar\" sekmesi ve kenar çubuğundaki "
+            "\"Yönetici\" başlığı gizlenir. Yetkiler DEĞİŞMEZ — yalnızca "
+            "görünüm."
+        )
+        mode_hint.setWordWrap(True)
+        mode_hint.setStyleSheet("color:#a6adc8; font-size:12px;")
+        mode_row.addWidget(mode_hint, 1)
+        lay.addLayout(mode_row)
+
         ttl_lbl = QLabel("İmha Odası varsayılan TTL süresi")
         ttl_lbl.setStyleSheet("color:#89b4fa; font-size:12px; font-weight:600;")
         lay.addWidget(ttl_lbl)
@@ -1130,9 +1172,26 @@ class AdminPanel(QDialog):
                 self._idle_combo.setCurrentIndex(i)
                 break
 
+        mode_current = get_app_mode(DBManager())
+        for i in range(self._mode_combo.count()):
+            if self._mode_combo.itemData(i) == mode_current:
+                self._mode_combo.setCurrentIndex(i)
+                break
+        self._apply_mode_visibility(mode_current)
+
+    def _apply_mode_visibility(self, mode: str) -> None:
+        """Bireysel/Kurumsal seçimine göre bu panelin sekmelerini filtreler.
+
+        YALNIZCA görünürlük: `_pending_tab_index`'teki widget, `_on_approve`/
+        `_on_reject` ve altındaki veri hiçbir zaman silinmiyor — yalnızca
+        sekme çubuğunda gizleniyor/gösteriliyor.
+        """
+        self._tabs.setTabVisible(self._pending_tab_index, mode != BIREYSEL)
+
     def _on_save_settings(self) -> None:
         hours = self._ttl_combo.currentData()
         minutes = self._idle_combo.currentData()
+        mode = self._mode_combo.currentData()
         try:
             db = DBManager()
             db.set_setting("imha_ttl_hours", str(hours))
@@ -1143,17 +1202,35 @@ class AdminPanel(QDialog):
             # bir action ile yazılıyor (bkz. CORE/idle_lock.py).
             set_idle_timeout_minutes(db, minutes, hwid=self._current_hwid)
 
+            # Doğrulama ve denetim kaydı CORE tarafında (bkz. CORE/app_mode.py).
+            set_app_mode(db, mode, hwid=self._current_hwid)
+            self._apply_mode_visibility(mode)
+
             # Açık pencereye anında uygula — yeniden başlatma beklenmesin.
             self._apply_idle_timeout_to_main_window()
+            self._apply_mode_to_main_window()
 
             idle_text = "kapalı" if minutes == IDLE_DISABLED else f"{minutes} dakika"
+            mode_text = "Bireysel" if mode == BIREYSEL else "Kurumsal"
             QMessageBox.information(
                 self, "Kaydedildi",
                 f"İmha Odası TTL süresi {hours} saat olarak güncellendi.\n"
-                f"Hareketsizlik kilidi: {idle_text}.",
+                f"Hareketsizlik kilidi: {idle_text}.\n"
+                f"Görünüm modu: {mode_text}.",
             )
         except Exception as exc:
             QMessageBox.critical(self, "Hata", str(exc))
+
+    def _apply_mode_to_main_window(self) -> None:
+        """Ayarı çalışan ana pencereye bildirir — `_apply_idle_timeout_to_main_window`
+        ile aynı desen (bulunamazsa sessizce geçilir, bir sonraki açılışta okunur)."""
+        parent = self.parent()
+        while parent is not None:
+            reload_fn = getattr(parent, "reload_app_mode", None)
+            if callable(reload_fn):
+                reload_fn()
+                return
+            parent = parent.parent()
 
     def _apply_idle_timeout_to_main_window(self) -> None:
         """

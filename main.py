@@ -50,6 +50,7 @@ from UI.main_window import HycleusWindow
 #: `tests/test_packaging.py` bu listenin CORE/ ve DB/ ile eşleştiğini
 #: denetliyor — elle tutulan bir liste sessizce eskir.
 _SELFTEST_MODULLERI: tuple[str, ...] = (
+    "CORE.app_mode",
     "CORE.audit_chain", "CORE.audit_report", "CORE.backup", "CORE.backup_cli",
     "CORE.backup_reminder", "CORE.checkout", "CORE.console", "CORE.crypto",
     "CORE.disposal", "CORE.duplicates", "CORE.expiry", "CORE.export",
