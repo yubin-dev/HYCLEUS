@@ -38,7 +38,6 @@ from CORE.usb_manager import get_usb_hwid
 from CORE.vault_manager import (
     USBAuthError,
     VaultTamperedError,
-    _read_vault_path,
     create_vault,
     open_vault,
 )
@@ -50,7 +49,7 @@ from CORE.paths import data_dir as _data_dir
 from CORE import rate_limit
 from CORE.pin_policy import LOGIN_MIN_LEN, PIN_MIN_LEN, validate_new_pin
 from CORE.pin_rotation import yenileme_gerekli
-from CORE.session_user import kullanici_bilgisi
+from CORE.session_user import kullanici_bilgisi, sistem_kurulmus_mu
 from CORE.rate_limit import LockState
 from CORE.secret_store import load_totp_secret, store_totp_secret
 
@@ -325,12 +324,18 @@ class LoginDialog(QDialog):
         secret = _load_secret()
 
         # first_run: main.py'den gelir; yoksa hesapla
+        #
+        # B-058 kök neden düzeltmesi: vault dalı artık "bu HWID'nin vault'u
+        # var mı" DEĞİL, "sistemde onaylı en az bir kullanıcı var mı"
+        # soruyor (main.py'deki gerçek karar noktasıyla AYNI fonksiyon —
+        # `CORE.session_user.sistem_kurulmus_mu`, tek kaynak). Eski soru
+        # HWID başınaydı ve daha önce hiç görülmemiş her USB'yi "sistem hiç
+        # kurulmamış" sanıp İlk Kurulum sihirbazını (serbest rol seçimi,
+        # onaysız doğrudan 'approved' yazımı) yeniden açıyordu.
         if first_run is not None:
             _first_run = first_run
         elif self._use_vault:
-            _vault_path   = _read_vault_path(hwid) if hwid else None
-            _vault_exists = _vault_path.exists() if _vault_path else False
-            _first_run    = secret is None or not _vault_exists
+            _first_run = not sistem_kurulmus_mu(DBManager())
         else:
             _first_run = secret is None or _load_pin_hash() is None
 
@@ -740,6 +745,21 @@ class LoginDialog(QDialog):
     # ── Event handlers (mantık değişmedi) ─────────────────────────────────
 
     def _on_setup_confirm(self) -> None:
+        # Savunma derinliği (B-058): bu fonksiyon rolü SERBEST seçtirip
+        # doğrudan 'approved' bir kullanıcı üretiyor (`main.py`'nin
+        # `dialog.exec()` sonrası çağırdığı `sync_session_user()` ile) —
+        # tam olarak kapatılan güvenlik açığının kendisi. `__init__`'teki
+        # `_first_run` hesabı bunu zaten engellemeli; burası o hesabın
+        # bir yerde atlanması İHTİMALİNE karşı — sessizce ikinci bir
+        # onaysız admin üretmek yerine GÖRÜNÜR biçimde patlıyor.
+        if self._use_vault and sistem_kurulmus_mu(DBManager()):
+            raise RuntimeError(
+                "İlk Kurulum sihirbazı, sistemde zaten onaylı bir kullanıcı "
+                "varken çağrıldı (B-058) — _first_run hesaplaması bir yerde "
+                "bu kontrolü atlamış olmalı. Onaysız ikinci bir 'approved' "
+                "kullanıcı ÜRETİLMEDİ."
+            )
+
         checked = self._role_group.checkedButton()
         if checked is None:
             self._show_error("Lütfen bir rol seçin")

@@ -125,6 +125,26 @@ def kullanici_bilgisi(db: Any, hwid: str) -> tuple[int, str] | None:
     return (int(row["id"]), row["username"]) if row is not None else None
 
 
+def sistem_kurulmus_mu(db: Any) -> bool:
+    """
+    Sistemde en az bir onaylı ('approved') kullanıcı var mı (B-058).
+
+    `_first_run`'ın (main.py + UI/login_dialog.py) TEK doğru sorusu bu —
+    "bu HWID'nin vault dosyası var mı" DEĞİL. Vault dosyası HWID başına;
+    TOTP sırrı ise GLOBAL ve kalıcı, yani daha önce hiç görülmemiş her
+    USB için "bu HWID'in vault'u yok" hep doğruydu. Sonuç: kurulu bir
+    sistemde ikinci/üçüncü bir USB, "Kayıt Ol" (`status='pending'`)
+    yoluna değil, İlk Kurulum sihirbazına (serbest rol seçimi, onaysız
+    doğrudan 'approved' yazımı) yeniden düşüyordu — hangi HWID olursa
+    olsun.
+
+    Doğru soru HWID'den bağımsız: "sistem hiç bootstrap edildi mi".
+    `status='approved'` bunun ölçüsü — o kullanıcı zaten USB+PIN(+TOTP)
+    ile doğrulanmış demek (bkz. `sync_session_user()` docstring'i).
+    """
+    return db.fetchone("SELECT 1 FROM users WHERE status = 'approved' LIMIT 1") is not None
+
+
 def sync_session_user(
     db: Any, *, hwid: str, role: str | None = None
 ) -> int:

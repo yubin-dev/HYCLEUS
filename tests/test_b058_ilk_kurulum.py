@@ -1,41 +1,35 @@
 """
-B-058 (devam) — "Kayıt için Yönetici USB'si takılı olmalıdır" metni ile
-gerçek davranış arasındaki fark, ve taze kurulumda ilk admin'in nasıl
-oluştuğu.
+B-058 — kök neden düzeltmesi + savunma derinliği.
 
-Bu paket YALNIZCA KANITLIYOR — düzeltme yazmıyor. Görev kod yazılmamasını
-istedi; bulgu ve önerilen yaklaşım ayrı bir raporda.
+Önceki tur (bu dosyanın önceki hâli) YALNIZCA kanıtlıyordu, düzeltmiyordu:
+`_first_run` hesabı "bu HWID'nin vault dosyası var mı" sorusuna bakıyordu
+(HWID BAŞINA) ama TOTP sırrı GLOBAL'di — sonuç, kurulu bir sistemde daha
+önce hiç görülmemiş HER USB'nin "Kayıt Ol" (pending onay) sekmesine değil,
+yeniden İlk Kurulum sihirbazına (serbest rol seçimi, onaysız doğrudan
+'approved' yazımı) düşmesiydi.
 
-Bulgu 1 — taze kurulumda ilk kullanıcı
-----------------------------------------
-`users` tablosu boşken, `LoginDialog` "Kayıt Ol" sekmesinden DEĞİL,
-"İlk Kurulum" sihirbazından (`_build_setup_ui`/`_on_setup_confirm`)
-geçiyor. O yol `users` tablosuna HİÇ dokunmuyor — satırı `main.py`'nin
-`dialog.exec()` SONRASI çağırdığı `sync_session_user()`
-(`CORE/session_user.py`) yazıyor, doğrudan `status='approved'` ile.
-Yani "hiçbir onaylayan admin yokken sistem hiç kullanılabilir hale
-gelmiyor" korkusu asılsız: ilk kullanıcı otomatik onaylı — ama "Kayıt
-Ol" sekmesinin `status='pending'` yazan koduyla HİÇBİR ilgisi yok, iki
-ayrı fonksiyon.
+Bu tur kök nedeni düzeltiyor: doğru soru "sistemde onaylı en az bir
+kullanıcı var mı" — `CORE.session_user.sistem_kurulmus_mu()`, HEM
+`main.py` HEM `UI/login_dialog.py`'nin kendi fallback hesabında AYNI
+fonksiyon (tek kaynak — iki ayrı tanım İKİ AYRI KARAR NOKTASI demek
+olurdu, bu deponun B-028/B-030/B-033'te defalarca düzelttiği kusur).
+Savunma derinliği için `_on_setup_confirm()`'ün başına da AYNI kontrolle
+bir guard eklendi — `_first_run` hesabı bir yerde atlanırsa (ör. ileride
+`first_run=True` sabitlenmiş bir çağrı yolu eklenirse) sessizce ikinci
+bir onaysız admin üretmek yerine `RuntimeError` fırlatıyor.
 
-Bulgu 2 — bu yol "İLK" ile sınırlı değil (asıl mesele bu)
------------------------------------------------------------
-`_first_run` hesabı iki şeye bakıyor: TOTP sırrının varlığı (GLOBAL —
-tek bir anahtar kasası girdisi, `CORE/secret_store.py::TOTP_USERNAME`)
-ve vault dosyasının varlığı (HWID BAŞINA,
-`CORE/vault_manager.py::_read_vault_path`). Sır bir kez kaydedildikten
-SONRA bile, DAHA ÖNCE HİÇ GÖRÜLMEMİŞ herhangi bir USB takıldığında (o
-HWID için vault dosyası yok) `_first_run` yine `True` çıkıyor — yani
-"Kayıt Ol" (pending onay) sekmesi değil, İLK KURULUM SİHİRBAZI yeniden
-açılıyor. Sihirbaz rolü SERBEST seçtiriyor (varsayılan "Yönetici") ve
-`_on_setup_confirm()` sonunda PAYLAŞILAN TOTP sırrını YENİ bir rastgele
-değerle EZİYOR (`_save_secret`).
-
-Sonuç: kurulu bir sistemde daha önce hiç kullanılmamış bir USB takan
-biri (a) hiçbir onay olmadan "Yönetici" rolüyle `status='approved'` bir
-hesap açabiliyor, (b) bunun yan etkisi olarak TÜM mevcut kullanıcıların
-paylaştığı TOTP sırrını değiştirip onların authenticator kodunu
-geçersiz kılıyor.
+Bu paket dört şeyi ölçüyor
+---------------------------
+1. Taze kurulumda ilk kullanıcı hâlâ otomatik onaylı (değişmedi).
+2. Kurulumdan SONRA, daha önce hiç görülmemiş bir USB artık İlk Kurulum
+   sihirbazına DÜŞMÜYOR — "Kayıt Ol" (pending) yoluna gidiyor.
+3. Bu yönlendirme düzeltmesinin yan etkisi: ikinci USB artık paylaşılan
+   TOTP sırrına hiç DOKUNMUYOR (sihirbaza hiç girmediği için). Sırrın
+   GLOBAL olması kendi başına ayrı bir açık (B-059) — bu turda ona
+   dokunulmadı, yalnızca BU yoldan artık tetiklenemediği kanıtlanıyor.
+4. Guard mutasyonla doğrulanıyor: onaylı kullanıcı VARKEN sihirbaz
+   zorla çağrılırsa patlıyor; YOKKEN aynı zorlama patlamıyor — guard'ın
+   gerçekten KOŞULA bağlı olduğu, kör bir `raise` olmadığı kanıtlanıyor.
 """
 from __future__ import annotations
 
@@ -59,12 +53,14 @@ except ImportError as _exc:  # pragma: no cover — ortama bağlı
 
 from CORE import vault_manager
 from CORE.secret_store import load_totp_secret
-from CORE.session_user import sync_session_user
+from CORE.session_user import sistem_kurulmus_mu, sync_session_user
 
 _HWID_ILK    = "USB-B058-ILK-ADMIN"
 _HWID_IKINCI = "USB-B058-IKINCI-CALISAN"
+_HWID_UCUNCU = "USB-B058-UCUNCU-CALISAN"
 _PIN_ILK     = "ilkKurulumPIN1"
 _PIN_IKINCI  = "ikinciCalisanPIN2"
+_ROL_IKINCI  = "Standart"
 
 
 @pytest.fixture(scope="module")
@@ -85,9 +81,9 @@ def kasa_dizini(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _ilk_kurulumu_tamamla(qapp, hwid: str, pin: str) -> LoginDialog:
     """
-    `first_run` ELLE VERİLMİYOR — `main.py`'nin gerçek otomatik hesabına
-    (TOTP sırrı + o HWID için vault var mı) güveniliyor. Sahne
-    kurulmuşsa (`_role_group` varsa) İlk Kurulum sihirbazı açılmış demektir.
+    `first_run` ELLE VERİLMİYOR — gerçek otomatik hesaba (artık
+    `sistem_kurulmus_mu()`) güveniliyor. Sahne kurulmuşsa (`_role_group`
+    varsa) İlk Kurulum sihirbazı açılmış demektir.
     """
     dlg = LoginDialog(hwid=hwid, first_run=None, use_vault=True)
     assert hasattr(dlg, "_role_group"), (
@@ -103,21 +99,17 @@ def _ilk_kurulumu_tamamla(qapp, hwid: str, pin: str) -> LoginDialog:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1. Taze kurulum — ilk kullanıcı otomatik onaylı mı, 'pending' mi düşüyor
+# 1. Taze kurulum — ilk kullanıcı otomatik onaylı (değişmedi)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 def test_taze_kurulumda_ILK_kullanici_PENDING_DEGIL_otomatik_onayli(
     qapp, db, kasa_dizini,
 ) -> None:
-    """
-    Görevin 1. sorusu. Cevap: (a) — otomatik onaylı — AMA "Kayıt Ol"
-    sekmesinin `status='pending'` yazan koduyla hiç ilgisi yok; ayrı bir
-    yol (`sync_session_user`, ayrı bir dosyada) bunu yapıyor.
-    """
     assert db.fetchone("SELECT COUNT(*) AS n FROM users")["n"] == 0, (
         "ön koşul: users tablosu taze/boş olmalı"
     )
+    assert not sistem_kurulmus_mu(db), "boş tabloda sistem kurulmuş görünüyor — kör"
 
     dlg = _ilk_kurulumu_tamamla(qapp, _HWID_ILK, _PIN_ILK)
     assert dlg.result() == LoginDialog.Accepted
@@ -132,97 +124,157 @@ def test_taze_kurulumda_ILK_kullanici_PENDING_DEGIL_otomatik_onayli(
         "ilk kullanıcı 'pending' düşüyor — onaylayacak admin yok, sistem kilitli kalırdı"
     )
     assert satir["role"] == "admin"
+    assert sistem_kurulmus_mu(db), "onaylı kullanıcı yazıldıktan sonra hâlâ 'kurulmamış' görünüyor"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2. Kurulumdan SONRA, hiç görülmemiş bir USB da AYNI (onaysız) yoldan geçiyor
+# 2. Düzeltme — kurulumdan SONRA yeni bir USB artık 'Kayıt Ol' (pending) yolunda
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_KURULUMDAN_SONRA_farkli_bir_USB_de_ILK_KURULUM_SIHIRBAZINA_dusuyor(
-    qapp, db, kasa_dizini,
+@pytest.mark.parametrize("hwid", [_HWID_IKINCI, _HWID_UCUNCU])
+def test_KURULUMDAN_SONRA_yeni_bir_USB_ARTIK_sihirbaza_DUSMUYOR(
+    qapp, db, kasa_dizini, hwid: str,
 ) -> None:
     """
-    Asıl bulgu. "Kayıt Ol" sekmesinin varlığı "yeni kullanıcı → pending →
-    admin onayı" akışının TEK yolu olduğu izlenimi veriyor. Değil: bu
-    sekmeye ancak ZATEN vault'u olan bir HWID'le ulaşılıyor (`_first_run`
-    o zaman `False`). Vault'u OLMAYAN (yani gerçekten YENİ) her USB,
-    sistem daha önce hiç kurulmamış gibi, yeniden İlk Kurulum
-    sihirbazına düşüyor.
+    (a) — users tablosu doluyken sihirbaz HİÇBİR HWID için tetiklenmiyor.
+    İki farklı, daha önce hiç görülmemiş HWID ile ayrı ayrı sınanıyor —
+    tek bir HWID'e özel bir tesadüf olmadığını göstermek için.
     """
     _ilk_kurulumu_tamamla(qapp, _HWID_ILK, _PIN_ILK)
     sync_session_user(db, hwid=_HWID_ILK, role="Yönetici")
-    ilk_sonra_kullanici_sayisi = db.fetchone("SELECT COUNT(*) AS n FROM users")["n"]
-    assert ilk_sonra_kullanici_sayisi == 1
+
+    yeni = LoginDialog(hwid=hwid, first_run=None, use_vault=True)
+
+    assert not hasattr(yeni, "_role_group"), (
+        f"{hwid}: İlk Kurulum sihirbazı hâlâ açılıyor — kök neden düzeltmesi çalışmıyor"
+    )
+    assert hasattr(yeni, "_stack"), (
+        f"{hwid}: normal Giriş/Kayıt Ol ekranı (ana UI) açılmadı"
+    )
+
+
+def test_KURULUMDAN_SONRA_yeni_USB_KAYIT_OL_ile_PENDING_uretiyor_ASLA_approved_degil(
+    qapp, db, kasa_dizini, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    (b) — daha önce görülmemiş bir HWID, "Kayıt Ol" sekmesinden geçtiğinde
+    her koşulda `status='pending'` üretiyor; `approved`/`admin` ASLA değil.
+    """
+    _ilk_kurulumu_tamamla(qapp, _HWID_ILK, _PIN_ILK)
+    sync_session_user(db, hwid=_HWID_ILK, role="Yönetici")
+
+    import UI.login_dialog as ld
+    monkeypatch.setattr(ld, "get_usb_hwid", lambda: _HWID_IKINCI)
 
     ikinci = LoginDialog(hwid=_HWID_IKINCI, first_run=None, use_vault=True)
+    assert hasattr(ikinci, "_stack"), "ana UI açılmadı — ön koşul sağlanmıyor"
 
-    assert hasattr(ikinci, "_role_group"), (
-        "beklenen (ve sorunlu) davranış: 'Kayıt Ol' sekmesi DEĞİL, İlk "
-        "Kurulum sihirbazı yeniden açıldı — açılmadıysa bulgu artık "
-        "geçerli değil, bu testi güncelle"
-    )
-    assert not hasattr(ikinci, "_stack"), (
-        "ikinci/farklı USB normal giriş+kayıt ekranına düştü (beklenmiyordu)"
-    )
+    ikinci._reg_username.setText("ikinci_calisan")
+    ikinci._reg_pin.setText(_PIN_IKINCI)
+    ikinci._reg_pin2.setText(_PIN_IKINCI)
+    ikinci._reg_role.setCurrentText(_ROL_IKINCI)
+    ikinci._on_register()
 
-    kod = pyotp.TOTP(ikinci._secret).now()
-    ikinci._pin_input.setText(_PIN_IKINCI)
-    ikinci._pin_confirm_input.setText(_PIN_IKINCI)
-    ikinci._totp_input.setText(kod)
-    ikinci._on_setup_confirm()
-
-    assert ikinci.result() == LoginDialog.Accepted
-    assert ikinci._role == "Yönetici", (
-        "sihirbaz ikinci USB'ye de rolü SERBEST bıraktı, onay istemedi"
+    assert ikinci._reg_error.isHidden(), (
+        f"kayıt hata verdi: {ikinci._reg_error.text()}"
     )
-    sync_session_user(db, hwid=_HWID_IKINCI, role=ikinci._role)
-
-    ikinci_satir = db.fetchone("SELECT * FROM users WHERE hwid = ?", (_HWID_IKINCI,))
-    assert ikinci_satir is not None
-    assert ikinci_satir["status"] == "approved", (
-        "ikinci kullanıcı da HİÇBİR onay olmadan 'approved' yazıldı"
+    satir = db.fetchone("SELECT * FROM users WHERE hwid = ?", (_HWID_IKINCI,))
+    assert satir is not None, "ikinci kullanıcı hiç yazılmadı"
+    assert satir["status"] == "pending", (
+        f"ikinci kullanıcı 'pending' DEĞİL — status={satir['status']!r}"
     )
-    assert ikinci_satir["role"] == "admin", (
-        "ikinci kullanıcı varsayılan rol seçimiyle (Yönetici) onaysız admin oldu"
+    assert satir["role"] != "admin", (
+        "ikinci kullanıcı onaysız şekilde admin oldu"
     )
 
+    toplam_approved = db.fetchone(
+        "SELECT COUNT(*) AS n FROM users WHERE status = 'approved'"
+    )["n"]
+    assert toplam_approved == 1, (
+        "onaylı kullanıcı sayısı hâlâ 1 olmalı — ikinci kullanıcı onaysız "
+        "'approved' listesine sızmamalı"
+    )
+
+
+def test_IKINCI_USB_ARTIK_paylasilan_totp_sirrini_EZMIYOR(
+    qapp, db, kasa_dizini,
+) -> None:
+    """
+    Yönlendirme düzeltmesinin yan etkisi: ikinci USB artık
+    `_on_setup_confirm()`'e hiç GİRMİYOR, dolayısıyla paylaşılan TOTP
+    sırrına dokunmuyor. Sırrın GLOBAL olması kendi başına ayrı bir açık
+    (B-059, bu turun kapsamı dışında) — burada sınanan yalnızca BU
+    yoldan artık tetiklenemediği.
+    """
+    _ilk_kurulumu_tamamla(qapp, _HWID_ILK, _PIN_ILK)
+    sync_session_user(db, hwid=_HWID_ILK, role="Yönetici")
+    ilk_sir = load_totp_secret()
+    assert ilk_sir is not None
+
+    ikinci = LoginDialog(hwid=_HWID_IKINCI, first_run=None, use_vault=True)
+    assert not hasattr(ikinci, "_role_group"), (
+        "sihirbaz hâlâ açılıyor — bu test artık B-058'in düzeltilmiş "
+        "hâlini ölçmüyor"
+    )
+
+    sir_degismedi = load_totp_secret()
+    assert sir_degismedi == ilk_sir, (
+        "paylaşılan TOTP sırrı hâlâ değişiyor — yönlendirme düzeltmesi "
+        "bu yan etkiyi kapatmamış"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3. Guard — mutasyon kanıtı
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `_first_run` hesabı doğru çalışsa bile, savunma derinliği
+# `_on_setup_confirm()`'ün KENDİSİNİN de aynı korumayı taşımasını
+# istiyor. Bunu ölçmenin tek yolu, dış kapıyı (`_first_run`) BİLEREK
+# atlayıp sihirbazı `first_run=True` ile ZORLA açmak — gerçek bir kod
+# yolunda hiç olmaması gereken ama "ileride biri first_run'u yanlış
+# sabitlerse" senaryosunu taklit eden bir durum.
+
+
+def test_GUARD_onayli_kullanici_VARKEN_sihirbaz_ZORLA_cagrilirsa_PATLAR(
+    qapp, db, kasa_dizini,
+) -> None:
+    _ilk_kurulumu_tamamla(qapp, _HWID_ILK, _PIN_ILK)
+    sync_session_user(db, hwid=_HWID_ILK, role="Yönetici")
+    assert sistem_kurulmus_mu(db)
+
+    zorla = LoginDialog(hwid=_HWID_IKINCI, first_run=True, use_vault=True)
+    kod = pyotp.TOTP(zorla._secret).now()
+    zorla._pin_input.setText(_PIN_IKINCI)
+    zorla._pin_confirm_input.setText(_PIN_IKINCI)
+    zorla._totp_input.setText(kod)
+
+    with pytest.raises(RuntimeError, match="B-058"):
+        zorla._on_setup_confirm()
+
+    # Guard PATLADIKTAN SONRA bile ikinci bir onaysız kullanıcı yazılmamalı.
     toplam = db.fetchone("SELECT COUNT(*) AS n FROM users")["n"]
-    assert toplam == 2, "iki ayrı, onaysız 'approved' admin — ikisi de kayıtlı"
+    assert toplam == 1, "guard patladı ama satır yine de yazılmış"
 
 
-def test_IKINCI_kurulum_PAYLASILAN_totp_sirrini_EZIYOR(
+def test_GUARD_onayli_kullanici_YOKKEN_zorla_first_run_PATLAMAZ(
     qapp, db, kasa_dizini,
 ) -> None:
     """
-    Bulgu 2'nin yan etkisi. TOTP sırrı GLOBAL (`CORE/secret_store.py`) —
-    ikinci sihirbaz kendi rastgele sırrını kaydederken ilk kullanıcının
-    sırrını da EZİYOR. Sonuç: ilk kullanıcının authenticator uygulaması
-    artık geçersiz kod üretiyor, kendi hesabına giremiyor.
+    Mutasyon kontrastı: guard KOŞULA bağlı, kör bir `raise` değil. Users
+    tablosu boşken (gerçek ilk kurulum) `first_run=True` ZORLAMASI bile
+    normal şekilde tamamlanabilmeli — guard yalnızca "onaylı kullanıcı
+    zaten var" durumunda devreye giriyor.
     """
-    _ilk_kurulumu_tamamla(qapp, _HWID_ILK, _PIN_ILK)
-    sync_session_user(db, hwid=_HWID_ILK, role="Yönetici")
-    ilk_kullanicinin_sirri = load_totp_secret()
-    assert ilk_kullanicinin_sirri is not None
+    assert db.fetchone("SELECT COUNT(*) AS n FROM users")["n"] == 0
 
-    ikinci = LoginDialog(hwid=_HWID_IKINCI, first_run=None, use_vault=True)
-    assert hasattr(ikinci, "_role_group")
-    kod = pyotp.TOTP(ikinci._secret).now()
-    ikinci._pin_input.setText(_PIN_IKINCI)
-    ikinci._pin_confirm_input.setText(_PIN_IKINCI)
-    ikinci._totp_input.setText(kod)
-    ikinci._on_setup_confirm()
-    assert ikinci.result() == LoginDialog.Accepted
+    zorla = LoginDialog(hwid=_HWID_ILK, first_run=True, use_vault=True)
+    kod = pyotp.TOTP(zorla._secret).now()
+    zorla._pin_input.setText(_PIN_ILK)
+    zorla._pin_confirm_input.setText(_PIN_ILK)
+    zorla._totp_input.setText(kod)
 
-    sirdan_sonra = load_totp_secret()
-    assert sirdan_sonra != ilk_kullanicinin_sirri, (
-        "paylaşılan TOTP sırrı ikinci kurulumla EZİLMEDİ — bulgu artık "
-        "geçerli değil, bu testi güncelle"
-    )
+    zorla._on_setup_confirm()  # PATLAMAMALI
 
-    # İlk kullanıcının kendi authenticator kodu artık DOĞRULANAMIYOR —
-    # login akışının kendisi çökmüyor, ama TOTP kontrolü kalıcı olarak yanlış.
-    ilk_kullanicinin_guncel_kodu = pyotp.TOTP(ilk_kullanicinin_sirri).now()
-    assert not pyotp.TOTP(sirdan_sonra).verify(
-        ilk_kullanicinin_guncel_kodu, valid_window=1
-    ), "ilk kullanıcının kodu hâlâ geçerliyse sır aslında ezilmemiş demektir"
+    assert zorla.result() == LoginDialog.Accepted

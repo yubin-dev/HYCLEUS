@@ -24,7 +24,7 @@ from CORE.safezone import purge_on_exit, purge_orphans
 from CORE.scheduler import start_scheduler, stop_scheduler
 from CORE.secret_migration import MigrationError, run_migrations
 from CORE.secret_store import KeyringUnavailableError, backend_name, ensure_available
-from CORE.session_user import sync_session_user
+from CORE.session_user import sistem_kurulmus_mu, sync_session_user
 from CORE.tpm_sealing import oturum_raporu as tpm_oturum_raporu
 from CORE.usb_manager import get_usb_hwid
 from CORE.vault_manager import has_recovery_share
@@ -256,22 +256,6 @@ def main() -> None:
     else:
         dev_mode = os.getenv("DEV_MODE", "").lower() in ("1", "true", "yes")
 
-    # ── use_vault + first_run: tek noktada hesapla, LoginDialog'a geç ─────────
-    from CORE.vault_manager import _read_vault_path as _rvp
-    from UI.login_dialog import _load_secret as _ls
-    _use_vault = not dev_mode   # hwid None kontrolü yukarıda yapıldı
-    if _use_vault:
-        _vault_path   = _rvp(hwid)
-        _vault_exists = _vault_path.exists()
-        _secret       = _ls()
-        _first_run    = (_secret is None) or (not _vault_exists)
-    else:
-        _vault_path   = None
-        _vault_exists = False
-        _secret       = None
-        _first_run    = False   # DEV_MODE — LoginDialog gösterilmeyecek
-    # ─────────────────────────────────────────────────────────────────────────
-
     # ── Anahtar kasası zorunlu ───────────────────────────────────────────────
     # Sırlar (share_2, TOTP) OS anahtar kasasında tutuluyor. Kasa açılamıyorsa
     # ESKİ DÜZ METİN DAVRANIŞINA DÜŞÜLMEZ — uygulama açılmayı reddeder.
@@ -283,12 +267,25 @@ def main() -> None:
         _log.critical("Anahtar kasası erişilemiyor — başlatma iptal: %s", exc)
         sys.exit(1)
 
-    # DB bağlantısını geçici boş anahtar ile aç (şifreleme anahtarı login'den sonra gelir)
+    # DB bağlantısını geçici boş anahtar ile aç (şifreleme anahtarı login'den sonra gelir).
+    # BURADA, first_run hesabından ÖNCE: o hesap artık users tablosunu okuyor
+    # (bkz. altı) — eskiden bu adım first_run'dan SONRAYDI, sıra tersti.
     try:
         DBManager().connect(hwid=hwid, key=None)
     except HWIDMissingError as exc:
         QMessageBox.critical(None, "Hata", str(exc))
         sys.exit(1)
+
+    # ── use_vault + first_run: tek noktada hesapla, LoginDialog'a geç ─────────
+    # B-058 kök neden düzeltmesi: soru "bu HWID'nin vault'u var mı" DEĞİL,
+    # "sistemde onaylı en az bir kullanıcı var mı" (CORE/session_user.py).
+    # Vault dosyası HWID başına, TOTP sırrı ise global ve kalıcı — eski soru,
+    # daha önce hiç görülmemiş HER USB'yi "sistem hiç kurulmamış" sanıp İlk
+    # Kurulum sihirbazını (serbest rol seçimi, onaysız doğrudan 'approved'
+    # yazımı) yeniden açıyordu. Yeni soru HWID'den bağımsız.
+    _use_vault = not dev_mode   # hwid None kontrolü yukarıda yapıldı
+    _first_run = _use_vault and not sistem_kurulmus_mu(DBManager())
+    # ─────────────────────────────────────────────────────────────────────────
 
     # ── TPM mühürleme durumu ─────────────────────────────────────────────────
     # Sırlar TPM varsa mühürlenerek kasaya yazılıyor (CORE/tpm_sealing.py).

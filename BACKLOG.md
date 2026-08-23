@@ -2773,9 +2773,12 @@ talimatıyla gerginlik içinde — ayrı bir onay turu bekliyor.
 
 ## B-058 — Giriş ekranındaki self-servis kayıt, YÖNETİCİ USB'sini hiç doğrulamıyor
 
-**Durum:** Açık
-**Öncelik:** Yüksek (2026-08-24 güncellemesiyle yükseltildi — bkz. aşağı:
-onaysız `role='admin'` hesabı + tüm kullanıcıların TOTP'sini bozan yan etki)
+**Durum:** KISMEN KAPANDI (2026-08-24) — kök neden (onaysız admin
+oluşturma) DÜZELTİLDİ; aşağıdaki orijinal bulgu (`_on_register()`'ın
+bilgi kutusu metniyle çelişmesi) hâlâ AÇIK, ayrıca ele alınmalı.
+**Öncelik:** Düşük (yükseltilmişti — 2026-08-24'ün ikinci güncellemesi
+asıl ciddi kısmı, onaysız `role='admin'` oluşturma + TOTP ezme yan
+etkisini, kapattı; kalan yalnızca metinsel/kozmetik uyuşmazlık)
 **Bulundu:** 2026-08-24 — kayıt ekranının mod'a göre ayrılması turu,
 `UI/login_dialog.py::_on_register()` okunurken
 
@@ -2907,3 +2910,53 @@ Olası yönler (hiçbiri uygulanmadı):
   EKLEMEZ, yalnızca YOLU kapatır; ikinci bir USB için akış "Kayıt Ol"a
   DÜŞMEZ hâlâ, yalnızca sihirbaza da düşemez hâle gelir (kilitli kalır)
   — bu da kendi başına bir kullanılabilirlik sorunu, ayrı bir karar.
+
+**Güncelleme (2026-08-24, aynı gün ikinci tur) — kök neden DÜZELTİLDİ**
+
+Yukarıdaki seçeneklerin ilki (`_first_run`ı sistem bazlı kontrole
+çevirme) UYGULANDI. `CORE/session_user.py::sistem_kurulmus_mu(db)` eklendi
+— "sistemde en az bir `status='approved'` kayıt var mı" sorusu, TEK
+fonksiyon, HEM `main.py` HEM `UI/login_dialog.py`'nin kendi `first_run`
+fallback hesabı bunu çağırıyor (iki ayrı tanım yerine tek kaynak — bu
+deponun B-028/B-030/B-033'te defalarca kapattığı "aynı kararın iki
+kopyası" kusuru burada da açılmadı).
+
+`main.py`'de `DBManager().connect()` çağrısı `_first_run` hesabından
+ÖNCEye taşındı (eskiden sonraydı) — hesap artık `users` tablosunu
+okuyabilsin diye. Vault dosyasının (HWID başına) veya TOTP sırrının
+(global) varlığına bakan eski soru TAMAMEN kaldırıldı, "hangi HWID
+olursa olsun" ilkesine sadık kalınarak.
+
+Savunma derinliği: `_on_setup_confirm()`'ün başına AYNI kontrolle bir
+guard eklendi — `sistem_kurulmus_mu()` `True` döndürürken bu fonksiyon
+çağrılırsa `RuntimeError` fırlatıyor (B-058 referansıyla). `_first_run`
+hesabı ileride bir yerde atlanırsa (ör. `first_run=True` sabitlenmiş
+yeni bir çağrı yolu), sessizce onaysız ikinci bir admin üretmek yerine
+görünür şekilde çöküyor. Bu, tasarım brief'inin B-007 tarzı "iki katman
+birlikte duruyor" ilkesiyle tutarlı: TEK bir kontrol fonksiyonu, İKİ
+bağımsız noktada uygulanıyor.
+
+TOTP sırrının HALA global olması bilerek DOKUNULMADI (B-059'un konusu,
+ayrı ve öncelikli). Bu turun kapattığı şey yalnızca "ikinci bir USB
+sihirbaza girip sırrı ezebiliyor muydu" sorusu — cevap artık hayır,
+çünkü ikinci bir USB sihirbaza hiç GİRMİYOR (`tests/test_b058_ilk_kurulum.py`
+bunu doğrudan doğruluyor). Sırrın kendisinin HWID başına olup olmaması
+ayrı, daha büyük bir migration kararı.
+
+`tests/test_b058_ilk_kurulum.py` yeniden yazıldı (7 test): ilk kullanıcı
+hâlâ otomatik onaylı (değişmedi); iki farklı, daha önce hiç görülmemiş
+HWID artık sihirbaza HİÇ düşmüyor, "Kayıt Ol" üzerinden her zaman
+`status='pending'` üretiyor, asla `approved`/`admin` değil; ikinci USB
+artık paylaşılan TOTP sırrına dokunmuyor; guard onaylı kullanıcı varken
+zorla çağrılırsa patlıyor, yokken aynı zorlama patlamıyor (mutasyon
+kontrastı — guard'ın kör bir `raise` olmadığı, gerçekten KOŞULA bağlı
+olduğu kanıtlanıyor). Elle doğrulandı: `sistem_kurulmus_mu()` geçici
+olarak `return False`'a sabitlenip 6/7 testin beklendiği gibi kırmızı
+verdiği görüldü, sonra geri alındı.
+
+Kalan (aşağıdaki orijinal bulgu — hâlâ AÇIK): `_on_register()`'ın kendisi
+hâlâ takılı USB'nin gerçekten bir yöneticiye ait olup olmadığını
+sormuyor; bilgi kutusu metni hâlâ gerçek davranışla çelişiyor. Bunun
+ciddiyeti bu turla büyük ölçüde AZALDI (en kötü sonuç — onaysız admin
+oluşturma — artık mümkün değil, `_on_register()` her zaman `pending`
+yazıyor), ama metin/davranış uyuşmazlığının kendisi düzeltilmedi.
