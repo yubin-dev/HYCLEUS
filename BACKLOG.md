@@ -2644,6 +2644,14 @@ Not: bu düzeltme `subtext`/`search_bg` (B-057) veya `accent`/`search_bg`
 (`#F9FAFB`) biraz daha koyu bir yüzey, yeni `#898F9A` orada hâlâ AA'nın
 altında (~2.85:1). B-057 ayrı madde olarak açık kalıyor.
 
+**Güncelleme (2026-08-25):** Bu düzeltmenin KENDİSİ yanlış eşiği
+hedeflemiş çıktı. `subtext`'in gerçek kullanım yerleri tarandı — hepsi
+11-12px düz etiket metni, WCAG'ın büyük-metin eşiğine (3.0) değil normal
+küçük metin eşiğine (4.5:1) tabi. `#898F9A` (3.11:1) bu yüzden hâlâ
+yetersizdi; `#64707C`'ye çekilip 4.84:1'e çıkarıldı. Bkz. B-057'nin
+güncellenmiş kapanışı — bu ikinci düzeltme B-057'nin ilk maddesini de
+yan etki olarak kapattı.
+
 ---
 
 ## B-055 — AdminPanel / GuvenlikView / RecoveryShareDialog tema preset sistemine bağlı değil
@@ -2692,7 +2700,9 @@ renk/tema bağlanmasını kapsıyordu.
 
 ## B-056 — README'nin `--selftest` modül sayısı zaten yanlıştı, bu turdan önce de
 
-**Durum:** Açık
+**Durum:** KISMEN KAPANDI (2026-08-25) — sayı güncellendi; B-052-sınıfı
+kalıcı çözüm (sabit sayıyı README'den tamamen kaldırmak) hâlâ
+UYGULANMADI, öneri olarak açık kalıyor.
 **Öncelik:** Düşük (kozmetik — `--selftest` kendi doğru sayısını basıyor, README'ninki yalnızca örnek metin)
 **Bulundu:** 2026-08-22 — Bireysel/Kurumsal mod turu, `CORE/app_mode.py`'yi
 `main.py::_SELFTEST_MODULLERI`'ye eklerken
@@ -2709,21 +2719,28 @@ platform grubu) olduğu için her yeni modülde tekrar kayacak —
 kapsiyor` listenin EKSİKSİZ olduğunu zorluyor ama README'deki SAYIYI
 hiç doğrulamıyor.
 
-### Düzeltme (bu turda uygulanmadı)
+### Düzeltme — KISMEN UYGULANDI (2026-08-25)
 
-İki seçenek: (1) README'deki sayıyı 62/66'ya güncellemek — ama her yeni
-modülde yine eskiyecek; (2) sabit sayıyı README'den tamamen kaldırıp
-"`--selftest` kendi güncel sayısını basar" demek — B-052-sınıfı bir
-ders: sayı çürüyor, ölçen kod çürümüyor. İkincisi daha kalıcı ama
-README'nin "Verifying a build without a GUI" örneğini yeniden yazmayı
-gerektiriyor; bu tur yalnızca `CORE.app_mode`'u listeye ekledi, belge
-turunun kapsamı değildi.
+Seçenek (1) uygulandı: `python main.py --selftest` yeniden çalıştırılıp
+ölçüldü — B-060/B-061/B-059 turlarında eklenen `CORE.registration` ve
+diğer modüllerle gerçek sayı artık **63 (Windows dışı) / 67 (Windows)**
+(53 temel + 10 üçüncü taraf + Windows'ta 4 platform modülü — `wmi`,
+`pythoncom`, `win32api`, `win32con`). README.md'nin EN+TR iki satırı
+buna güncellendi.
+
+Bu, B-056'nın kendi teşhis ettiği sorunu ÇÖZMÜYOR: sayı yine elle
+tutulan bir liste, bir sonraki yeni modülde YİNE eskiyecek — bu zaten
+turun İKİNCİ sürüklenmesi (61/65 → 62/66 → 63/67). Seçenek (2) (sabit
+sayıyı README'den tamamen kaldırıp "`--selftest` kendi güncel sayısını
+basar" demek) hâlâ önerilen kalıcı çözüm ama bu turun kapsamı dışında —
+yalnızca "sayıyı ölç ve düzelt" istendi, README'nin ilgili örneğini
+yeniden yazmak ayrı bir belge turu gerektirir.
 
 ---
 
 ## B-057 — "Mavi" temasının `subtext`/`accent` renkleri search_bg üzerinde de AA sınırının altında
 
-**Durum:** Açık
+**Durum:** KAPANDI (2026-08-25)
 **Öncelik:** Düşük (kozmetik — B-054 ile aynı sınıf, aynı gerekçeyle düzeltilmedi)
 **Bulundu:** 2026-08-22 — B-055 turu, `tests/test_tema_kontrasti.py`'yi
 AdminPanel/GuvenlikView/RecoveryShareDialog'u kapsayacak şekilde
@@ -2758,16 +2775,72 @@ bilerek en küçük/en yakın düzeltmeyi seçti (yalnızca `bg` eşiğini
 geçecek kadar), `search_bg`'nin biraz daha koyu yüzeyi için yetmedi.
 Bu iki ölçüm hâlâ açık, ayrı bir renk kararı gerektiriyor.
 
+### Düzeltme — UYGULANDI (2026-08-25)
+
+İki nokta AYRI kararlarla kapatıldı, aynı turda, aynı dosyada (sıra
+önemli — B-054 takibi ÖNCE uygulandı, ikinci noktayı YAN ETKİ olarak
+kendiliğinden kapattı):
+
+**1. `subtext`/`search_bg` (mavi, açık mod)** — B-054 takibinin (bkz. o
+madde) yan etkisi. B-054'ün orijinal düzeltmesi `subtext`'i yalnızca
+3.0 eşiğini (`bg`'ye karşı) geçecek kadar koyultmuştu; bu turda gerçek
+kod kullanımı tarandı (`UI/AdminPanel.py`, `UI/dialog_kit.py`,
+`UI/main_window_theme.py`, `UI/main_window_tree.py`,
+`UI/RecoveryShareDialog.py`) ve HEPSİNİN 11-12px düz etiket metni
+olduğu, yani WCAG'ın büyük-metin eşiğine hiç girmediği görüldü — gerçek
+eşik 3.0 değil 4.5:1 olmalıydı. `subtext` `#898F9A` → `#64707C`'ye
+çekilince (`UI/main_window_palette.py::_LIGHT`) `search_bg` üzerindeki
+kontrast da (dokunulmadan) 2.95:1 → **4.60:1**'e çıktı — B-057'nin ilk
+maddesi ayrı bir renk kararı gerektirmeden kapandı.
+
+**2. `accent`/`search_bg` (mavi, koyu mod)** — ayrı, doğrudan bir
+düzeltme: `accent`'e (birçok başka geçen kontrastın bağlı olduğu token)
+HİÇ dokunulmadı, yalnızca `_DARK["search_bg"]` `#2C2C2E` → `#222224`
+koyultuldu (`UI/main_window_palette.py`). Sonuç: 2.70:1 → **3.07:1**.
+`topbar`/`hover`/`row_hover` (önceden `search_bg` ile aynı tondaydı)
+KASITLI olarak değişmedi — yalnızca `search_bg` artık onlardan bir tık
+koyu, en az yan etkili seçenek buydu.
+
+`tests/test_tema_kontrasti.py::_ONCEDEN_VAR_OLAN_ISTISNALAR` artık BOŞ
+— üç istisnanın (B-054'ün `subtext_bg`'si zaten önceden kapanmıştı) hiçbiri
+kalmadı. `test_b057_mavi_koyu_accent_search_bg_duzeltildi` ve B-054
+takibinin `test_b054_takibi_subtext_gercekte_kucuk_metin_4_5_esigini_geciyor`
+testleri her iki eski değeri de referans olarak sabit tutup mutasyonla
+doğrulandı (değerler geçici olarak eskiye döndürülüp testlerin kırmızı
+verdiği, sonra aynen geri getirilip yeşile döndüğü görüldü).
+
+Not: bu düzeltme yalnızca "mavi" preset'i kapsıyor — diğer 4 preset'in
+`subtext`'i de aynı 11-12px küçük-metin gerçekliğine tabi ama
+denetlenmedi (bkz. B-063).
+
+---
+
+## B-063 — `subtext`'in 3.0 eşiği yalnızca "mavi" preset'te düzeltildi, diğer 4 preset denetlenmedi
+
+**Durum:** Açık
+**Öncelik:** Düşük (kozmetik — B-054/B-057 ile aynı sınıf)
+**Bulundu:** 2026-08-25 — B-054 takibi turu, `subtext`'in gerçek
+kullanım yerlerini (11-12px düz etiket metni) tarayıp yalnızca "mavi"
+preset'i (`_LIGHT`) 4.5:1'e çekerken
+
+`tests/test_tema_kontrasti.py`'nin genel `_AA_MUTED` (3.0) eşiği
+`subtext`/`nav_text` gibi renkler için TÜM preset'lerde (Teal & Gold,
+Grafit & Kehribar, Aurora Borealis, Midnight — isimler yaklaşık, bkz.
+`UI/main_window_palette.py`) hâlâ geçerli. Ama gerçek kod kullanımı
+(`UI/AdminPanel.py`, `UI/dialog_kit.py` vb.) preset'e bakmaksızın aynı
+11-12px düz etiket metni — yani teorik olarak bu 4 preset'in `subtext`'i
+de gerçekte 4.5:1 gerektiriyor olabilir, yalnızca ÖLÇÜLMEDİ.
+
+Bu turun kapsamı dışında bırakıldı çünkü görev açıkça `_LIGHT["subtext"]`
+(yani "mavi" preset) ile sınırlıydı ve diğer 4 preset'e dokunmak ayrı bir
+onay gerektirir (her birinin kendi tanınabilirlik/görünüm dengesi var).
+
 ### Düzeltme (bu turda uygulanmadı)
 
-`search_bg` üzerinde de AA'yı geçmek için `subtext`'i B-054'tekinden
-daha da koyulaştırmak gerekir (yaklaşık `#7C8797` veya koyusu, bkz.
-B-054'ün commit'indeki hesaplama) — ama bu `bg` üzerindeki mevcut
-görünümü daha da değiştirir. `accent`/`search_bg` ayrı bir problem:
-`accent` (`#2563EB`) hiç dokunulmadan `search_bg`'yi koyulaştırmak
-(veya AdminPanel'in HWID vurgusunu `search_bg` yerine başka bir
-yüzeyde göstermek) gerekir. İkisi de "mevcut mavi"yi birebir koruma
-talimatıyla gerginlik içinde — ayrı bir onay turu bekliyor.
+Diğer 4 preset'in `subtext` (ve muhtemelen `nav_text`) değerleri aynı
+yöntemle (gerçek `bg`/`search_bg` karşısında 4.5:1 hedefi) tek tek
+gözden geçirilmeli — B-054/B-057'nin izlediği yöntemin aynısı, yalnızca
+her preset kendi renk ailesinde.
 
 ---
 
@@ -3376,7 +3449,7 @@ bırakmıyor (B-061). Mutasyon kanıtı ve tam test sonucu B-060'ın
 
 ## B-062 — ContactDialog: rol ayrımı yok + `auth_codes` üretiliyor ama hiçbir yerde doğrulanmıyor
 
-**Durum:** Açık
+**Durum:** KAPANDI (2026-08-25)
 **Öncelik:** Düşük — bilgi ifşası + ölü kod, doğrudan yetki yükseltmesi DEĞİL
 **Bulundu:** 2026-08-23 — B-058 sınıfı yetkilendirme/durum-geçiş taraması
 (taramanın kapsamı dışında ama giderken görüldü)
@@ -3408,14 +3481,52 @@ BAŞKA bir kullanıcı (potansiyel olarak bir admin) için kod üretebilir
 hale gelir — o türden bir bağlama YAPILMADAN ÖNCE bu dosyaya bir rol
 kapısı eklenmesi gerekir.
 
-### Düzeltme (bu turda uygulanmadı — yalnızca yön)
+### Doğrulama turu (2026-08-25) — ek bulgu
 
-- Kısa vadede: bu özelliğin gerçekten kullanılıp kullanılmadığını
-  netleştirmek (ölü kodsa kaldırmak, canlıysa `is_admin_role()` gibi
-  bir kapı eklemek ve listeyi "yalnızca kendisi" ile sınırlamak).
-- `auth_codes` bir doğrulama yoluna bağlanacaksa, üretim tarafında da
-  "kim kimin için kod üretebilir" sorusu B-058/B-060'daki gibi net
-  yanıtlanmalı — üretmek yetmiyor, doğru ÖN KOŞUL altında üretmek
-  gerekiyor.
+Yeniden tarandığında B-062'nin orijinal tespiti güncel çıktı, ayrıca BİR
+ek giriş noktası bulundu: `main_window.py::_on_open_contact()` sidebar/
+hamburger yoluyla `_support_btn` üzerinden ZATEN admin'e kısıtlıydı
+(`_apply_role_restrictions()`, `main_window.py:224-226`) — ama
+`ProfileDialog.py::_open_contact()` ("İletişim" sayfasındaki "Destek ve
+İletişim Penceresini Aç" düğmesi) HİÇ rol kısıtı taşımıyordu ve
+`ProfileDialog` kendisi de her role açık (herkesin profili var). Yani
+gerçek zafiyet buradaydı: admin-only sidebar yolu değil, herkese açık
+Profil yolu.
+
+### Düzeltme — UYGULANDI (2026-08-25)
+
+Kullanıcıyla birlikte karar verildi: `auth_codes` hiçbir yerde
+doğrulanmadığı (repo genelinde tarandı, yalnızca INSERT/UPDATE var,
+hiçbir SELECT/okuma yok) doğrulanan bir ölü/yarım özellik olduğu için
+canlı bir özelliğe rol kapısı eklemek yerine ÖZELLİĞİN TAMAMI kaldırıldı:
+
+- `UI/ContactDialog.py`: "Auth Kodu Paylaş" sekmesi, kullanıcı listesi,
+  kod üretimi/kopyalama, ilgili QSS kuralları ve `is_admin_role`
+  denemesi tamamen silindi — dialog artık tek sayfalı (yalnızca
+  "İletişim": sistem bilgileri + sorun bildirme), hiçbir zaman
+  ayrıcalıklı içerik göstermiyor, `role` parametresi gerekmiyor.
+- `UI/main_window.py` ve `UI/ProfileDialog.py`: çağrılar
+  `ContactDialog(self)`'e geri döndü (turun ortasında geçici olarak
+  eklenen `role=` argümanı, özellik kaldırılınca anlamsızlaştı).
+- `auth_codes` tablosu DB'den de kaldırıldı: `DB/migrations.py`
+  Migration 24 (`_m24_auth_codes_kaldir`, `DROP TABLE IF EXISTS`) +
+  `DB/db_manager.py::_apply_schema()`'daki tabloyu YENİDEN yaratan raw
+  SQL bloğu silindi (yalnızca göç eklemek YETMEZDİ — `_apply_schema()`
+  her açılışta tabloyu `CREATE TABLE IF NOT EXISTS` ile sessizce geri
+  yaratıp göç bir daha çalışmayacağı için tablo ikinci açılıştan
+  itibaren kalıcı olarak geri gelirdi). 13 numaralı tarihsel göç
+  (`_m13_auth_codes`) DEĞİŞTİRİLMEDİ — MIGRATIONS demeti değişmez
+  kuralı gereği, yalnızca `sifirdan_kur()` test yolunun gerçek
+  `_apply_schema()` geçmişini üretebilmesi için olduğu gibi duruyor.
+- `CORE/backup.py::EXCLUDED_TABLES` güncellendi — artık var olmayan
+  bir tabloya referans vermiyor.
+
+Test: `tests/test_contact_dialog.py` "referans yok" testleriyle (AST
+taraması, modül docstring'i hariç) ContactDialog.py'nin gövdesinde Auth
+Kodu Paylaş'a ait hiçbir isim kalmadığını doğruluyor; ayrı bir test
+`sifirdan_kur()` ile TÜM göçleri gerçekten uygulayıp `auth_codes`'un
+şemada olmadığını kanıtlıyor. Migration 24'ün gövdesi geçici olarak
+devre dışı bırakılıp bu testin kırmızı verdiği, sonra aynen geri
+getirilip yeşile döndüğü görüldü (mutasyon kanıtı).
 
 ---

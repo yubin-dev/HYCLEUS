@@ -283,17 +283,13 @@ class DBManager:
             self._conn.execute("ALTER TABLE files ADD COLUMN aad_metadata TEXT")
         except sqlite3.OperationalError:
             pass  # kolon zaten var
-        # Migration: auth_codes — geçici 8 haneli yönetici paylaşım kodları
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS auth_codes (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id    INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                code       TEXT    NOT NULL,
-                expires_at TEXT    NOT NULL,
-                used       INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-            )
-        """)
+        # auth_codes tablosu B-062 ile KALDIRILDI (bkz. DB/migrations.py
+        # Migration 24, `_m24_auth_codes_kaldir`) — bu blok artık BİLEREK
+        # burada YOK. `senkronize()`'ın çalıştıracağı 24 numaralı göç, bu
+        # tabloyu (13 numaralı tarihsel göç aracılığıyla oluşmuş olabilecek
+        # eski kurulumlar dahil) DROP ediyor; burada yeniden YARATMAMAK
+        # önemli, yoksa her açılışta oluşup göçle tekrar silinen bir
+        # döngüye girerdi.
         # Migration: usb_tokens.recovery_issued_at — Shamir 3. payının (kurtarma
         # parçası) dışa aktarıldığı zaman. YALNIZCA ZAMAN DAMGASI; parçanın
         # kendisi hiçbir zaman saklanmaz (bkz. CORE/recovery_share.py).

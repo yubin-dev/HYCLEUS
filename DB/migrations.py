@@ -242,6 +242,11 @@ def _m12_files_aad_metadata(conn: sqlite3.Connection) -> None:
 
 
 def _m13_auth_codes(conn: sqlite3.Connection) -> None:
+    """Tarihsel — DEĞİŞTİRİLMEDİ. Bu tablo Migration 24 ile KALDIRILDI
+    (B-062: hiçbir yerde doğrulanmayan yarım bir özellik). Bu fonksiyon
+    yalnızca `sifirdan_kur()`'un (test yolu) gerçek `_apply_schema()`
+    geçmişini birebir üretebilmesi için olduğu gibi duruyor — MIGRATIONS
+    demeti değişmez, bkz. modül docstring'i."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS auth_codes (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -423,6 +428,33 @@ def _m23_users_hwid_unique(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m24_auth_codes_kaldir(conn: sqlite3.Connection) -> None:
+    """`auth_codes` tablosunu kaldırır (B-062).
+
+    Tablo 13 numaralı göçle (ya da eski kurulumlarda `_apply_schema()`'nın
+    artık kaldırılmış raw SQL bloğuyla) oluşmuş olabilir — ikisi de
+    `DROP TABLE IF EXISTS` ile aynı şekilde ele alınır, hangisinden
+    geldiği önemli değil.
+
+    Neden kaldırıldı: `UI/ContactDialog.py`'nin "Auth Kodu Paylaş"
+    sekmesi bu tabloya 8 haneli kodlar yazıyordu ama repo genelinde
+    HİÇBİR YERDE bu kodlar okunup doğrulanmıyordu (`grep -rn
+    "auth_codes"` login akışının hiçbir dalına çıkmıyor) — yarım/ölü
+    bir özellikti. Ayrıca sekme rol kontrolsüzdü: herhangi bir oturum
+    (Standart/Salt Okunur dahil) TÜM onaylı kullanıcıların adını/rolünü
+    görebiliyor ve onlardan biri için kod üretebiliyordu.
+
+    `DB/db_manager.py::_apply_schema()`'daki tabloyu yeniden yaratan
+    raw SQL bloğu da BU göçle birlikte kaldırıldı — yalnızca bu göçü
+    eklemek yetmezdi: `_apply_schema()` her açılışta `CREATE TABLE IF
+    NOT EXISTS` ile tabloyu sessizce geri yaratıyor, bu göç yalnızca
+    İLK karşılaştığında (ledger'a damgalanana kadar) çalışıp bir daha
+    tekrar etmiyordu — ikisi birlikte kalsaydı tablo ikinci açılıştan
+    itibaren kalıcı olarak geri gelirdi.
+    """
+    conn.execute("DROP TABLE IF EXISTS auth_codes")
+
+
 #: Numaralı, SIRALI, değişmez göç listesi. Sıra anlamlıdır: 11 numara
 #: `folders` tablosuna referans veriyor, yani 10'dan sonra gelmek ZORUNDA.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -505,8 +537,12 @@ MIGRATIONS: tuple[Migration, ...] = (
               "fazla bir users satırına bağlanabilir. Çakışan satır "
               "varsa göç RuntimeError ile durur, sessizce atlamaz.",
               _m23_users_hwid_unique),
-    # Migration(24, "tpm-...", "...", _m24_...),
-    # Migration(25, "hclx-...", "...", _m25_...),
+    Migration(24, "auth-codes-kaldir",
+              "auth_codes tablosunu kaldırır (B-062) — hiçbir yerde "
+              "doğrulanmayan, rol kontrolsüz yarım bir özellikti.",
+              _m24_auth_codes_kaldir),
+    # Migration(25, "tpm-...", "...", _m25_...),
+    # Migration(26, "hclx-...", "...", _m26_...),
 )
 
 

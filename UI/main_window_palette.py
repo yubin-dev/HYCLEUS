@@ -42,7 +42,14 @@ _DARK: dict[str, str] = {
     "nav_text":  "#D1D5DB",
     "border":    "#3A3A3C",
     "hover":     "#2C2C2E",
-    "search_bg": "#2C2C2E",
+    # B-057 (2026-08-25): eskisi #2C2C2E (topbar/hover/row_hover ile aynı
+    # tondaydı), accent/search_bg (metin olarak — AdminPanel'in kendi HWID
+    # vurgusu) kontrastı 2.70:1 idi (AA eşiği 3.0). En az yan etkili
+    # düzeltme: yalnızca bu yüzeyi biraz koyulaştırmak — `accent`'e (birçok
+    # başka geçen kontrastın bağlı olduğu token) HİÇ dokunmadan yeter.
+    # Sonuç: accent/search_bg 3.07:1. topbar/hover/row_hover kasıtlı olarak
+    # DEĞİŞMEDİ — yalnızca search_bg artık onlardan bir tık koyu.
+    "search_bg": "#222224",
     "row_hover": "#2C2C2E",
     "green":     "#059669",
     "green_tint": "rgba(5, 150, 105, 0.14)",
@@ -69,7 +76,21 @@ _LIGHT: dict[str, str] = {
     # B-054 (2026-08-24): eskisi #9CA3AF, text/bg kontrastı 2.43:1 idi (AA
     # eşiği 3.0). Aynı gri tonun en yakın koyu tonuna çekildi — 3.11:1.
     # accent/bg/text'e dokunulmadı, "mavi" preset tanınabilir kaldı.
-    "subtext":   "#898F9A",
+    #
+    # B-054 takibi (2026-08-25): `subtext` gerçekte NEREDE kullanılıyor
+    # diye tarandı (AdminPanel.py, dialog_kit.py, main_window_theme.py,
+    # main_window_tree.py, RecoveryShareDialog.py, TimestampDialog.py) —
+    # hepsi 11-12px DÜZ etiket metni, WCAG'ın "büyük metin" eşiğine
+    # (18pt/24px normal ya da 14pt/18.66px kalın) hiçbiri girmiyor. Yani
+    # bunlar normal küçük metin sınıfında ve gerçek eşik 3.0 değil 4.5:1
+    # olmalıydı — 3.11:1 (yukarıdaki B-054 düzeltmesi) yetersizdi. `#898F9A`
+    # → `#64707C`: aynı soğuk gri-mavi aile, yalnızca daha koyu.
+    # accent/bg/text'e yine dokunulmadı.
+    #   subtext/bg        : 3.11:1 → 4.84:1  (eşik: 4.5)
+    #   subtext/search_bg : 2.95:1 → 4.60:1  (eşik: 4.5 — ayrıca B-057'nin
+    #                        iki noktasından biri, bu düzeltmenin YAN ETKİSİ
+    #                        olarak da kapandı, search_bg'ye hiç dokunulmadan)
+    "subtext":   "#64707C",
     "nav_text":  "#374151",
     "border":    "#E5E7EB",
     "hover":     "#F3F4F6",

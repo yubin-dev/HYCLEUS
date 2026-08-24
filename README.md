@@ -189,7 +189,7 @@ to the binary — see `CORE/paths.py`.
 HYCLEUS --version     # version string only
 HYCLEUS --selftest    # imports every module, reports what is missing
 # Expected: "SELFTEST OK" with loaded == attempted
-#           (57 on Windows — 53 plus the wmi/pywin32 group)
+#           (67 on Windows — 63 plus the wmi/pywin32 group)
 ```
 
 **This is automated.** Both builds are produced on every push and both are
@@ -595,7 +595,7 @@ yanında değil `$XDG_DATA_HOME/HYCLEUS` altında duruyor (varsayılan
 HYCLEUS --version     # yalnızca sürüm dizesi
 HYCLEUS --selftest    # her modülü içe aktarır, eksikleri raporlar
 # Beklenen: "SELFTEST OK" ve yüklenen == denenen
-#           (Windows'ta 57 — 53 artı wmi/pywin32 grubu)
+#           (Windows'ta 67 — 63 artı wmi/pywin32 grubu)
 ```
 
 **Bu artık otomatik.** İki yapı da her push'ta üretiliyor ve ikisi de duman

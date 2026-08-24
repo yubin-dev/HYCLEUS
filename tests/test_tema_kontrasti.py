@@ -104,23 +104,22 @@ def test_govde_metni_okunabilir(key, variant, T):
     assert contrast_ratio(T["text"], T["topbar"], T["topbar"]) >= _AA_TEXT, f"{key}/{variant}: text/topbar"
 
 
-# "mavi" (mevcut varsayılan) preset'inin `accent` rengi bu görevlerden ÖNCE
-# de bu değerdeydi ve iki görev de "mevcut mavi"yi geriye dönük uyumluluk
-# için BİREBİR korumayı istedi — sessizce düzeltilmiyor, yalnızca kaydı
-# tutuluyor (B-057).
+# Tarihsel not: bu küme bir zamanlar üç istisna taşıyordu (B-054/B-057) —
+# "mavi" preset'in birebir korunması istendiği için sessizce atlanıyorlardı,
+# yutulmuyor, yalnızca kaydı tutuluyordu:
 #
-#   subtext/bg           — B-054 idi, 2026-08-24'te DÜZELTİLDİ (bkz.
-#                           test_b054_mavi_acik_subtext_duzeltildi altta).
-#                           Artık istisna DEĞİL.
-#   subtext/search_bg    — B-057 (search_bg'nin AdminPanel/GuvenlikView
-#                           kartlarında metin yüzeyi olarak YENİ kullanımı
-#                           ortaya çıkardı)
-#   accent/search_bg     — B-057 (aynı sebep — AdminPanel'in kendi HWID
-#                           vurgusu)
-_ONCEDEN_VAR_OLAN_ISTISNALAR = {
-    ("mavi", "light", "subtext_search_bg"),
-    ("mavi", "dark", "accent_search_bg"),
-}
+#   subtext/bg           — B-054, 2026-08-24'te DÜZELTİLDİ.
+#   subtext/search_bg    — B-057, 2026-08-25'te DÜZELTİLDİ (B-054'ün
+#                           takibinde `subtext`'i 4.5:1'e çekmenin YAN
+#                           ETKİSİ — bkz. main_window_palette.py).
+#   accent/search_bg     — B-057, 2026-08-25'te DÜZELTİLDİ (`search_bg`
+#                           koyulaştırıldı, `accent`'e dokunulmadı).
+#
+# Üçü de kapandı, küme artık BOŞ. Mekanizma (ve `_istisna_disinda`) bir
+# sonraki preset/yüzey kombinasyonu AA'nın altında çıkarsa aynı "sessizce
+# yutma, kaydını tut" deseni tekrar kullanılabilsin diye kasıtlı olarak
+# duruyor — boş bir küme yeniden dolabilir, silinmiyor.
+_ONCEDEN_VAR_OLAN_ISTISNALAR: set[tuple[str, str, str]] = set()
 
 
 def _istisna_disinda(key: str, variant: str, ad: str) -> bool:
@@ -152,6 +151,49 @@ def test_b054_mavi_acik_subtext_duzeltildi():
         "bu testin referans değeri güncel değil"
     )
     assert yeni != eski, "subtext hâlâ eski (düzeltilmemiş) griye eşit"
+
+
+def test_b054_takibi_subtext_gercekte_kucuk_metin_4_5_esigini_geciyor():
+    """B-054 takibi (2026-08-25): `subtext` 3.0 DEĞİL 4.5:1'i karşılamalı.
+
+    Kod taraması: `_LIGHT["subtext"]` (ve `_DARK["subtext"]`, aynı anahtar
+    adı tüm preset'lerde okunuyor) şu dosyalarda hep 11-12px DÜZ etiket
+    metni olarak kullanılıyor — hiçbiri WCAG'ın büyük-metin eşiğine
+    (18pt/24px normal, 14pt/18.66px kalın) girmiyor:
+
+      UI/AdminPanel.py:249            (sekme metni, 12px varsayılan)
+      UI/AdminPanel.py:271            font-size:12px
+      UI/dialog_kit.py:57,63,64       font-size: 11px
+      UI/main_window_tree.py:96       font-size:11px
+      UI/RecoveryShareDialog.py:279   font-size:12px
+
+    Yani proje kararı olan "subtext'e 3.0 (büyük metin/UI) eşiği
+    uygulanır" varsayımı gerçek kullanımla UYUŞMUYOR — bu normal küçük
+    metin, 4.5:1 gerektiriyor. Bu test yalnızca "mavi" (varsayılan)
+    preset'i düzeltir; diğer 4 preset'in `subtext`'i denetlenmedi
+    (bkz. BACKLOG B-063).
+    """
+    bg = _LIGHT["bg"]
+    search_bg = _LIGHT["search_bg"]
+    yeni = _LIGHT["subtext"]
+    eski_b054 = "#898F9A"     # B-054'ün ARA değeri — 3.0'ı geçer, 4.5'i geçmez
+    eski_orijinal = "#9CA3AF"  # B-054'ten önceki değer
+
+    assert contrast_ratio(yeni, bg, bg) >= _AA_TEXT, (
+        f"mavi/light: subtext({yeni})/bg 4.5:1'in altında"
+    )
+    assert contrast_ratio(yeni, search_bg, search_bg) >= _AA_TEXT, (
+        f"mavi/light: subtext({yeni})/search_bg 4.5:1'in altında"
+    )
+    assert contrast_ratio(eski_b054, bg, bg) < _AA_TEXT, (
+        "B-054 ARA değeri artık 4.5:1'i geçiyor gibi görünüyor — "
+        "bu testin referans değeri güncel değil"
+    )
+    assert contrast_ratio(eski_orijinal, bg, bg) < _AA_TEXT, (
+        "orijinal değer artık 4.5:1'i geçiyor gibi görünüyor — "
+        "bu testin referans değeri güncel değil"
+    )
+    assert yeni not in (eski_b054, eski_orijinal)
 
 
 @pytest.mark.parametrize("key,variant,T", _variant_cases(), ids=lambda v: v if isinstance(v, str) else "")
@@ -216,6 +258,28 @@ def test_accent_metin_olarak_zeminde_okunabilir(key, variant, T):
         assert contrast_ratio(T["accent"], T["search_bg"], T["search_bg"]) >= _AA_MUTED, (
             f"{key}/{variant}: accent/search_bg (metin)"
         )
+
+
+def test_b057_mavi_koyu_accent_search_bg_duzeltildi():
+    """B-057: "mavi" koyu modun accent/search_bg kontrastı artık AA'yı (3.0) geçiyor.
+
+    `accent`'e HİÇ dokunulmadı (birçok başka geçen kontrast ona bağlı) —
+    yalnızca `search_bg` biraz koyulaştırıldı (`#2C2C2E` → `#222224`).
+    Eski değer burada bilerek sabit tutuluyor — biri `search_bg`'yi eski
+    tona döndürürse bu test düşer.
+    """
+    accent = _DARK["accent"]
+    yeni_search_bg = _DARK["search_bg"]
+    eski_search_bg = "#2C2C2E"
+
+    assert contrast_ratio(accent, yeni_search_bg, yeni_search_bg) >= _AA_MUTED, (
+        f"mavi/dark: accent/search_bg({yeni_search_bg}) hâlâ AA'nın altında"
+    )
+    assert contrast_ratio(accent, eski_search_bg, eski_search_bg) < _AA_MUTED, (
+        "eski search_bg değeri artık AA'yı geçiyor gibi görünüyor — "
+        "bu testin referans değeri güncel değil"
+    )
+    assert yeni_search_bg != eski_search_bg, "search_bg hâlâ eski (düzeltilmemiş) tona eşit"
 
 
 @pytest.mark.parametrize("key,variant,T", _variant_cases(), ids=lambda v: v if isinstance(v, str) else "")

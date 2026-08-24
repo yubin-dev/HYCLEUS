@@ -73,8 +73,7 @@ Hiç yedeklenmeyen:
     settings            — `audit_chain_start_id`, `integrity_last_sweep`
                           gibi O VERİTABANINA ait durum. Geri yüklemek
                           zincir ve tarama durumunu bozardı.
-    login_attempts,
-    auth_codes          — geçici durum.
+    login_attempts      — geçici durum.
 
 
 Yedek düzeni
@@ -126,7 +125,7 @@ REFERENCE_TABLES = ("audit_log",)
 
 #: Hiç yedeklenmeyenler; belge amaçlı, kodda kullanılmıyor.
 EXCLUDED_TABLES = (
-    "users", "usb_tokens", "settings", "login_attempts", "auth_codes",
+    "users", "usb_tokens", "settings", "login_attempts",
 )
 
 
