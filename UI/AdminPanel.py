@@ -1237,8 +1237,14 @@ class AdminPanel(QDialog):
         YALNIZCA görünürlük: `_pending_tab_index`'teki widget, `_on_approve`/
         `_on_reject` ve altındaki veri hiçbir zaman silinmiyor — yalnızca
         sekme çubuğunda gizleniyor/gösteriliyor.
+
+        "Kullanıcı Adı" sütunu (_pending_table, sütun 0) aynı gerekçeyle
+        Bireysel'de ayrıca gizleniyor: sekme zaten gizli olsa da, mod
+        Kurumsal'a dönüp sekme tekrar görünür olduğunda sütunun da doğru
+        durumda (görünür) olması gerekiyor — tek yerden, aynı çağrıyla.
         """
         self._tabs.setTabVisible(self._pending_tab_index, mode != BIREYSEL)
+        self._pending_table.setColumnHidden(0, mode == BIREYSEL)
 
     def _on_save_settings(self) -> None:
         hours = self._ttl_combo.currentData()

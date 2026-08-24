@@ -195,6 +195,29 @@ def test_admin_panel_mod_degisince_sekme_ILERI_GERI_dogru_gorunurluk(qapp, db):
         panel.close()
 
 
+def test_bekleyen_tablosu_kullanici_adi_sutunu_ILERI_GERI_dogru_gorunurluk(qapp, db):
+    """
+    "Kullanıcı Adı" sütunu (_pending_table, sütun 0) Bireysel'de gizli,
+    Kurumsal'da görünür olmalı — sekmenin kendi görünürlüğünden AYRI bir
+    kontrol, aynı `_apply_mode_visibility()` çağrısıyla uygulanıyor.
+    """
+    panel = AdminPanel(current_hwid=_HWID, role="Yönetici")
+    try:
+        assert panel._pending_table.isColumnHidden(0) is False
+
+        idx = panel._mode_combo.findData(BIREYSEL)
+        panel._mode_combo.setCurrentIndex(idx)
+        panel._on_save_settings()
+        assert panel._pending_table.isColumnHidden(0) is True
+
+        idx = panel._mode_combo.findData(KURUMSAL)
+        panel._mode_combo.setCurrentIndex(idx)
+        panel._on_save_settings()
+        assert panel._pending_table.isColumnHidden(0) is False
+    finally:
+        panel.close()
+
+
 def test_bekleyen_kayit_BIREYSELDE_kaybolmuyor_KURUMSALDA_yine_gorunur(qapp, db):
     """
     "Gizlemek silmek değil" — gerçek bir bekleyen kayıtla.

@@ -264,3 +264,31 @@ def test_iki_mod_AYNI_sekilde_davraniyor(
     assert sonuclar[KURUMSAL] == sonuclar[BIREYSEL], (
         "kayıt sonucu moda göre farklılaşıyor — mod bu ekranı ETKİLEMEMELİ"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3. Sürüm etiketi — CORE/version.py'den okunuyor, elle yazılı DEĞİL (B-017)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_giris_ekraninda_surum_etiketi_versiyon_py_ile_birebir_eslesiyor(
+    qapp, db, kasa_dizini, totp_gecerli, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Mutasyonla kanıt: `CORE.version.__version__` değiştirilince ekranda
+    GÖRÜNEN metin de değişmeli — sabit bir dize kopyalanmış olsaydı bu
+    ikinci kontrol düşerdi, yalnızca ilk eşitlik geçerdi.
+    """
+    import UI.login_dialog as ld
+    from CORE import version as version_modulu
+
+    monkeypatch.setattr(ld, "get_usb_hwid", lambda: f"{_HWID_BASE}-surum")
+
+    dlg = _kayit_ekrani(qapp)
+    assert dlg._surum_etiketi.text() == version_modulu.surum_etiketi()
+
+    onceki = dlg._surum_etiketi.text()
+    monkeypatch.setattr(version_modulu, "__version__", "9.9.9-mutasyon")
+    dlg_mutasyonlu = _kayit_ekrani(qapp)
+    assert dlg_mutasyonlu._surum_etiketi.text() == "HYCLEUS v9.9.9-mutasyon"
+    assert dlg_mutasyonlu._surum_etiketi.text() != onceki

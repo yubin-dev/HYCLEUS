@@ -71,7 +71,7 @@ def test_calisan_surum_son_yayindan_geride_degil() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 #: Bu dosyalarda sürüm dizesi elle yazılıydı; artık koddan okunmalı.
-_UI_DOSYALARI = ("UI/ContactDialog.py", "UI/main_window.py")
+_UI_DOSYALARI = ("UI/ContactDialog.py", "UI/main_window.py", "UI/login_dialog.py")
 
 
 @pytest.mark.parametrize("goreli", _UI_DOSYALARI)

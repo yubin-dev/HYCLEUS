@@ -39,6 +39,7 @@ from CORE.registration import (
     register_new_user,
 )
 from CORE.usb_manager import get_usb_hwid
+from CORE.version import surum_etiketi
 from UI.totp_enrollment import show_totp_enrollment_dialog
 from CORE.vault_manager import (
     USBAuthError,
@@ -464,6 +465,16 @@ class LoginDialog(QDialog):
         self._stack.addWidget(self._build_login_page())
         self._stack.addWidget(self._build_register_page())
         root.addWidget(self._stack, 1)   # stretch=1 → tüm boş alanı kapla
+
+        # ── Sürüm etiketi ───────────────────────────────────────────────
+        #
+        # CORE.version.surum_etiketi()'ten okunuyor — elle yazılmamalı
+        # (bkz. B-017, tests/test_version.py). Alt köşede, küçük ve gri:
+        # bilgi amaçlı, dikkat çekmemesi gerekiyor.
+        self._surum_etiketi = _lbl(surum_etiketi(), size=10, color="#D1D5DB")
+        self._surum_etiketi.setAlignment(Qt.AlignCenter)
+        self._surum_etiketi.setContentsMargins(0, 4, 0, 10)
+        root.addWidget(self._surum_etiketi)
 
         self._switch_tab(0)
 
