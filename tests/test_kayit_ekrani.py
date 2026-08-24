@@ -189,6 +189,10 @@ def test_kayit_akisi_HER_IKI_MODDA_da_tamamlaniyor(
     import UI.login_dialog as ld
     hwid = f"{_HWID_BASE}-{mod}"
     monkeypatch.setattr(ld, "get_usb_hwid", lambda: hwid)
+    # B-059: kayıt artık kendi TOTP sırrını üretip bir QR/mesaj kutusu
+    # gösteriyor (`show_totp_enrollment_dialog`, modal `.exec()`) —
+    # testte bu bloklamasın diye susturuluyor.
+    monkeypatch.setattr(ld, "show_totp_enrollment_dialog", lambda *a, **k: None)
 
     dlg = _kayit_ekrani(qapp)
     kullanici_adi = f"kayit_{mod}"
@@ -233,6 +237,7 @@ def test_iki_mod_AYNI_sekilde_davraniyor(
     ve hwid dışında) BİREBİR aynı şekle sahip olmalı.
     """
     import UI.login_dialog as ld
+    monkeypatch.setattr(ld, "show_totp_enrollment_dialog", lambda *a, **k: None)
 
     sonuclar = {}
     for mod in (KURUMSAL, BIREYSEL):

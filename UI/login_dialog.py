@@ -39,6 +39,7 @@ from CORE.registration import (
     register_new_user,
 )
 from CORE.usb_manager import get_usb_hwid
+from UI.totp_enrollment import show_totp_enrollment_dialog
 from CORE.vault_manager import (
     USBAuthError,
     VaultTamperedError,
@@ -59,7 +60,12 @@ from CORE.session_user import (
     tekil_hwid_satiri,
 )
 from CORE.rate_limit import LockState
-from CORE.secret_store import load_totp_secret, store_totp_secret
+from CORE.secret_store import (
+    load_totp_secret,
+    load_totp_secret_for_hwid,
+    store_totp_secret,
+    store_totp_secret_for_hwid,
+)
 
 _PIN_FILE    = _data_dir() / "pin_hash.json"
 _VAULT_PATH  = _data_dir() / ".hcl_vault"
@@ -329,7 +335,14 @@ class LoginDialog(QDialog):
                 and os.getenv("DEV_MODE", "").lower() not in ("1", "true", "yes")
             )
 
-        secret = _load_secret()
+        # B-059: TOTP sırrı artık HWID başına (paylaşılan/global DEĞİL).
+        # DEV_MODE'un kasa öncesi yolu (`not self._use_vault`) istisna:
+        # RBAC/çok-kullanıcı tehdit modelinin parçası değil, tek operatörlü
+        # geliştirme senaryosu — orada hâlâ global sır kullanılıyor.
+        if self._use_vault and hwid:
+            secret = load_totp_secret_for_hwid(hwid)
+        else:
+            secret = _load_secret()
 
         # first_run: main.py'den gelir; yoksa hesapla
         #
@@ -352,8 +365,12 @@ class LoginDialog(QDialog):
             self._init_card(640, 760)
             self._build_setup_ui()
         else:
-            # Tip daraltma; güvenlik kontrolü değil (mypy None'ı burada eliyor).
-            assert secret is not None  # nosec B101
+            if not self._use_vault:
+                # Tip daraltma; güvenlik kontrolü değil (mypy None'ı burada eliyor).
+                assert secret is not None  # nosec B101
+            # Vault yolunda `secret` None OLABİLİR (B-059): bu HWID hiç
+            # enroll olmamış -- göç öncesi onaylı bir kullanıcı ya da eski
+            # bir kayıt. `_on_login()` bunu ayrı, açık bir mesajla ele alıyor.
             self._secret = secret
             self._init_card(640, 720)
             self._build_main_ui()
@@ -808,9 +825,15 @@ class LoginDialog(QDialog):
             except Exception as exc:
                 self._show_error(f"Vault açılamadı: {exc}")
                 return
+            # B-059: TOTP sırrı HWID başına saklanır, global DEĞİL.
+            try:
+                store_totp_secret_for_hwid(self._hwid, self._secret)
+            except Exception as exc:
+                self._show_error(f"TOTP sırrı kaydedilemedi: {exc}")
+                return
         else:
             _save_pin_hash(pin, role)
-        _save_secret(self._secret)
+            _save_secret(self._secret)
         self._role = role
         self.accept()
 
@@ -862,13 +885,39 @@ class LoginDialog(QDialog):
             pin_ok = _verify_pin(pin)
             role   = _load_role() if pin_ok else ""
 
-        totp_ok = pyotp.TOTP(self._secret).verify(code, valid_window=1)
+        # B-059: `self._secret` None olabilir -- bu HWID hiç enroll olmamış
+        # (göç öncesi onaylı bir kullanıcı ya da eski bir kayıt). pyotp.TOTP(None)
+        # patlar; None'ı "kod hiçbir zaman doğrulanmaz" olarak ele alıyoruz.
+        totp_ok = (
+            self._secret is not None
+            and pyotp.TOTP(self._secret).verify(code, valid_window=1)
+        )
 
         if not pin_ok or not totp_ok:
             reason = f"pin_ok={pin_ok} totp_ok={totp_ok}"
             state = rate_limit.record_failure(DBManager(), self._rl_key(), detail=reason)
             if state.locked:
                 self._apply_lockout(state)
+                return
+            if pin_ok and self._secret is None:
+                # Ayrı ve açık mesaj (B-059): PIN doğru olduğu için bu HWID
+                # zaten kimliği doğrulanmış -- "kod yanlış" demek yanıltıcı
+                # olurdu, gerçek sorun bu USB'nin hiç TOTP kaydı olmaması.
+                #
+                # BİLİNÇLİ ÖDÜNLEŞİM: bu mesaj dolaylı olarak "PIN doğruydu"
+                # bilgisini sızdırıyor (rate limit'e rağmen). Kabul edildi
+                # çünkü saldırgan zaten fiziksel USB'ye sahip olmalı (uzaktan
+                # saldırılabilir bir yüzey değil) VE bu tek başına GİRİŞ
+                # SAĞLAMIYOR (totp_ok hâlâ False, fonksiyon burada dönüyor) —
+                # yalnızca "PIN doğru" bilgisini biraz erken açığa çıkarıyor.
+                # Karşılığında: bu geçici duruma (B-059 göçü sonrası yeniden
+                # enrollment bekleyen meşru bir kullanıcı) düşen gerçek
+                # kullanıcı neden giremediğini anlıyor, "kod yanlış" sanıp
+                # sonsuza kadar denemiyor.
+                self._show_error(
+                    "Bu USB için authenticator kaydı bulunamadı — "
+                    "yöneticinize başvurun."
+                )
                 return
             remaining = rate_limit.MAX_ATTEMPTS - state.fail_count
             suffix = f" ({remaining} deneme kaldı)" if remaining <= 2 else ""
@@ -984,7 +1033,7 @@ class LoginDialog(QDialog):
             return
 
         try:
-            register_new_user(
+            sonuc = register_new_user(
                 DBManager(), hwid=new_hwid, username=username, pin=pin, role=role,
             )
         except UsernameTakenError:
@@ -1011,6 +1060,7 @@ class LoginDialog(QDialog):
             self._show_reg_error(f"Kayıt oluşturulamadı: {exc}")
             return
 
+        show_totp_enrollment_dialog(self, sonuc.totp_secret, username)
         self._reg_btn.setEnabled(False)
         self._reg_pending.show()
 

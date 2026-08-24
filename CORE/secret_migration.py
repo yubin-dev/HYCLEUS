@@ -15,7 +15,8 @@ tutmuyordu, ALTER TABLE'ları try/except ile idare ediyordu).
 
   0 → hiçbir sır taşınmamış (migration öncesi tüm kurulumlar)
   1 → share_2 anahtar kasasında
-  2 → TOTP sırrı anahtar kasasında
+  2 → TOTP sırrı anahtar kasasında (HENÜZ global — tek kayıt)
+  3 → TOTP sırrı HWID başına (B-059) — bkz. migrate_totp_to_per_hwid()
 
 Her adım tamamlandığında versiyon ayrı ayrı yükseltilir; yarıda kesilen bir
 migration yeniden başlatıldığında tamamlanmış adımı tekrarlamaz.
@@ -48,7 +49,8 @@ _log = logging.getLogger("hycleus.migration")
 # Şema versiyonları
 SCHEMA_SHARE_2 = 1
 SCHEMA_TOTP = 2
-CURRENT_SCHEMA_VERSION = SCHEMA_TOTP
+SCHEMA_TOTP_PER_HWID = 3
+CURRENT_SCHEMA_VERSION = SCHEMA_TOTP_PER_HWID
 
 _TOTP_FILE = _data_dir() / "totp_secret.json"
 
@@ -67,16 +69,23 @@ class MigrationReport:
     share_2_migrated: int = 0
     share_2_already_in_keyring: int = 0
     totp_migrated: bool = False
+    totp_per_hwid_migrated_to: str | None = None
     notes: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         if not self.ran:
             return f"migration atlandı (şema v{self.from_version} güncel)"
+        totp_per_hwid = (
+            f"devralan_hwid={self.totp_per_hwid_migrated_to}"
+            if self.totp_per_hwid_migrated_to
+            else "devir yok"
+        )
         return (
             f"şema v{self.from_version} → v{self.to_version}; "
             f"share_2 taşınan={self.share_2_migrated} "
             f"zaten kasada={self.share_2_already_in_keyring}; "
-            f"totp taşındı={self.totp_migrated}"
+            f"totp taşındı={self.totp_migrated}; "
+            f"totp-per-hwid: {totp_per_hwid}"
         )
 
 
@@ -195,6 +204,87 @@ def migrate_totp_secret(totp_file: Path | None = None) -> str | None:
     return secret
 
 
+# ── TOTP-per-HWID migration (B-059) ────────────────────────────────────────────
+
+def migrate_totp_to_per_hwid(db: object, report: MigrationReport) -> None:
+    """
+    Paylaşılan/global TOTP sırrını (B-059) HWID başına şemaya taşır.
+
+    B-059'un hatası: `secret_store.TOTP_USERNAME` altında TEK bir global
+    kayıt vardı ve TÜM kullanıcılar aynı authenticator kodunu üretiyordu
+    — herhangi bir kullanıcı başka birinin 2FA kodunu üretebiliyordu,
+    RBAC'ı anlamsızlaştırıyordu.
+
+    Devir kararı: eski global sır sistemdeki EN ESKİ onaylı kullanıcının
+    (`SELECT hwid FROM users WHERE status='approved' ORDER BY id LIMIT 1`
+    — muhtemelen ilk admin, B-058'in ilk kurulum sihirbazıyla oluşan
+    kullanıcı) HWID'ine devrediliyor. Bu kimlik böylece KESİNTİSİZ
+    çalışmaya devam ediyor — authenticator uygulamasını yeniden taramasına
+    gerek yok. Alternatif (HERKESİ zorla yeniden enrollment'a sokmak,
+    yani sırrı kimseye devretmeden silmek) BİLEREK seçilmedi: bu turda
+    yeniden-enrollment AKIŞI (arayüz) henüz YOK — yalnızca öneri
+    (BACKLOG B-059), bu yüzden TÜM kullanıcıları anında ve geri dönüşsüz
+    kilitlemek "sessizce kırıp kullanıcıyı sistem dışında bırakma"
+    riskinin en kötü hâli olurdu: hiç kimse (bir admin bile) giremezdi.
+    En eski onaylı kullanıcıyı ayrıcalıklı tutmak, en azından BİR kişinin
+    (tipik olarak sistemi yöneten kişi) diğerlerinin yeniden enrollment'ını
+    ADMIN PANELİNDEN yönetebilmesini sağlıyor.
+
+    DİĞER TÜM onaylı/bekleyen kullanıcılar bu göçten SONRA kendi TOTP
+    kaydına sahip DEĞİL — bir sonraki girişlerinde
+    `UI/login_dialog.py::_on_login()` "Bu USB için authenticator kaydı
+    bulunamadı" mesajını gösterecek (sessizce "kod yanlış" demek yerine).
+    Bu SESSİZCE olmuyor: hangi HWID'lerin etkilendiği `report.notes`'a
+    yazılıyor, `main.py` bunu hem log'a hem audit_log'a düşürüyor.
+
+    Neden HWID başına, `users.id` başına DEĞİL: `CORE/secret_store.py`'nin
+    modül docstring'inde ayrıntılı gerekçe var (özet: `users.hwid` artık
+    kısmi UNIQUE — B-060 — yani HWID ve kullanıcı kimliği birebir
+    örtüşüyor; HWID, İlk Kurulum sihirbazının QR'ı gösterdiği anda ZATEN
+    elde, `user_id` başına saklamak bunu bir tavuk-yumurta sorununa
+    çevirirdi).
+    """
+    eski_sir = secret_store.load(secret_store.TOTP_USERNAME)
+    if eski_sir is None:
+        _log.info("TOTP-per-hwid migration: taşınacak global sır yok")
+        return
+
+    satir = db.fetchone(  # type: ignore[attr-defined]
+        "SELECT hwid FROM users WHERE status = 'approved' ORDER BY id LIMIT 1"
+    )
+    if satir is None or not satir["hwid"]:
+        note = (
+            "UYARI (B-059): global bir TOTP sırrı vardı ama onaylı hiçbir "
+            "kullanıcı yok — sır kimseye devredilemedi, kasadan silindi."
+        )
+        report.notes.append(note)
+        _log.warning(note)
+        secret_store.erase(secret_store.TOTP_USERNAME)
+        return
+
+    devralan_hwid = str(satir["hwid"])
+    secret_store.store_totp_secret_for_hwid(devralan_hwid, eski_sir)
+    secret_store.erase(secret_store.TOTP_USERNAME)
+    report.totp_per_hwid_migrated_to = devralan_hwid
+    _log.info("TOTP sırrı HWID başına devredildi  devralan_hwid=%s", devralan_hwid)
+
+    digerleri = db.fetchall(  # type: ignore[attr-defined]
+        "SELECT hwid, username, status FROM users"
+        " WHERE hwid IS NOT NULL AND hwid != '' AND hwid != ?",
+        (devralan_hwid,),
+    )
+    if digerleri:
+        etkilenen = ", ".join(
+            f"{r['username']}({r['status']})" for r in digerleri
+        )
+        note = (
+            "UYARI (B-059): şu kullanıcılar artık KENDİ TOTP kaydına "
+            f"sahip değil, yeniden enrollment gerekiyor: {etkilenen}"
+        )
+        report.notes.append(note)
+        _log.warning(note)
+
+
 # ── Giriş noktası ─────────────────────────────────────────────────────────────
 
 def run_migrations(db: object) -> MigrationReport:
@@ -230,6 +320,11 @@ def run_migrations(db: object) -> MigrationReport:
         report.totp_migrated = migrate_totp_secret() is not None
         set_schema_version(db, SCHEMA_TOTP)
         report.to_version = SCHEMA_TOTP
+
+    if report.from_version < SCHEMA_TOTP_PER_HWID:
+        migrate_totp_to_per_hwid(db, report)
+        set_schema_version(db, SCHEMA_TOTP_PER_HWID)
+        report.to_version = SCHEMA_TOTP_PER_HWID
 
     _log.info("Migration tamamlandı: %s", report.summary())
     return report

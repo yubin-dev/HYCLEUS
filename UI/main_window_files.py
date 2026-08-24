@@ -56,7 +56,7 @@ from CORE.expiry import expiry_from_now
 from CORE.scanner import ScanResult
 from DB.db_manager import DBManager
 
-from CORE.secret_store import load_totp_secret
+from CORE.secret_store import load_totp_secret_for_hwid
 from CORE.roles import is_readonly_role
 from UI.main_window_table import _ScanWorker
 from UI.main_window_palette import (
@@ -257,7 +257,7 @@ class FileActionsMixin:
             QMessageBox.warning(self, "İndir", "Dosya yolu bulunamadı.")
             return
         try:
-            secret = load_totp_secret()
+            secret = load_totp_secret_for_hwid(self._hwid)
         except Exception as exc:
             QMessageBox.critical(self, "İndir", f"TOTP anahtarı okunamadı.\n\n{exc}")
             return

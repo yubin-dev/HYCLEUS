@@ -64,7 +64,7 @@ from CORE.file_queries import (
 from CORE.usb_manager import DEV_MODE as _DEV_MODE
 from DB.db_manager import DBManager
 
-from CORE.secret_store import load_totp_secret
+from CORE.secret_store import load_totp_secret_for_hwid
 from CORE.roles import is_admin_role, is_readonly_role
 from UI.main_window_palette import (
     _TAG_COLORS,
@@ -305,7 +305,7 @@ class TreeMixin:
     def _on_folder_download(self, folder_id: int, folder_name: str) -> None:
 
         try:
-            secret = load_totp_secret()
+            secret = load_totp_secret_for_hwid(self._hwid)
         except Exception as exc:
             QMessageBox.critical(self, "İndir", f"TOTP anahtarı okunamadı.\n\n{exc}")
             return

@@ -262,22 +262,34 @@ def test_totp_migration_missing_file_is_noop(tmp_path: Path) -> None:
 # ── Uçtan uca: iki migration birlikte ─────────────────────────────────────────
 
 def test_run_migrations_reaches_current_version(db, monkeypatch, tmp_path: Path) -> None:
-    """share_2 + TOTP birlikte çalışıp şemayı güncel versiyona getirmeli."""
+    """share_2 + TOTP + TOTP-per-HWID (B-059) birlikte şemayı güncel versiyona getirmeli."""
     _seed_legacy_token(db, _HWID_A, _SHARE_A)
     totp_path = _write_legacy_totp(tmp_path)
     monkeypatch.setattr(secret_migration, "_TOTP_FILE", totp_path)
+    # B-059 (v2→v3) global TOTP sırrını EN ESKİ onaylı kullanıcının HWID'ine
+    # devrediyor — bu satır olmadan devredilecek kimse yok, sır kasadan
+    # SİLİNİR (bkz. test_totp_per_hwid_step_below). Uçtan uca "her şey
+    # erişilebilir kalıyor" senaryosu için _HWID_A'yı onaylı yapıyoruz.
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid) "
+        "VALUES ('gonderen', '!x', 'admin', 'approved', ?)",
+        (_HWID_A,),
+    )
 
     report = secret_migration.run_migrations(db)
 
     assert report.ran is True
     assert report.share_2_migrated == 1
     assert report.totp_migrated is True
+    assert report.totp_per_hwid_migrated_to == _HWID_A
     assert report.to_version == secret_migration.CURRENT_SCHEMA_VERSION
     assert secret_migration.get_schema_version(db) == secret_migration.CURRENT_SCHEMA_VERSION
 
-    # Her iki sır da kasadan okunabilir, orijinalleriyle aynı
+    # share_2 kasadan okunabilir, orijinaliyle aynı
     assert secret_store.load(secret_store.share_2_username(_HWID_A)) == _SHARE_A
-    assert secret_store.load_totp_secret() == _TOTP_SECRET
+    # TOTP artık HWID başına (B-059) — eski GLOBAL okuma artık boş.
+    assert secret_store.load_totp_secret() is None
+    assert secret_store.load_totp_secret_for_hwid(_HWID_A) == _TOTP_SECRET
 
     # Her iki eski konum da temiz
     assert _db_share_2(db, _HWID_A) == ""

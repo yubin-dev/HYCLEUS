@@ -6,25 +6,27 @@ B-058 sınıfı bir tarama (BACKLOG B-060/B-061) şunu buldu: kayıt akışı
 `users` INSERT'i atomik değildi. İkisi de aynı sonuca çıkıyordu: hiç
 onaylanmamış bir kullanıcı `status='approved'` ile sisteme giriyordu.
 
-Bu dosya o düzeltmenin dört DEĞİŞMEZİNİ (invariant) sabitliyor. İlk üçü
-bu turda düzeltildi ve YEŞİL olmalı. Dördüncüsü (TOTP kullanıcı başına)
-B-059'a bağlı, henüz uygulanmadı — `xfail(strict=True)` ile işaretli;
-bu turun "yeşil" sayımına dahil değil, B-059 kapanınca kendiliğinden
-yeşile dönecek.
+B-059 (ayrı bir tarama turunda bulundu): TOTP sırrı paylaşılan/global bir
+keyring kaydıydı — herhangi bir kullanıcı başka bir kullanıcının 2FA
+kodunu üretebiliyordu. Bu dosya o düzeltmenin de değişmezini sabitliyor:
+her HWID kendi TOTP sırrına sahip, göç eski global sırrı sessizce
+kaybetmiyor.
 """
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
 
+import pyotp
 import pytest
 
-from CORE import vault_manager
+from CORE import secret_migration, secret_store, vault_manager
 from CORE.registration import (
     HwidAlreadyRegisteredError,
     UsernameTakenError,
     register_new_user,
 )
+from CORE.vault_manager import create_vault
 from DB import migrations as M
 
 _PIN = "gecerli-pin-123"
@@ -83,10 +85,10 @@ def test_UNIQUE_kisit_uygulama_katmanini_bypass_eden_INSERTi_de_reddediyor(
 
 
 def test_yeni_kayit_daima_pending_asla_dogrudan_approved(db, kasa_dizini) -> None:
-    uid = register_new_user(
+    sonuc = register_new_user(
         db, hwid="USB-INV-003", username="yeni", pin=_PIN, role="Standart",
     )
-    row = db.fetchone("SELECT status, role FROM users WHERE id = ?", (uid,))
+    row = db.fetchone("SELECT status, role FROM users WHERE id = ?", (sonuc.user_id,))
     assert row["status"] == "pending"
     assert row["role"] != "admin"
 
@@ -275,38 +277,127 @@ def test_migration_cakisma_YOKSA_temiz_kuruluyor() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Değişmez 4 — TOTP kullanıcı başına (B-059'a bağlı, henüz uygulanmadı)
+# Değişmez 4 — TOTP HWID başına, göç eski sırrı sessizce kaybetmiyor (B-059)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.xfail(
-    reason=(
-        "B-059: TOTP sirri sistem genelinde TEK ve GLOBAL "
-        "(CORE.secret_store.TOTP_USERNAME) -- kullanici basina ayri sir "
-        "altyapisi henuz yok. B-059 kapanip her onayli kullanicinin KENDI "
-        "TOTP sirri olunca bu test kendiliginden yesile donmeli; "
-        "strict=True oldugu icin o an bu xfail isaretinin kaldirilip "
-        "testin gercek bagimsizligi dogrulayacak sekilde genisletilmesi "
-        "gerektigi ACIKCA gorulur (beklenmedik PASS, FAIL sayilir)."
-    ),
-    strict=True,
-)
-def test_totp_sirri_kullanici_basina_bagimsiz(db, kasa_dizini) -> None:
-    import CORE.session_user as su
+def test_totp_sirri_iki_kullanici_arasinda_bagimsiz(db, kasa_dizini) -> None:
+    """
+    B-059'un tam kanıtı: iki farklı kayıt, iki farklı TOTP sırrı alıyor
+    ve biri diğerinin kodunu DOĞRULAYAMIYOR.
+    """
+    sonuc_a = register_new_user(
+        db, hwid="USB-INV-A", username="a", pin=_PIN, role="Standart",
+    )
+    sonuc_b = register_new_user(
+        db, hwid="USB-INV-B", username="b", pin=_PIN, role="Standart",
+    )
 
-    register_new_user(db, hwid="USB-INV-A", username="a", pin=_PIN, role="Standart")
-    register_new_user(db, hwid="USB-INV-B", username="b", pin=_PIN, role="Standart")
+    assert sonuc_a.totp_secret != sonuc_b.totp_secret
+
+    kod_a = pyotp.TOTP(sonuc_a.totp_secret).now()
+    assert pyotp.TOTP(sonuc_a.totp_secret).verify(kod_a, valid_window=1)
+    # A'nın kodu B'nin sırrıyla DOĞRULANMIYOR -- eskiden (global sır)
+    # bu satır AssertionError verirdi, çünkü ikisi de AYNI sırra sahipti.
+    assert not pyotp.TOTP(sonuc_b.totp_secret).verify(kod_a, valid_window=1)
+
+    # Kasadan okunan da tutarlı ve birbirinden bağımsız.
+    assert secret_store.load_totp_secret_for_hwid("USB-INV-A") == sonuc_a.totp_secret
+    assert secret_store.load_totp_secret_for_hwid("USB-INV-B") == sonuc_b.totp_secret
+
+
+def test_migration_eski_global_sir_ilk_onayli_kullaniciya_devrediyor(
+    db, kasa_dizini,
+) -> None:
+    """
+    Göç sonrası var olan (ilk/en eski) onaylı kullanıcı HÂLÂ giriş
+    yapabiliyor mu: eski global sırrı devralan HWID'in TOTP kodu hâlâ
+    doğrulanabiliyor olmalı — authenticator uygulamasını yeniden
+    taramasına gerek yok.
+    """
+    create_vault("USB-MIG-ILK", _PIN, "Standart")
+    create_vault("USB-MIG-IKINCI", _PIN, "Standart")
     db.execute(
-        "UPDATE users SET status = 'approved' WHERE hwid IN ('USB-INV-A', 'USB-INV-B')"
+        "INSERT INTO users (username, password_hash, role, status, hwid) "
+        "VALUES ('ilk_admin', '!x', 'admin', 'approved', 'USB-MIG-ILK')"
+    )
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid) "
+        "VALUES ('ikinci_kullanici', '!y', 'user', 'approved', 'USB-MIG-IKINCI')"
     )
 
-    # B-059 kapanınca beklenen: her onaylı kullanıcının KENDİ TOTP sırrını
-    # okuyabilen bir API. Bugün böyle bir kavram yok — tek global
-    # load_totp_secret() var, iki kullanıcının "kendi" sırrını ayırt
-    # edemiyor.
-    assert hasattr(su, "totp_secret_for_user"), (
-        "B-059 kapandığında kullanıcı başına TOTP sırrı okuyacak bir API "
-        "(örn. CORE.session_user.totp_secret_for_user) eklenmiş olmalı; "
-        "bu test o zaman iki kullanıcının sırlarının GERÇEKTEN farklı "
-        "olduğunu doğrulayacak şekilde genişletilmeli."
+    eski_global_sir = pyotp.random_base32()
+    secret_store.store_totp_secret(eski_global_sir)
+    secret_migration.set_schema_version(db, secret_migration.SCHEMA_TOTP)
+
+    rapor = secret_migration.run_migrations(db)
+
+    assert rapor.ran
+    assert rapor.to_version == secret_migration.SCHEMA_TOTP_PER_HWID
+    assert rapor.totp_per_hwid_migrated_to == "USB-MIG-ILK"
+
+    # İlk onaylı kullanıcı KESİNTİSİZ çalışmaya devam ediyor: eski kodu
+    # hâlâ doğrulanıyor.
+    eski_kod = pyotp.TOTP(eski_global_sir).now()
+    devralinan_sir = secret_store.load_totp_secret_for_hwid("USB-MIG-ILK")
+    assert devralinan_sir == eski_global_sir
+    assert pyotp.TOTP(devralinan_sir).verify(eski_kod, valid_window=1)
+
+    # Global kayıt artık YOK -- ikinci bir sızıntı/kafa karışıklığı yok.
+    assert secret_store.load_totp_secret() is None
+
+
+def test_migration_digerleri_yeniden_enrollment_gerektiriyor_sessizce_degil(
+    db, kasa_dizini,
+) -> None:
+    """
+    İlk onaylı kullanıcı DIŞINDAKİLER göç sonrası kendi TOTP kaydına sahip
+    DEĞİL — ama bu SESSİZCE olmuyor: rapor kimin etkilendiğini söylüyor.
+    """
+    create_vault("USB-MIG-ILK-2", _PIN, "Standart")
+    create_vault("USB-MIG-DIGER", _PIN, "Standart")
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid) "
+        "VALUES ('ilk_admin', '!x', 'admin', 'approved', 'USB-MIG-ILK-2')"
     )
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid) "
+        "VALUES ('digeri', '!y', 'user', 'approved', 'USB-MIG-DIGER')"
+    )
+    secret_store.store_totp_secret(pyotp.random_base32())
+    secret_migration.set_schema_version(db, secret_migration.SCHEMA_TOTP)
+
+    rapor = secret_migration.run_migrations(db)
+
+    # "digeri" kendi TOTP kaydına sahip DEĞİL -- yeniden enrollment gerekiyor.
+    assert secret_store.load_totp_secret_for_hwid("USB-MIG-DIGER") is None
+    # Bu durum rapora (ve main.py üzerinden audit_log'a) SESSİZCE geçmiyor.
+    assert any("digeri" in not_ for not_ in rapor.notes), rapor.notes
+
+
+def test_migration_onayli_kullanici_yokken_sir_kimseye_devredilmeden_silinir(
+    db, kasa_dizini,
+) -> None:
+    """
+    Mutasyon kontrastı: onaylı hiç kullanıcı yoksa (teorik olarak olmamalı
+    ama savunma derinliği) göç sessizce takılıp kalmıyor, sırrı silip
+    uyarıyor.
+    """
+    secret_store.store_totp_secret(pyotp.random_base32())
+    secret_migration.set_schema_version(db, secret_migration.SCHEMA_TOTP)
+
+    rapor = secret_migration.run_migrations(db)
+
+    assert rapor.totp_per_hwid_migrated_to is None
+    assert secret_store.load_totp_secret() is None
+    assert any("kimseye devredilemedi" in n for n in rapor.notes)
+
+
+def test_migration_global_sir_YOKSA_hicbir_sey_yapmiyor(db, kasa_dizini) -> None:
+    """Mutasyon kontrastı: taşınacak eski sır yoksa göç sorunsuz geçmeli."""
+    secret_migration.set_schema_version(db, secret_migration.SCHEMA_TOTP)
+
+    rapor = secret_migration.run_migrations(db)
+
+    assert rapor.to_version == secret_migration.SCHEMA_TOTP_PER_HWID
+    assert rapor.totp_per_hwid_migrated_to is None

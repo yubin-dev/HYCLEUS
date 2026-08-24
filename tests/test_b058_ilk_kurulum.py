@@ -23,10 +23,13 @@ Bu paket dört şeyi ölçüyor
 1. Taze kurulumda ilk kullanıcı hâlâ otomatik onaylı (değişmedi).
 2. Kurulumdan SONRA, daha önce hiç görülmemiş bir USB artık İlk Kurulum
    sihirbazına DÜŞMÜYOR — "Kayıt Ol" (pending) yoluna gidiyor.
-3. Bu yönlendirme düzeltmesinin yan etkisi: ikinci USB artık paylaşılan
-   TOTP sırrına hiç DOKUNMUYOR (sihirbaza hiç girmediği için). Sırrın
-   GLOBAL olması kendi başına ayrı bir açık (B-059) — bu turda ona
-   dokunulmadı, yalnızca BU yoldan artık tetiklenemediği kanıtlanıyor.
+3. Bu yönlendirme düzeltmesinin yan etkisi: ikinci USB artık ilk
+   kullanıcının TOTP sırrına hiç DOKUNMUYOR (sihirbaza hiç girmediği
+   için). TOTP'nin o zamanlar GLOBAL olması ayrı bir açıktı (B-059);
+   sonraki bir turda TOTP HWID başına taşındı (`tests/test_authz_invariants.py`,
+   `CORE/secret_migration.py::migrate_totp_to_per_hwid`) — bu paketteki
+   test artık HWID başına saklanan sırrı okuyor, ama "ikinci USB
+   birincininkini ezmiyor" iddiasının kendisi değişmedi.
 4. Guard mutasyonla doğrulanıyor: onaylı kullanıcı VARKEN sihirbaz
    zorla çağrılırsa patlıyor; YOKKEN aynı zorlama patlamıyor — guard'ın
    gerçekten KOŞULA bağlı olduğu, kör bir `raise` olmadığı kanıtlanıyor.
@@ -52,7 +55,7 @@ except ImportError as _exc:  # pragma: no cover — ortama bağlı
     )
 
 from CORE import vault_manager
-from CORE.secret_store import load_totp_secret
+from CORE.secret_store import load_totp_secret_for_hwid
 from CORE.session_user import sistem_kurulmus_mu, sync_session_user
 
 _HWID_ILK    = "USB-B058-ILK-ADMIN"
@@ -166,6 +169,9 @@ def test_KURULUMDAN_SONRA_yeni_USB_KAYIT_OL_ile_PENDING_uretiyor_ASLA_approved_d
 
     import UI.login_dialog as ld
     monkeypatch.setattr(ld, "get_usb_hwid", lambda: _HWID_IKINCI)
+    # B-059: kayıt artık kendi TOTP sırrını üretip modal bir QR mesaj
+    # kutusu gösteriyor -- testte bloklamasın diye susturuluyor.
+    monkeypatch.setattr(ld, "show_totp_enrollment_dialog", lambda *a, **k: None)
 
     ikinci = LoginDialog(hwid=_HWID_IKINCI, first_run=None, use_vault=True)
     assert hasattr(ikinci, "_stack"), "ana UI açılmadı — ön koşul sağlanmıyor"
@@ -197,20 +203,25 @@ def test_KURULUMDAN_SONRA_yeni_USB_KAYIT_OL_ile_PENDING_uretiyor_ASLA_approved_d
     )
 
 
-def test_IKINCI_USB_ARTIK_paylasilan_totp_sirrini_EZMIYOR(
+def test_IKINCI_USB_ARTIK_ILK_KULLANICININ_totp_sirrini_EZMIYOR(
     qapp, db, kasa_dizini,
 ) -> None:
     """
     Yönlendirme düzeltmesinin yan etkisi: ikinci USB artık
-    `_on_setup_confirm()`'e hiç GİRMİYOR, dolayısıyla paylaşılan TOTP
-    sırrına dokunmuyor. Sırrın GLOBAL olması kendi başına ayrı bir açık
-    (B-059, bu turun kapsamı dışında) — burada sınanan yalnızca BU
-    yoldan artık tetiklenemediği.
+    `_on_setup_confirm()`'e hiç GİRMİYOR, dolayısıyla ilk kullanıcının
+    TOTP sırrına dokunmuyor.
+
+    B-059 (ayrı bir tarama turunda kapatıldı) TOTP'yi HWID başına
+    taşıdığı için "paylaşılan sırrı ezme" ihtimali artık YAPISAL olarak
+    da yok (her HWID kendi keyring kaydında) — bu test yine de ilk
+    kullanıcının KENDİ sırrının ikinci bir USB'nin varlığından
+    etkilenmediğini doğrudan ölçüyor.
     """
-    _ilk_kurulumu_tamamla(qapp, _HWID_ILK, _PIN_ILK)
+    ilk = _ilk_kurulumu_tamamla(qapp, _HWID_ILK, _PIN_ILK)
     sync_session_user(db, hwid=_HWID_ILK, role="Yönetici")
-    ilk_sir = load_totp_secret()
+    ilk_sir = load_totp_secret_for_hwid(_HWID_ILK)
     assert ilk_sir is not None
+    assert ilk_sir == ilk._secret
 
     ikinci = LoginDialog(hwid=_HWID_IKINCI, first_run=None, use_vault=True)
     assert not hasattr(ikinci, "_role_group"), (
@@ -218,10 +229,10 @@ def test_IKINCI_USB_ARTIK_paylasilan_totp_sirrini_EZMIYOR(
         "hâlini ölçmüyor"
     )
 
-    sir_degismedi = load_totp_secret()
+    sir_degismedi = load_totp_secret_for_hwid(_HWID_ILK)
     assert sir_degismedi == ilk_sir, (
-        "paylaşılan TOTP sırrı hâlâ değişiyor — yönlendirme düzeltmesi "
-        "bu yan etkiyi kapatmamış"
+        "ilk kullanıcının TOTP sırrı hâlâ değişiyor — yönlendirme "
+        "düzeltmesi bu yan etkiyi kapatmamış"
     )
 
 

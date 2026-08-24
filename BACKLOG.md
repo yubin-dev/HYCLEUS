@@ -2973,6 +2973,164 @@ kez ölçüldü ve tam bir hesap devralma çıktı.
 
 ---
 
+## B-059 — TOTP sırrı GLOBAL/paylaşılan, kullanıcı bazlı değildi
+
+**Durum:** KAPANDI (2026-08-23, aynı gün üçüncü tur)
+**Öncelik:** Yüksek — RBAC'ı anlamsızlaştıran bir kimlik doğrulama açığı
+**Bulundu:** 2026-08-23 — B-058 sınıfı yetkilendirme/durum-geçiş taraması
+sırasında adı geçti (bkz. B-058'in "kurulumdan sonra ikinci bir USB
+paylaşılan TOTP sırrını eziyordu" bulgusu); bu numarayla ayrıca ele
+alınmak üzere işaretlenmişti.
+
+`CORE/secret_store.py::TOTP_USERNAME = "totp_secret"` altında TEK bir
+global keyring kaydı vardı ve TÜM kullanıcılar aynı authenticator kodunu
+üretiyordu — `pyotp.TOTP(secret).verify(code)` her girişte, her indirme
+onayında AYNI `secret`'e bakıyordu. Sonuç: herhangi bir onaylı kullanıcı
+(Standart, Salt Okunur, admin fark etmeden) başka HERHANGİ bir
+kullanıcının 2FA kodunu üretebiliyordu — ikinci faktör PIN'e ek bir
+"bunu SEN mi giriyorsun" garantisi vermiyordu, yalnızca "authenticator
+uygulamasına sahip birileri" garantisi veriyordu. RBAC'ın (Yönetici /
+Standart / Salt Okunur ayrımı) üstüne kurulduğu ikinci katman, kimlik
+ayrımı yapmayan tek bir paylaşılan sırra indirgeniyordu.
+
+### Seçilen yön: HWID başına saklama, `users.id` başına DEĞİL
+
+`CORE/secret_store.py`'nin kendi eski notu "`totp_secret:<user_id>`
+biçimine genişletilmeli" diyordu — ama bu turda **HWID başına**
+(`totp_secret:<hwid>`) seçildi, gerekçe:
+
+1. `users.hwid` artık kısmi UNIQUE (B-060) — HWID ve kullanıcı kimliği
+   birebir örtüşüyor, iki şema arasında GÜVENLİK farkı yok.
+2. HWID, akışın HER noktasında (İlk Kurulum sihirbazının QR'ı dahil)
+   herhangi bir DB sorgusu gerekmeden ZATEN elde. `user_id` ise yalnızca
+   bir `users` satırı YAZILDIKTAN sonra biliniyor — sihirbaz QR'ı
+   kullanıcı henüz onaylanmadan, satır yokken göstermek zorunda; `user_id`
+   başına saklamak bunu bir tavuk-yumurta sırasına çevirirdi.
+3. `CORE/secret_store.py`'nin zaten `share_2:<hwid>` için kullandığı
+   desenle simetrik kalıyor — modülde üçüncü bir adlandırma şeması
+   açılmadı.
+
+Tam gerekçe `CORE/secret_store.py` ve `CORE/secret_migration.py`'nin
+modül docstring'lerinde.
+
+### Uygulanan değişiklik
+
+- **`CORE/secret_store.py`**: `totp_username(hwid)`,
+  `load_totp_secret_for_hwid()`, `store_totp_secret_for_hwid()`,
+  `erase_totp_secret_for_hwid()` eklendi. Eski `load_totp_secret()`/
+  `store_totp_secret()` KALDIRILMADI ama docstring'leri "YENİ KOD
+  BUNU ÇAĞIRMAMALI" diye işaretlendi — yalnızca migration'ın eski
+  kaydı okuması ve DEV_MODE'un kasa-öncesi (tek operatörlü, RBAC
+  kapsamı dışı) yolu için kalıyor.
+- **`CORE/registration.py::register_new_user()`**: artık her kayıt
+  KENDİ rastgele TOTP sırrını üretip HWID'ine kaydediyor ve
+  `RegistrationResult(user_id, totp_secret)` döndürüyor — eskiden
+  self-servis kayıt HİÇ TOTP sırrı üretmiyordu, onaydan sonra
+  paylaşılan global sırra güveniyordu (B-059'un ikinci, daha az
+  belgelenmiş yüzü). `users` INSERT'i başarısız olursa
+  (`vault_manager.discard_vault()`) TOTP sırrı da vault'la BİRLİKTE
+  geri alınıyor.
+- **`UI/totp_enrollment.py`** (yeni): `show_totp_enrollment_dialog()` —
+  yeni kayıt sonrası QR + manuel anahtarı gösteren TEK gövde; hem
+  `login_dialog.py`'nin self-servis "Kayıt Ol" sekmesi hem
+  `RegisterDialog.py` buraya bağlanıyor.
+- **`UI/login_dialog.py`**: `__init__` artık `use_vault` yolunda
+  `load_totp_secret_for_hwid(hwid)` çağırıyor (global `_load_secret()`
+  DEĞİL). `_on_setup_confirm()` (İlk Kurulum sihirbazı) sırrını artık
+  `store_totp_secret_for_hwid(self._hwid, ...)` ile kaydediyor.
+  `_on_login()`'da `self._secret` artık `None` OLABİLİR (bu HWID hiç
+  enroll olmamış); `totp_ok` hesaplaması `pyotp.TOTP(None)`
+  çökmesine karşı korunuyor ve PIN doğruyken sır yoksa ayrı, açık bir
+  mesaj gösteriliyor ("Bu USB için authenticator kaydı bulunamadı —
+  yöneticinize başvurun") — bkz. aşağıdaki bilinçli ödünleşim notu.
+- **`UI/main_window_files.py` / `main_window_tree.py` / `main_window_bulk.py`**:
+  indirme öncesi ikinci TOTP doğrulaması artık `load_totp_secret_for_hwid(self._hwid)`
+  kullanıyor — eskiden buradaki üç nokta da global sırra bakıyordu, yani
+  giriş dışında dosya indirirken de RBAC'ı delen aynı açık vardı.
+- **`CORE/vault_manager.py::discard_vault()`**: artık TOTP sırrını da
+  siliyor — bir USB kaydı tamamen kaldırıldığında (`AdminPanel._on_delete()`/
+  `_on_reject()`) ya da yarım kalan bir kayıt geri alındığında (B-061)
+  yetim bir TOTP kaydı kalmıyor.
+- **Migration (`CORE/secret_migration.py`, `PRAGMA user_version` 2→3,
+  `migrate_totp_to_per_hwid()`)**: eski global sır, sistemdeki EN ESKİ
+  onaylı kullanıcının (`ORDER BY id LIMIT 1` — muhtemelen ilk admin)
+  HWID'ine devrediliyor; global kayıt siliniyor.
+
+### Geriye dönük uyumluluk — KIRILIYOR, sessizce DEĞİL
+
+Migration sonrası **yalnızca devri alan (en eski onaylı) kullanıcı**
+authenticator uygulamasını yeniden taramadan çalışmaya devam ediyor.
+**Diğer TÜM onaylı/bekleyen kullanıcılar** kendi TOTP kaydına sahip
+DEĞİL — bir sonraki girişlerinde "Bu USB için authenticator kaydı
+bulunamadı" mesajıyla karşılaşıp GİREMEYECEKLER, yeniden enrollment
+gerekiyor. Bu SESSİZCE olmuyor: `migrate_totp_to_per_hwid()` etkilenen
+kullanıcı adlarını `MigrationReport.notes`'a yazıyor, `main.py` bunu
+hem log'a hem `audit_log`'a (`secret_migration_warning`) düşürüyor —
+bir yönetici açılış loglarına bakarak kimlerin etkilendiğini görebilir.
+
+**Neden EN ESKİ onaylı kullanıcıya devir, HERKESİ zorla sıfırlamak
+DEĞİL:** alternatif (sırrı kimseye devretmeden silmek, herkesi
+enrollment'a zorlamak) bu turda YAPILMADI çünkü yeniden-enrollment
+AKIŞI (arayüzden "sırrımı sıfırla, yeni QR göster" diyen bir ekran)
+henüz YOK — yalnızca aşağıda ÖNERİLİYOR. Kimseye devretmeden silmek,
+göç sonrası HİÇ KİMSENİN (bir admin bile) giremediği bir sistem
+üretirdi; bu "sessizce kırıp kullanıcıyı sistem dışında bırakma"
+riskinin EN KÖTÜ hâli olurdu. En eski onaylı kullanıcıyı ayrıcalıklı
+tutmak en azından BİR kişinin (tipik olarak sistemi yöneten kişi)
+diğerlerinin yeniden enrollment'ını yönetebilmesini sağlıyor.
+
+**Bilinçli ödünleşim (`_on_login()`):** "authenticator kaydı bulunamadı"
+mesajı, PIN doğruyken gösteriliyor — bu dolaylı olarak "PIN doğruydu"
+bilgisini sızdırıyor (rate limit'e rağmen). Kabul edildi çünkü (a)
+saldırgan zaten fiziksel USB'ye sahip olmalı (uzaktan saldırılabilir
+bir yüzey değil), (b) bu tek başına GİRİŞ SAĞLAMIYOR (`totp_ok` hâlâ
+`False`, fonksiyon orada dönüyor) — yalnızca "PIN doğru" bilgisini
+biraz erken açığa çıkarıyor. Karşılığında: bu geçici duruma (göç sonrası
+yeniden enrollment bekleyen meşru bir kullanıcı) düşen gerçek kullanıcı
+neden giremediğini anlıyor, "kod yanlış" sanıp sonsuza kadar denemiyor.
+
+### Önerilen yeniden-enrollment akışı (bu turda UYGULANMADI — yalnızca öneri)
+
+Görev tanımı bunu açıkça bu turun dışında bıraktı. Öneri: Admin
+Paneli'ne "TOTP Sıfırla" eylemi eklenmeli — seçili bir USB için yeni bir
+rastgele sır üretip `store_totp_secret_for_hwid()` ile kaydeden ve
+kullanıcıya (ör. `UI/ContactDialog.py`'nin auth-code akışına benzer
+şekilde, ya da doğrudan admin ekranında) yeni QR'ı gösteren bir akış.
+Yetki kontrolü zaten var olan `is_admin_role()` deseniyle
+(`AdminPanel.__init__`) örtüşür; yeni bir yetkilendirme kararı
+gerektirmez. Bu, göç sonrası "yeniden enrollment gerekiyor" durumuna
+düşen her kullanıcı için TEK, yönetici-onaylı bir çözüm yolu olurdu —
+bugün o kullanıcıların literal olarak hiçbir giriş yolu yok (kasıtlı,
+yukarıda gerekçelendirildi, ama kalıcı olmamalı).
+
+### Test
+
+`tests/test_authz_invariants.py`'ye eklenen/değiştirilen testler:
+`test_totp_sirri_iki_kullanici_arasinda_bagimsiz` (iki kaydın TOTP
+kodları birbirini doğrulamıyor — B-059'un ta kendisinin artık mümkün
+olmadığının doğrudan kanıtı), `test_migration_eski_global_sir_ilk_onayli_kullaniciya_devrediyor`
+(göç sonrası ilk onaylı kullanıcının eski kodu hâlâ doğrulanıyor),
+`test_migration_digerleri_yeniden_enrollment_gerektiriyor_sessizce_degil`
+(diğerlerinin etkilendiği rapora sessizce değil AÇIKÇA yazılıyor),
+`test_migration_onayli_kullanici_yokken_sir_kimseye_devredilmeden_silinir`
++ `test_migration_global_sir_YOKSA_hicbir_sey_yapmiyor` (mutasyon
+kontrastları). `tests/test_secret_migration.py::test_run_migrations_reaches_current_version`
+uçtan uca share_2+TOTP+TOTP-per-HWID'i tek akışta doğruluyor.
+`tests/test_b058_ilk_kurulum.py`/`tests/test_pin_rotation_ui.py`/
+`tests/test_kayit_ekrani.py` yeni per-HWID sır yükleme yoluna uyacak
+şekilde güncellendi (fixture'lar artık `load_totp_secret_for_hwid`'i de
+sabitliyor/susturuyor).
+
+Mutasyon kanıtı: `migrate_totp_to_per_hwid()`'deki devir satırı geçici
+olarak kaldırılıp ilgili migration testinin kırıldığı (devralan HWID'in
+eski kodu artık doğrulayamadığı) görüldü, sonra tam geri alındı.
+
+Tam takım: 2554 geçti, 4 atlandı, 0 kırıldı, 0 xfail (önceki turun
+`test_totp_sirri_kullanici_basina_bagimsiz` xfail testi bu turda GERÇEK
+bir geçen teste dönüştü).
+
+---
+
 ## B-060 — Kayıt Ol sekmesinde HWID benzersizlik kontrolü YOK: PIN bilmeden hesap devralma
 
 **Durum:** KAPANDI (2026-08-23, aynı gün ikinci tur)

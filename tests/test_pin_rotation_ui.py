@@ -68,10 +68,11 @@ def kasa_dizini(tmp_path: Path, monkeypatch):
 def totp_gecerli(monkeypatch):
     """TOTP doğrulamasını sabitler — sınanan şey PIN akışı.
 
-    Sır da sabitleniyor: `LoginDialog` ilk çalıştırma OLMADIĞINDA anahtar
-    kasasından bir TOTP sırrı bekliyor ve başsız koşucuda kasa yok.
-    Sırsız `LoginDialog` kurulum ekranını açardı — yani giriş akışı hiç
-    çalışmazdı.
+    Sır da sabitleniyor: `use_vault=True` yolunda `LoginDialog` artık
+    HWID başına bir TOTP sırrı bekliyor (B-059) ve başsız koşucuda kasada
+    hiç kayıt yok — `self._secret None` kalırdı ve yeni None-koruması
+    `_on_login()`'de `totp_ok`'u hiç `pyotp.TOTP` çağırmadan `False`'a
+    sabitlerdi. `load_totp_secret_for_hwid` de bu yüzden sabitleniyor.
     """
     import UI.login_dialog as ld
 
@@ -81,6 +82,7 @@ def totp_gecerli(monkeypatch):
 
     monkeypatch.setattr(ld.pyotp, "TOTP", _SahteTOTP)
     monkeypatch.setattr(ld, "_load_secret", lambda: "A" * 32)
+    monkeypatch.setattr(ld, "load_totp_secret_for_hwid", lambda hwid: "A" * 32)
 
 
 @pytest.fixture

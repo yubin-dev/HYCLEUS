@@ -51,7 +51,7 @@ from CORE.export import export_to_directory, format_errors
 from CORE.expiry import expiry_from_now
 from DB.db_manager import DBManager
 
-from CORE.secret_store import load_totp_secret
+from CORE.secret_store import load_totp_secret_for_hwid
 from CORE.usb_manager import DEV_MODE as _DEV_MODE
 
 
@@ -211,7 +211,7 @@ class BulkActionsMixin:
         self, file_ids: list[int], filepaths: list[str],
     ) -> None:
         try:
-            secret = load_totp_secret()
+            secret = load_totp_secret_for_hwid(self._hwid)
         except Exception as exc:
             QMessageBox.critical(self, "İndir", f"TOTP anahtarı okunamadı.\n\n{exc}")
             return

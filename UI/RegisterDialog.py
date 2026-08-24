@@ -32,6 +32,7 @@ from CORE.registration import (
 )
 from CORE.usb_manager import _sanitize_hwid, get_usb_hwid
 from DB.db_manager import DBManager
+from UI.totp_enrollment import show_totp_enrollment_dialog
 
 # Yönetici dışındaki roller — Yönetici hesabı yalnızca ilk kurulumda oluşur
 _NEW_USER_ROLES = [
@@ -369,7 +370,7 @@ class RegisterDialog(QDialog):
             return
 
         try:
-            register_new_user(
+            sonuc = register_new_user(
                 DBManager(), hwid=self._new_hwid, username=username, pin=pin,
                 role=role, registered_by=self._admin_hwid,
             )
@@ -389,6 +390,7 @@ class RegisterDialog(QDialog):
             self._show_error(f"Kayıt oluşturulamadı: {exc}")
             return
 
+        show_totp_enrollment_dialog(self, sonuc.totp_secret, username)
         QMessageBox.information(
             self,
             "Kayıt Başarılı",

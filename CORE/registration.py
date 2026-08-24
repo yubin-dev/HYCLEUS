@@ -35,17 +35,36 @@ temizliyor, bkz. o fonksiyonun docstring'i) ya da "Reddet"
 satırını kaldırdıktan SONRA aynı HWID yeniden kayıt olabilir. Bu KASITLI:
 bir HWID'in yeniden kullanılması her zaman bir yöneticinin AÇIK bir
 kararı olmalı, rastgele bir kayıt denemesinin YAN ETKİSİ değil.
+
+B-059: her kayıt KENDİ TOTP sırrına sahip
+----------------------------------------
+Eskiden self-servis kayıt hiç TOTP sırrı üretmiyordu — yeni kullanıcı,
+onaydan sonra, herkesin paylaştığı GLOBAL sırra güveniyordu (asıl
+B-059 hatası). Artık her başarılı kayıt kendi rastgele TOTP sırrını
+alıyor (`CORE.secret_store.store_totp_secret_for_hwid`) ve çağıran arayüz
+bunu QR/manuel anahtar olarak göstermeli — bkz. `RegistrationResult`.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
+import pyotp
 from argon2 import PasswordHasher
 
+from CORE import secret_store
 from CORE.roles import db_role, is_admin_role
 from CORE.vault_manager import create_vault, discard_vault
 
 _PH = PasswordHasher()
+
+
+@dataclass(frozen=True)
+class RegistrationResult:
+    """`register_new_user()`'ın döndürdüğü değer."""
+
+    user_id: int
+    totp_secret: str
 
 
 class RegistrationError(Exception):
@@ -81,9 +100,10 @@ def register_new_user(
     pin: str,
     role: str,
     registered_by: str | None = None,
-) -> int:
+) -> RegistrationResult:
     """
-    Yeni bir self-servis kayıt oluşturur; `users.id` döndürür.
+    Yeni bir self-servis kayıt oluşturur; `users.id` + KENDİ TOTP sırrını
+    döndürür.
 
     Her zaman `status='pending'` yazar — bunun DIŞINDA hiçbir yol
     status'u değiştiremez, onay `AdminPanel._on_approve()` üzerinden
@@ -91,7 +111,8 @@ def register_new_user(
 
     Args:
         db:            `DBManager` benzeri; `fetchone`/`execute`/`log`.
-        hwid:          Yeni kullanıcının USB donanım kimliği.
+        hwid:          Yeni kullanıcının USB donanım kimliği. TOTP sırrı
+                       da bu HWID'e bağlı saklanır (B-059).
         username:      Benzersizliği burada kontrol edilir.
         pin:            Argon2id ile hashlenir (`password_hash`) ve
                         `create_vault()`'a KEK türetme girdisi olarak geçer.
@@ -99,6 +120,11 @@ def register_new_user(
         registered_by: Kaydı bir yönetici başlattıysa onun HWID'i —
                         yalnızca denetim kaydına ek bilgi, karar
                         vermede kullanılmaz.
+
+    Returns:
+        `RegistrationResult(user_id, totp_secret)` — çağıran arayüz
+        `totp_secret`'ı QR kod + manuel anahtar olarak GÖSTERMELİ; bu
+        fonksiyon depolamaktan sorumlu, ekrana basmaktan değil.
 
     Raises:
         UsernameTakenError         — kullanıcı adı zaten alınmış.
@@ -108,8 +134,12 @@ def register_new_user(
         RuntimeError               — `role` "Yönetici"ye normalize
             oluyor: kayıt akışından ASLA admin üretilemez, admin
             yalnızca İlk Kurulum sihirbazından gelir (bkz. B-058).
-        Exception                  — `create_vault()`'un fırlattığı her
-            şey (ör. `OSError`) olduğu gibi yukarı taşınır.
+        Exception                  — `create_vault()`'un ya da TOTP
+            sırrının kasaya yazılmasının fırlattığı her şey (ör.
+            `OSError`, `KeyringUnavailableError`) olduğu gibi yukarı
+            taşınır; her durumda o ana kadar üretilmiş her şey
+            (vault, `users` satırı, TOTP sırrı) `discard_vault()` ile
+            geri alınır.
     """
     if is_admin_role(role):
         raise RuntimeError(
@@ -127,6 +157,15 @@ def register_new_user(
 
     create_vault(hwid, pin, role)
 
+    totp_secret = pyotp.random_base32()
+    try:
+        secret_store.store_totp_secret_for_hwid(hwid, totp_secret)
+    except Exception:
+        # Vault yazıldı ama TOTP sırrı kasaya yazılamadı — yarım bir
+        # HWID bırakmamak için vault'u da geri al (B-061 ile aynı disiplin).
+        discard_vault(hwid)
+        raise
+
     detail = f"username={username} hwid={hwid} role={role}"
     if registered_by:
         detail += f" registered_by={registered_by}"
@@ -139,13 +178,13 @@ def register_new_user(
         )
     except Exception:
         # B-061: `users` satırı yazılamadıysa az önce oluşturulan vault'u
-        # geri al — yarım bir HWID (vault var, `users` satırı yok)
-        # bırakmak `sync_session_user()`'ın "satır yok -> vault
-        # oturumu, approved yaz" dalını tetikleyip onaysız bir hesap
-        # üretirdi.
+        # VE TOTP sırrını geri al — yarım bir HWID (vault/TOTP var,
+        # `users` satırı yok) bırakmak `sync_session_user()`'ın "satır
+        # yok -> vault oturumu, approved yaz" dalını tetikleyip onaysız
+        # bir hesap üretirdi.
         discard_vault(hwid)
         raise
 
     user_id = int(cur.lastrowid)
     db.log("user_registered", detail=detail)
-    return user_id
+    return RegistrationResult(user_id=user_id, totp_secret=totp_secret)

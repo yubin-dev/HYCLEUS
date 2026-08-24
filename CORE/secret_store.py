@@ -21,11 +21,27 @@ Kullanıcı adı (username) alanı sırrın kimliğidir:
                      kendi payı var. Sabit bir ad kullanılsaydı ikinci USB
                      birincinin payını ezerdi.
 
-  totp_secret      — TOTP (authenticator) paylaşılan sırrı
-                     Sabit ad, çünkü mevcut tasarımda tek bir global sır var
-                     (data/totp_secret.json kullanıcı başına değil, kurulum
-                     başına tutuluyordu). Kullanıcı başına TOTP'ye geçilirse
-                     bu ad "totp_secret:<user_id>" biçimine genişletilmeli.
+  totp_secret:<hwid>  — TOTP (authenticator) sırrı, HWID başına (B-059)
+                     Eskiden sabit "totp_secret" adıyla TEK bir global sır
+                     tüm kullanıcılar arasında paylaşılıyordu — herhangi
+                     bir kullanıcı başka birinin 2FA kodunu üretebiliyordu,
+                     RBAC'ı anlamsızlaştırıyordu. `CORE/secret_migration.py`
+                     bu turda eski global kaydı sistemdeki EN ESKİ onaylı
+                     kullanıcının HWID'ine devrediyor (bkz. o modülün
+                     `migrate_totp_to_per_hwid()` docstring'i); diğer tüm
+                     kullanıcılar yeniden enrollment gerektiriyor.
+
+                     HWID başına seçildi, `users.id` başına DEĞİL (modülün
+                     önceki notu "totp_secret:<user_id>" öneriyordu):
+                     `users.hwid` artık kısmi UNIQUE (B-060), yani HWID ve
+                     kullanıcı kimliği birebir örtüşüyor. HWID, İlk Kurulum
+                     sihirbazının QR'ı gösterdiği anda ZATEN elde — henüz
+                     hiçbir `users` satırı/`user_id` yokken. `user_id`
+                     başına saklamak bu sırayı (QR önce, DB satırı sonra)
+                     bir tavuk-yumurta sorununa çevirirdi. HWID başına
+                     saklamak hem bu sorunu ortadan kaldırıyor hem de
+                     yukarıdaki `share_2:<hwid>` deseniyle simetrik
+                     kalıyor.
 
 Erişilemezlik politikası
 ------------------------
@@ -238,19 +254,70 @@ def store(username: str, value: str) -> None:
 
 def load_totp_secret() -> str | None:
     """
-    TOTP paylaşılan sırrını kasadan okur. Kurulmamışsa None.
+    ESKİ global TOTP sırrını kasadan okur. Kurulmamışsa None.
 
-    Tüm TOTP doğrulama noktaları (login, indirme, toplu indirme, klasör
-    indirme) buradan geçmelidir — data/totp_secret.json artık kullanılmıyor.
+    B-059 SONRASI YENİ KOD BUNU ÇAĞIRMAMALI — gerçek doğrulama noktaları
+    (login, indirme, toplu indirme, klasör indirme) artık
+    `load_totp_secret_for_hwid()` kullanıyor. Bu fonksiyon yalnızca iki
+    yerde kalıyor: (1) `CORE/secret_migration.py::migrate_totp_to_per_hwid()`
+    eski kaydı okuyup HWID başına şemaya taşımak için, (2) DEV_MODE'un
+    kasa öncesi (`use_vault=False`) yolu — o yol tek operatörlü geliştirme
+    senaryosu, RBAC/çok-kullanıcı tehdit modelinin parçası değil.
     """
     return load(TOTP_USERNAME)
 
 
 def store_totp_secret(secret: str) -> None:
-    """TOTP paylaşılan sırrını kasaya yazar (geri okuma doğrulamasıyla)."""
+    """
+    ESKİ global TOTP sırrını kasaya yazar (geri okuma doğrulamasıyla).
+
+    B-059 SONRASI YENİ KOD BUNU ÇAĞIRMAMALI — bkz. `load_totp_secret()`
+    docstring'i. Yalnızca DEV_MODE'un kasa öncesi yolu kullanıyor.
+    """
     if not secret:
         raise ValueError("TOTP sırrı boş olamaz.")
     store(TOTP_USERNAME, secret)
+
+
+def totp_username(hwid: str) -> str:
+    """TOTP sırrının HWID başına (B-059) keyring kullanıcı adını üretir."""
+    if not hwid:
+        raise ValueError("TOTP sırrı için HWID boş olamaz.")
+    return f"{TOTP_USERNAME}:{hwid}"
+
+
+def load_totp_secret_for_hwid(hwid: str) -> str | None:
+    """
+    Bu HWID'in KENDİ TOTP sırrını kasadan okur. Hiç enroll olmamışsa None.
+
+    None dönmesi bir hata değil: bu HWID ya hiç kayıtlı değil (yeni USB,
+    "Kayıt Ol" bekliyor) ya da B-059 göçü sırasında kendisine sır
+    devredilmemiş eski bir onaylı/bekleyen kullanıcı (yeniden enrollment
+    gerekiyor). Çağıran taraf (`UI/login_dialog.py::_on_login()`) bunu
+    ayrı ve açık bir mesajla ele almalı — sessizce "kod yanlış" demek
+    yanıltıcı olurdu.
+    """
+    if not hwid:
+        return None
+    return load(totp_username(hwid))
+
+
+def store_totp_secret_for_hwid(hwid: str, secret: str) -> None:
+    """Bu HWID'in TOTP sırrını kasaya yazar (geri okuma doğrulamasıyla)."""
+    if not secret:
+        raise ValueError("TOTP sırrı boş olamaz.")
+    store(totp_username(hwid), secret)
+
+
+def erase_totp_secret_for_hwid(hwid: str) -> bool:
+    """
+    Bu HWID'in TOTP sırrını kasadan siler.
+
+    `CORE/vault_manager.py::discard_vault()` tarafından, yarım kalan bir
+    kayıt denemesini geri almak (B-061) ya da bir USB kaydını tamamen
+    kaldırmak için çağrılıyor.
+    """
+    return erase(totp_username(hwid))
 
 
 def erase(username: str) -> bool:
