@@ -5,10 +5,17 @@ her varyantta (koyu / açık, varsa) okunabilir kalmalı. İki eşik kullanılı
 
 * 4.5:1 — asıl okunacak metin: gövde metni (`text`), accent dolgu üzerindeki
   metin (`on_accent`), aktif/seçili satır metni (`accent` veya `tint_text`
-  kendi tint arka planı üzerinde).
-* 3.0:1 — ikincil/loşlaştırılmış metin (`subtext`, `nav_text`) — bunlar
-  bilerek düşük vurgulu 11-12px etiketler, WCAG'ın büyük metin / UI bileşeni
-  eşiğiyle karşılaştırılır.
+  kendi tint arka planı üzerinde). B-054/B-057/B-063 (2026-08-24/25):
+  `subtext` da BURAYA taşındı — kod taraması (`AdminPanel.py`,
+  `dialog_kit.py`, `main_window_theme.py`, `main_window_tree.py`,
+  `RecoveryShareDialog.py`) gösterdi ki hep 11-12px DÜZ etiket metni,
+  WCAG'ın büyük-metin eşiğine hiç girmiyor — "ikincil" olması onu büyük
+  metin yapmıyor. 5 preset'in (10 varyant) hepsinde ölçülüp gerektiğinde
+  düzeltildi (bkz. `UI/main_window_palette.py`'deki B-054/B-057/B-063
+  yorumları).
+* 3.0:1 — yalnızca `nav_text` (kenar çubuğu menü metni) — bu da 11-12px
+  ama ayrı denetlenmedi, `subtext`'inkiyle aynı varsayımı miras alıyor
+  olabilir; kapsam dışı bırakıldı (bkz. BACKLOG).
 
 `accent_tint` / `accent_tint_hover` bazı preset'lerde yarı saydam
 (`rgba(...)`) — gerçek göründüğü yüzeyin (sidebar/bg/topbar) üzerine
@@ -128,8 +135,10 @@ def _istisna_disinda(key: str, variant: str, ad: str) -> bool:
 
 @pytest.mark.parametrize("key,variant,T", _variant_cases(), ids=lambda v: v if isinstance(v, str) else "")
 def test_ikincil_metin_ayirt_edilebilir(key, variant, T):
+    # B-054/B-057/B-063: subtext'in gerçek eşiği 4.5 (yukarıdaki modül
+    # docstring'ine bkz.) — `nav_text` denetlenmedi, 3.0'da bırakıldı.
     if _istisna_disinda(key, variant, "subtext_bg"):
-        assert contrast_ratio(T["subtext"], T["bg"], T["bg"]) >= _AA_MUTED, f"{key}/{variant}: subtext/bg"
+        assert contrast_ratio(T["subtext"], T["bg"], T["bg"]) >= _AA_TEXT, f"{key}/{variant}: subtext/bg"
     assert contrast_ratio(T["nav_text"], T["sidebar"], T["sidebar"]) >= _AA_MUTED, f"{key}/{variant}: nav_text/sidebar"
 
 
@@ -242,7 +251,7 @@ def test_search_bg_yuzeyinde_metin_okunabilir(key, variant, T):
         f"{key}/{variant}: text/search_bg"
     )
     if _istisna_disinda(key, variant, "subtext_search_bg"):
-        assert contrast_ratio(T["subtext"], T["search_bg"], T["search_bg"]) >= _AA_MUTED, (
+        assert contrast_ratio(T["subtext"], T["search_bg"], T["search_bg"]) >= _AA_TEXT, (
             f"{key}/{variant}: subtext/search_bg"
         )
 

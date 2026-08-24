@@ -2700,9 +2700,9 @@ renk/tema bağlanmasını kapsıyordu.
 
 ## B-056 — README'nin `--selftest` modül sayısı zaten yanlıştı, bu turdan önce de
 
-**Durum:** KISMEN KAPANDI (2026-08-25) — sayı güncellendi; B-052-sınıfı
-kalıcı çözüm (sabit sayıyı README'den tamamen kaldırmak) hâlâ
-UYGULANMADI, öneri olarak açık kalıyor.
+**Durum:** KAPANDI (2026-08-25) — kalıcı çözüm (sabit sayının README'den
+tamamen kaldırılması) uygulandı, bir daha sürüklenmesi yapısal olarak
+imkânsız.
 **Öncelik:** Düşük (kozmetik — `--selftest` kendi doğru sayısını basıyor, README'ninki yalnızca örnek metin)
 **Bulundu:** 2026-08-22 — Bireysel/Kurumsal mod turu, `CORE/app_mode.py`'yi
 `main.py::_SELFTEST_MODULLERI`'ye eklerken
@@ -2728,13 +2728,23 @@ diğer modüllerle gerçek sayı artık **63 (Windows dışı) / 67 (Windows)**
 `pythoncom`, `win32api`, `win32con`). README.md'nin EN+TR iki satırı
 buna güncellendi.
 
-Bu, B-056'nın kendi teşhis ettiği sorunu ÇÖZMÜYOR: sayı yine elle
-tutulan bir liste, bir sonraki yeni modülde YİNE eskiyecek — bu zaten
-turun İKİNCİ sürüklenmesi (61/65 → 62/66 → 63/67). Seçenek (2) (sabit
-sayıyı README'den tamamen kaldırıp "`--selftest` kendi güncel sayısını
-basar" demek) hâlâ önerilen kalıcı çözüm ama bu turun kapsamı dışında —
-yalnızca "sayıyı ölç ve düzelt" istendi, README'nin ilgili örneğini
-yeniden yazmak ayrı bir belge turu gerektirir.
+Bu, B-056'nın kendi teşhis ettiği sorunu ÇÖZMEDİ: sayı yine elle
+tutulan bir liste, bir sonraki yeni modülde YİNE eskiyecekti — bu zaten
+turun İKİNCİ sürüklenmesiydi (61/65 → 62/66 → 63/67).
+
+### Kalıcı çözüm — UYGULANDI (2026-08-25, kapanış turu)
+
+Seçenek (2): sabit sayı README'nin EN+TR "Verifying a build without a
+GUI" / "Yapıyı GUI açmadan doğrulama" bölümlerinden TAMAMEN kaldırıldı.
+Yerine konan, `--selftest`'in ZATEN bastığı `"Modüller : N/N yüklendi"`
+satırının kendisi doğrulama ölçütü olarak açıklandı — N'in platforma
+bağlı olduğu ve modül eklendikçe büyüdüğü, dolayısıyla burada sabit
+tutulmaya değmediği yazıldı. Böylece belge bir daha koddan bağımsız bir
+sayı taşımıyor: sürüklenme artık yalnızca yavaşlatılmadı, YAPISAL olarak
+imkânsız hale geldi — güncellenecek ikinci bir yer kalmadı.
+
+Doğrulama: `grep`'le README.md'de `--selftest` civarında sabit bir
+sayı (`\d+ on Windows`, `Windows'ta \d+` gibi) kalmadığı teyit edildi.
 
 ---
 
@@ -2817,7 +2827,7 @@ denetlenmedi (bkz. B-063).
 
 ## B-063 — `subtext`'in 3.0 eşiği yalnızca "mavi" preset'te düzeltildi, diğer 4 preset denetlenmedi
 
-**Durum:** Açık
+**Durum:** KAPANDI (2026-08-25)
 **Öncelik:** Düşük (kozmetik — B-054/B-057 ile aynı sınıf)
 **Bulundu:** 2026-08-25 — B-054 takibi turu, `subtext`'in gerçek
 kullanım yerlerini (11-12px düz etiket metni) tarayıp yalnızca "mavi"
@@ -2835,12 +2845,40 @@ Bu turun kapsamı dışında bırakıldı çünkü görev açıkça `_LIGHT["sub
 (yani "mavi" preset) ile sınırlıydı ve diğer 4 preset'e dokunmak ayrı bir
 onay gerektirir (her birinin kendi tanınabilirlik/görünüm dengesi var).
 
-### Düzeltme (bu turda uygulanmadı)
+### Düzeltme — UYGULANDI (2026-08-25)
 
-Diğer 4 preset'in `subtext` (ve muhtemelen `nav_text`) değerleri aynı
-yöntemle (gerçek `bg`/`search_bg` karşısında 4.5:1 hedefi) tek tek
-gözden geçirilmeli — B-054/B-057'nin izlediği yöntemin aynısı, yalnızca
-her preset kendi renk ailesinde.
+Kalan 4 preset'in tamamı aynı yöntemle tarandı: `subtext`'in kullanıldığı
+yerler yine `UI/AdminPanel.py`, `UI/dialog_kit.py`, `UI/main_window_theme.py`
+gibi PAYLAŞILAN bileşenler — hiçbiri preset'e göre font-size dallanmıyor,
+yani "mavi"de doğrulanan 11-12px düz-etiket gerçeği VARSAYILMADI, her
+preset için de aynı kod okunarak teyit edildi. Sonra her preset'in gerçek
+`subtext`/`bg` ve `subtext`/`search_bg` oranı ölçüldü:
+
+| Preset/varyant | subtext/bg (önce) | subtext/search_bg (önce) | Sonuç |
+|---|---|---|---|
+| mavi/koyu | 6.70:1 | 6.26:1 | Zaten geçiyordu, DOKUNULMADI |
+| teal_gold/koyu | 6.29:1 | 5.53:1 | Zaten geçiyordu, DOKUNULMADI |
+| teal_gold/açık | 4.43:1 | 4.20:1 | `#6b7280`→`#606773` (5.22/4.95) |
+| aurora_borealis/koyu | 5.66:1 | 5.45:1 | Zaten geçiyordu, DOKUNULMADI |
+| abyssal_blue/koyu | 4.88:1 | 4.28:1 | `#6A86A6`→`#7891AE` (5.66/4.96) |
+| graphite_amber/koyu | 3.84:1 | 3.71:1 | `#6B7280`→`#7C8492` (4.93/4.77) |
+
+Üç preset'te düzeltme gerekti (teal_gold/açık, abyssal_blue/koyu,
+graphite_amber/koyu) — üçünde de yalnızca `subtext` değişti, `accent`/
+`bg`/`text`'e dokunulmadı, aynı renk ailesinde kalındı (koyu zeminlerde
+AÇIKLAŞTIRMA, açık zeminde KOYULAŞTIRMA — ışık/karanlık yönü ters).
+
+`tests/test_tema_kontrasti.py`'nin `test_ikincil_metin_ayirt_edilebilir`
+ve `test_search_bg_yuzeyinde_metin_okunabilir` testleri artık `subtext`
+için `_AA_MUTED` (3.0) değil `_AA_TEXT` (4.5) kullanıyor — tüm 5 preset ×
+tüm varyantlar (8 kombinasyon) parametrize, tek bir istisna yok. Üç
+düzeltmenin üçü de mutasyonla doğrulandı: değerler geçici olarak eskiye
+döndürülüp ilgili preset/varyant kombinasyonlarının (5 test) kırmızı
+verdiği, sonra aynen geri getirilip 65 testin tamamının yeşile döndüğü
+görüldü.
+
+`nav_text` kapsam dışı bırakıldı — ayrı bir denetim gerektiriyor,
+görev yalnızca `subtext`'i kapsıyordu.
 
 ---
 

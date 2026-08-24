@@ -188,8 +188,12 @@ to the binary — see `CORE/paths.py`.
 ```bash
 HYCLEUS --version     # version string only
 HYCLEUS --selftest    # imports every module, reports what is missing
-# Expected: "SELFTEST OK" with loaded == attempted
-#           (67 on Windows — 63 plus the wmi/pywin32 group)
+# Expected: "SELFTEST OK" with the printed "Modüller : N/N yüklendi"
+# line showing loaded == attempted. N itself is platform-dependent
+# (Windows adds the wmi/pywin32 group) and grows as modules are added —
+# it is not a number worth hardcoding here; the command prints its own
+# current count (see BACKLOG B-056: this exact line drifted stale twice
+# before it was removed).
 ```
 
 **This is automated.** Both builds are produced on every push and both are
@@ -594,8 +598,12 @@ yanında değil `$XDG_DATA_HOME/HYCLEUS` altında duruyor (varsayılan
 ```bash
 HYCLEUS --version     # yalnızca sürüm dizesi
 HYCLEUS --selftest    # her modülü içe aktarır, eksikleri raporlar
-# Beklenen: "SELFTEST OK" ve yüklenen == denenen
-#           (Windows'ta 67 — 63 artı wmi/pywin32 grubu)
+# Beklenen: "SELFTEST OK" ve basılan "Modüller : N/N yüklendi" satırında
+# yüklenen == denenen. N'in kendisi platforma bağlı (Windows wmi/pywin32
+# grubunu ekliyor) ve modül eklendikçe büyüyor — burada sabit bir sayı
+# tutmaya değmez, komut kendi güncel sayısını basar (bkz. BACKLOG B-056:
+# bu satırdaki sayı iki kez art arda eskiyip sürüklendikten sonra
+# kaldırıldı).
 ```
 
 **Bu artık otomatik.** İki yapı da her push'ta üretiliyor ve ikisi de duman

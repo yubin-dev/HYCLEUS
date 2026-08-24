@@ -150,7 +150,14 @@ _TEAL_GOLD_LIGHT: dict[str, str] = {
     "on_accent":         "#FFFFFF",
     "tint_text":         "#1c1f1a",
     "text":      "#1c1f1a",
-    "subtext":   "#6b7280",
+    # B-063 (2026-08-25): B-054/B-057'nin "mavi"de bulduğu 11-12px küçük-metin
+    # gerçeği (gerçek eşik 3.0 değil 4.5:1) bu preset'te de doğrulandı — aynı
+    # paylaşılan bileşenler (AdminPanel.py, dialog_kit.py, main_window_theme.py
+    # vb.) preset'e bakmaksızın aynı font-size'ı kullanıyor. Eskisi #6b7280,
+    # subtext/bg 4.43:1 ve subtext/search_bg 4.20:1 idi — ikisi de 4.5'in
+    # altında. Aynı gri-mavi aile, biraz koyulaştırıldı. accent/bg/text'e
+    # dokunulmadı. Sonuç: subtext/bg 5.22:1, subtext/search_bg 4.95:1.
+    "subtext":   "#606773",
     "nav_text":  "#4b5563",
     "border":    "#e3e1d9",
     "hover":     "#ece9e1",
@@ -210,7 +217,15 @@ _ABYSSAL_BLUE: dict[str, str] = {
     "on_accent":         "#0B132B",
     "tint_text":         "#F0F8FF",
     "text":      "#F0F8FF",
-    "subtext":   "#6A86A6",
+    # B-063 (2026-08-25): aynı 11-12px küçük-metin denetimi bu preset'te de
+    # doğrulandı, gerçek eşik 4.5:1. Eskisi #6A86A6, subtext/bg 4.88:1 idi
+    # (geçiyordu) ama subtext/search_bg (AdminPanel/GuvenlikView kartları)
+    # 4.28:1'di — search_bg (#16203A) bg'den (#0B132B) daha açık bir yüzey,
+    # aynı ton orada yetmiyordu. Karanlık zeminde METİN olduğu için
+    # KOYULAŞTIRMAK değil AÇIKLAŞTIRMAK gerekti — aynı mavi-gri aile, biraz
+    # daha açık. accent/bg/text'e dokunulmadı. Sonuç: subtext/bg 5.66:1,
+    # subtext/search_bg 4.96:1.
+    "subtext":   "#7891AE",
     "nav_text":  "#8ECAE6",
     "border":    "#2A3A5E",
     "hover":     "#223056",
@@ -238,7 +253,13 @@ _GRAPHITE_AMBER: dict[str, str] = {
     "on_accent":         "#121316",
     "tint_text":         "#F3F4F6",
     "text":      "#F3F4F6",
-    "subtext":   "#6B7280",
+    # B-063 (2026-08-25): aynı 11-12px küçük-metin denetimi bu preset'te de
+    # doğrulandı, gerçek eşik 4.5:1. Eskisi #6B7280, subtext/bg 3.84:1 ve
+    # subtext/search_bg 3.71:1 idi — ikisi de belirgin biçimde altındaydı
+    # (yalnızca eski 3.0 eşiğini geçiyordu). Aynı nötr gri aile, açıklaştırıldı
+    # (koyu zeminde metin). accent/bg/text'e dokunulmadı. Sonuç: subtext/bg
+    # 4.93:1, subtext/search_bg 4.77:1.
+    "subtext":   "#7C8492",
     "nav_text":  "#9CA3AF",
     "border":    "#2D3139",
     "hover":     "#20232A",
