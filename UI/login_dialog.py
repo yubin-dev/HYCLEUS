@@ -33,7 +33,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from CORE.roles import db_role as rol_db
+from CORE.registration import (
+    HwidAlreadyRegisteredError,
+    UsernameTakenError,
+    register_new_user,
+)
 from CORE.usb_manager import get_usb_hwid
 from CORE.vault_manager import (
     USBAuthError,
@@ -49,7 +53,11 @@ from CORE.paths import data_dir as _data_dir
 from CORE import rate_limit
 from CORE.pin_policy import LOGIN_MIN_LEN, PIN_MIN_LEN, validate_new_pin
 from CORE.pin_rotation import yenileme_gerekli
-from CORE.session_user import kullanici_bilgisi, sistem_kurulmus_mu
+from CORE.session_user import (
+    kullanici_bilgisi,
+    sistem_kurulmus_mu,
+    tekil_hwid_satiri,
+)
 from CORE.rate_limit import LockState
 from CORE.secret_store import load_totp_secret, store_totp_secret
 
@@ -868,9 +876,7 @@ class LoginDialog(QDialog):
             return
 
         if self._hwid:
-            row = DBManager().fetchone(
-                "SELECT status FROM users WHERE hwid = ?", (self._hwid,)
-            )
+            row = tekil_hwid_satiri(DBManager(), self._hwid, "status")
             if row is not None and row["status"] == "pending":
                 self._show_error("Hesabınız yönetici onayı bekliyor — giriş yapılamaz")
                 return
@@ -977,32 +983,32 @@ class LoginDialog(QDialog):
             self._show_reg_error("USB tespit edilemedi.")
             return
 
-        db = DBManager()
-        if db.fetchone("SELECT id FROM users WHERE username = ?", (username,)):
+        try:
+            register_new_user(
+                DBManager(), hwid=new_hwid, username=username, pin=pin, role=role,
+            )
+        except UsernameTakenError:
             self._show_reg_error("Bu kullanıcı adı zaten alınmış.")
             return
-
-        try:
-            create_vault(new_hwid, pin, role)
-        except Exception as exc:
-            self._show_reg_error(f"Vault oluşturulamadı: {exc}")
+        except HwidAlreadyRegisteredError as exc:
+            # B-060: bu HWID zaten bir satıra bağlı -- ne pending ne
+            # approved fark etmez, create_vault() ÇAĞRILMADI, var olan
+            # vault dokunulmadan kaldı.
+            if exc.status == "approved":
+                self._show_reg_error(
+                    "Bu USB zaten kayıtlı ve onaylı bir kullanıcıya ait. "
+                    "Aynı USB'yi yeni biri için kullanmak istiyorsanız "
+                    "önce bir yönetici Admin Paneli'nden bu kaydı kaldırmalı."
+                )
+            else:
+                self._show_reg_error(
+                    "Bu USB için zaten bekleyen bir kayıt var — bir "
+                    "yönetici onaylayana ya da reddedene kadar yeniden "
+                    "kayıt olunamaz."
+                )
             return
-
-        # B-030: eşleme CORE/roles.py'de. Satır içi ifade ASCII
-        # "Yonetici" ile kaydolan kullanıcıyı `user` yazıyordu.
-        db_role = rol_db(role)
-        try:
-            db.execute(
-                "INSERT INTO users (username, password_hash, role, status, hwid) "
-                "VALUES (?, ?, ?, 'pending', ?)",
-                (username, _PH.hash(pin), db_role, new_hwid),
-            )
-            db.log(
-                "user_registered",
-                detail=f"username={username} hwid={new_hwid} role={role}",
-            )
         except Exception as exc:
-            self._show_reg_error(f"Veritabanı hatası: {exc}")
+            self._show_reg_error(f"Kayıt oluşturulamadı: {exc}")
             return
 
         self._reg_btn.setEnabled(False)

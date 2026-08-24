@@ -87,10 +87,11 @@ def kullanicili_db(db):  # type: ignore[no-untyped-def]
     yutuyor — yani kayıt SESSİZCE yazılmıyor. Üretimde satır garanti
     (B-011, `sync_session_user`); testte elle kuruluyor.
     """
+    # hwid her satır için FARKLI: users.hwid artık kısmi UNIQUE (B-060).
     for uid, ad in ((7, "gonderen"), (42, "alici")):
         db.execute(
             "INSERT INTO users (id, username, password_hash, role, status, hwid)"
-            " VALUES (?, ?, '', 'admin', 'approved', 'H')", (uid, ad))
+            " VALUES (?, ?, '', 'admin', 'approved', ?)", (uid, ad, f"H-{uid}"))
     return db
 
 

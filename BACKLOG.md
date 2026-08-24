@@ -2975,7 +2975,7 @@ kez ölçüldü ve tam bir hesap devralma çıktı.
 
 ## B-060 — Kayıt Ol sekmesinde HWID benzersizlik kontrolü YOK: PIN bilmeden hesap devralma
 
-**Durum:** Açık
+**Durum:** KAPANDI (2026-08-23, aynı gün ikinci tur)
 **Öncelik:** Kritik — bu turun en ciddi bulgusu
 **Bulundu:** 2026-08-23 — B-058 sınıfı yetkilendirme/durum-geçiş taraması
 (kullanıcı talebi: "B-058 sınıfı açıkları depo genelinde ara")
@@ -3077,11 +3077,81 @@ tek gövde" ilkesinin ihlali (iki farklı gövde, biri eksik).
   bağımsız olarak da kırılgan; birden fazla satır ihtimali
   engellenirse bu sorgunun kendisi de düzelir.
 
+**Güncelleme (2026-08-23, aynı gün ikinci tur) — DÜZELTİLDİ, B-061 ile birlikte**
+
+Yukarıdaki dört yön TEK bir düzeltme katmanında birleştirildi (kullanıcı
+talebi: "ikisi aynı akışın farklı katmanlarında aynı sonuca çıkıyor —
+ayrı yamalama, tek katman düzeltmesi").
+
+1. **`users.hwid`'e kısmi UNIQUE indeks** — `DB/migrations.py::_m23_users_hwid_unique`
+   (`Migration(23, ...)`, `TEMEL_SURUM`'un üstünde, gerçekten çalışıyor).
+   Çakışan bir kurulumda (aynı HWID'e bağlı birden fazla satır) indeks
+   SESSİZCE atlanmıyor: hangi HWID'lerin çakıştığı adıyla listelenerek
+   `RuntimeError` fırlatılıyor ve göç damgalanmıyor (bir sonraki açılışta
+   yeniden denenir) — operatör elle çözmeden uygulama açılmayı reddediyor.
+2. **Seçilen yön: (a)** — HWID zaten bir `users` satırına bağlıyken
+   (pending ya da approved fark etmez) yeni kayıt hiç satır/vault
+   oluşturmadan REDDEDİLİYOR. Gerekçe: (1)'deki UNIQUE kısıt fiziksel
+   olarak (b)'yi (aynı HWID'e ikinci bir pending satır) imkânsız kılıyor,
+   yani tutarlı tek seçenek (a) kalıyor. Meşru yeniden-kayıt senaryosu
+   TAMAMEN kilitlenmiyor: `UI/AdminPanel.py::_on_delete()` artık yalnızca
+   `usb_tokens`/kasa değil, `users` satırını ve per-HWID vault dosyasını
+   da temizliyor (eskiden `users` satırını yetim bırakıyordu — bu, UNIQUE
+   kısıt eklenince aynı HWID'i KALICI olarak kilitlerdi, o yüzden bu
+   fonksiyon da bu turda düzeltildi); `_on_reject()` zaten pending
+   satırlar için aynısını yapıyordu, o da aynı yardımcıya
+   (`vault_manager.discard_vault()`) bağlandı. Yani bir HWID'in yeniden
+   kullanılması artık her zaman bir yöneticinin AÇIK kararı.
+3. **Tek gövde: `CORE/registration.py::register_new_user()`** — hem
+   `UI/login_dialog.py::_on_register()` hem `UI/RegisterDialog.py::_on_save()`
+   artık kendi `INSERT INTO users`'ını yazmıyor, ikisi de buraya
+   bağlanıyor. Fonksiyon: önce kullanıcı adı/HWID çakışma kontrolü
+   (`UsernameTakenError` / `HwidAlreadyRegisteredError`), sonra
+   `create_vault()`, sonra `users` INSERT'i — INSERT başarısız olursa
+   (B-061) az önce yazılan vault `vault_manager.discard_vault()` ile
+   GERİ ALINIYOR (usb_tokens satırı + kasadaki share_2 + per-HWID vault
+   dosyası), yarım bir HWID bırakılmıyor. Ayrıca savunma derinliği:
+   `role` "Yönetici"ye normalize oluyorsa `RuntimeError` — kayıt
+   akışından hiçbir koşulda admin üretilemez (B-058 ile aynı disiplin).
+4. **Belirsiz sorgu düzeltmesi** — `CORE/session_user.py::tekil_hwid_satiri()`
+   eklendi: `WHERE hwid = ?` sorgusunu TEKİL sonuç varsayımıyla
+   çalıştırıyor, birden fazla satır dönerse (UNIQUE kısıt bir şekilde
+   atlanmışsa) sessizce ilkini kabul etmek yerine `RuntimeError`
+   fırlatıyor. `login_dialog.py::_on_login()`'daki pending kontrolü,
+   `sync_session_user()`'ın "mevcut satırı bul" sorgusu ve
+   `kullanici_bilgisi()` üçü de bu TEK fonksiyona bağlandı (`ORDER BY id
+   LIMIT 1` ile sessizce "birini seçmek" yerine).
+
+**Mutasyon kanıtı** (`tests/test_authz_invariants.py`): `register_new_user()`'daki
+`discard_vault(hwid)` satırı geçici olarak kaldırılıp
+`test_kesinti_sonrasi_ne_approved_satir_ne_yarim_vault_kaliyor`'un
+kırıldığı (usb_tokens yetim kaldığı) doğrulandı; `_m23_users_hwid_unique`'in
+çakışma tespiti geçici olarak devre dışı bırakılıp
+`test_migration_cakisan_hwid_varsa_sessizce_atlamiyor_raporluyor`'un
+kırıldığı (ham `sqlite3.IntegrityError`'a düştüğü, okunabilir
+`RuntimeError` yerine) doğrulandı. İkisi de sonra tam olarak geri
+alındı.
+
+Eski PoC'lar (`poc_hwid_takeover.py`, `poc_torn_write.py`) artık
+`tests/test_authz_invariants.py::test_b060_eski_hesap_devralma_poc_artik_basarisiz`
+ve `test_kesinti_sonrasi_ne_approved_satir_ne_yarim_vault_kaliyor` olarak
+kalıcı regresyon testleri hâline geldi — PoC'ların kendisi depoya hiç
+girmedi.
+
+TOTP'nin hâlâ GLOBAL olması (B-059) bu turda da BİLEREK dokunulmadı —
+kapsam dışı, ayrı ve öncelikli.
+
+Tam takım: 2548 geçti, 4 atlandı, 1 xfail (B-059'a bağlı, bkz.
+`test_totp_sirri_kullanici_basina_bagimsiz`), 0 kırıldı.
+
 ---
 
 ## B-061 — Kayıt akışı atomik değil: create_vault() ile users INSERT'i arasında kesinti, onaysız 'approved' üretir
 
-**Durum:** Açık
+**Durum:** KAPANDI (2026-08-23, aynı gün ikinci tur) — B-060 ile BİRLİKTE,
+aynı `CORE/registration.py::register_new_user()` düzeltmesiyle. Ayrıntı
+yukarıda B-060'ın "Güncelleme" bölümünde (madde 3: `discard_vault()` ile
+geri alma).
 **Öncelik:** Yüksek
 **Bulundu:** 2026-08-23 — B-058 sınıfı yetkilendirme/durum-geçiş taraması
 
@@ -3129,24 +3199,20 @@ saldırgan kontrolü dışında da (gerçek bir güç kesintisi, uygulama
 çökmesi) kendiliğinden gerçekleşebilir — üstelik iki bağımsız dosyada
 (`login_dialog.py`, `RegisterDialog.py`) aynı hata tekrarlanmış.
 
-### Düzeltme (bu turda uygulanmadı — yalnızca yön)
+### Düzeltme (uygulandı — bkz. B-060'ın "Güncelleme" bölümü)
 
-- İki yazımı tek bir transaction'a almak SQLite/`sqlite3` seviyesinde
-  mümkün değil çünkü `create_vault()` dosya sistemine de yazıyor
-  (dosya + DB birlikte atomik yapılamaz) — ama en azından `users`
-  INSERT'i BAŞARISIZ olursa vault dosyasını/`usb_tokens` kaydını geri
-  almak (telafi/"compensating action") mümkün.
-- Alternatif: `sync_session_user()`'ın "satır yok → oluştur, approved
-  yaz" varsayımını sıkılaştırmak — yalnızca DEV_MODE'da veya açıkça
-  işaretli "kayıt-akışı-öncesi" vault'larda bu dala izin vermek,
-  normal kayıt akışından sonra satırsız bir vault'u `pending` gibi
-  ele almak (B-058'in guard desenine benzer bir "bu duruma hiç
-  düşülmemeli" kontrolü).
-- Asgari: `_on_register()`/`_on_save()`'de `users` INSERT'i
-  BAŞARISIZ olursa (except bloğu) az önce yazılan vault dosyasını
-  silmeyi/`usb_tokens` kaydını geri almayı denemek — en azından
-  KASITLI OLMAYAN çökme senaryosunda kesinti sonrası "yarım" bir HWID
-  bırakmamak.
+Üç seçenekten "asgari" olanı (telafi/geri alma) uygulandı:
+`CORE/registration.py::register_new_user()` `users` INSERT'i
+BAŞARISIZ olursa `vault_manager.discard_vault(hwid)` ile az önce
+yazılan vault dosyasını + `usb_tokens` kaydını geri alıyor. Diğer iki
+seçenek (gerçek transaction — dosya+DB birlikte atomik yapılamadığı
+için zaten mümkün değildi; `sync_session_user()`'ın varsayımını
+sıkılaştırma) uygulanmadı, çünkü telafi yaklaşımı kök nedeni (yarım
+HWID hiç oluşmasın) B-060'ın HWID-çakışma kontrolüyle BİRLİKTE tam
+kapatıyor: artık normal yoldan iki kez aynı HWID'e yazılamıyor
+(B-060), VE tek seferlik yazımın kendisi kesintiye uğrarsa da iz
+bırakmıyor (B-061). Mutasyon kanıtı ve tam test sonucu B-060'ın
+"Güncelleme" bölümünde.
 
 ---
 

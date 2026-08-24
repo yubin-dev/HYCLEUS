@@ -458,6 +458,34 @@ def delete_usb_token(hwid: str) -> None:
     DBManager().execute("DELETE FROM usb_tokens WHERE hwid = ?", (hwid,))
 
 
+def discard_vault(hwid: str) -> None:
+    """
+    Bir HWID için ÜRETİLMİŞ per-HWID vault'u + usb_token'ı tamamen siler
+    (B-060 / B-061).
+
+    YALNIZCA per-HWID dosyayı (`_VAULT_DIR/{hwid}.hclv`) hedefler; eski
+    paylaşılan tek-dosya (`_VAULT_PATH_LEGACY`) HİÇ DOKUNULMAZ — o dosya
+    birden fazla eski kurulumun ortak kaynağı olabilir, "bu HWID'i sil"
+    isteğiyle silinmesi başka bir kimliği de etkilerdi.
+
+    İki çağıran:
+      1. `CORE/registration.py::register_new_user()` — `users` INSERT'i
+         başarısız olduğunda az önce yazılan vault'u geri almak için
+         (B-061: yarım bir HWID, yani vault var ama `users` satırı yok,
+         bırakılırsa `sync_session_user()` onu "yeni vault oturumu" sanıp
+         doğrudan `status='approved'` üretirdi).
+      2. `UI/AdminPanel.py::_on_delete()` — bir USB kaydını TAMAMEN
+         kaldırmak için (yalnızca `usb_tokens` silmek `users` satırını
+         yetim bırakır ve aynı HWID'in yeniden kaydını `users.hwid`
+         UNIQUE kısıtı yüzünden kalıcı olarak kilitlerdi).
+    """
+    delete_usb_token(hwid)
+    path = _VAULT_DIR / f"{hwid}.hclv"
+    if path.exists():
+        _clear_readonly(path)
+        path.unlink()
+
+
 def _set_readonly(path: Path) -> None:
     """Dosyaya FILE_ATTRIBUTE_READONLY uygular (Windows dışında no-op)."""
     if _k32 is None:

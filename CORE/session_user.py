@@ -106,6 +106,37 @@ def db_role(session_role: str | None) -> str:
     return _rol_db(session_role)
 
 
+def tekil_hwid_satiri(db: Any, hwid: str, kolonlar: str) -> Any:
+    """
+    `SELECT {kolonlar} FROM users WHERE hwid = ?` sorgusunu TEKİL SONUÇ
+    varsayımıyla çalıştırır (B-060/B-061).
+
+    `users.hwid` artık kısmi UNIQUE (`DB/migrations.py::_m23_users_hwid_unique`),
+    yani bu sorgu asla birden fazla satır döndürmemeli. Yine de -- eski
+    bir veritabanı o göçü henüz çalıştırmadıysa (çakışma bulunup
+    RuntimeError ile durduysa) ya da ileride bir yerde bu varsayım
+    bozulursa -- sessizce `fetchone()`'un SQLite'ın iç uygulamasına bağlı
+    ilk satırını kabul etmek yerine GÖRÜNÜR biçimde çöküyor.
+
+    B-060'ın kök nedenlerinden biri tam olarak buydu: `_on_login()`'daki
+    "pending mi" sorgusu `ORDER BY` içermiyordu, ve iki satır (kurbanın
+    eski onaylı satırı + saldırganın yeni pending satırı) aynı HWID'e
+    bağlıyken hangisinin döndüğü garanti değildi — ölçülen davranışta
+    her zaman eski/onaylı satır dönüyordu, yani saldırgan hiç
+    engellenmiyordu.
+    """
+    if not hwid:
+        return None
+    rows = db.fetchall(f"SELECT {kolonlar} FROM users WHERE hwid = ?", (hwid,))
+    if len(rows) > 1:
+        raise RuntimeError(
+            f"HWID icin users tablosunda {len(rows)} satir var -- "
+            "beklenmeyen (UNIQUE kisit ihlal edilmis olmali, bkz. B-060). "
+            "Belirsiz sonuc kabul edilmedi."
+        )
+    return rows[0] if rows else None
+
+
 def kullanici_bilgisi(db: Any, hwid: str) -> tuple[int, str] | None:
     """
     HWID'ye bağlı `users` satırını SALT OKUNUR arar: `(id, username)`.
@@ -116,12 +147,7 @@ def kullanici_bilgisi(db: Any, hwid: str) -> tuple[int, str] | None:
     burada bulunmaması beklenen bir durum değil, ama None dönmek
     çağıranın bir yer tutucu göstermesine izin veriyor.
     """
-    if not hwid:
-        return None
-    row = db.fetchone(
-        "SELECT id, username FROM users WHERE hwid = ? ORDER BY id LIMIT 1",
-        (hwid,),
-    )
+    row = tekil_hwid_satiri(db, hwid, "id, username")
     return (int(row["id"]), row["username"]) if row is not None else None
 
 
@@ -173,10 +199,7 @@ def sync_session_user(
             "açılan satırlar birbirinden ayırt edilemez."
         )
 
-    mevcut = db.fetchone(
-        "SELECT id, username FROM users WHERE hwid = ? ORDER BY id LIMIT 1",
-        (hwid,),
-    )
+    mevcut = tekil_hwid_satiri(db, hwid, "id, username")
     if mevcut is not None:
         user_id = int(mevcut["id"])
         db.execute(

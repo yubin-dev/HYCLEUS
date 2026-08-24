@@ -82,6 +82,10 @@ _KAYIT_DOSYALARI = ("UI/login_dialog.py", "UI/RegisterDialog.py")
 #: şeması + `hwid`/`status` göçleri). Kurum/referans/plan sütunu YOK.
 _GERCEK_KOLONLAR = frozenset({"username", "password_hash", "role", "status", "hwid"})
 
+#: B-060/061 sonrası `INSERT INTO users` TEK yerde — iki kayıt ekranı da
+#: buraya bağlanıyor (bkz. aşağıdaki testler).
+_REGISTRATION_MODULE = "CORE/registration.py"
+
 
 def _kaynak(yol: str) -> str:
     return (KOK / yol).read_text(encoding="utf-8")
@@ -134,17 +138,40 @@ def test_kurumsal_alanlar_HICBIR_KAYIT_DOSYASINDA_YOK(dosya: str) -> None:
     assert not bulunan, f"{dosya}: mockup'ın kurumsal alanı eklenmiş: {bulunan}"
 
 
-@pytest.mark.parametrize("dosya", _KAYIT_DOSYALARI)
-def test_INSERT_users_TAM_gercek_kolonlari_yaziyor(dosya: str) -> None:
+def test_INSERT_users_TAM_gercek_kolonlari_yaziyor() -> None:
     """
     Kurum/referans/plan gibi bir alan UI'a hiç eklenmese bile, birinin
     "madem ekranda değil, DB'ye kaydını tutayım" diyerek satır içine
     sızdırmasını da kapatıyor: sütun listesi TAM olarak gerçek beşli.
+
+    B-060/061 sonrası `INSERT INTO users` iki kayıt ekranında ayrı ayrı
+    DEĞİL, `CORE/registration.py::register_new_user()`'da TEK yerde —
+    bkz. `test_kayit_dosyalari_KENDI_INSERT_ini_YAZMIYOR`.
     """
-    kolonlar = _insert_users_kolonlari(_kaynak(dosya))
+    kolonlar = _insert_users_kolonlari(_kaynak(_REGISTRATION_MODULE))
     assert kolonlar == _GERCEK_KOLONLAR, (
-        f"{dosya}: INSERT INTO users beklenmeyen sütun(lar) içeriyor: "
-        f"{kolonlar - _GERCEK_KOLONLAR}"
+        f"{_REGISTRATION_MODULE}: INSERT INTO users beklenmeyen sütun(lar) "
+        f"içeriyor: {kolonlar - _GERCEK_KOLONLAR}"
+    )
+
+
+@pytest.mark.parametrize("dosya", _KAYIT_DOSYALARI)
+def test_kayit_dosyalari_KENDI_INSERT_ini_YAZMIYOR(dosya: str) -> None:
+    """
+    B-060/061: iki kayıt ekranı aynı iki hatayı (HWID çakışma kontrolü
+    yok + create_vault()/INSERT atomik değil) BAĞIMSIZ olarak
+    tekrarlıyordu — ikisi de kendi `INSERT INTO users`'ını yazıyordu.
+    Düzeltme sonrası ikisi de `CORE.registration.register_new_user()`
+    üzerinden geçiyor ("iki çağıran, tek gövde"); bu test o ayrışmanın
+    geri gelmediğini doğruluyor.
+    """
+    kaynak = _kaynak(dosya)
+    assert "INSERT INTO users" not in kaynak, (
+        f"{dosya} kendi 'INSERT INTO users'ını yeniden yazmış — "
+        "CORE.registration.register_new_user() kullanılmalı (B-060/061)"
+    )
+    assert "register_new_user" in kaynak, (
+        f"{dosya} register_new_user() çağırmıyor gibi görünüyor"
     )
 
 

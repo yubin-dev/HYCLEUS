@@ -9,7 +9,6 @@ Akış:
 from __future__ import annotations
 
 
-from argon2 import PasswordHasher
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -24,14 +23,15 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from CORE.roles import db_role as rol_db
 from CORE.pin_policy import PIN_MIN_LEN as _PIN_MIN_LEN
 from CORE.pin_policy import validate_new_pin
+from CORE.registration import (
+    HwidAlreadyRegisteredError,
+    UsernameTakenError,
+    register_new_user,
+)
 from CORE.usb_manager import _sanitize_hwid, get_usb_hwid
-from CORE.vault_manager import create_vault
 from DB.db_manager import DBManager
-
-_PH          = PasswordHasher()
 
 # Yönetici dışındaki roller — Yönetici hesabı yalnızca ilk kurulumda oluşur
 _NEW_USER_ROLES = [
@@ -368,40 +368,25 @@ class RegisterDialog(QDialog):
             self._show_error("Önce yeni USB'yi tespit edin.")
             return
 
-        db = DBManager()
-
-        # Kullanıcı adı benzersizlik kontrolü
-        if db.fetchone("SELECT id FROM users WHERE username = ?", (username,)):
+        try:
+            register_new_user(
+                DBManager(), hwid=self._new_hwid, username=username, pin=pin,
+                role=role, registered_by=self._admin_hwid,
+            )
+        except UsernameTakenError:
             self._show_error("Bu kullanıcı adı zaten alınmış.")
             return
-
-        # ── Vault oluştur ─────────────────────────────────────────────
-        try:
-            create_vault(self._new_hwid, pin, role)
-        except Exception as exc:
-            self._show_error(f"Vault oluşturulamadı: {exc}")
+        except HwidAlreadyRegisteredError:
+            # `_on_detect()` zaten `usb_tokens`'ı kontrol etmişti; buraya
+            # düşmek bir yarış durumu ya da `users`/`usb_tokens`
+            # ayrışması demek (bkz. B-061) — `create_vault()` HİÇ
+            # çağrılmadı, var olan vault dokunulmadan kaldı.
+            self._show_error(
+                "Bu USB zaten kayıtlı — 'USB Tespit Et' ile tekrar deneyin."
+            )
             return
-
-        # ── DB: users kaydı (status='pending') ────────────────────────
-        # B-030: eşleme CORE/roles.py'de (login_dialog ile aynı karar).
-        db_role = rol_db(role)
-        try:
-            db.execute(
-                """
-                INSERT INTO users (username, password_hash, role, status, hwid)
-                VALUES (?, ?, ?, 'pending', ?)
-                """,
-                (username, _PH.hash(pin), db_role, self._new_hwid),
-            )
-            db.log(
-                "user_registered",
-                detail=(
-                    f"username={username} hwid={self._new_hwid} "
-                    f"role={role} registered_by={self._admin_hwid}"
-                ),
-            )
         except Exception as exc:
-            self._show_error(f"Veritabanı hatası: {exc}")
+            self._show_error(f"Kayıt oluşturulamadı: {exc}")
             return
 
         QMessageBox.information(

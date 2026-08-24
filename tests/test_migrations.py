@@ -294,9 +294,11 @@ def test_ikinci_acilis_hicbir_sey_uygulamiyor(gercek_db) -> None:
 
 def test_bekleyenler_bugun_BOS(gercek_db) -> None:
     """
-    Bugün TEMEL_SURUM üstünde göç yok. Bu test, v3.0 göçleri eklendiğinde
-    bilerek düşecek ve güncellenecek — o an "iskelet gerçekten devreye
-    girdi" demektir.
+    `gercek_db` zaten `.connect()` üzerinden açıldığı için TEMEL_SURUM
+    üstündeki göçler (22, 23 — bkz. B-060) `senkronize()` tarafından
+    GERÇEKTEN uygulanmış olmalı; bu yüzden açılıştan SONRA bekleyen
+    kalmamalı. "Bugün üstte göç yok" değil — üstte göç VAR, hepsi zaten
+    çalıştı.
     """
     assert M.bekleyenler(gercek_db.conn) == ()
 

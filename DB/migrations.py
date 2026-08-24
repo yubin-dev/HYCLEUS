@@ -371,6 +371,58 @@ def _m22_settings_app_mode(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m23_users_hwid_unique(conn: sqlite3.Connection) -> None:
+    """
+    users.hwid'e KISMİ UNIQUE indeks (B-060).
+
+    `_m07_users_hwid` sütunu UNIQUE'sız eklemişti; bu yüzden aynı HWID
+    birden fazla `users` satırına bağlanabiliyordu. `_on_login()`'daki
+    "pending mi" sorgusu ve `sync_session_user()`'ın "mevcut satırı bul"
+    sorgusu ikisi de `ORDER BY` içermiyordu — birden fazla satır varsa
+    SQLite'ın tam tablo taramasında HANGİ satırın döndüğü uygulama
+    ayrıntısıydı, garanti değildi. Ölçülen (bkz. BACKLOG B-060) davranışta
+    en eski (genelde onaylı) satır dönüyordu: bir saldırgan aynı HWID'e
+    ikinci bir 'pending' satır ekleyip vault'u kendi PIN'iyle yeniden
+    yazdığında, giriş kontrolü hâlâ eski 'approved' satırı buluyor ve
+    saldırganı o kimlikle içeri alıyordu.
+
+    NULL/boş hwid (ör. eski DEV_MODE kayıtları) İSTİSNA: onlar hiçbir
+    zaman kimlik doğrulamada hwid ile aranmıyor, indeksin dışında
+    tutulması zararsız ve NULL'ların UNIQUE'te çakışmaması gibi SQLite
+    ayrıntılarına bağımlı kalmayı önlüyor (kısmi indeks bunu açıkça
+    yazıyor).
+
+    Var olan bir kurulumda ZATEN çakışan (aynı HWID'e bağlı birden
+    fazla) satır varsa indeks SESSİZCE atlanmaz: hangi HWID'lerin
+    çakıştığı listelenerek RuntimeError fırlatılır ve göç bu haliyle
+    UYGULANMAZ (damgalanmaz, bir sonraki açılışta yeniden denenir).
+    Sessizce atlamak B-060'ın canlı bir kurbanını "çözülmüş" gibi
+    göstermek olurdu — operatör çakışmayı elle çözmeden (hangi satırın
+    gerçek olduğuna karar verip ötekini silmeden/hwid'ini temizlemeden)
+    uygulama açılmayı reddetmeli, `CORE/secret_store.py`'nin
+    `KeyringUnavailableError` felsefesiyle aynı: "sessizce zayıflamaktansa
+    görünür biçimde dur."
+    """
+    catisan = conn.execute(
+        "SELECT hwid, COUNT(*) AS n FROM users"
+        " WHERE hwid IS NOT NULL AND hwid != ''"
+        " GROUP BY hwid HAVING COUNT(*) > 1"
+    ).fetchall()
+    if catisan:
+        detay = ", ".join(f"{hwid!r} ({n} satir)" for hwid, n in catisan)
+        raise RuntimeError(
+            "users.hwid UNIQUE gocu uygulanamadi (B-060): asagidaki "
+            f"HWID'ler birden fazla satira bagli: {detay}. Once bu "
+            "cakismalari elle cozun (hangi satirin gecerli oldugunu "
+            "belirleyip digerini silin ya da hwid'ini temizleyin); "
+            "bu goc bir sonraki acilista otomatik yeniden denenecek."
+        )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_hwid_unique"
+        " ON users(hwid) WHERE hwid IS NOT NULL AND hwid != ''"
+    )
+
+
 #: Numaralı, SIRALI, değişmez göç listesi. Sıra anlamlıdır: 11 numara
 #: `folders` tablosuna referans veriyor, yani 10'dan sonra gelmek ZORUNDA.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -448,8 +500,13 @@ MIGRATIONS: tuple[Migration, ...] = (
               "Bireysel/Kurumsal görünüm modu ayarı (CORE/app_mode.py). "
               "Yalnızca UI filtresi, RBAC değil; varsayılan kurumsal.",
               _m22_settings_app_mode),
-    # Migration(23, "tpm-...", "...", _m23_...),
-    # Migration(24, "hclx-...", "...", _m24_...),
+    Migration(23, "users-hwid-unique",
+              "users.hwid'e kısmi UNIQUE indeks (B-060) — bir HWID en "
+              "fazla bir users satırına bağlanabilir. Çakışan satır "
+              "varsa göç RuntimeError ile durur, sessizce atlamaz.",
+              _m23_users_hwid_unique),
+    # Migration(24, "tpm-...", "...", _m24_...),
+    # Migration(25, "hclx-...", "...", _m25_...),
 )
 
 

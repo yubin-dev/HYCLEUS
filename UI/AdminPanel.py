@@ -42,7 +42,7 @@ from CORE.vault_manager import (
     VaultTamperedError,
     blacklist_usb,
     change_vault_role,
-    delete_usb_token,
+    discard_vault,
     export_recovery_share,
     has_recovery_share,
 )
@@ -669,8 +669,15 @@ class AdminPanel(QDialog):
 
         try:
             db = DBManager()
-            # DB satırı + kasadaki share_2 birlikte silinir
-            delete_usb_token(hwid)
+            # B-060 düzeltmesi: yalnızca usb_tokens/kasa silmek `users`
+            # satırını yetim bırakırdı VE `users.hwid` artık UNIQUE
+            # olduğu için (bkz. B-060/061) aynı HWID'in yeniden kaydını
+            # KALICI olarak kilitlerdi. Bir USB kaydını silmek, o HWID'i
+            # bir yönetici kararıyla yeniden kullanılabilir hale
+            # getirmenin TEK yolu — ikisi birlikte silinmeli.
+            db.execute("DELETE FROM users WHERE hwid = ?", (hwid,))
+            # usb_tokens satırı + kasadaki share_2 + per-HWID vault dosyası
+            discard_vault(hwid)
             db.log("usb_deleted", detail=f"hwid={hwid}")
             QMessageBox.information(self, "Silindi", f"USB kaydı silindi:\n{hwid}")
         except Exception as exc:
@@ -852,8 +859,9 @@ class AdminPanel(QDialog):
         try:
             db = DBManager()
             db.execute("DELETE FROM users WHERE hwid = ?", (hwid,))
-            # DB satırı + kasadaki share_2 birlikte silinir
-            delete_usb_token(hwid)
+            # users satırı + usb_tokens/kasa + per-HWID vault dosyası
+            # birlikte silinir (bkz. discard_vault() docstring'i, B-060/061)
+            discard_vault(hwid)
             db.log(
                 "user_rejected",
                 detail=f"hwid={hwid} username={username} rejected_by={self._current_hwid}",
