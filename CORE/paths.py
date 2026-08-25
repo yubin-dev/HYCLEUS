@@ -41,6 +41,18 @@ APPIMAGE_ENV = "APPIMAGE"
 #: XDG altındaki dizin adı.
 APP_DIRNAME = "HYCLEUS"
 
+#: Test izolasyonu için data dizini geçersiz kılma değişkeni (B-067).
+#:
+#: Yalnızca AÇIKÇA ayarlanırsa etkin olur; boş/tanımsızsa aşağıdaki üç
+#: normal dal (AppImage / EXE / geliştirme) hiç değişmeden çalışır.
+#: `main.py`, HERHANGİ bir HYCLEUS modülü içe aktarılmadan ÖNCE bunu
+#: ayarlıyor (`--test-data-dir` bayrağı ya da bu değişkenin doğrudan
+#: kendisi) -- çünkü bu modülün üstteki docstring'inin de uyardığı gibi,
+#: `_DEFAULT_DB_PATH`, `_VAULT_DIR`, `_TOTP_FILE`, `_USB_IDS_FILE` gibi
+#: birçok yer bu kararı İÇE AKTARILDIKLARI ANDA veriyor -- sonradan
+#: düzeltme şansı yok.
+TEST_DATA_DIR_ENV = "HYCLEUS_TEST_DATA_DIR"
+
 
 def _xdg_data_home() -> Path:
     """`$XDG_DATA_HOME`, tanımsız ya da göreliyse `~/.local/share`.
@@ -64,10 +76,14 @@ def running_in_appimage() -> bool:
 def data_dir() -> Path:
     """data/ klasörünün mutlak yolunu döndürür.
 
+    - Test izolasyonu: `HYCLEUS_TEST_DATA_DIR` ayarlıysa DOĞRUDAN o (B-067)
     - AppImage:         $XDG_DATA_HOME/HYCLEUS  (varsayılan ~/.local/share/HYCLEUS)
     - EXE (sys.frozen): EXE'nin yanındaki data/ klasörü
     - Geliştirme:       proje kökündeki data/ klasörü
     """
+    override = os.environ.get(TEST_DATA_DIR_ENV, "")
+    if override:
+        return Path(override)
     if hasattr(sys, "frozen"):
         if running_in_appimage():
             return _xdg_data_home() / APP_DIRNAME

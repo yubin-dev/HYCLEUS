@@ -3,6 +3,77 @@ import logging
 import os
 import sys
 
+# ── Test izolasyonu bayrağı: HERHANGİ bir HYCLEUS modülü içe aktarılmadan
+# ÖNCE çözülmeli (B-067) ─────────────────────────────────────────────────
+#
+# CORE/paths.py::data_dir() içe aktarıldığı ANDA çağrılan modül seviyesi
+# sabitler var (DB/db_manager.py::_DEFAULT_DB_PATH, CORE/vault_manager.py::
+# _VAULT_DIR, CORE/secret_migration.py::_TOTP_FILE, CORE/usb_manager.py::
+# _USB_IDS_FILE, UI/login_dialog.py::_PIN_FILE, ...) -- karar burada, en
+# tepede, aşağıdaki CORE/DB/UI import'larından ÖNCE verilmezse sonradan
+# düzeltme şansı yok (bkz. CORE/paths.py'nin kendi docstring'i).
+from CORE.paths import TEST_DATA_DIR_ENV
+from CORE.paths import data_dir as _gercek_veri_dizini
+
+
+def _test_data_dir_bayragini_coz(argv: list[str]) -> None:
+    """
+    `--test-data-dir <dizin>` bayrağını (ya da doğrudan `HYCLEUS_TEST_DATA_DIR`
+    ortam değişkenini) çözer; etkinse `os.environ`'a yazar (B-067).
+
+    Amaç: gerçek USB donanımı takılıyken bile ilk kurulum/kayıt akışını
+    ÜRETİM verisine hiç dokunmadan, sıfırdan ve tekrar tekrar test
+    edebilmek. `data_dir()`'dan türeyen HER ŞEY (DB, vault dosyaları, TOTP
+    göç dosyası, USB kimliği önbelleği, PIN hash dosyası, denetim çıpası,
+    SafeZone) bu tek noktadan izole edilir -- yalnızca `DBManager`'ın
+    yolunu değiştirmek yetmezdi, "Kayıt Ol" akışı gerçek vault dosyasını
+    yine üretim `data/vaults/`'a yazardı.
+
+    Güvenlik kuralları:
+      (a) YALNIZCA bayrak/ortam değişkeni AÇIKÇA verilirse çalışır --
+          ikisi de yoksa bu fonksiyon HİÇBİR ŞEYİ DEĞİŞTİRMEZ, varsayılan
+          `data_dir()` çözümlemesi (EXE yanı / proje kökü / XDG) aynen
+          işler.
+      (b) Kullanımı `main()` içinde DB bağlandıktan hemen sonra audit
+          log'a yazılır (`test_data_dir_active`) -- sessiz bir izolasyon
+          modu, "neden hiçbir eski kaydım yok" sorusunu sonradan
+          yanıtlayamazdı.
+      (c) Hedef dizin gerçek ÜRETİM data diziniyle AYNIYSA reddedilir --
+          bir script'in yanlışlıkla gerçek yolu vermesi, "izole test"
+          sanılan bir çalıştırmanın sessizce üretim verisini değiştirmesini
+          önler. Bu karşılaştırma env değişkeni HENÜZ ayarlanMAdanKEN
+          yapılıyor, yani `_gercek_veri_dizini()` burada GERÇEKTEN normal
+          (üretim) yolu döndürür.
+    """
+    if "--test-data-dir" in argv:
+        idx = argv.index("--test-data-dir")
+        if idx + 1 >= len(argv):
+            print("--test-data-dir bir dizin yolu bekliyor.", file=sys.stderr)
+            sys.exit(2)
+        aday = argv[idx + 1]
+    else:
+        aday = os.environ.get(TEST_DATA_DIR_ENV, "")
+        if not aday:
+            return
+
+    from pathlib import Path
+
+    hedef  = Path(aday).resolve()
+    uretim = _gercek_veri_dizini().resolve()
+    if hedef == uretim:
+        print(
+            f"--test-data-dir üretim data diziniyle AYNI ({uretim}) -- "
+            "reddedildi. İzole bir test dizini belirtin "
+            "(ör. --test-data-dir C:\\temp\\hycleus-test).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    hedef.mkdir(parents=True, exist_ok=True)
+    os.environ[TEST_DATA_DIR_ENV] = str(hedef)
+
+
+_test_data_dir_bayragini_coz(sys.argv[1:])
+
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s  %(name)-24s  %(levelname)-7s  %(message)s",
@@ -276,6 +347,14 @@ def main() -> None:
     except HWIDMissingError as exc:
         QMessageBox.critical(None, "Hata", str(exc))
         sys.exit(1)
+
+    # B-067: test izolasyonu aktifse görünür ol -- hem konsolda hem denetim
+    # kaydında. Sessiz bir izolasyon modu "neden hiçbir eski kaydım yok"
+    # sorusunu sonradan yanıtlayamazdı.
+    _test_data_dir = os.environ.get(TEST_DATA_DIR_ENV, "")
+    if _test_data_dir:
+        _log.warning("TEST DATA DİZİNİ AKTİF — izole: %s", _test_data_dir)
+        DBManager().log("test_data_dir_active", detail=f"dizin={_test_data_dir}")
 
     # ── use_vault + first_run: tek noktada hesapla, LoginDialog'a geç ─────────
     # B-058 kök neden düzeltmesi: soru "bu HWID'nin vault'u var mı" DEĞİL,

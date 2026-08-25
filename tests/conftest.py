@@ -213,3 +213,73 @@ def db(tmp_path: Path) -> Iterator["object"]:
     finally:
         manager.close()
         DBManager._instance = None
+
+
+class SahteUSB:
+    """
+    Gerçek USB donanımı olmadan "takılı fiziksel USB"yi simüle eder (B-067).
+
+    B-064/B-065/B-066 PoC'larında ve testlerinde tekrar tekrar elle
+    yazılan `monkeypatch.setattr(<modül>, "get_usb_hwid", lambda: hwid)`
+    deseninin kalıcı hâli. Tek bir yeri yamamak YETMEZ: her modül
+    `from CORE.usb_manager import get_usb_hwid` ile KENDİ isim uzayına
+    kendi bağlı adını alıyor, `CORE.usb_manager.get_usb_hwid`'i
+    değiştirmek o modüllerin GÖRDÜĞÜ referansı etkilemiyor (ölçüldü) --
+    o yüzden `_HEDEF_MODULLER` listesindeki HEPSİ ayrı ayrı yamalanıyor.
+
+    `.hwid` alanı doğrudan değiştirilebilir (`.tak()`/`.cikar()` sadece
+    okunabilir kısayollar) -- yamalar `lambda: self.hwid` ile KAPALI
+    (closure), yani `self.hwid`'i değiştirmek TÜM hedef modüllere aynı
+    anda, yeniden yamalamaya gerek kalmadan yansır (fiziksel bir USB'nin
+    takılıp çıkarılmasının birebir karşılığı).
+    """
+
+    #: `get_usb_hwid`'i kendi isim uzayına içe aktaran TÜM modüller.
+    #: Yeni bir modül `from CORE.usb_manager import get_usb_hwid` yazarsa
+    #: buraya eklenmeli -- eklenmezse o modül simülasyondan HABERSİZ kalır
+    #: ve testte sessizce GERÇEK donanımı görmeye devam eder.
+    _HEDEF_MODULLER = (
+        "UI.main_window",
+        "UI.main_window_lock",
+        "UI.main_window_table",
+        "UI.AdminPanel",
+        "UI.RegisterDialog",
+        "UI.login_dialog",
+        "CORE.recover_vault",
+        "CORE.setup_usb",
+    )
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, hwid: str | None) -> None:
+        import importlib
+
+        self.hwid = hwid
+        for ad in self._HEDEF_MODULLER:
+            modul = importlib.import_module(ad)  # ImportError bilerek YUTULMUYOR
+            monkeypatch.setattr(modul, "get_usb_hwid", lambda: self.hwid, raising=False)
+
+    def tak(self, hwid: str) -> None:
+        """USB'yi (yeni bir HWID ile) takar."""
+        self.hwid = hwid
+
+    def cikar(self) -> None:
+        """USB'yi fiziksel olarak çıkarır -- get_usb_hwid() artık None döner."""
+        self.hwid = None
+
+
+@pytest.fixture
+def sahte_usb(monkeypatch: pytest.MonkeyPatch):
+    """
+    Fabrika fixture: `sahte_usb(hwid)` çağrısı bir `SahteUSB` döndürür.
+
+    `UI.*` modülleri Qt gerektirir; bu ortamda Qt katmanı yüklenemiyorsa
+    (diğer Qt test dosyalarındaki aynı korumalı-import deseni) testi
+    ATLAR -- sessizce hiçbir modülü yamamadan devam etmek, "donanım simüle
+    ediliyor sanılan" ama aslında hâlâ GERÇEK donanımı gören yanıltıcı bir
+    teste yol açardı.
+    """
+    def _kur(hwid: str | None = None) -> SahteUSB:
+        try:
+            return SahteUSB(monkeypatch, hwid)
+        except ImportError as exc:
+            pytest.skip(f"Qt katmanı bu ortamda yüklenemedi ({exc})")
+    return _kur
