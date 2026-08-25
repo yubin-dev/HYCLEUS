@@ -56,6 +56,7 @@ from CORE.idle_lock import (
     get_idle_timeout_minutes,
     log_idle_lock,
 )
+from CORE.session_user import oturum_yetkisi_gecerli_mi
 from CORE.usb_manager import DEV_MODE as _DEV_MODE, get_usb_hwid
 from CORE.vault_manager import (
     USBAuthError,
@@ -171,11 +172,49 @@ class LockMixin:
         if hwid is None:
             if not self._locked:
                 self._lock()
-        elif hwid == self._hwid:
-            if self._locked:
-                self._unlock()
-        else:
+            return
+        if hwid != self._hwid:
             self._trigger_usb_reauth(hwid)
+            return
+
+        # Aynı fiziksel USB hâlâ takılı — ama DB'deki yetki hâlâ girişteki
+        # gibi mi? (B-064/B-066: eskiden burada HİÇBİR kontrol yoktu; bir
+        # yönetici bu HWID'i reddedip (`_on_reject`), silip (`_on_delete`)
+        # ya da kara listeye alıp (`_do_blacklist`) DB'yi değiştirse bile,
+        # USB'si hâlâ takılı olan bu oturum bundan habersiz kalıp eski
+        # yetkisiyle çalışmaya devam ediyordu.)
+        try:
+            gecerli, sebep = oturum_yetkisi_gecerli_mi(DBManager(), hwid, self._role)
+        except Exception as exc:
+            # DB'ye ANLIK erişilemedi (ör. yoğun bir toplu işlem sırasında
+            # kısa süreli kilit) — bunu "yetki iptal edildi" SAYMIYORUZ,
+            # aksi hâlde geçici bir DB tıkanıklığı meşru bir oturumu
+            # kilitlerdi. Bir sonraki tik (3 sn sonra) yeniden dener;
+            # reload_idle_timeout'un aynı DB hatası karşısındaki tavrıyla
+            # tutarlı (bkz. o metot).
+            _log.warning("Oturum yetkisi doğrulanamadı (tekrar denenecek): %s", exc)
+            return
+
+        if not gecerli:
+            if "revoked" not in self._lock_reasons:
+                try:
+                    DBManager().log(
+                        "session_revoked", detail=f"hwid={hwid} sebep={sebep}"
+                    )
+                except Exception as exc:
+                    _log.error("Oturum iptali denetime yazılamadı: %s", exc)
+            self._revoked_reason = sebep
+            self._lock("revoked")
+            return
+
+        if self._locked:
+            # `_unlock()` varsayılanı "usb" nedenini kaldırır. Kilitli
+            # tek neden "revoked" ise bu çağrı KASITLI OLARAK hiçbir şey
+            # açmaz (bkz. _unlock: kalan neden varsa örtü durur) —
+            # "revoked" bilerek buradan çıkışı yok: yetki DB'de gerçekten
+            # iptal edilmişti, oturumun kendi kendine iyileşmesi yanlış
+            # olurdu. Tek çıkış: uygulamayı kapatıp yeniden giriş yapmak.
+            self._unlock()
 
     def _trigger_usb_reauth(self, new_hwid: str) -> None:
         self._authenticating = True
@@ -244,6 +283,10 @@ class LockMixin:
             except Exception as exc:
                 _log.error("kilit check-in basarisiz: %s", exc)
         title, sub = self._LOCK_MESSAGES.get(reason, self._LOCK_MESSAGES["usb"])
+        if reason == "revoked":
+            # Sebep DB'den geliyor (rol/durum/kara liste) — sabit
+            # sözlükte tutulamaz, _poll_usb her tetiklemede yazıyor.
+            sub = getattr(self, "_revoked_reason", "") or sub
         self._overlay.set_message(title, sub)
         self.centralWidget().setEnabled(False)
         self.centralWidget().setGraphicsEffect(self._blur)

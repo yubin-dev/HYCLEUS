@@ -80,6 +80,28 @@ def _pencereyi_kapat(window: HycleusWindow) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _admin_panel_canli_yetki(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    B-064/B-066: `AdminPanel` artık her yetkili işlemden (ör.
+    `_on_save_settings`) önce USB'nin hâlâ takılı olduğunu VE DB'deki
+    yetkinin hâlâ girişteki gibi olduğunu canlı doğruluyor
+    (`UI.AdminPanel._yonetici_hala_yetkili`). Bu dosyadaki testler hep
+    `_HWID` kullanıyor; o USB'nin takılı kaldığını simüle edip ona
+    karşılık gelen onaylı yönetici satırını ekliyoruz — aksi hâlde
+    her `AdminPanel(current_hwid=_HWID, role="Yönetici")` sonrası
+    çağrılan yetkili bir işlem sessizce reddedilir (panel kapanır).
+    """
+    import UI.AdminPanel as _ap
+
+    monkeypatch.setattr(_ap, "get_usb_hwid", lambda: _HWID)
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, 'admin', 'approved', ?)",
+        ("app-mode-test-admin", "x", _HWID),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _diyalog_engelle(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     """AdminPanel'in `QMessageBox.information/...` çağrıları testi bloklamasın."""
     gosterilen: list[tuple[str, str]] = []
@@ -172,6 +194,7 @@ def test_admin_panel_KURUMSALDA_bekleyen_sekmesi_gorunur(qapp, db):
     try:
         assert panel._tabs.isTabVisible(panel._pending_tab_index) is True
     finally:
+        panel._yetki_timer.stop()
         panel.close()
 
 
@@ -192,6 +215,7 @@ def test_admin_panel_mod_degisince_sekme_ILERI_GERI_dogru_gorunurluk(qapp, db):
         assert panel._tabs.isTabVisible(panel._pending_tab_index) is True
         assert get_app_mode(db) == KURUMSAL
     finally:
+        panel._yetki_timer.stop()
         panel.close()
 
 
@@ -215,6 +239,7 @@ def test_bekleyen_tablosu_kullanici_adi_sutunu_ILERI_GERI_dogru_gorunurluk(qapp,
         panel._on_save_settings()
         assert panel._pending_table.isColumnHidden(0) is False
     finally:
+        panel._yetki_timer.stop()
         panel.close()
 
 
@@ -248,6 +273,7 @@ def test_bekleyen_kayit_BIREYSELDE_kaybolmuyor_KURUMSALDA_yine_gorunur(qapp, db)
         panel._load_pending()
         assert panel._pending_table.rowCount() == 1
     finally:
+        panel._yetki_timer.stop()
         panel.close()
 
 

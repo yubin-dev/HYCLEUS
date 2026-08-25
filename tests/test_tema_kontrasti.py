@@ -380,6 +380,8 @@ def test_mutasyon_admin_panel_dialog_gercekten_farkli_boyaniyor(qapp, db):
         assert a.styleSheet() != b.styleSheet()
         assert a._mode_combo.styleSheet() != b._mode_combo.styleSheet()
     finally:
+        a._yetki_timer.stop()
+        b._yetki_timer.stop()
         a.close()
         b.close()
 

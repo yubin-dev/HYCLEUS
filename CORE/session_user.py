@@ -171,6 +171,64 @@ def sistem_kurulmus_mu(db: Any) -> bool:
     return db.fetchone("SELECT 1 FROM users WHERE status = 'approved' LIMIT 1") is not None
 
 
+def oturum_yetkisi_gecerli_mi(
+    db: Any, hwid: str, oturum_rolu: str | None
+) -> tuple[bool, str]:
+    """
+    B-064/B-066 — açık bir oturumun DB'deki GERÇEK yetkisiyle hâlâ
+    uyuşup uyuşmadığını kontrol eder.
+
+    Neden gerekli
+    -------------
+    `_poll_usb()` (UI/main_window_lock.py) ve `AdminPanel` (USB Yönetimi
+    paneli), USB fiziksel olarak SABİT kaldığı sürece "her şey yolunda"
+    varsayıyordu — DB'deki `status`/`role`/kara liste durumunu bir daha
+    HİÇ okumuyordu. Sonuç: bir yönetici bir kullanıcıyı reddedip
+    (`_on_reject`), silip (`_on_delete`) ya da kara listeye alıp
+    (`_do_blacklist`) DB'yi değiştirdiğinde, o HWID'e ait ZATEN AÇIK bir
+    oturum (USB'si hâlâ takılı) bundan HABERSİZ kalıyor ve eski
+    yetkisiyle çalışmaya devam ediyordu.
+
+    Bu fonksiyon USB'nin fiziksel varlığına BAKMAZ (o, çağıranın işi —
+    `get_usb_hwid()` ile karşılaştırılmalı); yalnızca DB tarafını
+    kontrol eder. İki çağıran: `LockMixin._poll_usb` (ana pencere) ve
+    `AdminPanel._yonetici_hala_yetkili` (USB Yönetimi paneli — modal
+    olduğu için ana penceredeki döngüden habersiz, kendi kontrolünü
+    kendi yapmak zorunda).
+
+    Args:
+        oturum_rolu: oturumun GİRİŞTE sahip olduğu arayüz rolü
+            ("Yönetici" gibi). `CORE.roles.db_role()` ile DB'nin ikili
+            (admin/user) ölçeğine indirgenip karşılaştırılır — DB şeması
+            Standart/Salt Okunur ayrımını TUTMUYOR
+            (`users.role CHECK(role IN ('admin','user'))`), yani bu
+            fonksiyon yalnızca o ikisi arasındaki bir düşüşü
+            YAKALAYAMAZ; bu, DB katmanının var olan bir sınırı, bu
+            düzeltmenin kapsamı değil.
+
+    Returns:
+        (geçerli, sebep) — `geçerli` False ise `sebep` kullanıcıya
+        gösterilebilir bir Türkçe cümle.
+    """
+    satir = db.fetchone(
+        "SELECT role, status FROM users WHERE hwid = ?", (hwid,)
+    )
+    if satir is None:
+        return False, "Kullanıcı kaydı artık mevcut değil."
+    if satir["status"] != "approved":
+        return False, f"Hesap durumu artık '{satir['status']}'."
+    if satir["role"] != db_role(oturum_rolu):
+        return False, "Yetki düzeyi değişti."
+
+    token = db.fetchone(
+        "SELECT blacklisted FROM usb_tokens WHERE hwid = ?", (hwid,)
+    )
+    if token is not None and token["blacklisted"]:
+        return False, "Bu USB cihazı kara listeye alındı."
+
+    return True, ""
+
+
 def sync_session_user(
     db: Any, *, hwid: str, role: str | None = None
 ) -> int:

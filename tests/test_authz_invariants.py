@@ -14,6 +14,7 @@ kaybetmiyor.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -401,3 +402,305 @@ def test_migration_global_sir_YOKSA_hicbir_sey_yapmiyor(db, kasa_dizini) -> None
 
     assert rapor.to_version == secret_migration.SCHEMA_TOTP_PER_HWID
     assert rapor.totp_per_hwid_migrated_to is None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Değişmez 5 — açık oturum DB'deki GERÇEK yetkiyle uyumsuz kalamaz (B-064/B-066)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# B-064: `AdminPanel` application-modal bir QDialog (`.exec()`) — ana
+# penceredeki `_lock()` yalnızca `centralWidget()`'ı etkiliyor, paneli
+# HABERSİZ bırakıyor. USB Yönetimi paneli AÇIKKEN yönetici USB'si fiziksel
+# olarak çekilirse, eskiden panel hiçbir kontrol yapmadan yetkili DB
+# yazılarına (onayla/reddet/rol değiştir/sil/kara listeye al/...) devam
+# ediyordu.
+#
+# B-066: `_poll_usb()` yalnızca "HWID DEĞİŞTİ mi" sorusunu soruyordu. Aynı
+# fiziksel USB takılı kaldığı sürece (fiziksel olarak hiç çıkarılmadıysa),
+# DB'de rol/durum/kara-liste değişse bile açık oturum ESKİ yetkiyle
+# çalışmaya devam ediyordu.
+#
+# İkisi de aynı kök nedenin (oturum, gerçek zamanlı DB yetkisini hiç
+# yeniden doğrulamıyor) iki yüzü — düzeltme tek ortak fonksiyonda:
+# `CORE.session_user.oturum_yetkisi_gecerli_mi()`.
+#
+# Bu iki test PoC scriptleriyle (scratchpad) DEĞİL, gerçek `AdminPanel` /
+# `HycleusWindow` sınıflarıyla çalışıyor ve ikisi de mutasyonla doğrulandı:
+# ilgili `_yonetici_hala_yetkili()` / `oturum_yetkisi_gecerli_mi()` çağrısı
+# geçici olarak devre dışı bırakılıp testin GERÇEKTEN düştüğü görüldü,
+# sonra geri getirildi.
+
+
+def test_b064_admin_paneli_usb_cikinca_onayi_reddediyor(
+    db, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Panel AÇIKKEN USB fiziksel olarak çekiliyor (aynı süreç, main_window
+    kilidinden habersiz bir modal). `_on_approve()` artık DB'ye hiç
+    dokunmamalı ve paneli kendisi kapatmalı — düğmenin devre dışı kalması
+    değil, handler'ın kendisi son çare.
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+
+        import UI.AdminPanel as ap
+    except ImportError as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"Qt katmanı bu ortamda yüklenemedi ({exc})")
+
+    try:
+        QApplication.instance() or QApplication([])
+    except Exception as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"QApplication kurulamadı ({exc})")
+
+    admin_hwid = "B064-ADMIN-HWID"
+    pending_hwid = "B064-PENDING-HWID"
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, 'admin', 'approved', ?)",
+        ("panel-admin", "x", admin_hwid),
+    )
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, 'user', 'pending', ?)",
+        ("bekleyen.kullanici", "x", pending_hwid),
+    )
+
+    for ad in ("question", "information", "warning", "critical"):
+        monkeypatch.setattr(
+            QMessageBox, ad, staticmethod(lambda *a, **k: QMessageBox.Yes)
+        )
+
+    # Panel USB HÂLÂ TAKILIYKEN açılıyor.
+    monkeypatch.setattr(ap, "get_usb_hwid", lambda: admin_hwid)
+    panel = ap.AdminPanel(current_hwid=admin_hwid, role="Yönetici")
+    panel._load_pending()
+    panel._pending_table.selectRow(0)
+
+    # USB fiziksel olarak çekiliyor. Panel modal olduğu için ana
+    # penceredeki _lock() ondan HABERSİZ — hiçbir şey paneli kapatmaz.
+    monkeypatch.setattr(ap, "get_usb_hwid", lambda: None)
+
+    panel._on_approve()
+
+    row = db.fetchone("SELECT status FROM users WHERE hwid = ?", (pending_hwid,))
+    assert row["status"] == "pending", (
+        "B-064 REGRESYONU: USB çekiliyken AdminPanel yetkili bir DB "
+        "yazısını (onayla) yine de tamamladı"
+    )
+    assert panel.result() == QDialog.Rejected, (
+        "B-064 REGRESYONU: panel, USB çekilince kendini kapatmadı"
+    )
+    panel._yetki_timer.stop()
+    panel.close()
+
+
+def test_b064_guard_kaldirilirsa_test_gercekten_dusuyor(
+    db, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Mutasyon kontrastı — yukarıdaki testin gerçekten bir şey ölçtüğünü
+    kanıtlar: `_yonetici_hala_yetkili()` devre dışı bırakılırsa (eski,
+    savunmasız davranış simüle edilirse) aynı senaryo GERÇEKTEN onaylanır.
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtWidgets import QApplication, QMessageBox
+
+        import UI.AdminPanel as ap
+    except ImportError as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"Qt katmanı bu ortamda yüklenemedi ({exc})")
+
+    try:
+        QApplication.instance() or QApplication([])
+    except Exception as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"QApplication kurulamadı ({exc})")
+
+    admin_hwid = "B064-MUTASYON-ADMIN-HWID"
+    pending_hwid = "B064-MUTASYON-PENDING-HWID"
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, 'admin', 'approved', ?)",
+        ("panel-admin-2", "x", admin_hwid),
+    )
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, 'user', 'pending', ?)",
+        ("bekleyen.kullanici.2", "x", pending_hwid),
+    )
+
+    for ad in ("question", "information", "warning", "critical"):
+        monkeypatch.setattr(
+            QMessageBox, ad, staticmethod(lambda *a, **k: QMessageBox.Yes)
+        )
+
+    monkeypatch.setattr(ap, "get_usb_hwid", lambda: admin_hwid)
+    panel = ap.AdminPanel(current_hwid=admin_hwid, role="Yönetici")
+    panel._load_pending()
+    panel._pending_table.selectRow(0)
+
+    # Eski (savunmasız) davranışı simüle et: guard'ı devre dışı bırak.
+    monkeypatch.setattr(panel, "_yonetici_hala_yetkili", lambda: True)
+    monkeypatch.setattr(ap, "get_usb_hwid", lambda: None)
+
+    panel._on_approve()
+
+    row = db.fetchone("SELECT status FROM users WHERE hwid = ?", (pending_hwid,))
+    assert row["status"] == "approved", (
+        "guard devre dışıyken bile onay engellendi — bu test B-064'ü "
+        "gerçekten ölçmüyor olabilir"
+    )
+    panel._yetki_timer.stop()
+    panel.close()
+
+
+def test_b066_rol_dusurulunce_ayni_usb_takiliyken_oturum_kilitleniyor(
+    db, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    USB HİÇ ÇIKARILMIYOR (fiziksel olarak aynı cihaz takılı kalıyor). DB'de
+    rol admin'den user'a düşürülünce `_poll_usb()` (gerçek 3 sn'lik
+    zamanlayıcı kodu) oturumu kilitlemeli — HWID hâlâ aynı diye sessiz
+    kalmamalı.
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtWidgets import QApplication, QWidget
+
+        import UI.main_window_lock as main_window_lock
+        from UI.main_window import HycleusWindow
+        from UI.main_window_lock import _LockOverlay
+    except ImportError as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"Qt katmanı bu ortamda yüklenemedi ({exc})")
+
+    try:
+        QApplication.instance() or QApplication([])
+    except Exception as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"QApplication kurulamadı ({exc})")
+
+    hwid = "B066-STALE-ROLE-HWID"
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, 'admin', 'approved', ?)",
+        ("dusurulen.admin", "x", hwid),
+    )
+
+    monkeypatch.setattr(main_window_lock, "get_usb_hwid", lambda: hwid)
+
+    class _Sahne:
+        _LOCK_MESSAGES = HycleusWindow._LOCK_MESSAGES
+        _lock = HycleusWindow._lock
+        _unlock = HycleusWindow._unlock
+        _poll_usb = HycleusWindow._poll_usb
+        _refresh_usb_badge = HycleusWindow._refresh_usb_badge
+
+        def __init__(self) -> None:
+            self._central = QWidget()
+            self._central.resize(800, 600)
+            self._overlay = _LockOverlay(self._central)
+            self._blur = None
+            self._locked = False
+            self._lock_reasons: set[str] = set()
+            self._authenticating = False
+            self._hwid = hwid
+            self._role = "admin"
+            self._usb_badge = QWidget()
+            self._usb_badge.setText = lambda *a, **k: None
+            self._checkouts = None
+
+        def centralWidget(self):
+            return self._central
+
+        def size(self):
+            return self._central.size()
+
+    sahne = _Sahne()
+    sahne._poll_usb()
+    assert sahne._locked is False, "USB hâlâ takılı ve rol henüz düşmedi"
+
+    # Başka bir yerden (ör. ikinci bir AdminPanel) rol DB'de düşürülüyor.
+    # USB HİÇ ÇIKARILMIYOR — aynı fiziksel cihaz.
+    db.execute("UPDATE users SET role = 'user' WHERE hwid = ?", (hwid,))
+
+    sahne._poll_usb()
+
+    assert sahne._locked is True, (
+        "B-066 REGRESYONU: DB'de rol düştüğü hâlde, aynı fiziksel USB "
+        "takılıyken açık oturum kilitlenmedi"
+    )
+    assert "revoked" in sahne._lock_reasons
+
+
+def test_b066_guard_kaldirilirsa_test_gercekten_dusuyor(
+    db, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Mutasyon kontrastı — `oturum_yetkisi_gecerli_mi()` çağrısı `_poll_usb`
+    içinde devre dışı bırakılırsa (eski davranış: yalnızca HWID eşitliği)
+    aynı senaryoda oturum GERÇEKTEN kilitlenmeden kalır.
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtWidgets import QApplication, QWidget
+
+        import UI.main_window_lock as main_window_lock
+        from UI.main_window import HycleusWindow
+        from UI.main_window_lock import _LockOverlay
+    except ImportError as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"Qt katmanı bu ortamda yüklenemedi ({exc})")
+
+    try:
+        QApplication.instance() or QApplication([])
+    except Exception as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"QApplication kurulamadı ({exc})")
+
+    hwid = "B066-MUTASYON-HWID"
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, 'admin', 'approved', ?)",
+        ("dusurulen.admin.2", "x", hwid),
+    )
+
+    monkeypatch.setattr(main_window_lock, "get_usb_hwid", lambda: hwid)
+    # Eski (savunmasız) davranışı simüle et: DB'yi hiç yeniden okuma.
+    monkeypatch.setattr(
+        main_window_lock, "oturum_yetkisi_gecerli_mi", lambda *a, **k: (True, "")
+    )
+
+    class _Sahne:
+        _LOCK_MESSAGES = HycleusWindow._LOCK_MESSAGES
+        _lock = HycleusWindow._lock
+        _unlock = HycleusWindow._unlock
+        _poll_usb = HycleusWindow._poll_usb
+        _refresh_usb_badge = HycleusWindow._refresh_usb_badge
+
+        def __init__(self) -> None:
+            self._central = QWidget()
+            self._central.resize(800, 600)
+            self._overlay = _LockOverlay(self._central)
+            self._blur = None
+            self._locked = False
+            self._lock_reasons: set[str] = set()
+            self._authenticating = False
+            self._hwid = hwid
+            self._role = "admin"
+            self._usb_badge = QWidget()
+            self._usb_badge.setText = lambda *a, **k: None
+            self._checkouts = None
+
+        def centralWidget(self):
+            return self._central
+
+        def size(self):
+            return self._central.size()
+
+    sahne = _Sahne()
+    sahne._poll_usb()
+    db.execute("UPDATE users SET role = 'user' WHERE hwid = ?", (hwid,))
+
+    sahne._poll_usb()
+
+    assert sahne._locked is False, (
+        "guard devre dışıyken bile oturum kilitlendi — bu test B-066'yı "
+        "gerçekten ölçmüyor olabilir"
+    )

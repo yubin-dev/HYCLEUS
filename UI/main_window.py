@@ -109,6 +109,9 @@ class HycleusWindow(
         self._locked             = False
         # Kilit nedenleri kümesi — biri kalkınca diğeri düşmesin (bkz. _unlock)
         self._lock_reasons: set[str] = set()
+        # "revoked" kilidinin DB'den gelen dinamik sebebi (B-064/B-066) —
+        # bkz. LockMixin._poll_usb / _lock.
+        self._revoked_reason: str = ""
         self._authenticating     = False
         self._threads: list[QThread]  = []
         self._workers: list[QObject]  = []
@@ -527,6 +530,11 @@ class HycleusWindow(
     _LOCK_MESSAGES = {
         "usb": ("USB Token Çıkarıldı", "Lütfen USB'yi yeniden takın"),
         "idle": ("Oturum Kilitlendi", "Hareketsizlik nedeniyle — devam etmek için PIN girin"),
+        # Alt metin _poll_usb tarafından _revoked_reason'a yazılıp burada
+        # üzerine geçiliyor (bkz. LockMixin._lock) — bu yalnızca yedek.
+        # PIN girerek açılamaz: yetki DB'de gerçekten iptal edilmiş,
+        # yeniden giriş (uygulamayı kapatıp açmak) gerekiyor.
+        "revoked": ("Erişim İptal Edildi", "Yetkiniz artık geçerli değil."),
     }
 
 

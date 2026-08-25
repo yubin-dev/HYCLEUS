@@ -7,7 +7,7 @@ from pathlib import Path
 
 _log = logging.getLogger("hycleus.admin_panel")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QComboBox,
@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 
 from CORE.app_mode import BIREYSEL, KURUMSAL, get_app_mode, set_app_mode
 from CORE.roles import is_admin_role
+from CORE.session_user import oturum_yetkisi_gecerli_mi
+from CORE.usb_manager import get_usb_hwid
 from CORE.idle_lock import (
     DEFAULT_IDLE_MINUTES,
     IDLE_DISABLED,
@@ -129,6 +131,9 @@ class AdminPanel(QDialog):
         self._current_hwid = current_hwid
         self._caller_role  = role
         self._T: dict[str, str] = T if T is not None else _DARK
+        # B-064: reject() iki kez tetiklenmesin (hem tik hem bir eylem
+        # aynı anda geçersizliği yakalarsa).
+        self._kapatiliyor = False
         self.setWindowTitle("HYCLEUS — USB Yönetim Paneli")
         self.setStyleSheet(_stil(self._T))
 
@@ -154,6 +159,79 @@ class AdminPanel(QDialog):
         self._load_pending()
         self._load_settings()
 
+        # B-064: bu panel application-modal (bkz. main_window.py::
+        # _on_open_admin_panel — `.exec()`). Ana penceredeki _usb_timer/
+        # _poll_usb/_lock() bu modallık yüzünden ÇALIŞMAYA DEVAM EDER
+        # (Qt'nin iç içe event loop'u zamanlayıcıları durdurmaz) ama
+        # _lock() yalnızca ana pencerenin centralWidget()'ını etkiler —
+        # bu panel ayrı bir üst seviye pencere olduğu için ondan
+        # HABERSİZ, açık ve tam işlevsel kalırdı. Panel bu yüzden kendi
+        # denetimini kendi yapıyor; ana pencereye bağımlı değil.
+        self._yetki_timer = QTimer(self)
+        self._yetki_timer.setInterval(3000)
+        self._yetki_timer.timeout.connect(self._yetki_kontrolu_tik)
+        self._yetki_timer.start()
+
+    # ------------------------------------------------------------------
+    # B-064 / B-066 — canlı yetki denetimi
+    # ------------------------------------------------------------------
+    #
+    # İki tüketici, tek kaynak (`oturum_yetkisi_gecerli_mi` + `get_usb_hwid`):
+    #
+    #   `_yetki_kontrolu_tik` — 3 sn'de bir, YUMUŞAK: sekmeleri devre dışı
+    #       bırakır + bir uyarı şeridi gösterir, panel AÇIK kalır. Geçici
+    #       bir durumsa (ör. ikinci bir admin işlemi geri alırsa) kendini
+    #       toparlar. Nested bir alt diyalog (PIN sorma vb.) o an açık
+    #       olsa bile GÜVENLE çalışır — yalnızca widget durumu değiştirir,
+    #       hiçbir diyaloğu kapatmaz.
+    #
+    #   `_yonetici_hala_yetkili` — her yetkili İŞLEMDEN ÖNCE, SERT: geçersizse
+    #       paneli `reject()` ile TAMAMEN kapatır. Zamanlayıcının 3 sn'lik
+    #       aralığını beklemeden, DOĞRUDAN metot çağrısı yapan kod (ör. bir
+    #       test ya da programatik çağrı) için bile açık kapı bırakmaz —
+    #       düğmenin devre dışı bırakılmış olması UI'yi korur, ama Python
+    #       düzeyinde `panel._on_approve()` çağrısını ENGELLEMEZ; asıl
+    #       garanti bu.
+
+    def _yetki_durumu(self) -> tuple[bool, str]:
+        """USB hâlâ takılı mı VE DB'deki yetki hâlâ girişteki gibi mi."""
+        canli_hwid = get_usb_hwid()
+        if canli_hwid != self._current_hwid:
+            return False, "USB çıkarıldı veya değiştirildi."
+        try:
+            return oturum_yetkisi_gecerli_mi(
+                DBManager(), self._current_hwid, self._caller_role
+            )
+        except Exception as exc:
+            # Ana penceredeki _poll_usb ile aynı tavır: DB'ye anlık
+            # erişilemedi diye geçerli bir yönetici oturumunu kesme,
+            # bir sonraki tik yeniden dener.
+            _log.warning("AdminPanel yetki doğrulanamadı (tekrar denenecek): %s", exc)
+            return True, ""
+
+    def _yetki_kontrolu_tik(self) -> None:
+        gecerli, sebep = self._yetki_durumu()
+        if not gecerli:
+            self._yetki_seridi.setText(f"⚠ {sebep} Bu pencere kapanmak üzere.")
+            self._yetki_seridi.setVisible(True)
+            self._tabs.setEnabled(False)
+        elif self._yetki_seridi.isVisible():
+            self._yetki_seridi.setVisible(False)
+            self._tabs.setEnabled(True)
+
+    def _yonetici_hala_yetkili(self) -> bool:
+        gecerli, sebep = self._yetki_durumu()
+        if gecerli:
+            return True
+        if not self._kapatiliyor:
+            self._kapatiliyor = True
+            QMessageBox.critical(
+                self, "Oturum Geçersiz",
+                f"{sebep}\n\nBu pencere kapatılıyor — yeniden giriş yapmanız gerekiyor.",
+            )
+            self.reject()
+        return False
+
     # ------------------------------------------------------------------
     # UI kurulumu
     # ------------------------------------------------------------------
@@ -167,6 +245,17 @@ class AdminPanel(QDialog):
         title.setFont(QFont("Arial", 13, QFont.Bold))
         title.setStyleSheet(f"color:{self._T['text']}; margin-bottom:2px;")
         root.addWidget(title)
+
+        # B-064: canlı yetki denetimi geçersiz bulduğunda görünen şerit.
+        # Varsayılan gizli — bkz. _yetki_kontrolu_tik.
+        self._yetki_seridi = QLabel("")
+        self._yetki_seridi.setWordWrap(True)
+        self._yetki_seridi.setStyleSheet(
+            f"background:{self._T['red']}; color:#FFFFFF; font-size:12px;"
+            f"font-weight:600; padding:8px 12px; border-radius:6px;"
+        )
+        self._yetki_seridi.setVisible(False)
+        root.addWidget(self._yetki_seridi)
 
         tabs = QTabWidget()
         tabs.setStyleSheet(self._tab_stili())
@@ -511,6 +600,8 @@ class AdminPanel(QDialog):
     # ------------------------------------------------------------------
 
     def _on_toggle_blacklist(self) -> None:
+        if not self._yonetici_hala_yetkili():  # B-064/B-066
+            return
         hwid = self._selected_hwid()
         if not hwid:
             return
@@ -572,6 +663,8 @@ class AdminPanel(QDialog):
     # ------------------------------------------------------------------
 
     def _on_change_role(self) -> None:
+        if not self._yonetici_hala_yetkili():  # B-064/B-066
+            return
         hwid = self._selected_hwid()
         if not hwid:
             return
@@ -652,6 +745,8 @@ class AdminPanel(QDialog):
     # ------------------------------------------------------------------
 
     def _on_delete(self) -> None:
+        if not self._yonetici_hala_yetkili():  # B-064/B-066
+            return
         hwid = self._selected_hwid()
         if not hwid:
             return
@@ -798,6 +893,8 @@ class AdminPanel(QDialog):
         return item.data(Qt.UserRole + 1) if item else None
 
     def _on_approve(self) -> None:
+        if not self._yonetici_hala_yetkili():  # B-064/B-066
+            return
         hwid = self._selected_pending_hwid()
         username = self._selected_pending_username()
         if not hwid:
@@ -834,12 +931,16 @@ class AdminPanel(QDialog):
         self._load_pending()
 
     def _on_new_user(self) -> None:
+        if not self._yonetici_hala_yetkili():  # B-064/B-066
+            return
         from UI.RegisterDialog import RegisterDialog
         dlg = RegisterDialog(admin_hwid=self._current_hwid, parent=self)
         if dlg.exec() == RegisterDialog.Accepted:
             self._load_pending()
 
     def _on_reject(self) -> None:
+        if not self._yonetici_hala_yetkili():  # B-064/B-066
+            return
         hwid = self._selected_pending_hwid()
         username = self._selected_pending_username()
         if not hwid:
@@ -1022,6 +1123,8 @@ class AdminPanel(QDialog):
         yalnızca bellekte yaşayan bir nesne döndürüyor ve blok biterken
         ikisi de bırakılıyor.
         """
+        if not self._yonetici_hala_yetkili():  # B-064/B-066
+            return
         from CORE.recovery_share import build_export
         from UI.RecoveryShareDialog import RecoveryShareDialog
 
@@ -1163,6 +1266,8 @@ class AdminPanel(QDialog):
             self._tsa_liste.addItem(oge)
 
     def _on_tsa_kok_ekle(self) -> None:
+        if not self._yonetici_hala_yetkili():  # B-064/B-066
+            return
         from CORE.trusted_roots import TrustedRootError, ekle
 
         yol, _ = QFileDialog.getOpenFileName(
@@ -1188,6 +1293,8 @@ class AdminPanel(QDialog):
             "yazabilen biri kendi kökünü ekleyebilir (SECURITY.md §4.9).")
 
     def _on_tsa_kok_sil(self) -> None:
+        if not self._yonetici_hala_yetkili():  # B-064/B-066
+            return
         from CORE.trusted_roots import sil
 
         oge = self._tsa_liste.currentItem()
@@ -1247,6 +1354,8 @@ class AdminPanel(QDialog):
         self._pending_table.setColumnHidden(0, mode == BIREYSEL)
 
     def _on_save_settings(self) -> None:
+        if not self._yonetici_hala_yetkili():  # B-064/B-066
+            return
         hours = self._ttl_combo.currentData()
         minutes = self._idle_combo.currentData()
         mode = self._mode_combo.currentData()

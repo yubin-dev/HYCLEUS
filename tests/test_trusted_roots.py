@@ -512,25 +512,51 @@ def qapp():  # type: ignore[no-untyped-def]
     yield app
 
 
-def _panel(qapp):  # type: ignore[no-untyped-def]
+@pytest.fixture(autouse=True)
+def _admin_panel_canli_usb(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    """
+    B-064/B-066: `AdminPanel` artık her yetkili işlemden (ör.
+    `_on_tsa_kok_ekle`/`_on_tsa_kok_sil`) önce `get_usb_hwid()`'i canlı
+    okuyor. Bu dosyadaki panel testleri hep `_panel()`'in kullandığı
+    "H" HWID'ini varsayıyor (bkz. `yonetici_db` — aynı HWID'e onaylı bir
+    yönetici satırı ekliyor); o USB'nin takılı kaldığını simüle ediyoruz.
+    """
+    import UI.AdminPanel as _ap
+
+    monkeypatch.setattr(_ap, "get_usb_hwid", lambda: "H")
+
+
+def _panel(qapp, request):  # type: ignore[no-untyped-def]
+    """
+    B-064/B-066: `AdminPanel` artık kendi `_yetki_timer`'ını (3 sn) her
+    örnekte başlatıyor. Kapatılmadan bırakılırsa (sadece `.close()` yeterli
+    değil — QTimer C++ tarafında canlı kalabiliyor) sonraki bir Qt event
+    loop'unda (ör. başka bir dosyada `.exec()` çağrılınca) art arda birikmiş
+    tüm bu zamanlayıcılar birden tetiklenip GERÇEK `get_usb_hwid()`/DB
+    çağrılarıyla tüm test takımını kilitleyebiliyor — ölçüldü. `request`
+    finalizer'ıyla test SONUCUNDAN bağımsız (assertion patlasa bile) durdurma
+    garanti ediliyor.
+    """
     from UI.AdminPanel import AdminPanel
-    return AdminPanel("H", role="Yönetici")
+    panel = AdminPanel("H", role="Yönetici")
+    request.addfinalizer(panel._yetki_timer.stop)
+    return panel
 
 
-def test_panel_bos_depoyu_ANLASILIR_gosteriyor(qapp, yonetici_db) -> None:  # type: ignore[no-untyped-def]
+def test_panel_bos_depoyu_ANLASILIR_gosteriyor(qapp, yonetici_db, request) -> None:  # type: ignore[no-untyped-def]
     """
     Boş liste "hiçbir şey yok" gibi değil, "henüz eklenmemiş" diye
     görünmeli — boş bir kutu, kullanıcıya durumu söylemiyor.
     """
-    panel = _panel(qapp)
+    panel = _panel(qapp, request)
     assert panel._tsa_liste.count() == 1
     assert "eklenmemiş" in panel._tsa_liste.item(0).text()
     assert not panel._btn_tsa_sil.isEnabled()
 
 
-def test_panel_eklenen_koku_LISTELIYOR(qapp, yonetici_db, sertifika) -> None:  # type: ignore[no-untyped-def]
+def test_panel_eklenen_koku_LISTELIYOR(qapp, yonetici_db, sertifika, request) -> None:  # type: ignore[no-untyped-def]
     ekle(yonetici_db, sertifika[0], ad="kurum.der", user_id=5)
-    panel = _panel(qapp)
+    panel = _panel(qapp, request)
     assert panel._tsa_liste.count() == 1
     metin = panel._tsa_liste.item(0).text()
     assert "HYCLEUS Test CA" in metin
@@ -539,21 +565,21 @@ def test_panel_eklenen_koku_LISTELIYOR(qapp, yonetici_db, sertifika) -> None:  #
 
 
 def test_panel_silme_dugmesi_KOK_SECILINCE_aciliyor(
-    qapp, yonetici_db, sertifika,  # type: ignore[no-untyped-def]
+    qapp, yonetici_db, sertifika, request,  # type: ignore[no-untyped-def]
 ) -> None:
     ekle(yonetici_db, sertifika[0], ad="kurum.der", user_id=5)
-    panel = _panel(qapp)
+    panel = _panel(qapp, request)
     assert not panel._btn_tsa_sil.isEnabled()
     panel._tsa_liste.setCurrentRow(0)
     assert panel._btn_tsa_sil.isEnabled()
 
 
-def test_panel_silmeyi_UYGULUYOR(qapp, yonetici_db, sertifika, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_panel_silmeyi_UYGULUYOR(qapp, yonetici_db, sertifika, monkeypatch, request) -> None:  # type: ignore[no-untyped-def]
     """Onay kutusu yamalı; silinen şeyin GERÇEKTEN depodan gittiği ölçülüyor."""
     from PySide6.QtWidgets import QMessageBox
 
     ekle(yonetici_db, sertifika[0], ad="kurum.der", user_id=5)
-    panel = _panel(qapp)
+    panel = _panel(qapp, request)
     panel._tsa_liste.setCurrentRow(0)
     monkeypatch.setattr(QMessageBox, "question",
                         staticmethod(lambda *a, **k: QMessageBox.Yes))
@@ -562,11 +588,11 @@ def test_panel_silmeyi_UYGULUYOR(qapp, yonetici_db, sertifika, monkeypatch) -> N
     assert "eklenmemiş" in panel._tsa_liste.item(0).text()
 
 
-def test_panel_ONAY_verilmezse_silmiyor(qapp, yonetici_db, sertifika, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_panel_ONAY_verilmezse_silmiyor(qapp, yonetici_db, sertifika, monkeypatch, request) -> None:  # type: ignore[no-untyped-def]
     from PySide6.QtWidgets import QMessageBox
 
     ekle(yonetici_db, sertifika[0], ad="kurum.der", user_id=5)
-    panel = _panel(qapp)
+    panel = _panel(qapp, request)
     panel._tsa_liste.setCurrentRow(0)
     monkeypatch.setattr(QMessageBox, "question",
                         staticmethod(lambda *a, **k: QMessageBox.No))
