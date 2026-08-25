@@ -308,6 +308,37 @@ def test_main_pencereye_user_id_geciyor():
         )
 
 
+def test_main_pencereye_username_geciyor():
+    """
+    `HycleusWindow(...)` çağrısı `username` argümanı da taşımalı (B-065).
+
+    Argüman düşerse `HycleusWindow`'un sabit varsayılanında ("Kullanıcı")
+    sessizce kalınır — istisna fırlamadan, Profil ekranı ve avatar baş
+    harfi gerçek kullanıcıyı hiç yansıtmaz. Çalışma zamanı testi bunu
+    yakalayamaz (tam main() akışı LoginDialog.exec() gerektirir, bkz.
+    tests/test_authz_invariants.py'deki B-065 testleri — onlar
+    `HycleusWindow`'u DOĞRUDAN gerçek username ile kurup ekranın onu
+    doğru gösterdiğini ölçüyor; main.py'nin o değeri gerçekten
+    GEÇTİĞİNİ ise yalnızca bu kaynak ağacı denetimi kanıtlıyor).
+    """
+    import ast
+
+    pencere_cagrilari = [
+        d
+        for d in ast.walk(_main_agaci())
+        if isinstance(d, ast.Call)
+        and isinstance(d.func, ast.Name)
+        and d.func.id == "HycleusWindow"
+    ]
+    assert pencere_cagrilari, "main.py artık HycleusWindow kurmuyor"
+    for cagri in pencere_cagrilari:
+        anahtarlar = {k.arg for k in cagri.keywords}
+        assert "username" in anahtarlar, (
+            "HycleusWindow'a username geçilmiyor — B-065 geri geldi, "
+            "Profil ekranı ve avatar sabit 'Kullanıcı' gösterir"
+        )
+
+
 def test_users_satiri_uyduran_ikinci_bir_yer_kalmadi():
     """
     Kaçamağın İKİ kopyası vardı: `CORE/folders.py` ve

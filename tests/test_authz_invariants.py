@@ -27,6 +27,7 @@ from CORE.registration import (
     UsernameTakenError,
     register_new_user,
 )
+from CORE.session_user import kullanici_bilgisi, sync_session_user
 from CORE.vault_manager import create_vault
 from DB import migrations as M
 
@@ -704,3 +705,189 @@ def test_b066_guard_kaldirilirsa_test_gercekten_dusuyor(
         "guard devre dışıyken bile oturum kilitlendi — bu test B-066'yı "
         "gerçekten ölçmüyor olabilir"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Değişmez 6 — ekrandaki "kullanıcı adı" gerçek doğrulanmış kullanıcıyı
+# yansıtıyor (B-065)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# main.py, HycleusWindow'u açarken `username=` hiç geçmiyordu — sabit
+# varsayılan "Kullanıcı" her oturumda kalıyordu, gerçek DB adı ne olursa
+# olsun. `_trigger_usb_reauth()` (main_window_lock.py) de farklı bir USB
+# ile yeniden giriş yapılınca `_hwid`/`_role`'ü güncelliyordu ama
+# `_username`/`_user_id`'e hiç dokunmuyordu — reauth sonrası Profil ekranı
+# ve avatar ESKİ kullanıcıyı göstermeye devam ediyordu.
+#
+# main.py ve `_trigger_usb_reauth()` artık AYNI iki fonksiyonu kullanıyor
+# (`sync_session_user()` + `kullanici_bilgisi()`) — ikinci bir okuma yolu
+# İCAT EDİLMEDİ.
+
+_KEY_B065 = b"K" * 32
+
+
+@pytest.fixture
+def isolate_safezone_b065(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from CORE.safezone import SAFEZONE_ENV_VAR
+
+    hedef = tmp_path / "safezone"
+    monkeypatch.setenv(SAFEZONE_ENV_VAR, str(hedef))
+    return hedef
+
+
+def _b065_kullanici_kur(
+    db, kasa_dizini, hwid: str, username: str, role: str,
+) -> tuple[int, str]:
+    """
+    main.py'nin YENİ mantığını birebir uygular: `sync_session_user()` +
+    `kullanici_bilgisi()`. Test main.py'yi (tam GUI akışı — LoginDialog
+    vb.) ÇALIŞTIRMIYOR, ama main.py'nin kullanıcı adını DB'den türettiği
+    İKİ fonksiyonu birebir kullanıyor — yani gerçek kod yolu ölçülüyor.
+    """
+    from CORE.roles import db_role
+
+    create_vault(hwid, _PIN, role)
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, ?, 'approved', ?)",
+        (username, "!x", db_role(role), hwid),
+    )
+    user_id = sync_session_user(db, hwid=hwid, role=role)
+    bilgi = kullanici_bilgisi(db, hwid)
+    assert bilgi is not None
+    return user_id, bilgi[1]
+
+
+def test_b065_profil_ve_avatar_iki_farkli_kullanicida_gercek_db_adini_gosteriyor(
+    db, kasa_dizini, isolate_safezone_b065, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    İki farklı kullanıcı sırayla "giriş yapıyor" (main.py'nin yeni
+    türetme mantığıyla): her ikisinde de Profil ekranı ve avatar baş
+    harfi KENDİ gerçek DB adını göstermeli — sabit bir varsayılana
+    düşmemeli, birinin adı diğerinde kalmamalı.
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtWidgets import QApplication, QLabel
+
+        import UI.main_window as mw
+        from UI.main_window import HycleusWindow
+        from UI.ProfileDialog import ProfileDialog
+    except ImportError as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"Qt katmanı bu ortamda yüklenemedi ({exc})")
+    try:
+        QApplication.instance() or QApplication([])
+    except Exception as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"QApplication kurulamadı ({exc})")
+
+    kullanicilar = (
+        ("B065-HWID-A", "ayse.yilmaz", "Yönetici"),
+        ("B065-HWID-B", "mehmet.demir", "Standart"),
+    )
+
+    for hwid, ad, rol in kullanicilar:
+        user_id, gercek_ad = _b065_kullanici_kur(db, kasa_dizini, hwid, ad, rol)
+        assert gercek_ad == ad  # kurulumun kendisi doğru mu
+
+        monkeypatch.setattr(mw, "get_usb_hwid", lambda h=hwid: h)
+        window = HycleusWindow(
+            hwid=hwid, key=_KEY_B065, role=rol, username=gercek_ad, user_id=user_id,
+        )
+        try:
+            assert window._avatar.text() == ad[0].upper(), (
+                f"B-065 REGRESYONU: avatar '{ad}' yerine "
+                f"{window._avatar.text()!r} gösteriyor"
+            )
+
+            profil = ProfileDialog(
+                hwid=window._hwid, username=window._username,
+                role=window._role, user_id=window._user_id,
+            )
+            try:
+                ad_etiketi = profil.findChild(QLabel, "user_name")
+                avatar_etiketi = profil.findChild(QLabel, "avatar_lbl")
+                assert ad_etiketi.text() == ad, (
+                    f"B-065 REGRESYONU: Profil ekranı '{ad}' yerine "
+                    f"{ad_etiketi.text()!r} gösteriyor"
+                )
+                assert avatar_etiketi.text() == ad[0].upper()
+            finally:
+                profil.close()
+        finally:
+            for zamanlayici in ("_usb_timer", "_expiry_timer", "_idle_timer"):
+                t = getattr(window, zamanlayici, None)
+                if t is not None:
+                    t.stop()
+            QApplication.instance().removeEventFilter(window)
+            window.close()
+
+
+def test_b065_reauth_sonrasi_kullanici_adi_ve_avatar_guncelleniyor(
+    db, kasa_dizini, isolate_safezone_b065, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Aynı süreçte, farklı bir USB ile yeniden giriş (`_trigger_usb_reauth`)
+    yapılınca `_username`/`_user_id` YENİ kullanıcıya güncellenmeli —
+    ve bu, ekrandaki avatar widget'ına da (üretim kodundaki
+    `_apply_theme()` çağrısı üzerinden) otomatik yansımalı; ayrıca
+    dokunmaya gerek olmamalı.
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtWidgets import (
+            QApplication, QInputDialog, QMessageBox,
+        )
+
+        import UI.main_window as mw
+        from UI.main_window import HycleusWindow
+    except ImportError as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"Qt katmanı bu ortamda yüklenemedi ({exc})")
+    try:
+        QApplication.instance() or QApplication([])
+    except Exception as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"QApplication kurulamadı ({exc})")
+
+    hwid_a, ad_a = "B065-REAUTH-HWID-A", "kadir.oz"
+    hwid_b, ad_b = "B065-REAUTH-HWID-B", "elif.kaya"
+
+    user_id_a, gercek_ad_a = _b065_kullanici_kur(db, kasa_dizini, hwid_a, ad_a, "Yönetici")
+    user_id_b, gercek_ad_b = _b065_kullanici_kur(db, kasa_dizini, hwid_b, ad_b, "Standart")
+
+    monkeypatch.setattr(mw, "get_usb_hwid", lambda: hwid_a)
+    window = HycleusWindow(
+        hwid=hwid_a, key=_KEY_B065, role="Yönetici",
+        username=gercek_ad_a, user_id=user_id_a,
+    )
+    try:
+        assert window._username == gercek_ad_a
+        assert window._avatar.text() == gercek_ad_a[0].upper()
+
+        monkeypatch.setattr(
+            QInputDialog, "getText", staticmethod(lambda *a, **k: (_PIN, True))
+        )
+        for ad_metodu in ("information", "warning", "critical"):
+            monkeypatch.setattr(
+                QMessageBox, ad_metodu, staticmethod(lambda *a, **k: None)
+            )
+
+        window._trigger_usb_reauth(hwid_b)
+
+        assert window._hwid == hwid_b, "reauth HWID'i güncellemedi"
+        assert not window._locked, "reauth başarılı oldu ama oturum kilitli kaldı"
+        assert window._username == gercek_ad_b, (
+            "B-065 REGRESYONU: reauth sonrası _username ESKİ kullanıcıda kaldı"
+        )
+        assert window._user_id == user_id_b, (
+            "B-065 REGRESYONU: reauth sonrası _user_id ESKİ kullanıcıda kaldı"
+        )
+        assert window._avatar.text() == gercek_ad_b[0].upper(), (
+            "B-065 REGRESYONU: reauth sonrası avatar widget'ı güncellenmedi"
+        )
+    finally:
+        for zamanlayici in ("_usb_timer", "_expiry_timer", "_idle_timer"):
+            t = getattr(window, zamanlayici, None)
+            if t is not None:
+                t.stop()
+        QApplication.instance().removeEventFilter(window)
+        window.close()

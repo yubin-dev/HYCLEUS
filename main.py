@@ -24,7 +24,7 @@ from CORE.safezone import purge_on_exit, purge_orphans
 from CORE.scheduler import start_scheduler, stop_scheduler
 from CORE.secret_migration import MigrationError, run_migrations
 from CORE.secret_store import KeyringUnavailableError, backend_name, ensure_available
-from CORE.session_user import sistem_kurulmus_mu, sync_session_user
+from CORE.session_user import kullanici_bilgisi, sistem_kurulmus_mu, sync_session_user
 from CORE.tpm_sealing import oturum_raporu as tpm_oturum_raporu
 from CORE.usb_manager import get_usb_hwid
 from CORE.vault_manager import has_recovery_share
@@ -499,7 +499,22 @@ def main() -> None:
         _log.error("Oturum kullanıcısı eşlenemedi (hwid=%s): %s", hwid, exc)
         user_id = 1
 
-    win = HycleusWindow(hwid=hwid, key=session_key, role=role, user_id=user_id)
+    # B-065: `username` yukarıdaki gibi geçilmezse HycleusWindow'un sabit
+    # varsayılanında ("Kullanıcı") kalıyordu — Profil ekranı ve avatar
+    # baş harfi gerçek kullanıcıyı hiç yansıtmıyordu. `sync_session_user()`
+    # az önce satırın var olduğunu garanti etti; burada aynı satırı salt
+    # okunur okuyoruz.
+    username = "Kullanıcı"
+    try:
+        bilgi = kullanici_bilgisi(DBManager(), hwid)
+        if bilgi is not None:
+            username = bilgi[1]
+    except Exception as exc:
+        _log.error("Kullanıcı adı okunamadı (hwid=%s): %s", hwid, exc)
+
+    win = HycleusWindow(
+        hwid=hwid, key=session_key, role=role, username=username, user_id=user_id,
+    )
     win.show()
     # Kısıtlamalar show() sonrasında uygulanmalı — Qt ilk paint'te
     # __init__ içindeki setVisible() çağrılarını sıfırlayabilir.

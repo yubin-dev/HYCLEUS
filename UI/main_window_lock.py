@@ -56,7 +56,12 @@ from CORE.idle_lock import (
     get_idle_timeout_minutes,
     log_idle_lock,
 )
-from CORE.session_user import oturum_yetkisi_gecerli_mi
+from CORE.session_user import (
+    kullanici_bilgisi,
+    oturum_yetkisi_gecerli_mi,
+    sync_session_user,
+    vault_username,
+)
 from CORE.usb_manager import DEV_MODE as _DEV_MODE, get_usb_hwid
 from CORE.vault_manager import (
     USBAuthError,
@@ -254,9 +259,31 @@ class LockMixin:
             self._authenticating = False
             return
 
-        prev_hwid  = self._hwid
-        self._hwid = new_hwid
-        self._role = new_role
+        # B-065: eskiden yalnızca _hwid/_role güncelleniyordu — _username/
+        # _user_id hiç dokunulmuyordu, yani Profil ekranı ve avatar YENİ
+        # kullanıcı yerine ESKİ kullanıcıyı göstermeye devam ediyordu.
+        # `sync_session_user()` (main.py'nin normal giriş yolundakiyle
+        # AYNI fonksiyon) satırın var olduğunu garanti ediyor;
+        # `kullanici_bilgisi()` de main.py'nin kullandığı AYNI salt okunur
+        # okuma yolu — ikinci bir sorgu şekli İCAT EDİLMEDİ.
+        try:
+            new_user_id = sync_session_user(DBManager(), hwid=new_hwid, role=new_role)
+            bilgi = kullanici_bilgisi(DBManager(), new_hwid)
+        except Exception as exc:
+            QMessageBox.critical(self, "Hata", f"Kullanıcı bilgisi okunamadı:\n{exc}")
+            self._authenticating = False
+            return
+        # `sync_session_user()` az önce satırın var olduğunu garanti etti;
+        # bu None yalnızca kuramsal (ör. eşzamanlı silme) — yine de
+        # `sync_session_user()`'ın kendi auto-provision biçimiyle tutarlı
+        # bir yer tutucuya düşüyoruz, eski kullanıcının adında KALMIYORUZ.
+        new_username = bilgi[1] if bilgi is not None else vault_username(new_hwid)
+
+        prev_hwid      = self._hwid
+        self._hwid     = new_hwid
+        self._role     = new_role
+        self._username = new_username
+        self._user_id  = new_user_id
         self._apply_role_restrictions()
         self._apply_theme()
         self._unlock()
