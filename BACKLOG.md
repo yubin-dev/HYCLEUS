@@ -3568,3 +3568,42 @@ devre dışı bırakılıp bu testin kırmızı verdiği, sonra aynen geri
 getirilip yeşile döndüğü görüldü (mutasyon kanıtı).
 
 ---
+
+## B-068 — Windows EXE'sinin dosya özellikleri (sürüm bilgisi) tamamen boş
+
+**Durum:** Açık — DÜZELTİLMEDİ, önce rapor
+**Öncelik:** Düşük — kozmetik, işlevi etkilemiyor
+**Bulundu:** 2026-08-26 — B-065/B-067 sonrası EXE yeniden derleme +
+gerçek paket doğrulama turu
+
+Windows Gezgini'nde `dist\HYCLEUS.exe` üzerinde sağ tık → Özellikler →
+Ayrıntılar sekmesi tamamen boş: Dosya sürümü, Ürün sürümü, Ürün adı,
+Açıklama, Telif hakkı — hiçbiri dolu değil. `Get-Item ... | Select
+VersionInfo` ile doğrulandı:
+
+```
+FileVersionRaw    : 0.0.0.0
+ProductVersionRaw : 0.0.0.0
+FileDescription   :
+CompanyName       :
+ProductName       :
+LegalCopyright    :
+```
+
+Sebep `HYCLEUS.spec`'in `EXE(...)` çağrısında (satır 94-113) `version=`
+parametresinin hiç bulunmaması — PyInstaller bu alan verilmeden PE
+kaynağına bir VERSIONINFO bloğu gömmüyor. Karşılaştırma: `CORE/version.py`
+uygulamanın kendi `__version__`'ını zaten biliyor (`--version` bayrağı ve
+`--selftest` çıktısı doğru "2.3.0" gösteriyor) — eksik olan yalnızca bu
+bilginin PyInstaller'ın `version=` alanına (bir `pyi-grab_version`/elle
+yazılmış `VSVersionInfo` dosyası yoluyla) aktarılması.
+
+### Yapılacak
+
+`HYCLEUS.spec`'e bir `version_info.txt` (PyInstaller'ın `VSVersionInfo`
+formatı) eklenip `EXE(..., version='version_info.txt')` ile bağlanması;
+`FileVersion`/`ProductVersion`'ın `CORE/version.py::__version__`'dan tek
+kaynaktan türetilmesi gerekiyor (elle senkronize edilen ikinci bir kopya
+açmamak için — bkz. B-056'daki benzer "tek kaynak" dersi).
+
+---
