@@ -119,7 +119,7 @@ class BulkActionsMixin:
 
     def _on_ctx_bulk_assign_tags(self, file_ids: list[int]) -> None:
         from UI.TagDialog import TagDialog
-        dlg = TagDialog(file_id=file_ids[0], role=self._role, parent=self, file_ids=file_ids)
+        dlg = TagDialog(file_id=file_ids[0], role=self._role, parent=self, file_ids=file_ids, T=self._T)
         if dlg.exec() == TagDialog.Accepted:
             self._refresh_tag_sidebar()
             if self._current_tag_id is not None:

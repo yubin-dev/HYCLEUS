@@ -16,121 +16,121 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from CORE.roles import ROL_SALT_OKUNUR, ROL_STANDART, ROL_YONETICI, normalize_role
 from CORE.pin_rotation import PinRotationError, rotate_pin
 from DB.db_manager import DBManager
+from UI.main_window_palette import _DARK
 
-_QSS = """
-QDialog { background: #F9FAFB; color: #111827; }
-QFrame#header {
-    background: #2563EB;
+
+def _stil(T: dict[str, str]) -> str:
+    """Diyaloğun stil sayfası — kayıtlı tema token'larından (B-055).
+
+    Önceden sabit bir açık (Tailwind-mavi) paletiydi; preset değişince bu
+    diyalog hiç değişmiyordu.
+    """
+    return f"""
+QDialog {{ background: {T['bg']}; color: {T['text']}; }}
+QFrame#header {{
+    background: {T['accent']};
     border-radius: 0;
-}
-QLabel#avatar_lbl {
-    background: #1D4ED8;
-    color: #FFFFFF;
+}}
+QLabel#avatar_lbl {{
+    background: {T['accent_hover']};
+    color: {T['on_accent']};
     font-size: 24px;
     font-weight: 700;
     border-radius: 28px;
     min-width: 56px; max-width: 56px;
     min-height: 56px; max-height: 56px;
-}
-QLabel#user_name {
-    color: #FFFFFF;
+}}
+QLabel#user_name {{
+    color: {T['on_accent']};
     font-size: 16px;
     font-weight: 700;
     background: transparent;
-}
-QLabel#user_role {
-    color: #BFDBFE;
+}}
+QLabel#user_role {{
+    color: {T['tint_text']};
     font-size: 12px;
     background: transparent;
-}
-QFrame#tab_bar { background: #FFFFFF; border-bottom: 1px solid #E5E7EB; }
-QPushButton[tab_on="true"] {
+}}
+QFrame#tab_bar {{ background: {T['topbar']}; border-bottom: 1px solid {T['border']}; }}
+QPushButton[tab_on="true"] {{
     background: transparent;
-    color: #2563EB;
+    color: {T['accent']};
     border: none;
-    border-bottom: 2px solid #2563EB;
+    border-bottom: 2px solid {T['accent']};
     border-radius: 0;
     font-size: 13px;
     font-weight: 600;
     padding: 10px 20px;
-}
-QPushButton[tab_on="false"] {
+}}
+QPushButton[tab_on="false"] {{
     background: transparent;
-    color: #6B7280;
+    color: {T['subtext']};
     border: none;
     border-bottom: 2px solid transparent;
     border-radius: 0;
     font-size: 13px;
     padding: 10px 20px;
-}
-QPushButton[tab_on="false"]:hover { color: #374151; }
-QWidget#page { background: #F9FAFB; }
-QLabel#section_lbl {
-    color: #6B7280;
+}}
+QPushButton[tab_on="false"]:hover {{ color: {T['text']}; }}
+QWidget#page {{ background: {T['bg']}; }}
+QLabel#section_lbl {{
+    color: {T['subtext']};
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 1px;
     background: transparent;
-}
-QLabel#field_key {
-    color: #6B7280;
+}}
+QLabel#field_key {{
+    color: {T['subtext']};
     font-size: 12px;
     background: transparent;
     min-width: 120px;
-}
-QLabel#field_val {
-    color: #111827;
+}}
+QLabel#field_val {{
+    color: {T['text']};
     font-size: 13px;
     font-weight: 500;
     background: transparent;
-}
-QLabel#warn_lbl {
-    color: #D97706;
+}}
+QLabel#warn_lbl {{
+    color: {T['yellow']};
     font-size: 12px;
-    background: #FEF3C7;
+    background: {T['search_bg']};
     border-radius: 6px;
     padding: 6px 10px;
-}
-QFrame#sep { background: #E5E7EB; max-height: 1px; border: none; }
-QLineEdit {
-    background: #FFFFFF;
-    color: #111827;
-    border: 1px solid #D1D5DB;
+}}
+QFrame#sep {{ background: {T['border']}; max-height: 1px; border: none; }}
+QLineEdit {{
+    background: {T['search_bg']};
+    color: {T['text']};
+    border: 1px solid {T['border']};
     border-radius: 8px;
     padding: 8px 12px;
     font-size: 13px;
-}
-QLineEdit:focus { border-color: #2563EB; }
-QPushButton#btn_primary {
-    background: #2563EB;
-    color: #FFFFFF;
+}}
+QLineEdit:focus {{ border-color: {T['accent']}; }}
+QPushButton#btn_primary {{
+    background: {T['accent']};
+    color: {T['on_accent']};
     border: none;
     border-radius: 8px;
     font-size: 13px;
     font-weight: 600;
     padding: 9px 20px;
-}
-QPushButton#btn_primary:hover { background: #1D4ED8; }
-QPushButton#btn_secondary {
-    background: #FFFFFF;
-    color: #374151;
-    border: 1px solid #D1D5DB;
+}}
+QPushButton#btn_primary:hover {{ background: {T['accent_hover']}; }}
+QPushButton#btn_secondary {{
+    background: {T['hover']};
+    color: {T['text']};
+    border: 1px solid {T['border']};
     border-radius: 8px;
     font-size: 13px;
     padding: 9px 20px;
-}
-QPushButton#btn_secondary:hover { background: #F3F4F6; }
+}}
+QPushButton#btn_secondary:hover {{ background: {T['row_hover']}; }}
 """
-
-#: Anahtarlar KANONİK rol değeri — bkz. main_window_palette._ROLE_BADGE.
-_ROLE_COLOR = {
-    ROL_YONETICI:    ("#DBEAFE", "#2563EB"),
-    ROL_STANDART:    ("#D1FAE5", "#059669"),
-    ROL_SALT_OKUNUR: ("#FEF3C7", "#D97706"),
-}
 
 
 def _sep() -> QFrame:
@@ -141,16 +141,23 @@ def _sep() -> QFrame:
 
 
 class ProfileDialog(QDialog):
-    def __init__(self, hwid: str, username: str, role: str, user_id: int, parent=None) -> None:
+    def __init__(self, hwid: str, username: str, role: str, user_id: int, parent=None,
+                 *, T: dict[str, str] | None = None) -> None:
+        """
+        Args:
+            T: Çağıranın aktif tema token sözlüğü (`HycleusWindow._T`).
+                Verilmezse varsayılan "mavi" koyu palete düşer.
+        """
         super().__init__(parent)
         self._hwid     = hwid
         self._username = username
         self._role     = role
         self._user_id  = user_id
+        self._T: dict[str, str] = T if T is not None else _DARK
 
         self.setWindowTitle("HYCLEUS — Profil")
         self.setFixedSize(460, 540)
-        self.setStyleSheet(_QSS)
+        self.setStyleSheet(_stil(self._T))
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -183,7 +190,6 @@ class ProfileDialog(QDialog):
         name_lbl.setObjectName("user_name")
         info.addWidget(name_lbl)
 
-        bg, fg = _ROLE_COLOR.get(normalize_role(self._role), ("#F3F4F6", "#6B7280"))
         role_lbl = QLabel(self._role)
         role_lbl.setObjectName("user_role")
         info.addWidget(role_lbl)
@@ -369,7 +375,7 @@ class ProfileDialog(QDialog):
 
         lbl = QLabel("Destek ve iletişim için ContactDialog'u açın.")
         lbl.setWordWrap(True)
-        lbl.setStyleSheet("color: #374151; font-size: 13px; background: transparent;")
+        lbl.setStyleSheet(f"color: {self._T['text']}; font-size: 13px; background: transparent;")
         lay.addWidget(lbl)
 
         btn = QPushButton("💬  Destek ve İletişim Penceresini Aç")

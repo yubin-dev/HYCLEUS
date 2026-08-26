@@ -71,6 +71,7 @@ from CORE.secret_store import (
     store_totp_secret,
     store_totp_secret_for_hwid,
 )
+from UI.main_window_palette import _ABYSSAL_BLUE as _LT
 
 _PIN_FILE    = _data_dir() / "pin_hash.json"
 _VAULT_PATH  = _data_dir() / ".hcl_vault"
@@ -87,72 +88,80 @@ _SETUP_ROLES = [
 ]
 
 # ── Shared QSS fragments ───────────────────────────────────────────────────────
+#
+# Arayüz güncellemesi (2026-08-26): oturum öncesi bu diyaloğun `self._T`'si
+# YOK — HycleusWindow henüz kurulmadı. Mockup'ın "air-gapped" koyu görünümüne
+# yaklaştırmak için sabit bir palet seçildi: `_ABYSSAL_BLUE` — icat edilmiş
+# yeni bir renk kümesi değil, kayıtlı preset'lerden biri (bkz.
+# UI/main_window_palette.py). Kullanıcının oturum-içi tema tercihini OKUMAYA
+# ÇALIŞMADI: bu, kapsamın dışında yeni bir özellik (kalıcı tercihin oturum
+# öncesine taşınması) olurdu, salt görsel bir renk değişikliği değil.
 
 # Input: borderless, only bottom rule, min-height 48px
 _QSS_INPUT = (
     "QLineEdit {"
     "  background: transparent;"
-    "  color: #111827;"
+    f"  color: {_LT['text']};"
     "  border: none;"
-    "  border-bottom: 2px solid #E5E7EB;"
+    f"  border-bottom: 2px solid {_LT['border']};"
     "  border-radius: 0px;"
     "  padding: 8px 0px;"
     "  font-size: 15px;"
     "  min-height: 48px;"
     "}"
     "QLineEdit:focus {"
-    "  border-bottom: 2px solid #2563EB;"
+    f"  border-bottom: 2px solid {_LT['accent']};"
     "}"
     "QLineEdit:disabled {"
-    "  color: #9CA3AF;"
-    "  border-bottom: 2px solid #F3F4F6;"
+    f"  color: {_LT['subtext']};"
+    f"  border-bottom: 2px solid {_LT['border']};"
     "}"
 )
 
 _QSS_COMBO = (
     "QComboBox {"
     "  background: transparent;"
-    "  color: #111827;"
+    f"  color: {_LT['text']};"
     "  border: none;"
-    "  border-bottom: 2px solid #E5E7EB;"
+    f"  border-bottom: 2px solid {_LT['border']};"
     "  border-radius: 0px;"
     "  padding: 8px 0px;"
     "  font-size: 15px;"
     "  min-height: 48px;"
     "}"
-    "QComboBox:focus { border-bottom: 2px solid #2563EB; }"
+    f"QComboBox:focus {{ border-bottom: 2px solid {_LT['accent']}; }}"
     "QComboBox::drop-down { border: none; width: 28px; }"
     "QComboBox QAbstractItemView {"
-    "  background: #FFFFFF;"
-    "  color: #111827;"
-    "  border: 1px solid #E5E7EB;"
+    f"  background: {_LT['search_bg']};"
+    f"  color: {_LT['text']};"
+    f"  border: 1px solid {_LT['border']};"
     "  outline: none;"
-    "  selection-background-color: #EFF6FF;"
-    "  selection-color: #1D4ED8;"
+    f"  selection-background-color: {_LT['hover']};"
+    f"  selection-color: {_LT['accent']};"
     "}"
 )
 
 _QSS_BTN_PRIMARY = (
     "QPushButton {"
-    "  background: #2563EB;"
-    "  color: #FFFFFF;"
+    f"  background: {_LT['accent']};"
+    f"  color: {_LT['on_accent']};"
     "  border: none;"
     "  border-radius: 10px;"
     "  font-size: 15px;"
     "  font-weight: 600;"
     "  min-height: 48px;"
     "}"
-    "QPushButton:hover   { background: #1D4ED8; }"
-    "QPushButton:pressed { background: #1E40AF; }"
-    "QPushButton:disabled { background: #BFDBFE; color: #93C5FD; }"
+    f"QPushButton:hover   {{ background: {_LT['accent_hover']}; }}"
+    f"QPushButton:pressed {{ background: {_LT['accent_hover']}; }}"
+    f"QPushButton:disabled {{ background: {_LT['hover']}; color: {_LT['subtext']}; }}"
 )
 
 _QSS_TAB_ON = (
     "QPushButton {"
     "  background: transparent;"
-    "  color: #2563EB;"
+    f"  color: {_LT['accent']};"
     "  border: none;"
-    "  border-bottom: 2px solid #2563EB;"
+    f"  border-bottom: 2px solid {_LT['accent']};"
     "  border-radius: 0px;"
     "  font-size: 14px;"
     "  font-weight: 600;"
@@ -162,36 +171,36 @@ _QSS_TAB_ON = (
 _QSS_TAB_OFF = (
     "QPushButton {"
     "  background: transparent;"
-    "  color: #9CA3AF;"
+    f"  color: {_LT['subtext']};"
     "  border: none;"
     "  border-bottom: 2px solid transparent;"
     "  border-radius: 0px;"
     "  font-size: 14px;"
     "  padding-bottom: 4px;"
     "}"
-    "QPushButton:hover { color: #6B7280; }"
+    f"QPushButton:hover {{ color: {_LT['text']}; }}"
 )
 
 _QSS_RADIO = (
     "QRadioButton {"
-    "  color: #374151;"
+    f"  color: {_LT['text']};"
     "  font-size: 13px;"
     "  background: transparent;"
     "  spacing: 6px;"
     "}"
     "QRadioButton::indicator {"
     "  width: 16px; height: 16px;"
-    "  border: 2px solid #D1D5DB;"
+    f"  border: 2px solid {_LT['border']};"
     "  border-radius: 8px;"
-    "  background: #FFFFFF;"
+    f"  background: {_LT['search_bg']};"
     "}"
     "QRadioButton::indicator:checked {"
-    "  background: #2563EB;"
-    "  border-color: #2563EB;"
+    f"  background: {_LT['accent']};"
+    f"  border-color: {_LT['accent']};"
     "}"
 )
 
-_PLACEHOLDER_COLOR = QColor("#9CA3AF")
+_PLACEHOLDER_COLOR = QColor(_LT["subtext"])
 
 
 # ── Helper functions ──────────────────────────────────────────────────────────
@@ -254,7 +263,7 @@ def _make_qr_pixmap(uri: str, size: int = 160) -> QPixmap:
     return px.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
 
-def _lbl(text: str, size: int = 12, color: str = "#9CA3AF",
+def _lbl(text: str, size: int = 12, color: str = _LT["subtext"],
          bold: bool = False) -> QLabel:
     w = QLabel(text)
     weight = "font-weight:600;" if bold else ""
@@ -303,7 +312,7 @@ def _field(label_text: str, input_widget: QWidget) -> QWidget:
 def _hsep() -> QFrame:
     f = QFrame()
     f.setFrameShape(QFrame.HLine)
-    f.setStyleSheet("QFrame{background:#F3F4F6;max-height:1px;border:none;}")
+    f.setStyleSheet(f"QFrame{{background:{_LT['border']};max-height:1px;border:none;}}")
     return f
 
 
@@ -392,7 +401,8 @@ class LoginDialog(QDialog):
         self._card = QFrame(self)
         self._card.setGeometry(10, 10, w, h)
         self._card.setStyleSheet(
-            "QFrame{background:#FFFFFF;border:none;border-radius:14px;}"
+            f"QFrame{{background:{_LT['sidebar']};border:1px solid {_LT['border']};"
+            f"border-radius:14px;}}"
         )
 
         eff = QGraphicsDropShadowEffect(self)
@@ -428,11 +438,11 @@ class LoginDialog(QDialog):
         h_lay.setContentsMargins(48, 44, 48, 0)
         h_lay.setSpacing(0)
 
-        title = _lbl("HYCLEUS", size=30, color="#111827", bold=True)
+        title = _lbl("HYCLEUS", size=30, color=_LT["text"], bold=True)
         title.setAlignment(Qt.AlignCenter)
         h_lay.addWidget(title)
 
-        sub = _lbl("Güvenli Dosya Yönetim Sistemi", size=14, color="#6B7280")
+        sub = _lbl("Güvenli Dosya Yönetim Sistemi", size=14, color=_LT["subtext"])
         sub.setAlignment(Qt.AlignCenter)
         sub.setContentsMargins(0, 8, 0, 0)
         h_lay.addWidget(sub)
@@ -475,7 +485,7 @@ class LoginDialog(QDialog):
         # CORE.version.surum_etiketi()'ten okunuyor — elle yazılmamalı
         # (bkz. B-017, tests/test_version.py). Alt köşede, küçük ve gri:
         # bilgi amaçlı, dikkat çekmemesi gerekiyor.
-        self._surum_etiketi = _lbl(surum_etiketi(), size=10, color="#D1D5DB")
+        self._surum_etiketi = _lbl(surum_etiketi(), size=10, color=_LT["border"])
         self._surum_etiketi.setAlignment(Qt.AlignCenter)
         self._surum_etiketi.setContentsMargins(0, 4, 0, 10)
         root.addWidget(self._surum_etiketi)
@@ -502,11 +512,11 @@ class LoginDialog(QDialog):
         usb_row.setSpacing(6)
         dot = QLabel("●")
         if self._hwid:
-            dot.setStyleSheet("color:#16A34A;font-size:14px;background:transparent;")
-            usb_txt = _lbl("USB Bağlı",    size=13, color="#16A34A")
+            dot.setStyleSheet(f"color:{_LT['green']};font-size:14px;background:transparent;")
+            usb_txt = _lbl("USB Bağlı",    size=13, color=_LT["green"])
         else:
-            dot.setStyleSheet("color:#DC2626;font-size:14px;background:transparent;")
-            usb_txt = _lbl("USB Gerekli",  size=13, color="#DC2626")
+            dot.setStyleSheet(f"color:{_LT['red']};font-size:14px;background:transparent;")
+            usb_txt = _lbl("USB Gerekli",  size=13, color=_LT["red"])
         usb_row.addWidget(dot)
         usb_row.addWidget(usb_txt)
         usb_row.addStretch()
@@ -532,7 +542,7 @@ class LoginDialog(QDialog):
         self._error_label.setAlignment(Qt.AlignCenter)
         self._error_label.setWordWrap(True)
         self._error_label.setStyleSheet(
-            "color:#DC2626;font-size:13px;background:transparent;"
+            f"color:{_LT['red']};font-size:13px;background:transparent;"
         )
         self._error_label.hide()
         lay.addWidget(self._error_label)
@@ -559,9 +569,9 @@ class LoginDialog(QDialog):
         scroll.setStyleSheet(
             "QScrollArea{background:transparent;border:none;}"
             "QScrollBar:vertical{"
-            "  background:#F9FAFB;width:6px;border-radius:3px;}"
+            f"  background:{_LT['search_bg']};width:6px;border-radius:3px;}}"
             "QScrollBar::handle:vertical{"
-            "  background:#D1D5DB;border-radius:3px;min-height:24px;}"
+            f"  background:{_LT['border']};border-radius:3px;min-height:24px;}}"
             "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
         )
 
@@ -576,7 +586,7 @@ class LoginDialog(QDialog):
         info = QFrame()
         info.setStyleSheet(
             "QFrame{"
-            "  background:#EFF6FF;"
+            f"  background:{_LT['accent_tint']};"
             "  border:none;"
             "  border-radius:10px;"
             "}"
@@ -586,7 +596,7 @@ class LoginDialog(QDialog):
         info_lay.setSpacing(0)
         info_lbl = QLabel("Kayıt için Yönetici USB'si takılı olmalıdır")
         info_lbl.setStyleSheet(
-            "color:#1D4ED8;font-size:13px;background:transparent;border:none;"
+            f"color:{_LT['accent']};font-size:13px;background:transparent;border:none;"
         )
         info_lbl.setWordWrap(True)
         info_lay.addWidget(info_lbl)
@@ -596,9 +606,9 @@ class LoginDialog(QDialog):
         # ── Admin USB status field ────────────────────────────────────────
         current = get_usb_hwid()
         if current == self._hwid and self._hwid is not None:
-            usb_val = _lbl("● Bağlı",     size=15, color="#16A34A")
+            usb_val = _lbl("● Bağlı",     size=15, color=_LT["green"])
         else:
-            usb_val  = _lbl("● Bekleniyor", size=15, color="#D97706")
+            usb_val  = _lbl("● Bekleniyor", size=15, color=_LT["yellow"])
         usb_val.setMinimumHeight(48)
         usb_val.setContentsMargins(0, 10, 0, 0)
         lay.addWidget(_field("Yönetici USB", usb_val))
@@ -646,7 +656,7 @@ class LoginDialog(QDialog):
         self._reg_error.setAlignment(Qt.AlignCenter)
         self._reg_error.setWordWrap(True)
         self._reg_error.setStyleSheet(
-            "color:#DC2626;font-size:13px;background:transparent;"
+            f"color:{_LT['red']};font-size:13px;background:transparent;"
         )
         self._reg_error.hide()
         lay.addWidget(self._reg_error)
@@ -654,7 +664,7 @@ class LoginDialog(QDialog):
         self._reg_pending = QLabel("Yönetici onayı bekleniyor...")
         self._reg_pending.setAlignment(Qt.AlignCenter)
         self._reg_pending.setStyleSheet(
-            "color:#16A34A;font-size:13px;background:transparent;"
+            f"color:{_LT['green']};font-size:13px;background:transparent;"
         )
         self._reg_pending.hide()
         lay.addWidget(self._reg_pending)
@@ -686,11 +696,11 @@ class LoginDialog(QDialog):
         h_lay.setContentsMargins(48, 44, 48, 0)
         h_lay.setSpacing(0)
 
-        title_lbl = _lbl("İlk Kurulum", size=30, color="#111827", bold=True)
+        title_lbl = _lbl("İlk Kurulum", size=30, color=_LT["text"], bold=True)
         title_lbl.setAlignment(Qt.AlignCenter)
         h_lay.addWidget(title_lbl)
 
-        sub = _lbl("Rol, PIN ve Authenticator ayarlarını yapın", size=14, color="#6B7280")
+        sub = _lbl("Rol, PIN ve Authenticator ayarlarını yapın", size=14, color=_LT["subtext"])
         sub.setAlignment(Qt.AlignCenter)
         sub.setContentsMargins(0, 8, 0, 0)
         h_lay.addWidget(sub)
@@ -705,8 +715,8 @@ class LoginDialog(QDialog):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setStyleSheet(
             "QScrollArea{background:transparent;border:none;}"
-            "QScrollBar:vertical{background:#F9FAFB;width:6px;border-radius:3px;}"
-            "QScrollBar::handle:vertical{background:#D1D5DB;border-radius:3px;min-height:24px;}"
+            f"QScrollBar:vertical{{background:{_LT['search_bg']};width:6px;border-radius:3px;}}"
+            f"QScrollBar::handle:vertical{{background:{_LT['border']};border-radius:3px;min-height:24px;}}"
             "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
         )
 
@@ -722,7 +732,7 @@ class LoginDialog(QDialog):
         # gerçek kodda öyle bir yapı hiç yok (tek, sürekli kaydırılan form)
         # — bu yüzden yeni bir "adım" değil, formun en başına yeni bir bölüm
         # olarak eklendi: en temel karar, rol seçiminden bile önce gelir.
-        mode_lbl = _lbl("Görünüm Modu", size=12, color="#9CA3AF")
+        mode_lbl = _lbl("Görünüm Modu", size=12, color=_LT["subtext"])
         lay.addWidget(mode_lbl)
         lay.addSpacing(10)
 
@@ -743,7 +753,7 @@ class LoginDialog(QDialog):
         lay.addSpacing(14)
 
         # Role selection
-        role_lbl = _lbl("Rol", size=12, color="#9CA3AF")
+        role_lbl = _lbl("Rol", size=12, color=_LT["subtext"])
         lay.addWidget(role_lbl)
         lay.addSpacing(10)
 
@@ -771,7 +781,7 @@ class LoginDialog(QDialog):
 
         # QR code
         qr_hint = _lbl("Google Authenticator ile QR kodu tarayın",
-                        size=13, color="#6B7280")
+                        size=13, color=_LT["subtext"])
         qr_hint.setAlignment(Qt.AlignCenter)
         lay.addWidget(qr_hint)
         lay.addSpacing(12)
@@ -788,7 +798,7 @@ class LoginDialog(QDialog):
         secret_lbl = QLabel(f"Manuel: {self._secret}")
         secret_lbl.setAlignment(Qt.AlignCenter)
         secret_lbl.setStyleSheet(
-            "color:#9CA3AF;font-size:10px;font-family:monospace;background:transparent;"
+            f"color:{_LT['subtext']};font-size:10px;font-family:monospace;background:transparent;"
         )
         lay.addWidget(secret_lbl)
         lay.addSpacing(20)
@@ -805,7 +815,7 @@ class LoginDialog(QDialog):
         self._error_label.setAlignment(Qt.AlignCenter)
         self._error_label.setWordWrap(True)
         self._error_label.setStyleSheet(
-            "color:#DC2626;font-size:13px;background:transparent;"
+            f"color:{_LT['red']};font-size:13px;background:transparent;"
         )
         self._error_label.hide()
         lay.addWidget(self._error_label)

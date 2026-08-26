@@ -22,70 +22,83 @@ from PySide6.QtWidgets import (
 )
 
 from DB.db_manager import DBManager
+from UI.main_window_palette import _DARK
 
 _FAIL_KEYWORDS = frozenset(
     {"fail", "denied", "blacklist", "error", "reject", "lock", "invalid", "unauthorized"}
 )
 
-_STYLE = """
-QDialog  { background: #1e1e2e; color: #cdd6f4; }
-QLabel   { color: #cdd6f4; }
-QTableWidget {
-    background: #181825;
-    color: #cdd6f4;
-    gridline-color: #313244;
-    border: 1px solid #313244;
+
+def _stil(T: dict[str, str]) -> str:
+    """Diyaloğun stil sayfası — kayıtlı tema token'larından (B-055).
+
+    Önceden sabit bir Catppuccin-Mocha paletiydi; preset değişince bu
+    diyalog hiç değişmiyordu.
+    """
+    return f"""
+QDialog  {{ background: {T['bg']}; color: {T['text']}; }}
+QLabel   {{ color: {T['text']}; }}
+QTableWidget {{
+    background: {T['search_bg']};
+    color: {T['text']};
+    gridline-color: {T['border']};
+    border: 1px solid {T['border']};
     border-radius: 4px;
     font-size: 12px;
-}
-QTableWidget::item:selected { background: #313244; }
-QHeaderView::section {
-    background: #1e1e2e;
-    color: #89b4fa;
+}}
+QTableWidget::item:selected {{ background: {T['accent_tint']}; color: {T['tint_text']}; }}
+QHeaderView::section {{
+    background: {T['bg']};
+    color: {T['accent']};
     border: none;
-    border-bottom: 1px solid #313244;
+    border-bottom: 1px solid {T['border']};
     padding: 4px 8px;
     font-weight: 600;
     font-size: 12px;
-}
-QComboBox {
-    background: #181825;
-    color: #cdd6f4;
-    border: 1px solid #313244;
+}}
+QComboBox {{
+    background: {T['search_bg']};
+    color: {T['text']};
+    border: 1px solid {T['border']};
     border-radius: 4px;
     padding: 4px 8px;
     min-width: 150px;
     font-size: 12px;
-}
-QComboBox QAbstractItemView {
-    background: #181825;
-    color: #cdd6f4;
-    selection-background-color: #313244;
-    border: 1px solid #313244;
-}
-QComboBox::drop-down { border: none; width: 20px; }
-QDateEdit {
-    background: #181825;
-    color: #cdd6f4;
-    border: 1px solid #313244;
+}}
+QComboBox QAbstractItemView {{
+    background: {T['search_bg']};
+    color: {T['text']};
+    selection-background-color: {T['row_hover']};
+    border: 1px solid {T['border']};
+}}
+QComboBox::drop-down {{ border: none; width: 20px; }}
+QDateEdit {{
+    background: {T['search_bg']};
+    color: {T['text']};
+    border: 1px solid {T['border']};
     border-radius: 4px;
     padding: 4px 8px;
     font-size: 12px;
-}
-QDateEdit::drop-down { border: none; width: 20px; }
-QCalendarWidget { background: #181825; color: #cdd6f4; }
+}}
+QDateEdit::drop-down {{ border: none; width: 20px; }}
+QCalendarWidget {{ background: {T['search_bg']}; color: {T['text']}; }}
 """
 
-_BTN = (
-    "QPushButton{color:#cdd6f4;background:#313244;border:none;"
-    "border-radius:6px;padding:5px 14px;font-size:12px;}"
-    "QPushButton:hover{background:#45475a;}"
-)
-_BTN_EXPORT = (
-    "QPushButton{color:#1e1e2e;background:#89b4fa;border:none;"
-    "border-radius:6px;padding:5px 14px;font-size:12px;font-weight:600;}"
-    "QPushButton:hover{background:#74c7ec;}"
-)
+
+def _btn_stil(T: dict[str, str]) -> str:
+    return (
+        f"QPushButton{{color:{T['text']};background:{T['hover']};border:none;"
+        f"border-radius:6px;padding:5px 14px;font-size:12px;}}"
+        f"QPushButton:hover{{background:{T['row_hover']};}}"
+    )
+
+
+def _btn_export_stil(T: dict[str, str]) -> str:
+    return (
+        f"QPushButton{{color:{T['on_accent']};background:{T['accent']};border:none;"
+        f"border-radius:6px;padding:5px 14px;font-size:12px;font-weight:600;}}"
+        f"QPushButton:hover{{background:{T['accent_hover']};}}"
+    )
 
 
 def _is_failure(action: str) -> bool:
@@ -94,11 +107,17 @@ def _is_failure(action: str) -> bool:
 
 
 class AuditLogDialog(QDialog):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, *, T: dict[str, str] | None = None) -> None:
+        """
+        Args:
+            T: Çağıranın aktif tema token sözlüğü (`HycleusWindow._T`).
+                Verilmezse varsayılan "mavi" koyu palete düşer.
+        """
         super().__init__(parent)
+        self._T: dict[str, str] = T if T is not None else _DARK
         self.setWindowTitle("HYCLEUS — Denetim Günlüğü")
         self.setMinimumSize(900, 540)
-        self.setStyleSheet(_STYLE)
+        self.setStyleSheet(_stil(self._T))
         self._build_ui()
         self._populate_action_filter()
         self._load()
@@ -144,13 +163,13 @@ class AuditLogDialog(QDialog):
         bar.addWidget(self._action_combo)
 
         btn_filter = QPushButton("Filtrele")
-        btn_filter.setStyleSheet(_BTN)
+        btn_filter.setStyleSheet(_btn_stil(self._T))
         btn_filter.setCursor(Qt.PointingHandCursor)
         btn_filter.clicked.connect(self._load)
         bar.addWidget(btn_filter)
 
         btn_reset = QPushButton("Sıfırla")
-        btn_reset.setStyleSheet(_BTN)
+        btn_reset.setStyleSheet(_btn_stil(self._T))
         btn_reset.setCursor(Qt.PointingHandCursor)
         btn_reset.clicked.connect(self._reset_filters)
         bar.addWidget(btn_reset)
@@ -176,13 +195,13 @@ class AuditLogDialog(QDialog):
         footer = QHBoxLayout()
 
         self._count_label = QLabel("Toplam: 0 kayıt")
-        self._count_label.setStyleSheet("color:#6c7086; font-size:11px;")
+        self._count_label.setStyleSheet(f"color:{self._T['subtext']}; font-size:11px;")
         footer.addWidget(self._count_label)
 
         footer.addStretch()
 
         btn_export = QPushButton("TXT Dışa Aktar")
-        btn_export.setStyleSheet(_BTN_EXPORT)
+        btn_export.setStyleSheet(_btn_export_stil(self._T))
         btn_export.setCursor(Qt.PointingHandCursor)
         btn_export.clicked.connect(self._export_txt)
         footer.addWidget(btn_export)
@@ -268,8 +287,12 @@ class AuditLogDialog(QDialog):
         for col, text in enumerate(values):
             item = QTableWidgetItem(text)
             if failure:
-                item.setForeground(QColor("#f38ba8"))
-                item.setBackground(QColor("#2d1818"))
+                item.setForeground(QColor(self._T["red"]))
+                # red_tint token bir CSS rgba() dizesi (QSS için) — QColor
+                # onu ayrıştıramaz, aynı görünümü alpha ile üretiyoruz.
+                tint = QColor(self._T["red"])
+                tint.setAlpha(36)
+                item.setBackground(tint)
             self._table.setItem(row, col, item)
 
     @staticmethod

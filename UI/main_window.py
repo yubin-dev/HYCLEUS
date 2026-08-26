@@ -337,7 +337,7 @@ class HycleusWindow(
             QMessageBox.critical(self, "Hata", str(exc))
 
     def _on_open_audit_log(self) -> None:
-        AuditLogDialog(self).exec()
+        AuditLogDialog(self, T=self._T).exec()
 
     def _on_open_admin_panel(self) -> None:
         if not is_admin_role(self._role):
@@ -376,6 +376,7 @@ class HycleusWindow(
             role=self._role,
             user_id=self._user_id,
             parent=self,
+            T=self._T,
         ).exec()
 
     def _on_hamburger_menu(self) -> None:

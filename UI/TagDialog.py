@@ -18,7 +18,12 @@ from PySide6.QtWidgets import (
 
 from CORE.roles import is_admin_role
 from DB.db_manager import DBManager
+from UI.main_window_palette import _DARK
 
+# Etiket renk seçici — kullanıcının etikete atadığı GERÇEK renk, tema
+# token'ı değil (bir etiket her temada aynı kalmalı). B-055'in "ikinci bir
+# renk yolu açma" kuralı burada uygulanmıyor: bu sabit bir stil rengi değil,
+# kullanıcının seçtiği veri.
 _TAG_COLORS = [
     "#89b4fa",  # mavi
     "#a6e3a1",  # yeşil
@@ -30,44 +35,51 @@ _TAG_COLORS = [
     "#eba0ac",  # pembe
 ]
 
-_STYLE = """
-QDialog  { background: #1e1e2e; color: #cdd6f4; }
-QLabel   { color: #cdd6f4; background: transparent; }
-QLabel#title   { color: #cdd6f4; font-size: 15px; font-weight: bold; }
-QLabel#section { color: #89b4fa; font-size: 11px; font-weight: bold; margin-top: 4px; }
-QLabel#field   { color: #a6adc8; font-size: 12px; }
-QFrame#sep     { background: #313244; max-height: 1px; }
-QWidget#tag_bg { background: #181825; }
-QLineEdit {
-    background: #313244; color: #cdd6f4;
-    border: 1px solid #45475a; border-radius: 6px;
+
+def _stil(T: dict[str, str]) -> str:
+    """Diyaloğun stil sayfası — kayıtlı tema token'larından (B-055).
+
+    Önceden sabit bir Catppuccin-Mocha paletiydi; preset değişince bu
+    diyalog hiç değişmiyordu.
+    """
+    return f"""
+QDialog  {{ background: {T['bg']}; color: {T['text']}; }}
+QLabel   {{ color: {T['text']}; background: transparent; }}
+QLabel#title   {{ color: {T['text']}; font-size: 15px; font-weight: bold; }}
+QLabel#section {{ color: {T['accent']}; font-size: 11px; font-weight: bold; margin-top: 4px; }}
+QLabel#field   {{ color: {T['subtext']}; font-size: 12px; }}
+QFrame#sep     {{ background: {T['border']}; max-height: 1px; }}
+QWidget#tag_bg {{ background: {T['search_bg']}; }}
+QLineEdit {{
+    background: {T['hover']}; color: {T['text']};
+    border: 1px solid {T['border']}; border-radius: 6px;
     padding: 7px 10px; font-size: 13px;
-}
-QLineEdit:focus { border-color: #89b4fa; }
-QCheckBox { color: #cdd6f4; spacing: 6px; font-size: 12px; background: transparent; }
-QCheckBox::indicator {
+}}
+QLineEdit:focus {{ border-color: {T['accent']}; }}
+QCheckBox {{ color: {T['text']}; spacing: 6px; font-size: 12px; background: transparent; }}
+QCheckBox::indicator {{
     width: 15px; height: 15px;
-    border: 2px solid #45475a; border-radius: 3px;
-    background: #313244;
-}
-QCheckBox::indicator:checked { background: #89b4fa; border-color: #89b4fa; }
-QScrollArea { background: #181825; border: 1px solid #313244; border-radius: 4px; }
-QPushButton#primary_btn {
-    background: #89b4fa; color: #1e1e2e; border: none;
+    border: 2px solid {T['border']}; border-radius: 3px;
+    background: {T['hover']};
+}}
+QCheckBox::indicator:checked {{ background: {T['accent']}; border-color: {T['accent']}; }}
+QScrollArea {{ background: {T['search_bg']}; border: 1px solid {T['border']}; border-radius: 4px; }}
+QPushButton#primary_btn {{
+    background: {T['accent']}; color: {T['on_accent']}; border: none;
     border-radius: 6px; padding: 9px; font-size: 13px; font-weight: bold;
-}
-QPushButton#primary_btn:hover { background: #b4d0ff; }
-QPushButton#cancel_btn {
-    background: #313244; color: #cdd6f4; border: none;
+}}
+QPushButton#primary_btn:hover {{ background: {T['accent_hover']}; }}
+QPushButton#cancel_btn {{
+    background: {T['hover']}; color: {T['text']}; border: none;
     border-radius: 6px; padding: 9px; font-size: 13px;
-}
-QPushButton#cancel_btn:hover { background: #45475a; }
-QPushButton#add_btn {
-    background: #1a2d1a; color: #a6e3a1;
-    border: 1px solid #2a3d2a; border-radius: 6px;
+}}
+QPushButton#cancel_btn:hover {{ background: {T['row_hover']}; }}
+QPushButton#add_btn {{
+    background: {T['green_tint']}; color: {T['green']};
+    border: 1px solid {T['green']}; border-radius: 6px;
     padding: 6px 14px; font-size: 12px;
-}
-QPushButton#add_btn:hover { background: #2a3d2a; }
+}}
+QPushButton#add_btn:hover {{ background: {T['green_tint']}; }}
 """
 
 
@@ -82,7 +94,13 @@ class TagDialog(QDialog):
     """Dosyaya etiket atama diyaloğu."""
 
     def __init__(self, file_id: int, role: str = "", parent=None, *,
-                 file_ids: list[int] | None = None) -> None:
+                 file_ids: list[int] | None = None,
+                 T: dict[str, str] | None = None) -> None:
+        """
+        Args:
+            T: Çağıranın aktif tema token sözlüğü (`HycleusWindow._T`).
+                Verilmezse varsayılan "mavi" koyu palete düşer.
+        """
         super().__init__(parent)
         self._file_ids: list[int] | None = file_ids
         self._file_id        = file_ids[0] if file_ids else file_id
@@ -90,6 +108,7 @@ class TagDialog(QDialog):
         # Rol kararı CORE/roles.py'de (B-028). `_role_norm` ara değişkeni
         # KALDIRILDI: tek kullanıcısı bu karşılaştırmaydı.
         self._is_admin       = is_admin_role(role)
+        self._T: dict[str, str] = T if T is not None else _DARK
         self._selected_color = _TAG_COLORS[0]
         self._color_btns: list[QPushButton]           = []
         self._checkboxes: list[tuple[QCheckBox, int]] = []
@@ -100,7 +119,7 @@ class TagDialog(QDialog):
         )
         self.setFixedWidth(360)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setStyleSheet(_STYLE)
+        self.setStyleSheet(_stil(self._T))
         self._build_ui()
         self._load_tags()
 
@@ -207,14 +226,14 @@ class TagDialog(QDialog):
             c = btn.property("color_val")
             if c == color:
                 btn.setStyleSheet(
-                    f"QPushButton{{background:{c};border:3px solid #cdd6f4;"
+                    f"QPushButton{{background:{c};border:3px solid {self._T['text']};"
                     f"border-radius:10px;width:20px;height:20px;}}"
                 )
             else:
                 btn.setStyleSheet(
                     f"QPushButton{{background:{c};border:2px solid transparent;"
                     f"border-radius:10px;width:20px;height:20px;}}"
-                    f"QPushButton:hover{{border:2px solid #6c7086;}}"
+                    f"QPushButton:hover{{border:2px solid {self._T['subtext']};}}"
                 )
 
     # ------------------------------------------------------------------
@@ -257,7 +276,7 @@ class TagDialog(QDialog):
 
         if not all_tags:
             empty = QLabel("Henüz etiket yok. Aşağıdan yeni etiket oluşturun.")
-            empty.setStyleSheet("color:#6c7086; font-size:11px;")
+            empty.setStyleSheet(f"color:{self._T['subtext']}; font-size:11px;")
             empty.setWordWrap(True)
             self._list_layout.addWidget(empty)
             self._list_layout.addStretch()

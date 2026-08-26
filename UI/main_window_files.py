@@ -339,7 +339,7 @@ class FileActionsMixin:
             QMessageBox.warning(self, "Etiket", "Dosya kimliği bulunamadı.")
             return
         from UI.TagDialog import TagDialog
-        dlg = TagDialog(file_id=file_id, role=self._role, parent=self)
+        dlg = TagDialog(file_id=file_id, role=self._role, parent=self, T=self._T)
         if dlg.exec() == TagDialog.Accepted:
             self._refresh_tag_sidebar()
             if self._current_tag_id is not None:
