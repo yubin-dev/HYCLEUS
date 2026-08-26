@@ -49,6 +49,12 @@ from UI.main_window_palette import (
     _AURORA_BOREALIS,
     _ABYSSAL_BLUE,
     _GRAPHITE_AMBER,
+    _CAM,
+    _KLASIK,
+    _AKRILIK,
+    _AURORA_CAM,
+    _GUN_BATIMI,
+    _GRAFIT_CAM,
     _ROLE_BADGE,
 )
 
@@ -76,6 +82,15 @@ register_theme("teal_gold", "Teal & Gold", _TEAL_GOLD_DARK, _TEAL_GOLD_LIGHT)
 register_theme("aurora_borealis", "Aurora Borealis", _AURORA_BOREALIS)
 register_theme("abyssal_blue", "Abyssal Blue", _ABYSSAL_BLUE)
 register_theme("graphite_amber", "Grafit & Kehribar", _GRAPHITE_AMBER)
+# Arayüz güncellemesi (2026-08-26) — mockup'ın 11 temasından eksik 6'sı.
+# "Gece"/"Gün" eklenmedi: ölçüldüğünde teal_gold ile birebir aynı çıktı
+# (bkz. UI/main_window_palette.py'nin bu bloğun üstündeki yorumu, BACKLOG).
+register_theme("cam", "Cam", _CAM)
+register_theme("klasik", "Klasik", _KLASIK)
+register_theme("akrilik", "Akrilik", _AKRILIK)
+register_theme("aurora_cam", "Aurora (Cam)", _AURORA_CAM)
+register_theme("gun_batimi", "Gün Batımı", _GUN_BATIMI)
+register_theme("grafit_cam", "Grafit (Cam)", _GRAFIT_CAM)
 
 
 class ThemeMixin:

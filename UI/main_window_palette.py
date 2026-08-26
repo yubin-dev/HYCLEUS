@@ -276,6 +276,193 @@ _GRAPHITE_AMBER: dict[str, str] = {
 }
 
 
+# ── Arayüz güncellemesi turu (2026-08-26) — mockup'ın 11 temasından eksik 6'sı ──
+# Mockup'ta 11 tema var; "Gece"/"Gün" mockup'ta varsayılan gibi görünse de
+# ölçüldüğünde `_TEAL_GOLD_DARK`/`_TEAL_GOLD_LIGHT` ile TÜM anahtarlarda birebir
+# aynı çıktı (bkz. BACKLOG) — o ikisi BİLEREK eklenmedi, teal_gold'un kopyası
+# olurdu. "Aurora"/"Grafit" (mockup'ın yeni yarı saydam/gradyanlı temaları) adı
+# zaten var olan `_AURORA_BOREALIS`/`_GRAPHITE_AMBER` (FARKLI renkler) ile
+# çakışmasın diye "(Cam)" ekiyle ayırt edildi — menüde ikisi de görünecek.
+#
+# Mockup yalnızca `wall` (gradyan duvar kağıdı), `panel` (yarı saydam yüzey),
+# `tx` (metin) ve `accent` veriyordu bu 4 tema için — QSS gerçek pencere
+# saydamlığı desteklemediğinden `wall` şu turda UYGULANMADI (BÖLÜM B'ye
+# ertelendi, orada gerçek arka plan widget'ları ele alınacak); `panel` burada
+# koyu/açık bir taban rengin üzerine matematiksel olarak bindirilip DÜZ bir
+# `sidebar` hex'ine çevrildi. `green`/`red`/`yellow` mockup'ta hiç verilmedi —
+# `tests/test_tema_kontrasti.py`'nin WCAG AA eşiklerini (bkz. B-054/B-057/B-063)
+# geçene kadar mevcut varsayılan tonlardan yalnızca gerektiği kadar koyultuldu.
+_CAM: dict[str, str] = {
+    "bg":        "#eef1f6",
+    "sidebar":   "#fbfcfe",
+    "topbar":    "#e6eaf2",
+    "accent":    "#1d6fa5",
+    "accent_hover":      "#175984",
+    "accent_tint":       "rgba(29, 111, 165, 0.08)",
+    "accent_tint_hover": "rgba(29, 111, 165, 0.16)",
+    "on_accent":         "#FFFFFF",
+    "tint_text":         "#161b22",
+    "text":      "#161b22",
+    "subtext":   "#626a7a",
+    "nav_text":  "#4b5566",
+    "border":    "#d7dde8",
+    "hover":     "#c3cbda",
+    "search_bg": "#e6eaf2",
+    "row_hover": "#c3cbda",
+    "green":     "#059669",
+    "green_tint": "rgba(5, 150, 105, 0.08)",
+    "red":       "#DC2626",
+    "red_tint":  "rgba(220, 38, 38, 0.08)",
+    "yellow":    "#cc7006",
+    "gray":      "#6B7280",
+    "purple":    "#1d6fa5",
+    "hcl_fg":    "#1d6fa5",
+}
+
+
+_KLASIK: dict[str, str] = {
+    "bg":        "#c8c6bd",
+    "sidebar":   "#dedcd3",
+    "topbar":    "#cfcdc4",
+    "accent":    "#1c5d54",
+    "accent_hover":      "#164a43",
+    "accent_tint":       "rgba(28, 93, 84, 0.14)",
+    "accent_tint_hover": "rgba(28, 93, 84, 0.24)",
+    "on_accent":         "#FFFFFF",
+    "tint_text":         "#1b1b18",
+    "text":      "#1b1b18",
+    "subtext":   "#51514c",
+    "nav_text":  "#4a4a44",
+    "border":    "#a9a79e",
+    "hover":     "#8e8c83",
+    "search_bg": "#cfcdc4",
+    "row_hover": "#8e8c83",
+    # green/red/yellow: mockup vermiyordu, bg orta tonlu (#c8c6bd) olduğu için
+    # varsayılan tonlar AA'nın altında kalıyordu — üçü de koyultuldu.
+    "green":     "#047653",
+    "green_tint": "rgba(4, 118, 83, 0.08)",
+    "red":       "#c22121",
+    "red_tint":  "rgba(194, 33, 33, 0.08)",
+    "yellow":    "#a55a05",
+    "gray":      "#6B7280",
+    "purple":    "#1c5d54",
+    "hcl_fg":    "#1c5d54",
+}
+
+
+_AKRILIK: dict[str, str] = {
+    "bg":        "#141a2e",
+    "sidebar":   "#151b2c",
+    "topbar":    "#111627",
+    "accent":    "#7fd8cd",
+    "accent_hover":      "#92ded4",
+    "accent_tint":       "rgba(127, 216, 205, 0.14)",
+    "accent_tint_hover": "rgba(127, 216, 205, 0.24)",
+    "on_accent":         "#0b2420",
+    "tint_text":         "#eceaf4",
+    "text":      "#eceaf4",
+    "subtext":   "#9aa0c4",
+    "nav_text":  "#c3c8e8",
+    "border":    "#3f4452",
+    "hover":     "#2c3241",
+    "search_bg": "#111627",
+    "row_hover": "#2c3241",
+    "green":     "#059669",
+    "green_tint": "rgba(5, 150, 105, 0.14)",
+    "red":       "#DC2626",
+    "red_tint":  "rgba(220, 38, 38, 0.14)",
+    "yellow":    "#D97706",
+    "gray":      "#6B7280",
+    "purple":    "#7fd8cd",
+    "hcl_fg":    "#7fd8cd",
+}
+
+
+_AURORA_CAM: dict[str, str] = {
+    "bg":        "#0b0f1a",
+    "sidebar":   "#0b171f",
+    "topbar":    "#090c15",
+    "accent":    "#68e0c6",
+    "accent_hover":      "#7fe5cf",
+    "accent_tint":       "rgba(104, 224, 198, 0.14)",
+    "accent_tint_hover": "rgba(104, 224, 198, 0.24)",
+    "on_accent":         "#04231f",
+    "tint_text":         "#e6f5f1",
+    "text":      "#e6f5f1",
+    "subtext":   "#8fb0a8",
+    "nav_text":  "#b3d9cf",
+    "border":    "#3c454c",
+    "hover":     "#28333a",
+    "search_bg": "#090c15",
+    "row_hover": "#28333a",
+    "green":     "#059669",
+    "green_tint": "rgba(5, 150, 105, 0.14)",
+    "red":       "#DC2626",
+    "red_tint":  "rgba(220, 38, 38, 0.14)",
+    "yellow":    "#D97706",
+    "gray":      "#6B7280",
+    "purple":    "#68e0c6",
+    "hcl_fg":    "#68e0c6",
+}
+
+
+_GUN_BATIMI: dict[str, str] = {
+    "bg":        "#ffd7b0",
+    "sidebar":   "#ffefe0",
+    "topbar":    "#ffebd8",
+    "accent":    "#0f6f78",
+    "accent_hover":      "#0c5960",
+    "accent_tint":       "rgba(15, 111, 120, 0.08)",
+    "accent_tint_hover": "rgba(15, 111, 120, 0.16)",
+    "on_accent":         "#FFFFFF",
+    "tint_text":         "#2a1c18",
+    "text":      "#2a1c18",
+    "subtext":   "#5c4a44",
+    "nav_text":  "#4a3a35",
+    "border":    "#d9cbbe",
+    "hover":     "#ebdcce",
+    "search_bg": "#ffebd8",
+    "row_hover": "#ebdcce",
+    # green: mockup vermiyordu, sıcak/açık bg'de varsayılan AA'nın altındaydı.
+    "green":     "#058860",
+    "green_tint": "rgba(5, 136, 96, 0.08)",
+    "red":       "#DC2626",
+    "red_tint":  "rgba(220, 38, 38, 0.08)",
+    "yellow":    "#b86505",
+    "gray":      "#6B7280",
+    "purple":    "#0f6f78",
+    "hcl_fg":    "#0f6f78",
+}
+
+
+_GRAFIT_CAM: dict[str, str] = {
+    "bg":        "#1d1f22",
+    "sidebar":   "#202225",
+    "topbar":    "#191a1d",
+    "accent":    "#8fd0c4",
+    "accent_hover":      "#a0d7cd",
+    "accent_tint":       "rgba(143, 208, 196, 0.14)",
+    "accent_tint_hover": "rgba(143, 208, 196, 0.24)",
+    "on_accent":         "#12211d",
+    "tint_text":         "#e9e9e6",
+    "text":      "#e9e9e6",
+    "subtext":   "#9aa19d",
+    "nav_text":  "#c2c7c4",
+    "border":    "#484a4c",
+    "hover":     "#36383b",
+    "search_bg": "#191a1d",
+    "row_hover": "#36383b",
+    "green":     "#059669",
+    "green_tint": "rgba(5, 150, 105, 0.14)",
+    "red":       "#DC2626",
+    "red_tint":  "rgba(220, 38, 38, 0.14)",
+    "yellow":    "#D97706",
+    "gray":      "#6B7280",
+    "purple":    "#8fd0c4",
+    "hcl_fg":    "#8fd0c4",
+}
+
+
 _SIDEBAR_NAV: list[tuple[str, str, str]] = [
     ("📁", "Genel",      "Genel"),
     ("🛡", "Kritik",     "Kritik"),
