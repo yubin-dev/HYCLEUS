@@ -528,7 +528,10 @@ class HycleusWindow(
     # USB'yi takan kişiye açılırdı. Küme boşalmadan örtü kalkmıyor.
 
     _LOCK_MESSAGES = {
-        "usb": ("USB Token Çıkarıldı", "Lütfen USB'yi yeniden takın"),
+        "usb": (
+            "Kayıtlı USB Token Çıkarıldı",
+            "Oturuma devam etmek için USB'yi yeniden takın — algılanınca otomatik devam eder",
+        ),
         "idle": ("Oturum Kilitlendi", "Hareketsizlik nedeniyle — devam etmek için PIN girin"),
         # Alt metin _poll_usb tarafından _revoked_reason'a yazılıp burada
         # üzerine geçiliyor (bkz. LockMixin._lock) — bu yalnızca yedek.

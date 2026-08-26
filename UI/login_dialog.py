@@ -17,6 +17,7 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QPalette, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QComboBox,
     QDialog,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -33,6 +35,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from CORE.app_mode import BIREYSEL, KURUMSAL, get_app_mode, set_app_mode
+from CORE.referans_id import generate_referans_id, get_referans_id, set_referans_id
 from CORE.registration import (
     HwidAlreadyRegisteredError,
     UsernameTakenError,
@@ -621,7 +625,21 @@ class LoginDialog(QDialog):
         self._reg_role.setStyleSheet(_QSS_COMBO)
         self._reg_role.setMinimumHeight(48)
         lay.addWidget(_field("Rol", self._reg_role))
-        lay.addSpacing(32)
+        lay.addSpacing(20)
+
+        # ── Referans Kodu — YALNIZCA Kurumsal modda ─────────────────────────
+        # Bireysel modda bu alan hiç YOK (widget bile oluşturulmuyor) —
+        # `_on_register` bunu `getattr(self, "_reg_referans", None)` ile
+        # kontrol ediyor. E-posta/plan-tier alanları EKLENMEDİ — o karar
+        # değişmedi (bkz. BACKLOG, 077159e). Bu alan `_on_register`'da
+        # `CORE.referans_id.get_referans_id()` ile GERÇEKTEN karşılaştırılır.
+        self._reg_referans = None
+        if get_app_mode(DBManager()) == KURUMSAL:
+            self._reg_referans = _make_input("İlk Kurulum'da üretilen kod (KRM-...)")
+            lay.addWidget(_field("Referans Kodu", self._reg_referans))
+            lay.addSpacing(12)
+
+        lay.addSpacing(12)
 
         # ── Error / pending feedback ──────────────────────────────────────
         self._reg_error = QLabel("")
@@ -697,6 +715,32 @@ class LoginDialog(QDialog):
         lay = QVBoxLayout(inner)
         lay.setContentsMargins(48, 32, 48, 40)
         lay.setSpacing(0)
+
+        # ── Görünüm modu (Bireysel/Kurumsal) ────────────────────────────────
+        # Mockup'ta bu ekranda yok — bizim kararımız (bkz. CORE/app_mode.py).
+        # Mockup'ın kendisinde adım sayaçlı bir sihirbaz görünüyordu ama
+        # gerçek kodda öyle bir yapı hiç yok (tek, sürekli kaydırılan form)
+        # — bu yüzden yeni bir "adım" değil, formun en başına yeni bir bölüm
+        # olarak eklendi: en temel karar, rol seçiminden bile önce gelir.
+        mode_lbl = _lbl("Görünüm Modu", size=12, color="#9CA3AF")
+        lay.addWidget(mode_lbl)
+        lay.addSpacing(10)
+
+        self._mode_group = QButtonGroup(self)
+        _MODE_SECENEKLERI = (
+            (KURUMSAL, "Kurumsal", "Birden çok kullanıcı, onay akışı, Referans ID"),
+            (BIREYSEL, "Bireysel", "Tek kullanıcı, sade görünüm"),
+        )
+        for i, (mval, mname, mdesc) in enumerate(_MODE_SECENEKLERI):
+            rb = QRadioButton(f"{mname}  ·  {mdesc}")
+            rb.setProperty("mode_value", mval)
+            rb.setStyleSheet(_QSS_RADIO)
+            if i == 0:
+                rb.setChecked(True)
+            self._mode_group.addButton(rb)
+            lay.addWidget(rb)
+            lay.addSpacing(6)
+        lay.addSpacing(14)
 
         # Role selection
         role_lbl = _lbl("Rol", size=12, color="#9CA3AF")
@@ -823,6 +867,9 @@ class LoginDialog(QDialog):
             self._totp_input.setFocus()
             return
 
+        mode_btn = self._mode_group.checkedButton()
+        mode = mode_btn.property("mode_value") if mode_btn is not None else KURUMSAL
+
         role = checked.property("role_value")
         if self._use_vault and self._hwid is not None:
             try:
@@ -842,11 +889,51 @@ class LoginDialog(QDialog):
             except Exception as exc:
                 self._show_error(f"TOTP sırrı kaydedilemedi: {exc}")
                 return
+            # Görünüm modu + (Kurumsal'sa) Referans ID — settings tablosuna
+            # kalıcı, users satırına DEĞİL (bkz. CORE/app_mode.py,
+            # CORE/referans_id.py — kurulum-geneli tek değerler).
+            try:
+                db = DBManager()
+                set_app_mode(db, mode, hwid=self._hwid)
+                referans_id = None
+                if mode == KURUMSAL:
+                    referans_id = generate_referans_id()
+                    set_referans_id(db, referans_id)
+            except Exception as exc:
+                self._show_error(f"Kurulum ayarları kaydedilemedi: {exc}")
+                return
+            if referans_id is not None:
+                self._show_referans_id_dialog(referans_id)
         else:
             _save_pin_hash(pin, role)
             _save_secret(self._secret)
         self._role = role
         self.accept()
+
+    def _show_referans_id_dialog(self, referans_id: str) -> None:
+        """Kurumsal Referans ID'yi ekranda gösterir — kopyalanabilir.
+
+        Kayıt Ol ekranındaki Referans Kodu alanı bununla GERÇEKTEN
+        karşılaştırılacak (bkz. `_on_register`) — bu yüzden yalnızca bir
+        kez gösterilip unutulacak bir metin değil, kullanıcı bunu fiilen
+        saklamalı.
+        """
+        kutu = QMessageBox(self)
+        kutu.setIcon(QMessageBox.Information)
+        kutu.setWindowTitle("Kurumsal Referans ID")
+        kutu.setText(
+            "Kurulum tamamlandı. Bu Referans ID, ekibinizin \"Kayıt Ol\" "
+            "ekranında kullanacağı doğrulama kodudur — güvenli bir yerde "
+            "saklayın:\n\n" + referans_id
+        )
+        for lbl in kutu.findChildren(QLabel):
+            lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        kopyala = kutu.addButton("Kopyala", QMessageBox.ActionRole)
+        tamam = kutu.addButton("Tamam", QMessageBox.AcceptRole)
+        kutu.setDefaultButton(tamam)
+        kutu.exec()
+        if kutu.clickedButton() is kopyala:
+            QApplication.clipboard().setText(referans_id)
 
     def _on_login(self) -> None:
         # Kilit DB'de tutulur — uygulamayı yeniden başlatmak kilidi kaldırmaz
@@ -1037,6 +1124,19 @@ class LoginDialog(QDialog):
         if pin != pin2:
             self._show_reg_error("PIN'ler eşleşmiyor.")
             return
+
+        # Kurumsal modda GERÇEK karşılaştırma — eşleşmezse kayıt REDDEDİLİR,
+        # sahte bir "geçerli" onayı hiç verilmez. `register_new_user()`
+        # çağrılmadan önce döndüğü için DB'ye hiçbir satır yazılmaz.
+        if self._reg_referans is not None:
+            girilen_kod = self._reg_referans.text().strip()
+            gercek_kod = get_referans_id(DBManager())
+            if not girilen_kod:
+                self._show_reg_error("Referans Kodu boş olamaz.")
+                return
+            if gercek_kod is None or girilen_kod != gercek_kod:
+                self._show_reg_error("Referans Kodu geçersiz.")
+                return
 
         new_hwid = get_usb_hwid()
         if new_hwid is None:

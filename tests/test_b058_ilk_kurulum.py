@@ -55,6 +55,7 @@ except ImportError as _exc:  # pragma: no cover — ortama bağlı
     )
 
 from CORE import vault_manager
+from CORE.app_mode import BIREYSEL, set_app_mode
 from CORE.secret_store import load_totp_secret_for_hwid
 from CORE.session_user import sistem_kurulmus_mu, sync_session_user
 
@@ -80,6 +81,20 @@ def kasa_dizini(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(vault_manager, "_VAULT_DIR", tmp_path / "vaults")
     monkeypatch.setattr(vault_manager, "_VAULT_PATH_LEGACY", tmp_path / ".hcl_vault")
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def referans_id_dialog_susturuldu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Arayüz güncellemesi (2026-08-26): sihirbazda Kurumsal VARSAYILAN olarak
+    seçili — `_on_setup_confirm()` artık Kurumsal seçiliyken modal bir
+    Referans ID diyaloğu (`.exec()`) gösteriyor (bkz. CORE/referans_id.py).
+    Bu dosyanın testleri o akışı hiç ölçmüyor (kendi paketi var, bkz.
+    tests/test_kayit_kurumsal_referans.py) — susturulmazsa başsız test
+    koşucusunda SONSUZA KADAR bloklardı (`show_totp_enrollment_dialog`
+    için zaten uygulanan aynı desen).
+    """
+    monkeypatch.setattr(LoginDialog, "_show_referans_id_dialog", lambda self, rid: None)
 
 
 def _ilk_kurulumu_tamamla(qapp, hwid: str, pin: str) -> LoginDialog:
@@ -166,6 +181,11 @@ def test_KURULUMDAN_SONRA_yeni_USB_KAYIT_OL_ile_PENDING_uretiyor_ASLA_approved_d
     """
     _ilk_kurulumu_tamamla(qapp, _HWID_ILK, _PIN_ILK)
     sync_session_user(db, hwid=_HWID_ILK, role="Yönetici")
+
+    # Bu test "ikinci USB → pending" davranışını ölçüyor, Kurumsal Referans
+    # Kodu akışını DEĞİL (o ayrı bir pakette, bkz. test_kayit_kurumsal_
+    # referans.py) — Bireysel'e geçilerek o alan devre dışı bırakılıyor.
+    set_app_mode(db, BIREYSEL)
 
     import UI.login_dialog as ld
     monkeypatch.setattr(ld, "get_usb_hwid", lambda: _HWID_IKINCI)

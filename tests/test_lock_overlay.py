@@ -43,6 +43,7 @@ try:
 
     # 2.7 Faz 2: kilit kodu UI/main_window_lock.py'ye taşındı. HycleusWindow
     # hâlâ ana pencere; _lock/_unlock ona LockMixin üzerinden geliyor.
+    import UI.main_window_lock as _mwl_modulu
     from UI.main_window import HycleusWindow
     from UI.main_window_lock import _ACTIVITY_EVENTS, _LockOverlay
 except ImportError as _exc:  # pragma: no cover — ortama bağlı
@@ -260,3 +261,79 @@ def test_non_interaction_events_do_not_count_as_activity(olay):
     kilit hiç devreye girmezdi.
     """
     assert olay not in _ACTIVITY_EVENTS
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3. Uçtan uca — gerçek `_poll_usb()` ile USB çıkarma/geri takma (arayüz
+#    güncellemesi turu: "USB geri takılınca oturum devam ediyor mu" testi)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Yukarıdaki testler `_lock`/`_unlock`'ı DOĞRUDAN çağırıyor — bu bölüm asıl
+# tetikleyiciyi (`_poll_usb`, `get_usb_hwid()`'e bakan gerçek metot) kullanıyor.
+# `oturum_yetkisi_gecerli_mi()` gerçek DB'ye baktığı için `db` fixture'ı
+# (conftest.py) ve DB'de gerçek bir 'approved' satır gerekiyor — aksi hâlde
+# "USB geri takıldı" dalı hiç doğrulanmadan (yetki kontrolü patlayıp) geri
+# döner, test yanıltıcı bir yeşil verirdi.
+
+class _UcTanUcaSahne:
+    _LOCK_MESSAGES = HycleusWindow._LOCK_MESSAGES
+    _lock = HycleusWindow._lock
+    _unlock = HycleusWindow._unlock
+    _poll_usb = HycleusWindow._poll_usb
+    _refresh_usb_badge = HycleusWindow._refresh_usb_badge
+
+    def __init__(self, hwid: str) -> None:
+        self._central = QWidget()
+        self._central.resize(800, 600)
+        self._overlay = _LockOverlay(self._central)
+        self._blur = None
+        self._locked = False
+        self._lock_reasons: set[str] = set()
+        self._authenticating = False
+        self._hwid = hwid
+        self._role = "admin"
+        self._usb_badge = QWidget()
+        self._usb_badge.setText = lambda *a, **k: None
+        self._checkouts = None
+
+    def centralWidget(self):
+        return self._central
+
+    def size(self):
+        return self._central.size()
+
+
+def test_ucdan_uca_usb_cikarilinca_uyari_gosteriliyor_geri_takilinca_devam_ediyor(
+    qapp, db, monkeypatch: pytest.MonkeyPatch,
+):
+    hwid = "UCTANUCA-USB-HWID"
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, 'admin', 'approved', ?)",
+        ("uctanuca.admin", "x", hwid),
+    )
+
+    sahne = _UcTanUcaSahne(hwid)
+
+    # USB TAKILI — kilit devreye girmemeli.
+    monkeypatch.setattr(_mwl_modulu, "get_usb_hwid", lambda: hwid)
+    sahne._poll_usb()
+    assert sahne._locked is False
+
+    # USB ÇIKARILDI — get_usb_hwid() None dönüyor.
+    monkeypatch.setattr(_mwl_modulu, "get_usb_hwid", lambda: None)
+    sahne._poll_usb()
+    assert sahne._locked is True
+    assert not sahne._overlay.isHidden()
+    assert "USB" in sahne._overlay._title.text()
+    assert sahne.centralWidget().isEnabled() is False
+
+    # USB GERİ TAKILDI — aynı fiziksel cihaz, aynı HWID.
+    monkeypatch.setattr(_mwl_modulu, "get_usb_hwid", lambda: hwid)
+    sahne._poll_usb()
+
+    assert sahne._locked is False, (
+        "USB geri takılınca oturum otomatik devam etmedi"
+    )
+    assert sahne._overlay.isHidden()
+    assert sahne.centralWidget().isEnabled() is True

@@ -1,33 +1,34 @@
 """
-Kayıt ekranı — tasarım mockup'ının kurumsal alanları (kurum e-postası,
-referans kodu, plan/tier chip) ve mod ayrımı.
+Kayıt ekranı — tasarım mockup'ının kurumsal alanları ve mod ayrımı.
 
-Karar (bu paket bunu SABİTLİYOR): mockup'taki üç alanın hiçbirinin
-backend karşılığı yok — `users` tablosunda kurum/referans/plan sütunu
-YOK, HYCLEUS'ta çok kiracılı (tenant) ya da davetiye-kodu kavramı hiç
-yok. Bu yüzden alanlar HİÇBİR MODDA eklenmedi (seçenek a — "alanları
-şimdilik hiç ekleme"), "isteğe bağlı" etiketiyle bile: bir güvenlik
-kasası kaydında kullanıcı bir form alanına bir şey yazdığında onun bir
-yere gittiğini varsayar; etiket bu varsayımı tam olarak silmiyor.
-Plan/tier chip'i zaten hiçbir yerde yoktu — kaldırılacak bir şey
-bulunamadı.
+Tarihçe: `077159e` (2026-08-23) mockup'taki ÜÇ alanın (kurum e-postası,
+referans kodu, plan/tier chip) hiçbirinin backend karşılığı olmadığını
+tespit edip hiçbirini eklemedi ("seçenek a"). Arayüz güncellemesi turunda
+(2026-08-26) bunlardan YALNIZCA Referans Kodu için gerçek bir backend
+kuruldu (bkz. `CORE/referans_id.py`) — bu yüzden bu dosya güncellendi:
+Referans Kodu artık KURUMSAL modda GERÇEKTEN var ve gerçekten doğrulanıyor.
+Kurum e-postası ve plan/tier chip kararı DEĞİŞMEDİ — ikisi de hâlâ hiçbir
+modda yok, hâlâ backend karşılığı yok.
 
-Sonuç: kayıt ekranı HER İKİ modda da bugünkü gerçek akışın (Kullanıcı
-Adı + PIN + PIN Tekrar + Rol) aynısı — mod, bu ekranı hiç ETKİLEMİYOR.
-`UI/login_dialog.py`'nin "Kayıt Ol" sekmesi hedef alındı: `UI/AdminPanel.py`
-→ `RegisterDialog.py` yolu zaten `_apply_mode_visibility()` ile Bireysel
-modda TAMAMEN gizli (bkz. `UI/AdminPanel.py:1233`, "Bekleyen Kayıtlar"
-sekmesi) — yani mockup'ın betimlediği, her modda erişilebilir kalan tek
-kayıt ekranı budur.
+Sonuç: kayıt ekranı BİREYSEL modda bugünkü gerçek akışın (Kullanıcı Adı +
+PIN + PIN Tekrar + Rol) aynısı; KURUMSAL modda buna GERÇEK bir Referans
+Kodu doğrulaması ekleniyor (yanlış/boş kod → kayıt reddedilir, DB'ye hiçbir
+satır yazılmaz). `UI/login_dialog.py`'nin "Kayıt Ol" sekmesi hedef alındı:
+`UI/AdminPanel.py` → `RegisterDialog.py` yolu zaten `_apply_mode_visibility()`
+ile Bireysel modda TAMAMEN gizli (bkz. `UI/AdminPanel.py:1233`, "Bekleyen
+Kayıtlar" sekmesi) — yani mockup'ın betimlediği, her modda erişilebilir
+kalan tek kayıt ekranı budur.
 
-Bu paket iki şeyi ölçüyor
---------------------------
-1. YAPISAL (metin/regex) — mockup'ın kurumsal alanları ve plan/tier
-   chip'i HİÇBİR dosyada YOK; `INSERT INTO users` sütun listesi tam
-   olarak gerçek beş sütun. Biri "isteğe bağlı" etiketiyle bile bu
-   alanları geri getirirse test düşer.
-2. DAVRANIŞSAL — kayıt akışı BİREYSEL ve KURUMSAL modda BİREBİR aynı
-   şekilde tamamlanıyor; mod DB'ye yazılan satırı hiç ETKİLEMİYOR.
+Bu paket şunları ölçüyor
+-------------------------
+1. YAPISAL (metin/regex) — kurum e-postası ve plan/tier chip HİÇBİR
+   dosyada YOK; `INSERT INTO users` sütun listesi tam olarak gerçek beş
+   sütun (Referans Kodu `users`'a hiç YAZILMIYOR — settings'te tek bir
+   kurulum-geneli değer, bkz. `CORE/referans_id.py`).
+2. DAVRANIŞSAL — Bireysel modda kayıt akışı eskisi gibi; Kurumsal modda
+   doğru Referans Kodu ile geçiyor, yanlış/boş kodla GERÇEKTEN reddediliyor
+   (mutasyon kanıtı: `tests/test_kayit_kurumsal_referans.py`). İki modda
+   üretilen `users` satırının ŞEKLİ (sütun kümesi) hâlâ birebir aynı.
 """
 from __future__ import annotations
 
@@ -51,6 +52,7 @@ except ImportError as _exc:  # pragma: no cover — ortama bağlı
 
 from CORE import vault_manager
 from CORE.app_mode import BIREYSEL, KURUMSAL, set_app_mode
+from CORE.referans_id import generate_referans_id, set_referans_id
 
 KOK = Path(__file__).resolve().parent.parent
 
@@ -58,7 +60,10 @@ _HWID_BASE = "USB-KAYIT-TEST"
 _PIN = "yeniPIN123"
 _ROLE = "Standart"
 
-#: Mockup'ın kurumsal alanları — hiçbir dosyada, hiçbir modda görünmemeli.
+#: Backend karşılığı hâlâ olmayan mockup alanları — hiçbir dosyada, hiçbir
+#: modda görünmemeli. Referans Kodu buradan ÇIKARILDI (artık gerçek bir
+#: backend'i var, bkz. modül docstring'i) — "KRM-" ve "Referans" metinleri
+#: artık login_dialog.py'de KURUMSAL modda MEŞRU olarak bulunuyor.
 #: "plan"/"tier" gibi çıplak sözcükler DIŞARIDA bırakıldı: Türkçe metinde
 #: ("planlanan", vb.) yanlış pozitif üretirdi. Somut etiket/objectName'ler
 #: kontrol ediliyor.
@@ -66,10 +71,6 @@ _YASAKLI_METINLER = (
     "Kurum e-posta",
     "kurum_email",
     "company_email",
-    "Referans kod",
-    "referans_kod",
-    "reference_code",
-    "KRM-",
     "plan_chip",
     "tier_chip",
     "plan_badge",
@@ -201,6 +202,18 @@ def test_kayit_akisi_HER_IKI_MODDA_da_tamamlaniyor(
     dlg._reg_pin2.setText(_PIN)
     dlg._reg_role.setCurrentText(_ROLE)
 
+    # KURUMSAL modda artık GERÇEK bir Referans Kodu alanı var — doğru
+    # değer olmadan `_on_register()` reddeder (bkz. test_kayit_kurumsal_
+    # referans.py'deki ret/mutasyon testleri). Bireysel modda alan hiç
+    # oluşturulmuyor (`dlg._reg_referans is None`).
+    if mod == KURUMSAL:
+        rid = generate_referans_id()
+        set_referans_id(db, rid)
+        assert dlg._reg_referans is not None
+        dlg._reg_referans.setText(rid)
+    else:
+        assert dlg._reg_referans is None
+
     dlg._on_register()
 
     # `.isVisible()` DEĞİL: `dlg` hiç `.show()` edilmedi, bu yüzden ana
@@ -228,13 +241,17 @@ def test_kayit_akisi_HER_IKI_MODDA_da_tamamlaniyor(
         )
 
 
-def test_iki_mod_AYNI_sekilde_davraniyor(
+def test_iki_mod_SONUC_SATIRININ_SEKLI_AYNI_kaliyor(
     qapp, db, kasa_dizini, totp_gecerli, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    Mod farkı YOK denemesinin doğrudan kanıtı: aynı girdiyle iki ayrı
-    kullanıcı adı altında iki moda da kaydolunca satırlar (kullanıcı adı
-    ve hwid dışında) BİREBİR aynı şekle sahip olmalı.
+    Arayüz güncellemesi turundan ÖNCE bu test "iki mod BİREBİR aynı
+    davranıyor" diyordu — artık doğru değil: Kurumsal modda GERÇEK bir
+    Referans Kodu adımı var (bkz. modül docstring'i). Hâlâ doğru olan ve
+    burada kanıtlanan şey: SÜREÇ farklı olsa da, sonuçta `users`'a yazılan
+    satırın ŞEKLİ (hangi sütunlar, hangi tipte) iki modda birebir aynı —
+    Referans Kodu satıra hiç YAZILMIYOR, yalnızca doğrulama için kullanılıp
+    atılıyor.
     """
     import UI.login_dialog as ld
     monkeypatch.setattr(ld, "show_totp_enrollment_dialog", lambda *a, **k: None)
@@ -251,10 +268,14 @@ def test_iki_mod_AYNI_sekilde_davraniyor(
         dlg._reg_pin.setText(_PIN)
         dlg._reg_pin2.setText(_PIN)
         dlg._reg_role.setCurrentText(_ROLE)
+        if mod == KURUMSAL:
+            rid = generate_referans_id()
+            set_referans_id(db, rid)
+            dlg._reg_referans.setText(rid)
         dlg._on_register()
 
         satir = db.fetchone("SELECT * FROM users WHERE username = ?", (kullanici_adi,))
-        assert satir is not None
+        assert satir is not None, f"{mod}: kayıt hata verdi: {dlg._reg_error.text()}"
         # `password_hash` argon2'nin kendi rastgele tuzu yüzünden aynı PIN'de
         # bile HER kayıtta farklı çıkar — karşılaştırma dışında tutuluyor,
         # yoksa bu test hiçbir zaman geçmezdi (mod farkından değil, tuzdan).
@@ -262,8 +283,11 @@ def test_iki_mod_AYNI_sekilde_davraniyor(
                          if k not in ("id", "username", "hwid", "created_at", "password_hash")}
 
     assert sonuclar[KURUMSAL] == sonuclar[BIREYSEL], (
-        "kayıt sonucu moda göre farklılaşıyor — mod bu ekranı ETKİLEMEMELİ"
+        "iki modda üretilen satırın ŞEKLİ farklılaştı — Referans Kodu "
+        "users tablosuna SIZMIŞ olabilir"
     )
+    for k in sonuclar[KURUMSAL]:
+        assert "referans" not in k.lower() and "kurum" not in k.lower()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

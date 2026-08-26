@@ -129,7 +129,7 @@ _SELFTEST_MODULLERI: tuple[str, ...] = (
     "CORE.hclx", "CORE.hwid_probe",
     "CORE.idle_lock", "CORE.integrity", "CORE.inventory", "CORE.merkle",
     "CORE.paths", "CORE.pin_policy", "CORE.pin_rotation",
-    "CORE.rate_limit", "CORE.recover_vault", "CORE.rehber",
+    "CORE.rate_limit", "CORE.recover_vault", "CORE.referans_id", "CORE.rehber",
     "CORE.roles",
     "CORE.recovery_share", "CORE.registration",
     "CORE.retention", "CORE.safezone", "CORE.scanner",
