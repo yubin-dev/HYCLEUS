@@ -79,6 +79,12 @@ _APP_NAME    = "HYCLEUS"
 _TOTP_LEN    = 6
 # Deneme sınırı ve kilit süreleri CORE/rate_limit.py'de — sayaç DB'de tutulur
 
+# İki-sütunlu düzen (2026-08-26): sol marka paneli sabit genişlik, sağ
+# sütun (form) eskisiyle AYNI genişlik (`w` parametresi _init_card'a hâlâ
+# bunu taşıyor) — içindeki hiçbir margin/genişlik matematiği değişmedi,
+# yalnızca kartın TOPLAM genişliğine bu kadar eklendi.
+_SOL_PANEL_W = 380
+
 _PH = PasswordHasher()
 
 _SETUP_ROLES = [
@@ -394,15 +400,38 @@ class LoginDialog(QDialog):
         return self._role
 
     # ── Card / window ─────────────────────────────────────────────────────
+    #
+    # İki-sütunlu düzen (2026-08-26, mockup): kart artık TEK bir
+    # QVBoxLayout değil, yatayda ikiye bölünmüş — sol sabit-genişlik marka
+    # paneli (`_sol_panel`, tamamen statik metin) + sağ `_sag_govde`
+    # (içine `_build_main_ui`/`_build_setup_ui`'nin AYNI kod yolu
+    # yerleşiyor, `self._card` yerine `self._sag_govde`'ye). Bu ayrım
+    # yalnızca YERLEŞİM: hiçbir widget adı, sinyal bağlantısı ya da iş
+    # mantığı fonksiyonu değişmedi — bkz. B-058/B-060/B-061/B-065/B-067
+    # testleri, hepsi bu dosyanın davranışını kilitliyor.
+    #
+    # Köşe yuvarlaklığı: `self._card` (QFrame) kendi arka planını/
+    # border-radius'unu boyuyor; sol panel şeffaf kalıp o rengi olduğu
+    # gibi gösteriyor (dosyadaki mevcut kural — header/tab_wrap/stack de
+    # hep "background:transparent"). Sağ taraf FARKLI (biraz daha açık)
+    # bir yüzey rengi istediği için ayrı bir QFrame — yalnızca SAĞ iki
+    # köşesi yuvarlatılmış, sol kenarı kartın içinde, görünmeyen bir
+    # dikişte kalıyor.
 
     def _init_card(self, w: int, h: int) -> None:
-        self.setFixedSize(w + 20, h + 20)
+        total_w = w + _SOL_PANEL_W
+        self.setFixedSize(total_w + 20, h + 20)
 
+        # NOT: seçiciler `QFrame{...}` DEĞİL, `QFrame#adı{...}` — bare
+        # tip seçicisi Qt'de QLabel'a (QFrame'in alt sınıfı) KASKAD EDER
+        # ve her etikete istenmeyen bir border/border-radius bulaştırır.
+        # Nesne-adı seçicisi bu kaskadı keser (yalnızca bu widget'a bağlar).
         self._card = QFrame(self)
-        self._card.setGeometry(10, 10, w, h)
+        self._card.setObjectName("hycleus_login_card")
+        self._card.setGeometry(10, 10, total_w, h)
         self._card.setStyleSheet(
-            f"QFrame{{background:{_LT['sidebar']};border:1px solid {_LT['border']};"
-            f"border-radius:14px;}}"
+            f"QFrame#hycleus_login_card{{background:{_LT['bg']};"
+            f"border:1px solid {_LT['border']};border-radius:14px;}}"
         )
 
         eff = QGraphicsDropShadowEffect(self)
@@ -410,6 +439,84 @@ class LoginDialog(QDialog):
         eff.setOffset(0, 6)
         eff.setColor(QColor(0, 0, 0, 30))
         self._card.setGraphicsEffect(eff)
+
+        card_lay = QHBoxLayout(self._card)
+        card_lay.setContentsMargins(0, 0, 0, 0)
+        card_lay.setSpacing(0)
+        card_lay.addWidget(self._sol_panel())
+
+        self._sag_govde = QFrame()
+        self._sag_govde.setObjectName("hycleus_login_sag")
+        self._sag_govde.setStyleSheet(
+            f"QFrame#hycleus_login_sag{{background:{_LT['sidebar']};border:none;"
+            f"border-top-right-radius:14px;border-bottom-right-radius:14px;}}"
+        )
+        card_lay.addWidget(self._sag_govde, 1)
+
+    def _sol_panel(self) -> QWidget:
+        """Marka/özellik paneli — Giriş/Kayıt Ol/İlk Kurulum'un ortak sol sütunu.
+
+        Tamamen statik metin: hiçbir widget veri bağlamıyor, hiçbir DB
+        çağrısı ya da doğrulama mantığı yok. Buradaki üç madde
+        (AES-256-GCM, Shamir 2-of-3, HWID kilidi) ve alt bilgi (Argon2id,
+        TOTP RFC 6238) uydurulmadı — SECURITY.md'de belgelenen gerçek
+        özellikler, mockup'ın metni olduğu gibi buraya taşındı.
+        """
+        panel = QWidget()
+        panel.setFixedWidth(_SOL_PANEL_W)
+        panel.setStyleSheet("background:transparent;")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(40, 40, 32, 32)
+        lay.setSpacing(0)
+
+        ust_satir = QHBoxLayout()
+        ust_satir.setSpacing(8)
+        rozet = _lbl(f"{surum_etiketi()} · AIR-GAPPED", size=11, color=_LT["subtext"])
+        ust_satir.addWidget(rozet)
+        ust_satir.addStretch()
+        durum = QLabel("●  ÇEVRİMDIŞI")
+        durum.setStyleSheet(
+            f"color:{_LT['green']};font-size:11px;font-weight:600;background:transparent;"
+        )
+        ust_satir.addWidget(durum)
+        lay.addLayout(ust_satir)
+        lay.addSpacing(40)
+
+        baslik = QLabel("Donanıma\nbağlı kasa.")
+        baslik.setStyleSheet(
+            f"color:{_LT['text']};font-size:26px;font-weight:700;background:transparent;"
+        )
+        lay.addWidget(baslik)
+        lay.addSpacing(28)
+
+        for ozellik in (
+            "AES-256-GCM Mühürlü",
+            "Shamir 2-of-3 Paylaşımı",
+            "USB HWID Kilit Mekanizması",
+        ):
+            satir = QHBoxLayout()
+            satir.setSpacing(8)
+            tik = QLabel("✓")
+            tik.setFixedWidth(16)
+            tik.setStyleSheet(
+                f"color:{_LT['accent']};font-size:13px;font-weight:700;background:transparent;"
+            )
+            satir.addWidget(tik)
+            satir.addWidget(_lbl(ozellik, size=13, color=_LT["text"]))
+            satir.addStretch()
+            lay.addLayout(satir)
+            lay.addSpacing(10)
+
+        lay.addStretch(1)
+
+        alt_bilgi = _lbl(
+            "Argon2id · TOTP RFC 6238 · Yerel Bellek İzolasyonu",
+            size=10, color=_LT["subtext"],
+        )
+        alt_bilgi.setWordWrap(True)
+        lay.addWidget(alt_bilgi)
+
+        return panel
 
     def mousePressEvent(self, ev) -> None:
         if ev.button() == Qt.LeftButton:
@@ -427,7 +534,7 @@ class LoginDialog(QDialog):
     # ── Main UI (login + register tabs) ──────────────────────────────────
 
     def _build_main_ui(self) -> None:
-        root = QVBoxLayout(self._card)
+        root = QVBoxLayout(self._sag_govde)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
@@ -685,7 +792,7 @@ class LoginDialog(QDialog):
     # ── Setup UI (first run) ──────────────────────────────────────────────
 
     def _build_setup_ui(self) -> None:
-        root = QVBoxLayout(self._card)
+        root = QVBoxLayout(self._sag_govde)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
