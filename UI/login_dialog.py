@@ -96,8 +96,8 @@ _SETUP_ROLES = [
 # ── Shared QSS fragments ───────────────────────────────────────────────────────
 #
 # Arayüz güncellemesi (2026-08-26): oturum öncesi bu diyaloğun `self._T`'si
-# YOK — HycleusWindow henüz kurulmadı. Mockup'ın "air-gapped" koyu görünümüne
-# yaklaştırmak için sabit bir palet seçildi: `_ABYSSAL_BLUE` — icat edilmiş
+# YOK — HycleusWindow henüz kurulmadı. Mockup'ın donanım-temalı koyu
+# görünümüne yaklaştırmak için sabit bir palet seçildi: `_ABYSSAL_BLUE` — icat edilmiş
 # yeni bir renk kümesi değil, kayıtlı preset'lerden biri (bkz.
 # UI/main_window_palette.py). Kullanıcının oturum-içi tema tercihini OKUMAYA
 # ÇALIŞMADI: bu, kapsamın dışında yeni bir özellik (kalıcı tercihin oturum
@@ -469,17 +469,16 @@ class LoginDialog(QDialog):
         lay.setContentsMargins(40, 40, 32, 32)
         lay.setSpacing(0)
 
-        ust_satir = QHBoxLayout()
-        ust_satir.setSpacing(8)
-        rozet = _lbl(f"{surum_etiketi()} · AIR-GAPPED", size=11, color=_LT["subtext"])
-        ust_satir.addWidget(rozet)
-        ust_satir.addStretch()
-        durum = QLabel("●  ÇEVRİMDIŞI")
-        durum.setStyleSheet(
-            f"color:{_LT['green']};font-size:11px;font-weight:600;background:transparent;"
-        )
-        ust_satir.addWidget(durum)
-        lay.addLayout(ust_satir)
+        # Mockup'ın ağ-erişimi-yok rozeti BİLEREK YOK — doğrulanmamış bir
+        # mimari iddia, SECURITY.md'yle çelişiyordu (bkz. §M1: zaman damgası
+        # otoritesi gibi ağ üzerinden ulaşılan gerçek bir tehdit yüzeyi
+        # var). Aynı gerekçe UI/main_window_palette.py'de _AURORA_BOREALIS
+        # üstündeki yorumda da kayıtlı — buraya da BİLEREK taşınmadı. (Bu
+        # yorumun kendisi de rozetin metnini YAZMAZ — tests/test_login_
+        # dogrulanmamis_iddia.py'nin banned-text taraması, açıklarken
+        # tekrar sızdırmayı önlemek için tam da bunu kontrol ediyor.)
+        rozet = _lbl(surum_etiketi(), size=11, color=_LT["subtext"])
+        lay.addWidget(rozet)
         lay.addSpacing(40)
 
         baslik = QLabel("Donanıma\nbağlı kasa.")
