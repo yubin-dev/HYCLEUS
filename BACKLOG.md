@@ -3607,3 +3607,45 @@ kaynaktan türetilmesi gerekiyor (elle senkronize edilen ikinci bir kopya
 açmamak için — bkz. B-056'daki benzer "tek kaynak" dersi).
 
 ---
+
+## B-069 — "Kurtarma parçasıyla giriş" ekranı — wontfix
+
+**Durum:** Kapalı — wontfix, kod DEĞİŞTİRİLMEDİ
+**Öncelik:** —
+**Bulundu:** 2026-08-26 — Arayüz güncellemesi (BÖLÜM B) mockup taraması,
+Giriş ekranı restyle turu
+
+Mockup'ta bir "Kurtarma parçasıyla gir" ekranı var: kullanıcı kâğıda
+bastığı `share_3`'ü (Base32/QR) doğrudan Giriş ekranından girip PIN'i
+sıfırlayarak kasayı açabiliyor. Gerçek kodda bu ekranın karşılığı yok —
+`login_dialog.py`'de "kurtarma"/"recovery"/"share_3" geçen tek bir satır
+bile yok. Restyle turunda bu yüzden atlandı; bu madde neden EKLENMEYECEĞİNİ
+kayda geçiriyor.
+
+Gerçek kurtarma mekanizması (`CORE/recovery_share.py`,
+`python CORE/recover_vault.py --recover`) yalnızca AdminPanel'den,
+yönetici oturumu İÇİNDEN bir payın (`share_3`) DIŞA AKTARILMASINI
+sağlıyor — kullanım rehberi bunu açıkça "USB takılıyken" senaryosu olarak
+tanımlıyor, çünkü `--recover` payı hangi HWID'e ait olduğunu bilmek için
+kayıtlı USB'nin fiziksel olarak takılı olmasını ZORUNLU kılıyor. Yani
+mekanizma yalnızca "USB elimde, PIN'i unuttum" senaryosunu çözüyor —
+"USB gerçekten kayıp" senaryosunu CLI'da bile çözmüyor, oraya yalnızca bir
+yönetici müdahalesiyle (USB kaydını silip yeniden kayıt) çıkılabiliyor.
+
+İki sebeple bu ekran eklenmeyecek:
+
+1. **Kullanıcının asıl ihtiyacını karşılamıyor.** Mockup'taki "kurtarma
+   parçasıyla giriş" senaryosu tam olarak "USB kayıp" durumunda çekici
+   görünüyor, ama gerçek `--recover` akışı bu senaryoyu ZATEN çözmüyor
+   (HWID'i bilmek için USB gerekiyor). UI'a bu ekranı eklemek, çözmediği
+   bir sorunu çözüyormuş gibi görünen sahte bir kapı açardı.
+2. **USB'siz gerçek bir kurtarma yolu kurmak güvenlik amacını bozar.**
+   HWID kilidinin var oluş sebebi "sahip olunan şey" (fiziksel USB)
+   faktörü — bunu atlayan bir kurtarma yolu (yalnızca `share_3` + PIN ile
+   HWID doğrulaması olmadan açılan bir kasa) bu faktörü tamamen ortadan
+   kaldırır. Mockup'ın gösterdiği ekranı gerçek yapmak, restyle kapsamının
+   çok ötesinde bir mimari değişiklik olurdu.
+
+Test: yok — yalnızca belge girişi, kod değişikliği yapılmadı.
+
+---
