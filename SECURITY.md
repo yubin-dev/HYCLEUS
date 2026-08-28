@@ -1747,6 +1747,28 @@ in `BACKLOG.md` with the reasoning. A report that repeats one of them is
 still welcome if you can show the triage was wrong — that is exactly the
 failure mode a second pair of eyes catches.
 
+**A fourth, project-specific check runs in the same `pytest` suite as
+everything else in this document:** `tests/test_ui_yasakli_iddia_terimleri.py`
+parses every string constant in every `UI/*.py` file (via `ast`, so
+comments are never scanned — only what could actually reach the screen)
+and fails the build if a banned, unverified architecture claim appears.
+The list, and why each entry is on it:
+
+| Term | Why it's banned | Allowed context |
+|---|---|---|
+| `AIR-GAPPED` / `air-gapped` | The app reaches the TSA over the network (§1.1, M1) — it is not air-gapped, unconditionally | None — banned in every UI string |
+| `ZERO-TRUST` / `zero-trust` | Not an architecture this app implements or claims anywhere else | None |
+| `ÇEVRİMDIŞI` / `çevrimdışı` ("offline") | True of one *specific, verified* capability (RFC 3161 timestamp verification, §4.9 — genuinely network-free, measured) but false as a claim about the application as a whole | Only inside the exact phrase "çevrimdışı doğrula-" (qualifying that one verification action) — everything else, including a standalone status badge, is banned |
+
+This exists because the same claim leaked into the UI twice: once nearly
+(a comment in `UI/main_window_palette.py` records that "v2.5 ·
+AIR-GAPPED" was deliberately dropped from a ported theme), and once for
+real (the two-column login redesign copied "● ÇEVRİMDIŞI" straight from
+a mockup into `UI/login_dialog.py`, 2026-08-26). The fix that caught the
+second leak checked one file; this one checks every file `UI/` will ever
+have, the same structural move B-056 made for a drifting module count
+in this README. Full incident history: **B-071** in `BACKLOG.md`.
+
 ---
 ---
 
@@ -3483,3 +3505,26 @@ Bu araçların gözden geçirilip yerinde bırakılan bulguları gerekçesiyle
 birlikte `BACKLOG.md` içinde kayıtlı. Bunlardan birini yineleyen bir bildirim,
 değerlendirmenin yanlış olduğunu gösterebiliyorsanız yine de değerlidir —
 ikinci bir çift gözün yakaladığı şey tam olarak budur.
+
+**Dördüncü, projeye özgü bir kontrol de bu belgedeki her şeyle AYNI
+`pytest` suite'inde çalışıyor:** `tests/test_ui_yasakli_iddia_terimleri.py`
+`UI/*.py` altındaki HER dosyadaki her string sabitini (`ast` ile, yani
+yorumlar HİÇ taranmıyor — yalnızca ekrana gerçekten çıkabilecek şeyler)
+ayrıştırıyor ve yasaklı, doğrulanmamış bir mimari iddia bulursa yapıyı
+kırıyor. Liste, ve her maddenin neden orada olduğu:
+
+| Terim | Neden yasaklı | İzin verilen bağlam |
+|---|---|---|
+| `AIR-GAPPED` / `air-gapped` | Uygulama TSA'ya ağ üzerinden ulaşıyor (§1.1, M1) — hava boşluklu değil, koşulsuz | Yok — hiçbir UI dizesinde |
+| `ZERO-TRUST` / `zero-trust` | Bu uygulamanın hiçbir yerde uyguladığı ya da iddia ettiği bir mimari değil | Yok |
+| `ÇEVRİMDIŞI` / `çevrimdışı` | Belirli, DOĞRULANMIŞ bir yetenek için (RFC 3161 zaman damgası doğrulaması, §4.9 — gerçekten ağsız, ölçüldü) doğru, ama uygulamanın TAMAMI hakkında bir iddia olarak yanlış | Yalnızca "çevrimdışı doğrula-" bigramının TAM İÇİNDE (o tek doğrulama eylemini nitelerken) — geri kalan her şey, bağımsız bir durum rozeti dahil, yasak |
+
+Bu kontrol, aynı iddianın UI'ye İKİ KEZ sızmasından doğdu: bir kez neredeyse
+(`UI/main_window_palette.py`'deki bir yorum, "v2.5 · AIR-GAPPED"'in
+portlanan bir temadan BİLEREK çıkarıldığını kayda geçiriyor), bir kez
+gerçekten (iki-sütunlu giriş ekranı yeniden tasarımı "● ÇEVRİMDIŞI"'yi
+bir mockup'tan doğrudan `UI/login_dialog.py`'ye kopyaladı, 2026-08-26).
+İkinci sızıntıyı yakalayan düzeltme tek bir dosyayı kontrol ediyordu; bu
+kontrol `UI/`'nin bundan sonra sahip olacağı HER dosyayı kapsıyor —
+B-056'nın bu README'deki sürüklenen modül sayısı için yaptığı AYNI
+yapısal hamle. Olayın tam geçmişi: `BACKLOG.md`'de **B-071**.

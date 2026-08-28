@@ -4190,3 +4190,98 @@ adları) `win32cred.CredEnumerate` ile bağımsızca teyit edilerek
 temizlendi. Ayrıntı SECURITY.md §4.13'te.
 
 ---
+
+## B-071 — "AIR-GAPPED"/"ÇEVRİMDIŞI" UI'ye İKİ KEZ sızdı — tek dosyalı düzeltme B-056'nın dersini tekrar öğretti, tek bir kapsamlı tarama ile kapatıldı
+
+**Durum:** Kapalı
+**Öncelik:** Orta (yanlış bir mimari iddia; kırılan bir şey değil ama
+SECURITY.md ile ÇELİŞEN bir güvenlik iddiası kullanıcıya ulaşabilirdi)
+**Bulundu ve kapatıldı:** 2026-08-28 — aynı turda
+
+### Olay geçmişi
+
+"HYCLEUS v2.5 · AIR-GAPPED" ve "● ÇEVRİMDIŞI" — SECURITY.md §1.1'in M1
+(zaman damgası otoritesine AĞ üzerinden ulaşılıyor) ile doğrudan çelişen,
+doğrulanmamış mimari iddialar — bu koda İKİ KEZ girdi:
+
+1. Tema portlama turunda mockup'ın "v2.5 / AIR-GAPPED" metni BİLEREK
+   taşınmadı (`UI/main_window_palette.py`'nin `_AURORA_BOREALIS`
+   üstündeki yorum bunu kayda geçiriyor).
+2. İki-sütunlu giriş ekranı restyle turunda (2026-08-26), aynı mockup'ın
+   sol paneli tasarlanırken "HYCLEUS v2.5 · AIR-GAPPED" ve "● ÇEVRİMDIŞI"
+   metni bu kez GERÇEKTEN `UI/login_dialog.py`'ye kopyalandı — 1.
+   maddedeki karar unutulmuştu.
+
+2. maddeyi yakalayan düzeltme (`tests/test_login_dogrulanmamis_iddia.py`)
+   **TEK bir dosyayı** (`login_dialog.py`) tarıyordu, elle tutulan bir
+   terim listesiyle. Bu tam olarak B-056'nın "README'nin `--selftest`
+   modül sayısı" bulgusuyla aynı sınıf sorun: dosyaya-özgü, elle tutulan
+   bir kontrol, YENİ bir UI dosyasında aynı iddia sızarsa onu YAKALAMAZ
+   — üçüncü bir sızıntı için üçüncü bir dosyaya-özgü test yazılması
+   gerekirdi, sessizce sürüklenmeye açık.
+
+### Kalıcı çözüm — B-056'nın yapısal hamlesinin aynısı
+
+`tests/test_login_dogrulanmamis_iddia.py` SİLİNDİ, yerine
+`tests/test_ui_yasakli_iddia_terimleri.py` eklendi — `UI/*.py` altındaki
+**HER** dosyadaki **her** string sabitini `ast` ile ayrıştırıp yasaklı
+terim listesine karşı kontrol ediyor. Yeni bir UI dosyası eklendiğinde
+elle güncellenecek bir liste YOK; tarama `UI/` glob'unu takip ediyor.
+
+**Neden `ast`, neden ham metin taraması değil.**
+`main_window_palette.py`'nin kendi yorumu ("... 'air-gapped'
+doğrulanmamış bir güvenlik iddiası...") YASAKLI TERİMİN kendisini, onu
+NEDEN yasakladığını açıklarken içeriyor. Ham bir `terim in dosya_metni`
+taraması (önceki testin yaptığı gibi, ama o zaman tek dosyaya bakıyordu)
+bu yorumu da bir ihlal SANIRDI — kanıtlandı: `UI/` genelinde ham metin
+taraması denendiğinde bu tam olarak oldu. `ast.Constant` (yalnızca gerçek
+string DEĞERLERİ) taramasına geçilince Python yorumları hiç AST'ye
+girmediği için bu yanlış pozitif ortadan kalktı.
+
+**Yasaklı terim listesi — SECURITY.md §6.8'de tam gerekçesiyle belgeli:**
+
+| Terim | Bağlam |
+|---|---|
+| `AIR-GAPPED` / `air-gapped` | Koşulsuz yasak |
+| `ZERO-TRUST` / `zero-trust` | Koşulsuz yasak |
+| `ÇEVRİMDIŞI` / `çevrimdışı` | Yalnızca "çevrimdışı doğrula-" bigramı içinde izinli (RFC 3161 doğrulaması, §4.9 ile doğrulanmış GERÇEK bir yetenek); başka her bağlamda yasak |
+
+"ÇEVRİMDIŞI" bağlama bağlı ele alındı çünkü `UI/GuvenlikView.py` ve
+`UI/main_window_files.py`'de MEŞRU, doğru kullanımları var ("zaman
+damgasını çevrimdışı doğrular" — gerçekten ağsız, ölçüldü). Koşulsuz
+yasaklansa bu ikisi yanlış pozitif üretirdi; izin verilen bigram listesi
+metinden çıkarılıp KALAN kısımda hâlâ bir "çevrimdışı" varyantı var mı
+diye bakılarak ayrım yapılıyor.
+
+Türkçe'nin noktalı/noktasız I sorunu ("İ".lower() tek bir "i" değil,
+"i" + BİRLEŞTİRİCİ NOKTA üretiyor — ölçüldü) yüzünden `.lower()/.upper()`
+kullanılmadı; tüm terimler ve izinli bigramlar büyük/küçük harf
+varyantlarıyla ELLE listelendi (önceki testle aynı desen).
+
+### Test
+
+`tests/test_ui_yasakli_iddia_terimleri.py` — 7 test:
+
+- `test_ui_stringlerinde_yasakli_mimari_iddia_YOK` — asıl tarama, tüm
+  `UI/*.py`.
+- `test_ui_dizini_taranacak_dosya_iceriyor` — denetimin kendisi boş
+  kümeyi denetlemiyor mu (B-024 dersi, bkz. `test_tpm_sealing.py`).
+- `test_mevcut_UI_dosyalarindaki_mesru_kullanimlar_YANLIS_POZITIF_
+  URETMIYOR` — `GuvenlikView.py`/`main_window_files.py`'deki gerçek,
+  meşru "çevrimdışı doğrular" kullanımları yanlışlıkla yakalanmıyor.
+- 4 tane "denetimin kendisi çalışıyor mu" testi (`tmp_path` ile, gerçek
+  dosyalara HİÇ dokunmadan): enjekte edilen AIR-GAPPED yakalanıyor,
+  terim kaldırılınca yeşile dönüyor, enjekte edilen ZERO-TRUST
+  yakalanıyor, bağımsız "● ÇEVRİMDIŞI" rozeti yakalanırken aynı dosyadaki
+  "çevrimdışı doğrular" cümlesi yakalanmıyor (tam olarak sızan örüntü).
+
+Ayrıca GERÇEK bir dosyaya (`UI/RecoveryShareDialog.py`) geçici olarak
+`"Bu kasa AIR-GAPPED calisir"` eklenip asıl taramanın onu doğru dosya/
+satır bilgisiyle yakaladığı, sonra geri alınınca yeşile döndüğü elle
+doğrulandı (kalıcı teste dahil edilmedi — `tmp_path` testleri aynı
+kanıtı gerçek dosyalara dokunmadan sağlıyor).
+
+Tam test suite: 2735 passed, 4 skipped (bir önceki turdan +6: yeni
+dosyanın 7 testi eksi silinen dosyanın 1 testi).
+
+---
