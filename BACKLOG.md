@@ -4341,4 +4341,63 @@ SECURITY.md §6.8 (EN+TR) 2026-08-29 tarihli bir paragrafla güncellendi;
 Tam test suite: 2741 passed, 4 skipped (bir önceki turdan +6 — bu dosyaya
 eklenen 6 yeni test: yukarıda sayılan 5 + alt dizin kapsamı testi).
 
+### 2026-08-29 (devam 2) — `raise Sinif(degisken)` atlatması ölçüldü ve kapatıldı
+
+Bir sonraki turda, bir önceki maddedeki `raise`-yalnızca CORE/DB
+taramasının KENDİSİNİN bir boşluk bırakıp bırakmadığı sorgulandı: tarama
+yalnızca `raise Sinif(...)` çağrısının İÇİNDEKİ `ast.Constant`
+düğümlerini arıyordu (kod satırıyla teyit:
+`tests/test_ui_yasakli_iddia_terimleri.py`'nin o zamanki `_raise_mesaj_
+sabitlerini_topla`'sı, `ast.walk(dugum.exc)` içinde `Constant` arıyordu).
+Argüman bir `ast.Name` (değişken) olduğunda o alt ağaçta HİÇ `Constant`
+düğümü yok — geri izleme YOKTU.
+
+**Sentetik kanıt.** CORE/'ye geçici olarak eklendi:
+
+```python
+msg = "AIR-GAPPED doğrulama modu etkin"
+raise USBAuthError(msg)
+```
+
+Tarama çalıştırıldı: **TOPLAM İHLAL: 0**. Atlatma gerçekti. Geçici dosya
+kanıttan hemen sonra silindi. (Gerçek üretim kodunda bu kalıbın kullanılıp
+kullanılmadığı grep ile ayrıca kontrol edildi — kullanılmıyor, ama boşluk
+yine de kapatılması gereken gerçek bir yapısal zayıflıktı.)
+
+**Uygulanan seçenek — (a): taramayı genişlet.** Görevin izin verdiği
+"basit tek-seviye geri izleme" uygulandı, tam bir veri akışı analizi
+DEĞİL: `_govde_icinde_raise_ve_atamalari_coz` her fonksiyon/modül gövdesini
+SIRAYLA gezip `ad = "literal"` atamalarını bir sözlükte takip ediyor,
+`raise Sinif(ad)` görüldüğünde o ana kadar bilinen en son atamayı
+kullanıyor. Kapsam kuralları:
+
+- İç içe `if`/`for`/`while`/`try`/`with` blokları AYNI kapsam (sözlük
+  PAYLAŞILIYOR — dallanma doğruluğundan çok, kaçırmamak önceliklendirildi,
+  bir güvenlik taraması için doğru yön: fazla-yakalama zararsız, az-yakalama
+  tehlikeli).
+- İç içe bir `def`/`class` YENİ bir kapsam (boş sözlükle işleniyor,
+  dışarıdan miras almıyor) — başka bir fonksiyondaki aynı isimli bir
+  değişkenle YANLIŞLIKLA eşleşmemesi için.
+- Sıra önemli: bir atama `raise`'den SONRA yazılmışsa "en yakın ÖNCEKİ"
+  tanımına uymadığı için çözülmüyor.
+
+Sentetik kanıt tekrar çalıştırıldı, bu kez geri izlemeyle: **TOPLAM
+İHLAL: 1**, doğru dosya/satır (`raise`'in satırı, atamanınki değil) ile
+yakalandı. Gerçek CORE/DB ağacına karşı da çalıştırıldı — geri izleme
+eklendikten sonra hâlâ sıfır ihlal (yeni mantık yeni bir yanlış pozitif
+üretmedi).
+
+**Yeni testler (4, dosyanın toplamı 17'ye çıktı):**
+`test_raise_DEGISKEN_uzerinden_gecirilen_enjekte_terimi_yakaliyor` (pozitif
+kanıt), `test_raise_DEGISKEN_atamasi_BASKA_FONKSIYONDA_ise_COZULMUYOR` ve
+`test_raise_DEGISKEN_atamasi_RAISE_DEN_SONRA_ise_COZULMUYOR` (kapsam/sıra
+sınırları), `test_gercek_CORE_DB_dosyalarinda_degisken_uzerinden_gecen_
+ihlal_YOK` (gerçek ağaçta yeni yanlış pozitif yok).
+
+SECURITY.md §6.8 (EN+TR) 2026-08-29 "devam" paragrafıyla güncellendi;
+`test_belge_dil_paritesi.py` (27/27) ile doğrulandı.
+
+Tam test suite: 2745 passed, 4 skipped (bir önceki turdan +4 — bu dosyaya
+eklenen 4 yeni test).
+
 ---

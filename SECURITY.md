@@ -1803,6 +1803,27 @@ same file:
    was added to the allowed-context list alongside the existing
    "çevrimdışı doğrula-" forms.
 
+**2026-08-29 (continued) — one-level backtracking for `raise Class(var)`.**
+The `raise`-only CORE/DB scan (above) inspected only `ast.Constant` nodes
+inside the `raise` call — a `raise Class(msg)` where `msg` is a variable
+has no `Constant` node in that subtree at all, so it was invisible to the
+scan. Measured directly: planting `msg = "AIR-GAPPED doğrulama modu
+etkin"` followed by `raise USBAuthError(msg)` in a temporary CORE file
+left the scan at zero violations (the planted file was removed
+immediately after). No production code does this today (grep confirmed),
+but the gap was real, so the scan was extended rather than merely
+documented: it now walks each function/module body in order, tracks the
+nearest preceding `name = "literal"` assignment in the same scope, and
+resolves `raise Class(name)` against it — a simple one-level, sequential
+lookup, not a full data-flow analysis. A nested `def`/`class` starts a
+fresh scope (no inheritance from the enclosing function, so a same-named
+variable elsewhere can't be mistaken for the one in scope); an assignment
+after the `raise` is correctly ignored. Four permanent tests cover this:
+the injected-variable case is caught, a same-named variable in a
+different function is not wrongly resolved, an assignment written after
+the `raise` is not wrongly resolved, and the real CORE/DB tree still
+produces zero violations with backtracking enabled.
+
 ---
 ---
 
@@ -3596,3 +3617,25 @@ kapatıldı:
    `"...bu damga sonradan çevrimdışı doğrulanamaz."` mesajı — bir SINIRLAMA
    bildirimi, bir mimari iddia değil), bu da mevcut "çevrimdışı doğrula-"
    biçimlerinin yanına izin verilen bağlam listesine eklendi.
+
+**2026-08-29 (devam) — `raise Sinif(degisken)` için tek-seviye geri
+izleme.** Yukarıdaki `raise`-yalnızca CORE/DB taraması, `raise`
+çağrısının İÇİNDE yalnızca `ast.Constant` düğümlerini arıyordu —
+`raise Sinif(msg)` (`msg` bir değişken) çağrısının o alt ağacında HİÇ
+`Constant` düğümü yok, yani tarama için görünmezdi. Doğrudan ölçüldü:
+geçici bir CORE dosyasına `msg = "AIR-GAPPED doğrulama modu etkin"`,
+ardından `raise USBAuthError(msg)` eklenince tarama SIFIR ihlalde kaldı
+(geçici dosya kanıttan hemen sonra silindi). Bugün hiçbir üretim kodu bu
+kalıbı kullanmıyor (grep ile doğrulandı), ama boşluk gerçekti, o yüzden
+tarama yalnızca belgelenmedi, genişletildi: artık her fonksiyon/modül
+gövdesini SIRAYLA gezip aynı kapsamdaki en yakın önceki `ad = "literal"`
+atamasını takip ediyor ve `raise Sinif(ad)`'i buna göre çözüyor — basit,
+tek seviyeli, sıralı bir arama, tam bir veri akışı analizi DEĞİL. İç içe
+bir `def`/`class` YENİ bir kapsam başlatıyor (çevreleyen fonksiyondan
+miras almıyor, yani başka bir yerdeki aynı isimli bir değişkenle
+karıştırılamıyor); `raise`'den SONRA yazılan bir atama doğru şekilde
+YOK SAYILIYOR. Bunu 4 kalıcı test kapsıyor: enjekte edilen değişken
+kalıbı yakalanıyor, farklı bir fonksiyondaki aynı isimli değişken
+YANLIŞLIKLA çözülmüyor, `raise`'den SONRA yazılan bir atama
+YANLIŞLIKLA çözülmüyor, ve gerçek CORE/DB ağacı geri izleme etkinken
+hâlâ sıfır ihlal üretiyor.

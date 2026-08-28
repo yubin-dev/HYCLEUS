@@ -161,10 +161,69 @@ def _string_sabitlerini_topla(kaynak: str, dosya_adi: str) -> list[tuple[str, in
     ]
 
 
+#: `_govde_icinde_raise_ve_atamalari_coz`'ün YENİ bir kapsam (miras almadan
+#: sıfırdan) başlattığı düğüm tipleri — bir `def`/`class` içindeki yerel bir
+#: değişken, dışarıdaki (veya kardeş bir fonksiyondaki) aynı isimli bir
+#: değişkeni ÇÖZMEMELİ.
+_YENI_KAPSAM_BASLATAN_DUGUMLER = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _govde_icinde_raise_ve_atamalari_coz(
+    govde: list, atamalar: dict
+) -> list[tuple[str, int]]:
+    """Bir deyim listesini (`govde`) SIRAYLA gezip `ad = "literal"`
+    biçimindeki EN YAKIN ÖNCEKİ atamayı takip ederek `raise Sinif(ad)` gibi
+    bir DEĞİŞKEN üzerinden geçirilen mesajları çözer — 2026-08-29'da
+    ÖLÇÜLEN bir atlatma için: doğrudan `raise Sinif("...")` taraması
+    (`ast.walk(dugum.exc)` içinde `ast.Constant` arıyor) argüman bir
+    `ast.Name` olduğunda İÇİNDE hiçbir `Constant` düğümü BULAMIYOR — kanıt:
+    `msg = "AIR-GAPPED doğrulama modu etkin"` sonra `raise
+    USBAuthError(msg)` eklendiğinde asıl tarama 0 ihlal buldu (bkz.
+    BACKLOG.md B-071 devamı). Bu fonksiyon o boşluğu KAPATIYOR — tam bir
+    veri akışı analizi DEĞİL, tek seviyeli, sıralı bir geri izleme
+    (görevin istediği gibi): `atamalar` sözlüğü aynı fonksiyon/modül
+    kapsamı içinde İLERİYE doğru güncellenir, bir `raise` görüldüğünde o
+    ana kadar bilinen en son atama kullanılır. İç içe `if`/`for`/`try`/
+    `with` blokları AYNI kapsamdır (sözlük PAYLAŞILIR — dallanma
+    doğruluğundan çok, kaçırmamak önceliklidir); iç içe bir `def`/`class`
+    YENİ bir kapsamdır (boş sözlükle ayrıca işlenir, dışarıdakini miras
+    almaz)."""
+    sonuc: list[tuple[str, int]] = []
+    for stmt in govde:
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and isinstance(stmt.value, ast.Constant)
+            and isinstance(stmt.value.value, str)
+        ):
+            atamalar[stmt.targets[0].id] = stmt.value.value
+        elif isinstance(stmt, ast.Raise) and isinstance(stmt.exc, ast.Call):
+            argumanlar = list(stmt.exc.args) + [kw.value for kw in stmt.exc.keywords]
+            for arg in argumanlar:
+                if isinstance(arg, ast.Name) and arg.id in atamalar:
+                    sonuc.append((atamalar[arg.id], stmt.lineno))
+
+        if isinstance(stmt, _YENI_KAPSAM_BASLATAN_DUGUMLER):
+            sonuc.extend(_govde_icinde_raise_ve_atamalari_coz(stmt.body, {}))
+            continue
+
+        for alan in ("body", "orelse", "finalbody"):
+            alt_govde = getattr(stmt, alan, None)
+            if alt_govde:
+                sonuc.extend(_govde_icinde_raise_ve_atamalari_coz(alt_govde, atamalar))
+        for handler in getattr(stmt, "handlers", None) or ():
+            sonuc.extend(_govde_icinde_raise_ve_atamalari_coz(handler.body, atamalar))
+    return sonuc
+
+
 def _raise_mesaj_sabitlerini_topla(kaynak: str, dosya_adi: str) -> list[tuple[str, int]]:
     """CORE/DB için `_string_sabitlerini_topla`'nın DAR karşılığı: dosyadaki
     HER string sabiti değil, yalnızca `raise SinifAdi(...)` çağrılarının
-    İÇİNDEKİ string sabitleri.
+    İÇİNDEKİ string sabitleri — DOĞRUDAN literal argümanlar (`raise
+    X("...")`) VE tek-seviye geri izlemeyle çözülen değişken argümanları
+    (`msg = "..."; raise X(msg)`) dahil, bkz.
+    `_govde_icinde_raise_ve_atamalari_coz`.
 
     Neden dar — ölçüldü, geniş tarama gerçek yanlış-pozitif üretti
     -----------------------------------------------------------------
@@ -187,6 +246,7 @@ def _raise_mesaj_sabitlerini_topla(kaynak: str, dosya_adi: str) -> list[tuple[st
             for alt in ast.walk(dugum.exc):
                 if isinstance(alt, ast.Constant) and isinstance(alt.value, str):
                     sonuc.append((alt.value, alt.lineno))
+    sonuc.extend(_govde_icinde_raise_ve_atamalari_coz(agac.body, {}))
     return sonuc
 
 
@@ -472,4 +532,94 @@ def test_gercek_CORE_timestamp_dosyasinin_raise_mesaji_UYGUN_ALLOWLIST_ile_GECIY
     assert hedef, "CORE/timestamp.py:672'deki raise mesajı bulunamadı — satır kaymış olabilir"
     assert _metindeki_ihlalleri_bul(hedef[0]) == [], (
         f"Meşru 'çevrimdışı doğrulanamaz' mesajı yanlışlıkla yakalandı: {hedef[0]!r}"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. Değişken üzerinden geçirilen raise mesajları — 2026-08-29'da ÖLÇÜLEN
+#    atlatma: `raise Sinif(ad)` (`ad` bir değişken) İÇİNDE hiçbir
+#    `ast.Constant` YOK, doğrudan-literal tarama bunu görmüyordu. Gerçek
+#    kanıt (bu turda, geçici bir dosyayla): CORE/'ye
+#    `msg = "AIR-GAPPED doğrulama modu etkin"; raise USBAuthError(msg)`
+#    eklenip asıl tarama çalıştırıldığında TOPLAM İHLAL: 0 ölçüldü — geçici
+#    dosya kanıttan hemen sonra silindi. Tek-seviye geri izleme
+#    (`_govde_icinde_raise_ve_atamalari_coz`) eklenince aynı örüntü
+#    yakalandı (satır numarası `raise`'inki, atamanınki değil).
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_raise_DEGISKEN_uzerinden_gecirilen_enjekte_terimi_yakaliyor() -> None:
+    """Tam olarak geçmişte ölçülen atlatma örüntüsü: `msg = "..."` sonra
+    `raise Sinif(msg)` — doğrudan literal DEĞİL, tek-seviye geri izlemeyle
+    çözülmesi gerekiyor."""
+    kaynak = (
+        'class SahteHata(Exception):\n'
+        '    pass\n\n\n'
+        'def f():\n'
+        '    msg = "AIR-GAPPED doğrulama modu etkin"\n'
+        '    raise SahteHata(msg)\n'
+    )
+    dizeler = _raise_mesaj_sabitlerini_topla(kaynak, "sahte.py")
+    bulunanlar = [
+        terim for metin, _ in dizeler for terim in _metindeki_ihlalleri_bul(metin)
+    ]
+    assert "AIR-GAPPED" in bulunanlar, (
+        f"Değişken üzerinden geçirilen terim yakalanmadı: {dizeler}"
+    )
+    satirlar = [ln for metin, ln in dizeler if "AIR-GAPPED" in metin]
+    assert satirlar == [7], f"Beklenen satır 7 (raise), bulunan: {satirlar}"
+
+
+def test_raise_DEGISKEN_atamasi_BASKA_FONKSIYONDA_ise_COZULMUYOR() -> None:
+    """Kapsam sınırı doğru mu: `msg` adlı değişken BAŞKA bir fonksiyonda
+    atanmışsa (aynı isim, farklı kapsam), o değeri YANLIŞLIKLA
+    kullanmamalı — aksi halde tesadüfi isim çakışmaları hatalı eşleştirme
+    üretir."""
+    kaynak = (
+        'class SahteHata(Exception):\n'
+        '    pass\n\n\n'
+        'def baska_fonksiyon():\n'
+        '    msg = "AIR-GAPPED — bu değer BAŞKA bir kapsamda"\n'
+        '    return msg\n\n\n'
+        'def f():\n'
+        '    raise SahteHata(msg)\n'
+    )
+    dizeler = _raise_mesaj_sabitlerini_topla(kaynak, "sahte.py")
+    bulunanlar = [
+        terim for metin, _ in dizeler for terim in _metindeki_ihlalleri_bul(metin)
+    ]
+    assert bulunanlar == [], (
+        f"Başka bir fonksiyonun yerel değişkeni yanlışlıkla çözüldü: {dizeler}"
+    )
+
+
+def test_raise_DEGISKEN_atamasi_RAISE_DEN_SONRA_ise_COZULMUYOR() -> None:
+    """Sıra doğru mu: atama `raise`'den SONRA geliyorsa (kod akışında hiç
+    ulaşılamaz ya da farklı bir dala ait olsa bile), "en yakın ÖNCEKİ"
+    tanımına uymaz — çözülmemeli."""
+    kaynak = (
+        'class SahteHata(Exception):\n'
+        '    pass\n\n\n'
+        'def f():\n'
+        '    raise SahteHata(msg)\n'
+        '    msg = "AIR-GAPPED — bu atama raise SONRASINDA"\n'
+    )
+    dizeler = _raise_mesaj_sabitlerini_topla(kaynak, "sahte.py")
+    bulunanlar = [
+        terim for metin, _ in dizeler for terim in _metindeki_ihlalleri_bul(metin)
+    ]
+    assert bulunanlar == [], (
+        f"raise SONRASI atama yanlışlıkla ÖNCEKİ atama sanıldı: {dizeler}"
+    )
+
+
+def test_gercek_CORE_DB_dosyalarinda_degisken_uzerinden_gecen_ihlal_YOK() -> None:
+    """Tek-seviye geri izleme eklendikten SONRA gerçek CORE/DB dosyalarında
+    hâlâ sıfır ihlal olduğunu doğruluyor — yeni geri izleme mantığının
+    kendisi yeni bir yanlış pozitif YARATMADI (ör. gerçek kodda `msg`/`hata`
+    gibi ortak isimli, terim İÇERMEYEN başka bir değişkenle yanlış
+    eşleşme)."""
+    ihlaller = _tum_ihlalleri_tara(_core_db_dosyalari())
+    assert ihlaller == [], (
+        f"Geri izleme eklendikten sonra CORE/DB'de beklenmeyen ihlal: {ihlaller}"
     )
