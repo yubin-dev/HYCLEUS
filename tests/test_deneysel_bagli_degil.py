@@ -31,6 +31,24 @@ taranıyor (tests/ ve docs/ hariç), hedef fonksiyon adına yapılan her
 TANIMLAYAN dosyanın kendisi hariç tutuluyor (`def` satırı bir çağrı
 değil, ama modül içi yardımcı çağrılar da varsa onlar sayılmamalı diye
 yine de dışlanıyor — bu iki modülde öyle bir iç çağrı zaten yok, ölçüldü).
+
+Negatif kontrol — dört üretim konumunun DÖRDÜ de ayrı ayrı denendi
+--------------------------------------------------------------------
+Taranan dört yerin (`CORE/`, `UI/`, `DB/`, `main.py`) HER birine geçici
+bir çağrı eklenip test çalıştırıldı, sonra çağrı kaldırılıp yeşile
+dönüldüğü doğrulandı — "tarama gerçekten çalışıyor" iddiası "sıfır
+eşleşme buldu" gözlemine değil, her dört konumda da GERÇEKTEN
+yakaladığının ölçümüne dayanıyor:
+
+  - `UI/`  → `UI/main_window_files.py`'ye geçici `create_package(...)`
+  - `CORE/`→ `CORE/vault_manager.py`'ye geçici `create_package(...)`
+  - `DB/`  → `DB/db_manager.py`'ye geçici `timestamp_batch(...)`
+  - `main.py` → geçici `open_package(...)`
+
+Dördünde de: ekleme testi kırdı, kaldırma yeşile döndürdü. Hiçbiri
+çalışmadan geçmedi (ör. yanlışlıkla dosyayı okumayan bir glob kalıbı,
+ya da attribute-çağrı biçimini kaçıran bir AST eşleşmesi gibi bir kapsam
+boşluğu yok) — 2026-08-28'de doğrulandı.
 """
 from __future__ import annotations
 
