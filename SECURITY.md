@@ -1138,6 +1138,80 @@ remaining B-042 items (CI never exercising the TPM path, only one vendor
 measured, a real Clear-TPM never physically tried) are unrelated to this and
 still open.
 
+**Re-seal was audited for side effects, and it found a real one — not in
+the re-seal code, in the credential store underneath it.** `store()`
+(`CORE/secret_store.py`) has exactly two production call sites for the
+secret types it handles: `share_2` (`CORE/vault_manager.py::
+_save_usb_token`, and `CORE/secret_migration.py::migrate_share_2` for the
+legacy-DB-column upgrade path) and the TOTP secret, global-legacy and
+per-hwid (`store_totp_secret`/`store_totp_secret_for_hwid`, called from
+`UI/login_dialog.py`, `CORE/registration.py`, and `CORE/secret_migration.py`
+for the B-059 migration). Neither the recovery share (`share_3`, never
+persisted anywhere — always re-derived) nor PIN-derived key material
+(never persisted — Argon2id runs fresh on every unlock) ever reach `store()`.
+`store()` itself writes **no audit-chain entry of its own** — grepped, no
+`DBManager()` call in its body — so there is no generic "record written"
+tag for `tpm_reseal_completed`/`tpm_reseal_failed` to collide with; reading
+the chain, a `tpm_reseal_*` row is unambiguous, and
+`test_reseal_ile_TAZE_kayit_denetim_zincirinde_AYIRT_EDILEBILIYOR` proves it
+directly: a fresh, TPM-available registration leaves zero reseal rows, an
+old-installation reseal leaves exactly one. `store()`'s own round-trip
+verification calls `load()` — the same function the re-seal logic lives
+in — but this can never spuriously fire: whatever `store()` just wrote is
+already sealed (if TPM was available, `belki_muhurle()` sealed it before
+the write) or the re-seal attempt inside that round-trip is a genuine no-op
+(if TPM was unavailable, `belki_muhurle()` returns the value unchanged both
+times) — proved in code and in
+`test_share_2_DISI_cagri_yerinde_reseal_TETIKLENMIYOR_TAZE_yazimda` for the
+non-share_2 call site specifically.
+
+On atomicity: `_reseal_firsatci()`'s write is a single `set_password()`
+call, not a create-then-delete pair — there is no `delete_password`/`erase`
+call anywhere in it, so there is no window where both the old and new
+values could be lost, or neither could be found. Interrupting the write
+(`test_reseal_yazimi_KESILIRSE_ESKI_kayit_hala_okunabilir`, `set_password`
+raising mid-call) leaves the old, unsealed record fully intact — the
+failure is only reported, never allowed to corrupt or drop what was already
+there.
+
+**But auditing that call surfaced a second, real gap: Windows Credential
+Manager does not delete what `set_password()` overwrites.** `keyring`'s
+Windows backend (`keyring.backends.Windows.WinVaultKeyring`) emulates
+multiple usernames under one service name — something native `CredWrite`
+does not support — by moving whichever credential currently occupies the
+bare `TargetName` into a compound one (`{username}@{service}`) before
+writing the new value to the bare slot. Measured directly against the real
+Windows Credential Manager on this machine (not the in-memory test double,
+which does not reproduce this at all): writing `u1`, then `u2` (evicting
+`u1` to `u1@HYCLEUS`), then `u1` again — the exact overwrite shape a
+re-seal produces — leaves `u1`'s **old, unsealed** value sitting at
+`u1@HYCLEUS` forever, invisible to `get_password()` but not deleted.
+Under this project's own M2 model this is not inert: Windows credentials
+are DPAPI-protected regardless of location, but if that protection is ever
+defeated offline (a known class of attack against DPAPI, distinct from
+needing to be logged in as the user), the orphaned compound entry hands
+back the pre-TPM plaintext-equivalent value with no chip involved at all —
+exactly the guarantee sealing exists to remove. This was not something
+re-seal introduced — any overwrite of an existing keyring username has
+always had this shape on Windows — but re-seal is a new, common source of
+exactly that overwrite pattern, so it made the gap worth finding. Fixed the
+same day it was found: `CORE/secret_store.py::_windows_golge_sil()` runs
+after every successful `store()` and after every successful re-seal write,
+Windows-only and only when the active backend actually is `WinVaultKeyring`
+(checked by name, so a differently-configured backend is left alone), and
+deletes the specific compound target directly via `win32cred.CredDelete` —
+never through `keyring.delete_password()`, which searches *and deletes*
+both the bare and compound locations for a username and would just as
+happily delete the value that was only just safely written. It is
+best-effort and ordered strictly after the real write is verified: if
+cleanup fails, the new value is already safe and only the stale shadow
+persists, exactly as it did before this fix — no new failure mode, no
+regression in write safety. Verified against the real backend, not a
+mock: `test_windows_golge_kopya_gercek_kasada_TEMIZLENIYOR` reproduces the
+eviction, confirms the shadow exists, triggers the cleanup path, and
+confirms the shadow is gone and the live value is untouched. Tracked as
+**B-070**, closed the same turn it was opened, in `BACKLOG.md`.
+
 **What was measured and what was not.** The path was exercised on real
 hardware (AMD fTPM 2.0, rev 1.59): seal 1.2 ms, unseal 38 ms, one-time key
 generation 1.33 s. Not measured: any other TPM vendor, and CI — no runner
@@ -2600,6 +2674,81 @@ makinesinde GERÇEK donanımla da
 B-042'nin kalan maddeleri (CI'da TPM yolunun hiç çalışmaması, tek
 üreticinin ölçülmüş olması, gerçek bir Clear-TPM'in fiziksel olarak hiç
 denenmemiş olması) bununla ilgisiz ve hâlâ açık.
+
+**Reseal'in yan etkileri denetlendi, ve GERÇEK bir tane bulundu — reseal
+kodunda değil, ALTINDAKİ kasada.** `store()`'un (`CORE/secret_store.py`)
+kapsadığı sır tipleri için üretim kodunda tam olarak iki çağrı yeri var:
+`share_2` (`CORE/vault_manager.py::_save_usb_token`, ve eski DB sütununu
+göçüren `CORE/secret_migration.py::migrate_share_2`) ve TOTP sırrı, hem
+eski-global hem HWID-başına (`store_totp_secret`/
+`store_totp_secret_for_hwid` — `UI/login_dialog.py`, `CORE/registration.py`
+ve B-059 göçü için `CORE/secret_migration.py`'den çağrılıyor). Ne kurtarma
+payı (`share_3`, hiçbir yerde saklanmıyor — her zaman yeniden türetiliyor)
+ne de PIN-türevi anahtar materyali (hiç saklanmıyor — Argon2id her açılışta
+taze çalışıyor) `store()`'a hiç ulaşmıyor. `store()`'un KENDİSİ hiçbir
+denetim zinciri kaydı YAZMIYOR — grep edildi, gövdesinde `DBManager()`
+çağrısı yok — yani `tpm_reseal_completed`/`tpm_reseal_failed` ile
+çakışabilecek jenerik bir "kayıt yazıldı" etiketi YOK; zinciri okuyan biri
+için bir `tpm_reseal_*` satırı tek anlamlı, ve
+`test_reseal_ile_TAZE_kayit_denetim_zincirinde_AYIRT_EDILEBILIYOR` bunu
+doğrudan kanıtlıyor: taze, TPM'li bir kayıt SIFIR reseal satırı bırakıyor,
+eski bir kurulumun reseal'i TAM OLARAK BİR satır bırakıyor. `store()`'un
+kendi round-trip doğrulaması `load()`'u çağırıyor — reseal mantığının
+YAŞADIĞI aynı fonksiyon — ama bu asla sahte bir tetiklemeye yol açamıyor:
+`store()`'un az önce yazdığı değer YA zaten mühürlü (TPM varsa
+`belki_muhurle()` yazmadan önce mühürlemişti) YA DA o round-trip'in
+içindeki reseal denemesi gerçek bir no-op (TPM yoksa `belki_muhurle()`
+değeri her iki seferde de değiştirmeden döndürür) — bu kodda kanıtlandı ve
+share_2 DIŞI çağrı yeri için özel olarak
+`test_share_2_DISI_cagri_yerinde_reseal_TETIKLENMIYOR_TAZE_yazimda`'da da.
+
+Atomiklik konusunda: `_reseal_firsatci()`'nin yazımı TEK bir
+`set_password()` çağrısı, create-then-delete bir çift DEĞİL — içinde
+hiçbir yerde `delete_password`/`erase` çağrısı yok, yani ne eski ne yeni
+değerin birlikte kaybolabileceği bir pencere var. Yazımı kesmek
+(`test_reseal_yazimi_KESILIRSE_ESKI_kayit_hala_okunabilir`, `set_password`
+çağrı ortasında fırlatıyor) eski, mühürsüz kaydı TAM SAĞLAM bırakıyor —
+başarısızlık yalnızca RAPORLANIYOR, zaten orada duran şeyi bozmasına ya da
+silmesine asla izin verilmiyor.
+
+**Ama bu denetim ikinci, gerçek bir boşluk daha çıkardı: Windows Credential
+Manager, `set_password()`'ün üzerine yazdığı şeyi SİLMİYOR.** `keyring`'in
+Windows arka ucu (`keyring.backends.Windows.WinVaultKeyring`), native
+`CredWrite`'ın desteklemediği "aynı serviste birden fazla kullanıcı adı"nı,
+çıplak (bare) `TargetName`'i o an işgal eden krediyi yeni değer yazılmadan
+ÖNCE compound bir hedefe (`{username}@{service}`) taşıyarak simüle ediyor.
+Bu makinedeki GERÇEK Windows Credential Manager'a karşı doğrudan ölçüldü
+(bellek-içi test taklidi bunu HİÇ üretmiyor): `u1` yazılıp, sonra `u2`
+yazılıp (`u1` `u1@HYCLEUS`'a taşınıyor), sonra `u1` TEKRAR yazılınca —
+reseal'in ürettiği TAM OLARAK aynı üzerine-yazma şekli — `u1`'in ESKİ,
+MÜHÜRSÜZ değeri `u1@HYCLEUS`'ta SONSUZA KADAR kalıyor: `get_password()`'e
+görünmez ama SİLİNMEMİŞ. Bu projenin kendi M2 modelinde bu önemsiz değil:
+Windows kimlik bilgileri konumdan bağımsız DPAPI ile korunuyor, ama bu
+koruma bir gün çevrimdışı kırılırsa (DPAPI'ye karşı bilinen bir saldırı
+sınıfı, kullanıcı olarak oturum açmış olmaktan farklı) yetim compound
+kayıt, hiçbir yongaya ihtiyaç duymadan mühürleme-öncesi düz metne eşdeğer
+değeri geri veriyor — tam olarak mühürlemenin kaldırmak için var olduğu
+garantiyi. Bunu reseal İCAT ETMEDİ — mevcut bir kullanıcı adının üzerine
+YAZILMASI Windows'ta hep bu şekildeydi — ama reseal, TAM OLARAK bu üzerine-
+yazma örüntüsünün yeni ve yaygın bir kaynağı, o yüzden boşluğu bulmaya
+değdi. Bulunduğu gün kapatıldı: `CORE/secret_store.py::_windows_golge_sil()`
+her başarılı `store()`'dan sonra VE her başarılı reseal yazımından sonra
+çalışıyor, yalnızca Windows'ta ve yalnızca aktif backend GERÇEKTEN
+`WinVaultKeyring` İSE (ada bakarak kontrol ediliyor, farklı yapılandırılmış
+bir backend'e dokunulmuyor), ve hedef compound kaydı DOĞRUDAN
+`win32cred.CredDelete` ile siliyor — `keyring.delete_password()`
+KULLANILMIYOR, çünkü o hem bare hem compound konumda AYNI kullanıcı adını
+arayıp ikisini de siler; az önce güvenle yazılmış değeri de silme riski
+taşırdı. Best-effort ve KESİNLİKLE ana yazımın doğrulanmasından SONRA
+sıralanıyor: temizlik başarısız olursa yeni değer zaten güvende, yalnızca
+eski gölge kalmaya devam eder — bu düzeltmeden ÖNCEki hâliyle aynı, yeni
+bir başarısızlık modu ya da yazma güvenliğinde bir gerileme yok. GERÇEK
+backend'e karşı doğrulandı, sahte değil:
+`test_windows_golge_kopya_gercek_kasada_TEMIZLENIYOR` tahliyeyi
+yeniden üretiyor, gölgenin var olduğunu doğruluyor, temizlik yolunu
+tetikliyor, ve gölgenin gittiğini VE canlı değerin dokunulmamış kaldığını
+doğruluyor. `BACKLOG.md`'de **B-070** olarak izleniyor, bulunduğu turda
+kapandı.
 
 **Ne ölçüldü, ne ölçülmedi.** Yol gerçek donanımda çalıştırıldı (AMD fTPM
 2.0, rev 1.59): mühürleme 1.2 ms, açma 38 ms, tek seferlik anahtar üretimi

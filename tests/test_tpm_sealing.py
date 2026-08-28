@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import sys
 from pathlib import Path
 
 import keyring
@@ -527,6 +528,204 @@ def test_gercek_TPM_ile_ESKI_kayit_ilk_okumada_yeniden_muhurleniyor(
     assert ham is not None and muhurlu_mu(ham), (
         "gerçek TPM kullanılabilirken bile ilk okuma kaydı yeniden mühürlemedi"
     )
+
+
+def test_share_2_DISI_cagri_yerinde_reseal_TETIKLENMIYOR_TAZE_yazimda(
+    monkeypatch: pytest.MonkeyPatch, db,  # type: ignore[no-untyped-def]
+) -> None:
+    """
+    `store()`'un share_2 DIŞINDAKİ tek çağıranı TOTP sırrı
+    (`store_totp_secret_for_hwid`, `store_totp_secret`) — grep ile
+    doğrulandı, `CORE/secret_migration.py` ve `CORE/vault_manager.py`
+    dışında üçüncü bir çağıran yok.
+
+    TAZE bir TOTP yazımı (kasada daha önce hiç kayıt yokken) TPM
+    kullanılabiliyorsa `store()`'un KENDİ `belki_muhurle()` çağrısıyla
+    ZATEN mühürlü yazılır — `load()`'un round-trip doğrulaması bu yüzden
+    hiçbir reseal tetiklememeli. Tetiklerse, "taze kayıt" ile "reseal"
+    audit zincirinde ayırt edilemez hâle gelirdi.
+    """
+    tpm_sealing.zorla_durum(TpmDurum(True, "", "sahte-TPM"))
+    monkeypatch.setattr(tpm_sealing, "muhurle", _sahte_muhurle)
+    monkeypatch.setattr(tpm_sealing, "coz", _sahte_coz)
+
+    secret_store.store_totp_secret_for_hwid("TOTP-TAZE-HWID", "A" * 32)
+
+    ham = keyring.get_password(
+        secret_store.SERVICE, secret_store.totp_username("TOTP-TAZE-HWID")
+    )
+    assert ham is not None and muhurlu_mu(ham), "taze TOTP yazımı mühürlenmedi"
+
+    for eylem in (EYLEM_YENIDEN_MUHUR, EYLEM_YENIDEN_MUHUR_BASARISIZ):
+        kayitlar = db.fetchall("SELECT detail FROM audit_log WHERE action = ?", (eylem,))
+        assert kayitlar == [], (
+            f"taze TOTP kaydı '{eylem}' denetim kaydı düşürdü — reseal, taze "
+            "yazımın kendi round-trip doğrulaması tarafından yanlışlıkla "
+            "tetiklendi"
+        )
+
+
+def test_reseal_ile_TAZE_kayit_denetim_zincirinde_AYIRT_EDILEBILIYOR(
+    monkeypatch: pytest.MonkeyPatch, db, tmp_path: Path,  # type: ignore[no-untyped-def]
+) -> None:
+    """
+    `store()`'un KENDİSİ hiçbir audit etiketi YAZMIYOR (grep ile
+    doğrulandı — `CORE/secret_store.py::store()` gövdesinde `DBManager()`
+    çağrısı yok) — yani "yeni kayıt" için jenerik bir etiket YOK ve
+    `tpm_reseal_completed`/`tpm_reseal_failed` ile çakışabilecek bir şey
+    de yok. Bu testte iki senaryoyu ARKA ARKAYA çalıştırıp ayrımı somut
+    şekilde kanıtlıyoruz: taze kayıt SIFIR reseal-etiketi bırakıyor, aynı
+    kullanıcı adının ESKİ/mühürsüz bir kopyası okunduğunda TAM OLARAK BİR
+    `tpm_reseal_completed` bırakıyor — ikisi asla aynı olayla karışmıyor.
+    """
+    monkeypatch.setattr(vault_manager, "_VAULT_DIR", tmp_path / "vaults")
+    monkeypatch.setattr(vault_manager, "_VAULT_PATH_LEGACY", tmp_path / ".hcl_vault")
+
+    # ── 1. TAZE kayıt: TPM YOKKEN (varsayılan, tpm_kapali autouse) ──────────
+    assert not durum().kullanilabilir
+    create_vault("AYIRT-TAZE-HWID", "123456", "Yönetici")
+
+    kayitlar = db.fetchall(
+        "SELECT detail FROM audit_log WHERE action IN (?, ?)",
+        (EYLEM_YENIDEN_MUHUR, EYLEM_YENIDEN_MUHUR_BASARISIZ),
+    )
+    assert kayitlar == [], "TPM'siz taze kayıt reseal etiketi bırakmamalı"
+
+    # ── 2. TPM SONRADAN geldi, İLK açılış re-seal'i tetikliyor ──────────────
+    tpm_sealing.zorla_durum(TpmDurum(True, "", "sahte-TPM"))
+    monkeypatch.setattr(tpm_sealing, "muhurle", _sahte_muhurle)
+    monkeypatch.setattr(tpm_sealing, "coz", _sahte_coz)
+    open_vault("AYIRT-TAZE-HWID", "123456")
+
+    tamamlanan = db.fetchall(
+        "SELECT detail FROM audit_log WHERE action = ?", (EYLEM_YENIDEN_MUHUR,)
+    )
+    assert len(tamamlanan) == 1, (
+        "gerçek bir reseal olayı tam olarak bir tpm_reseal_completed satırı "
+        "bırakmalı — taze kayıt (0 satır) ile karışmıyor"
+    )
+    assert "AYIRT-TAZE-HWID" in tamamlanan[0]["detail"]
+
+
+def test_reseal_yazimi_KESILIRSE_ESKI_kayit_hala_okunabilir(
+    monkeypatch: pytest.MonkeyPatch, db, fake_keyring,  # type: ignore[no-untyped-def]
+) -> None:
+    """
+    ATOMİKLİK: `_reseal_firsatci()` tek bir `set_password()` çağrısı
+    yapıyor — önce ESKİ kaydı SİLİP sonra YENİYİ yazan bir "create-then-
+    delete" adımı YOK (koda bakarak: `CORE/secret_store.py::
+    _reseal_firsatci` içinde `delete_password`/`erase` çağrısı yok). Bu
+    testte `set_password`'ün KENDİSİ kesintiye uğruyor (güç kaybı/çökme
+    benzetimi) — sonrasında ESKİ, mühürsüz kayıt HÂLÂ tam ve okunabilir
+    olmalı: K0-3'ün "ikisi de kaybolan/bozulan bir pencere olmamalı"
+    ilkesi. Kayıp da yok, bozulma da yok — yalnızca reseal bir dahaki
+    okumaya kalıyor.
+
+    `fake_keyring.store` sözlüğüne DOĞRUDAN bakıyoruz (monkeypatch'lenmiş
+    `keyring.set_password`'ü geri almaya gerek kalmadan) — bellek içi
+    arka ucun kendi durumu, kesintiden etkilenmemiş hâliyle.
+    """
+    keyring.set_password(secret_store.SERVICE, "kesinti-testi", "eski-deger")
+
+    tpm_sealing.zorla_durum(TpmDurum(True, "", "sahte-TPM"))
+    monkeypatch.setattr(tpm_sealing, "muhurle", _sahte_muhurle)
+    monkeypatch.setattr(tpm_sealing, "coz", _sahte_coz)
+
+    def _kesilen_yazma(*a, **k):
+        raise RuntimeError("simüle edilmiş güç kaybı — set_password ortasında")
+
+    monkeypatch.setattr(keyring, "set_password", _kesilen_yazma)
+
+    # OKUMA yine de başarılı dönmeli — kesinti reseal'i etkiler, okumayı değil.
+    assert secret_store.load("kesinti-testi") == "eski-deger"
+
+    # Kesinti keyring.set_password'ü monkeypatch'lediği için kasaya HİÇ
+    # dokunulmadı: eski kayıt DEĞİŞMEDEN, olduğu gibi duruyor.
+    ham = fake_keyring.store[(secret_store.SERVICE, "kesinti-testi")]
+    assert ham == "eski-deger", (
+        "kesintiye uğrayan reseal, eski kaydı bozmuş ya da silmiş olmamalı"
+    )
+    assert not muhurlu_mu(ham), (
+        "kayıt hâlâ mühürsüz olmalı — yarım kalmış bir mühür değil, TAMAMEN "
+        "eski hâliyle korunmuş olmalı"
+    )
+
+    basarisiz = db.fetchall(
+        "SELECT detail FROM audit_log WHERE action = ?", (EYLEM_YENIDEN_MUHUR_BASARISIZ,)
+    )
+    assert len(basarisiz) == 1
+
+
+def test_windows_golge_kopya_gercek_kasada_TEMIZLENIYOR(
+    use_keyring_backend, db,  # type: ignore[no-untyped-def]
+) -> None:
+    """
+    GERÇEK Windows Credential Manager'da (InMemoryKeyring DEĞİL) ölçüldü:
+    `keyring` kütüphanesinin Windows arka ucu, aynı serviste birden fazla
+    kullanıcı adını "compound target" (`{username}@{service}`) hilesiyle
+    simüle ediyor — `set_password()` YENİ değeri her zaman "çıplak" (bare)
+    hedefe yazıyor ve yalnızca ORADA BULDUĞU FARKLI bir kullanıcıyı
+    compound'a taşıyor, kendi eski compound kopyasına HİÇ dokunmuyor.
+    Doğrudan bir betikle doğrulandı: iki kullanıcı adını art arda yazıp
+    üçüncüsünü ilk kullanıcıya tekrar yazdırınca, ilk kullanıcının ESKİ
+    değeri `{username}@{service}` hedefinde SESSİZCE hayatta kalıyordu.
+
+    `CORE/secret_store.py::_windows_golge_sil()` bunu kapatıyor — bu test
+    GERÇEK backend'le fiilen temizlendiğini kanıtlıyor (InMemoryKeyring bu
+    hatayı hiç üretmediği için diğer testler bunu YAKALAYAMAZ).
+    """
+    if sys.platform != "win32":
+        pytest.skip("Windows Credential Manager'a özgü davranış")
+    try:
+        import pywintypes
+        import win32cred
+        from keyring.backends.Windows import WinVaultKeyring
+    except ImportError:
+        pytest.skip("pywin32 kurulu değil")
+
+    use_keyring_backend(WinVaultKeyring())
+
+    service = secret_store.SERVICE
+    u_eski, u_yeni = "golge-test-eski", "golge-test-yeni"
+    compound_eski = f"{u_eski}@{service}"
+
+    def _sil(target: str) -> None:
+        try:
+            win32cred.CredDelete(Type=win32cred.CRED_TYPE_GENERIC, TargetName=target)
+        except pywintypes.error:
+            pass
+
+    for hedef in (u_eski, u_yeni, compound_eski, f"{u_yeni}@{service}", service):
+        _sil(hedef)  # önceki (yarım kalmış) bir koşudan kalıntı olabilir
+
+    try:
+        # 1) u_eski bare'i alır. 2) u_yeni yazılır — u_eski compound'a taşınır.
+        secret_store.store(u_eski, "eski-deger")
+        secret_store.store(u_yeni, "yeni-deger")
+
+        # ÖN KOŞUL: u_eski'nin gölge kopyası GERÇEKTEN orada.
+        assert win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=compound_eski)
+
+        # 3) u_eski TEKRAR yazılır (reseal'in de kullandığı aynı üzerine-
+        #    yazma deseni) — bu, kendi eski gölge kopyasını temizlemeli.
+        secret_store.store(u_eski, "guncel-deger")
+
+        with pytest.raises(pywintypes.error) as ex:
+            win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=compound_eski)
+        assert ex.value.winerror == 1168, "gölge kopya hâlâ okunabiliyor — temizlik çalışmadı"
+
+        assert secret_store.load(u_eski) == "guncel-deger", (
+            "temizlik yeni değeri de silmiş olabilir"
+        )
+
+        kayitlar = db.fetchall(
+            "SELECT detail FROM audit_log WHERE action = ?",
+            (secret_store.EYLEM_GOLGE_SILINDI,),
+        )
+        assert any(f"username={u_eski}" in k["detail"] for k in kayitlar)
+    finally:
+        for hedef in (u_eski, u_yeni, compound_eski, f"{u_yeni}@{service}", service):
+            _sil(hedef)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

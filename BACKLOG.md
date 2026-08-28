@@ -3736,3 +3736,101 @@ yönetici müdahalesiyle (USB kaydını silip yeniden kayıt) çıkılabiliyor.
 Test: yok — yalnızca belge girişi, kod değişikliği yapılmadı.
 
 ---
+
+## B-070 — Windows Credential Manager, üzerine yazılan eski kaydı silmiyordu — bulundu ve aynı turda kapatıldı
+
+**Durum:** Kapalı
+**Öncelik:** Yüksek (TPM mühürlemesinin M2 iddiasını kısmen zayıflatıyordu)
+**Bulundu ve kapatıldı:** 2026-08-28 — TPM re-seal'in (bkz. bir önceki
+tur) yan etkilerinin denetimi sırasında
+
+Re-seal'in atomiklik denetimi istenmişti (`_reseal_firsatci()`'nin write'ı
+create-then-delete mi, yerinde mi güncelliyor). Kod OKUNARAK doğrulandı:
+tek bir `set_password()` çağrısı, ayrı bir silme adımı yok — bu, MY kod
+seviyesinde zaten atomik. Ama denetim orada durmadı: `set_password()`'ün
+ALTINDA, `keyring` kütüphanesinin Windows arka ucunun (`keyring.backends.
+Windows.WinVaultKeyring`) NASIL çalıştığı da okundu, ve GERÇEK Windows
+Credential Manager'a karşı doğrudan bir betikle ölçüldü.
+
+### Bulgu
+
+Native Windows `CredWrite`, yalnızca `TargetName`'e göre anahtarlıyor —
+kullanıcı adı diye bir kavramı yok. `keyring`'in Windows arka ucu, "aynı
+serviste birden fazla kullanıcı adı" fikrini bir hileyle simüle ediyor: bir
+"çıplak" (bare) hedef (`{service}`) ve gerektiğinde bir "compound" hedef
+(`{username}@{service}`). `set_password(service, username, value)` şöyle
+çalışıyor:
+
+1. Çıplak hedefte O AN duran kredi neyse (kime ait olursa olsun) OKUNUR.
+2. Duran bir şey varsa, o kendi (`existing_username`) compound hedefine
+   TAŞINIR (yeniden yazılır).
+3. YENİ değer HER ZAMAN çıplak hedefe yazılır.
+
+Sorun: adım 3, YAZILAN kullanıcı adının KENDİ ÖNCEKİ compound kopyasına
+HİÇ dokunmuyor. Yani `username`'i BİRDEN FAZLA KEZ yazmak (ki reseal TAM
+OLARAK bunu yapıyor — aynı kullanıcı adına yeniden yazma) o kullanıcının
+ESKİ değerini, `get_password()`'ün asla bakmadığı bir compound hedefte,
+SONSUZA KADAR kasada bırakabiliyor.
+
+Doğrudan ölçüldü (gerçek `WinVaultKeyring`, bellek-içi test taklidi DEĞİL):
+
+```
+u1 yazıldı (bare'i aldı)                    → bare=u1
+u2 yazıldı (u1 compound'a taşındı)          → bare=u2, u1@HYCLEUS=u1(eski)
+u1 TEKRAR yazıldı (reseal'in şekli)         → bare=u1(yeni), u1@HYCLEUS=u1(eski) — DEĞİŞMEDİ
+```
+
+`get_password(service, "u1")` doğru (yeni) değeri döndürüyor — ama
+`u1@HYCLEUS`'taki ESKİ değer hâlâ orada, silinmemiş.
+
+### Neden önemli
+
+TPM mühürlemesinin (§4.13) M2 iddiası: "mühürlü kayıt, o TPM olmadan
+açılamaz." Bu iddia YALNIZCA `get_password()`'ün gördüğü kopya için doğru.
+Bir reseal'den sonra, aynı sırrın ESKİ, MÜHÜRSÜZ hâli — TPM'e hiç ihtiyaç
+duymadan okunabilir bir kopya — kasada, farklı bir ad altında, sessizce
+hayatta kalmaya devam ediyordu. Windows kimlik bilgileri konum fark
+etmeksizin DPAPI ile korunuyor (bkz. §4.13), yani bu M1/uzak bir saldırgana
+hiçbir şey vermiyor; ama DPAPI'nin kendisi çevrimdışı kırılırsa (bilinen
+bir saldırı sınıfı, oturum açmış kullanıcı olmaktan farklı bir yetenek)
+yetim kopya, mühürlemenin kaldırmak için var olduğu tam garantiyi geri
+veriyordu.
+
+Reseal bunu İCAT ETMEDİ — `set_password()`'ün bu şekli her zaman
+böyleydi, mevcut bir kullanıcı adının üzerine yazan HERHANGİ bir kod (ör.
+`setup_usb.py --reset` ile aynı hwid'in yeniden kaydı) aynı boşluğu
+üretirdi. Ama reseal, tam olarak bu üzerine-yazma örüntüsünün yeni ve
+düzenli bir kaynağı olduğu için, denetim bunu şimdi buldu.
+
+### Düzeltme
+
+`CORE/secret_store.py::_windows_golge_sil(username)` — yalnızca Windows'ta
+VE yalnızca aktif backend gerçekten `WinVaultKeyring` İSE (ada bakarak,
+farklı yapılandırılmış bir backend'e dokunmuyor) çalışıyor. Hedef compound
+adı (`{username}@{SERVICE}`) doğrudan hesaplanıp `win32cred.CredDelete` ile
+siliniyor — `keyring.delete_password()` KULLANILMIYOR, çünkü o hem çıplak
+hem compound konumda AYNI kullanıcı adını arayıp İKİSİNİ DE siler; bu, az
+önce güvenle yazılmış YENİ değeri de silme riski taşırdı.
+
+`store()`'un round-trip doğrulamasından SONRA ve `_reseal_firsatci()`'nin
+kendi doğrulamasından SONRA çağrılıyor — yani temizlik yalnızca YENİ değer
+GÜVENDE olduğu kanıtlandıktan sonra denenir. Best-effort: başarısız olursa
+yalnızca eski gölge kalmaya devam eder (bu düzeltmeden ÖNCEki durumla
+aynı), yeni değer asla riske girmiyor.
+
+Test: `tests/test_tpm_sealing.py::
+test_windows_golge_kopya_gercek_kasada_TEMIZLENIYOR` — GERÇEK
+`WinVaultKeyring` kullanıyor (`use_keyring_backend` fixture'ıyla), Windows
+dışında/pywin32 yokken atlanıyor. Tahliyeyi yeniden üretiyor, gölgenin
+GERÇEKTEN var olduğunu doğruluyor, temizlik yolunu tetikliyor, gölgenin
+gittiğini VE canlı değerin dokunulmadığını doğruluyor. Ayrıca reseal'in
+kendi atomiklik/audit-ayrım testleri de bu turda eklendi:
+`test_reseal_yazimi_KESILIRSE_ESKI_kayit_hala_okunabilir` (kesintiye
+uğrayan reseal yazımı eski kaydı bozmuyor),
+`test_reseal_ile_TAZE_kayit_denetim_zincirinde_AYIRT_EDILEBILIYOR` (taze
+kayıt ile reseal denetim zincirinde asla karışmıyor),
+`test_share_2_DISI_cagri_yerinde_reseal_TETIKLENMIYOR_TAZE_yazimda` (TOTP
+gibi share_2 dışı bir çağrı yerinde reseal sahte tetiklenmiyor). Ayrıntı
+SECURITY.md §4.13'te.
+
+---

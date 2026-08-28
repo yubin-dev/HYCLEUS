@@ -97,6 +97,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import sys
 from typing import Any
 
 from CORE import tpm_sealing
@@ -104,6 +105,12 @@ from CORE import tpm_sealing
 _log = logging.getLogger("hycleus.secret_store")
 
 SERVICE = "HYCLEUS"
+
+#: `_windows_golge_sil()` — bir üzerine-yazmanın Windows Credential
+#: Manager'da bıraktığı, `get_password()`'ün artık hiç görmediği eski bir
+#: "compound" kopyayı temizlediğinde düşen denetim eylemi. Bkz. o
+#: fonksiyonun docstring'i ve SECURITY.md §4.13 / BACKLOG B-070.
+EYLEM_GOLGE_SILINDI = "credential_shadow_erased"
 
 # Kullanıcı adı şeması
 _SHARE_2_PREFIX = "share_2:"
@@ -319,6 +326,63 @@ def _reseal_firsatci(username: str, deger: str) -> None:
 
     _log.info("tpm_yeniden_muhurlendi  username=%s", username)
     _denetim_log(tpm_sealing.EYLEM_YENIDEN_MUHUR, f"username={username}")
+    _windows_golge_sil(username)
+
+
+def _windows_golge_sil(username: str) -> None:
+    """
+    Yalnızca Windows + WinVaultKeyring: bir ÖNCEKİ üzerine-yazmanın arkada
+    bıraktığı, `get_password()`'ün artık hiç GÖRMEDİĞİ ama kasada hâlâ VAR
+    olan bir "compound" kopyayı temizler.
+
+    Ölçüldü — bu makinede, GERÇEK Windows Credential Manager'da: `keyring`
+    kütüphanesinin Windows arka ucu (`keyring.backends.Windows.
+    WinVaultKeyring`) aynı serviste birden fazla kullanıcı adını, native
+    `CredWrite`'ın yalnızca TargetName'e göre anahtarlamasını aşmak için,
+    "compound target" (`{username}@{service}`) hilesiyle simüle ediyor.
+    `set_password()` YENİ değeri HER ZAMAN "çıplak" (bare) `service`
+    hedefine yazıyor; bare hedefte O AN başka bir kullanıcı adı duruyorsa
+    önce onu compound hedefe TAŞIYOR — ama üzerine yazılan kullanıcı
+    adının KENDİ önceki compound kopyasına HİÇ dokunmuyor. Sonuç: aynı
+    `username`'i birden fazla kez yazmak (reseal DAHİL, ama onunla sınırlı
+    değil — ör. `setup_usb.py --reset` ile aynı hwid'in yeniden kaydı)
+    ESKİ değerin bir kopyasını, `get_password()`'ün asla bakmadığı bir
+    hedef adı altında, SÜRESİZ olarak kasada bırakabiliyor.
+
+    Bu, TPM mühürlemesi için önemsiz değil: "yeniden mühürlendi" denen bir
+    kaydın ESKİ, mühürSÜZ hâli — DPAPI kırılırsa (M2'nin daha ileri bir
+    biçimi, bkz. SECURITY.md §4.13) TPM'siz de okunabilir bir kopya olarak
+    — sessizce hayatta kalabiliyordu. Bu fonksiyon o gölge kopyayı,
+    YALNIZCA yeni değer güvenle yazılıp doğrulandıktan SONRA (çağıranlara
+    bakın: `store()`'un round-trip'inden sonra, `_reseal_firsatci()`'nin
+    kendi doğrulamasından sonra), hedefi doğrudan silerek temizliyor —
+    `keyring.delete_password()` KULLANILMIYOR çünkü o hem bare hem compound
+    hedefte AYNI kullanıcı adını arayıp ikisini de siler; bare'deki YENİ
+    değeri de silme riski taşırdı. Bkz. BACKLOG B-070.
+
+    BEST EFFORT ve ASLA fırlatmıyor: bir temizlik adımı, ana yazımdan
+    SONRA çalışıyor — burada bir şey ters giderse yalnızca eski gölge
+    kopya kalmaya devam eder, zaten güvenle yazılmış yeni değer etkilenmez.
+    """
+    if sys.platform != "win32" or backend_name() != "WinVaultKeyring":
+        return
+    try:
+        import pywintypes
+        import win32cred
+
+        hedef = f"{username}@{SERVICE}"
+        try:
+            win32cred.CredDelete(Type=win32cred.CRED_TYPE_GENERIC, TargetName=hedef)
+        except pywintypes.error as exc:
+            if exc.winerror == 1168:  # ERROR_NOT_FOUND — temizlenecek bir şey yok
+                return
+            raise
+    except Exception as exc:
+        _log.warning("windows_golge_kopya_silinemedi  username=%s hata=%s", username, exc)
+        return
+
+    _log.info("windows_golge_kopya_silindi  username=%s", username)
+    _denetim_log(EYLEM_GOLGE_SILINDI, f"username={username}")
 
 
 def store(username: str, value: str) -> None:
@@ -330,6 +394,10 @@ def store(username: str, value: str) -> None:
 
     TPM varsa değer önce mühürleniyor; yoksa eskisi gibi düz yazılıyor ve
     düşüş `tpm_sealing` tarafından kayda geçiyor.
+
+    Doğrulamadan SONRA, Windows'ta, bu `username`'in ÖNCEKİ bir yazımdan
+    kalma bir "gölge" kopyası varsa temizleniyor — bkz. `_windows_golge_sil()`
+    docstring'i, BACKLOG B-070.
 
     Raises:
         KeyringUnavailableError — yazma başarısızsa, geri okuma tutmazsa
@@ -362,6 +430,8 @@ def store(username: str, value: str) -> None:
             f"'{username}' kasaya yazıldı ama geri okunduğunda eşleşmedi — "
             "kasa güvenilir değil, işlem durduruldu."
         )
+
+    _windows_golge_sil(username)
 
 
 def load_totp_secret() -> str | None:
