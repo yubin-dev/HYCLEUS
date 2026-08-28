@@ -1211,40 +1211,67 @@ ordinary, hardware-bound HWID.
 - **Visible.** `_get_or_create_uuid()` logs a warning
   (`CORE/usb_manager.py`) the first time it mints a UUID for a given raw
   value — not on every subsequent read of the same device, which would
-  just be poll-loop noise. `is_uuid_fallback_hwid(hwid)` answers the
-  question for any hwid string without a live USB probe, by checking
-  whether it is one of `usb_ids.json`'s values — the file `_get_or_create_
-  uuid()` itself always writes to, so the check is canonical by
-  construction.
+  just be poll-loop noise. The same event is also written to the audit
+  chain (`DBManager().log("weak_hwid_uuid_assigned", detail=...)`, best
+  effort — swallowed if the DB is not yet connected, since this probe can
+  run before login, e.g. from `setup_usb.py`) — a plain application-log
+  line alone would sit outside the one chain the system treats as
+  evidence-grade (§4.6); anything outside it can be edited or deleted
+  without breaking the chain's own verification. `is_uuid_fallback_hwid(hwid)`
+  answers the question for any hwid string without a live USB probe, by
+  checking whether it is one of `usb_ids.json`'s values — the file
+  `_get_or_create_uuid()` itself always writes to, so the check is
+  canonical by construction.
 - **Fail-closed.** `CORE/vault_manager._reject_if_weak_binding()` calls
   that check at the entry to every operation that would extend *trust* to
-  such an identity — `create_vault()` for a fresh registration,
-  `open_vault()`, `authenticate_usb()`, `read_vault_role()`,
-  `change_vault_role()`, `change_vault_pin()` — and raises `USBAuthError`
-  before doing anything else. Each rejection writes a
-  `weak_hwid_binding_rejected` audit row (`hwid`, the operation name) and
-  reaches the same UI paths blacklist rejections already use
-  (`UI/login_dialog.py`'s `except USBAuthError as exc:
-  self._show_error(str(exc))`, `UI/main_window_lock.py`'s "USB Reddedildi"
-  dialog) — so the message a locked-out user sees is not the generic
-  wrong-PIN one, for the same reason §4.1 gives for blacklisting: reusing
-  it would send them into a retry loop that ends at the rate limiter.
+  such an identity — `create_vault()` for a fresh registration **and**
+  for a reprovision (`anchor_share` set — see below), `open_vault()`,
+  `authenticate_usb()`, `read_vault_role()`, `change_vault_role()`,
+  `change_vault_pin()` — and raises `USBAuthError` before doing anything
+  else. Each rejection writes a `weak_hwid_binding_rejected` audit row
+  (`hwid`, the operation name) and reaches the same UI paths blacklist
+  rejections already use (`UI/login_dialog.py`'s `except USBAuthError as
+  exc: self._show_error(str(exc))`, `UI/main_window_lock.py`'s "USB
+  Reddedildi" dialog) — so the message a locked-out user sees is not the
+  generic wrong-PIN one, for the same reason §4.1 gives for blacklisting:
+  reusing it would send them into a retry loop that ends at the rate
+  limiter.
 
 **What is deliberately exempt, and why it differs from the blacklist
 precedent.** `verify_vault()` is untouched — the weekly integrity sweep
 (§4.7) must still be able to tell whether a weakly-bound vault is corrupt,
 so detection stays available even where trust does not. `recover_master_
-key()` and `reprovision_vault()` (the `anchor_share`-carrying call to
-`create_vault()`) are untouched too, and this is the opposite choice from
-§4.1's blacklist, which **does** block recovery because it is an
-administrative revocation — someone decided this device should stop
-working. A weak binding is a hardware limitation the user did not choose;
-its only way out is recovering onto better hardware, so cutting off
-recovery would strand exactly the users this fix exists to protect, not
-punish them. `create_vault()` tells the two cases apart the same way the
-rest of the codebase already does: `anchor_share is None` means a fresh
-registration (checked), `anchor_share` set means a reprovision following a
-successful recovery (exempt) — no new parameter was needed.
+key()` is untouched too, and this is the opposite choice from §4.1's
+blacklist, which **does** block recovery because it is an administrative
+revocation — someone decided this device should stop working. A weak
+binding is a hardware limitation the user did not choose; cutting off
+their only way to *read* their own data back would strand exactly the
+users this fix exists to protect, not punish them.
+
+That exemption is narrower than it first looks, though, and a follow-up
+review (2026-08-28) tightened it: `recover_master_key()` only *reads* —
+it reconstructs `master_key` from an existing share plus the printed
+recovery share, nothing more. `reprovision_vault()` (the `anchor_share`-
+carrying call to `create_vault()`) is a separate act — it *writes* a new
+vault, binding the recovered `master_key` to a **new** hwid — and binding
+is exactly the trust decision this section exists to gate, indistinguishable
+from a fresh registration in that respect. So `create_vault()` no longer
+exempts the `anchor_share`-set branch: both branches call
+`_reject_if_weak_binding()`, just with a different operation label
+("USB kaydı" vs. "USB kaydı (kurtarma sonrası yeniden kurulum)") so the
+audit row and the on-screen message say which one fired. Concretely: a
+user whose only device is weakly bound can still call `recover_master_key()`
+and see/export their key, but `reprovision_vault()` on that same device
+raises `USBAuthError` — the recovered secret is real and retrievable, it
+just cannot be sealed into a new, permanently-trusted vault until a device
+with a readable serial is plugged in. Verified adversarially in
+`tests/test_usb_weak_binding.py::test_reprovision_YAZMA_zayif_hwid_icin_REDDEDILIR`
+(read still works, write is rejected, rejection is audited) alongside
+`test_kurtarma_OKUMA_zayif_hwid_icin_MUAF` (read path unaffected) and
+`test_reprovision_GUCLU_hwid_ile_calismaya_devam_eder` (a normal,
+strongly-bound reprovision — old hwid read, new hwid write — is unaffected,
+guarding against a regression in the common case already covered by
+`tests/test_recovery_e2e.py`).
 
 **What this does not fix.** The root cause — `get_usb_hwid()` reading only
 the storage stack, not the USB node identity `CORE/hwid_probe.py` already
@@ -2616,14 +2643,21 @@ kimlik doğrulama — onu sıradan, donanıma bağlı bir HWID gibi ele alıyord
 - **Görünür.** `_get_or_create_uuid()` verilen bir ham değer için ilk kez
   UUID ürettiğinde bir uyarı log'a düşüyor (`CORE/usb_manager.py`) —
   AYNI cihazın her sonraki okunuşunda değil, o yalnızca yoklama döngüsü
-  gürültüsü olurdu. `is_uuid_fallback_hwid(hwid)` bu soruyu, canlı bir USB
-  probu gerektirmeden, herhangi bir hwid dizesi için cevaplıyor —
+  gürültüsü olurdu. Aynı olay denetim zincirine de yazılıyor
+  (`DBManager().log("weak_hwid_uuid_assigned", detail=...)`, best effort —
+  DB henüz bağlı değilse yutuluyor, çünkü bu prob login'den önce de
+  çalışabiliyor, ör. `setup_usb.py`) — yalnızca uygulama logunda kalsaydı,
+  sistemin delil-değeri kabul ettiği TEK zincirin (§4.6) dışında kalırdı;
+  o zincirin dışındaki hiçbir şey, zincirin kendi doğrulamasını bozmadan
+  düzenlenip silinebilir. `is_uuid_fallback_hwid(hwid)` bu soruyu, canlı
+  bir USB probu gerektirmeden, herhangi bir hwid dizesi için cevaplıyor —
   `usb_ids.json`'ın DEĞERLER kümesine bakarak; `_get_or_create_uuid()`'in
   KENDİSİ her zaman bu dosyaya yazdığı için kontrol yapı gereği kanonik.
 - **Kapalı hata (fail-closed).**
   `CORE/vault_manager._reject_if_weak_binding()` bu kontrolü, böyle bir
-  kimliğe GÜVEN veren her işlemin
-  girişinde çağırıyor — taze kayıt için `create_vault()`, `open_vault()`,
+  kimliğe GÜVEN veren her işlemin girişinde çağırıyor — taze kayıt İÇİN
+  DE, kurtarma sonrası yeniden kurulum İÇİN DE `create_vault()`
+  (`anchor_share` durumuna bakılmaksızın — aşağıya bakın), `open_vault()`,
   `authenticate_usb()`, `read_vault_role()`, `change_vault_role()`,
   `change_vault_pin()` — ve başka hiçbir şey yapmadan `USBAuthError`
   fırlatıyor. Her red bir `weak_hwid_binding_rejected` denetim satırı
@@ -2639,17 +2673,41 @@ kimlik doğrulama — onu sıradan, donanıma bağlı bir HWID gibi ele alıyord
 `verify_vault()` dokunulmadı — haftalık bütünlük taraması (§4.7) zayıf
 bağlı bir vault'un bozuk olup olmadığını hâlâ söyleyebilmeli, yani
 saptama güven olmayan yerde de erişilebilir kalıyor. `recover_master_
-key()` ve `reprovision_vault()` (create_vault()'un `anchor_share` taşıyan
-çağrısı) de dokunulmadı, ve bu §4.1'in kara listesinin TAM TERSİ bir
+key()` de dokunulmadı, ve bu §4.1'in kara listesinin TAM TERSİ bir
 seçim — o kurtarmayı da BİLEREK engelliyor çünkü o idari bir iptal: biri bu
 cihazın artık çalışmaması gerektiğine karar verdi. Zayıf bağlama
-kullanıcının seçmediği bir donanım kısıtı; tek çıkış yolu daha iyi bir
-donanıma kurtarmak, o yüzden kurtarmayı da kesmek tam olarak bu düzeltmenin
-korumak istediği kullanıcıları cezalandırır, korumaz. `create_vault()` iki
-durumu kod tabanının zaten kullandığı yöntemle ayırt ediyor:
-`anchor_share is None` taze kayıt demek (denetleniyor), `anchor_share`
-verilmişse bir kurtarmayı izleyen yeniden kurulum demek (muaf) — yeni bir
-parametre gerekmedi.
+kullanıcının seçmediği bir donanım kısıtı; kendi verisini GERİ OKUMANIN
+tek yolunu kesmek, tam olarak bu düzeltmenin korumak istediği kullanıcıları
+cezalandırır, korumaz.
+
+Ama bu muafiyet göründüğünden dar, ve 2026-08-28 tarihli bir takip
+incelemesi onu daralttı: `recover_master_key()` yalnızca OKUYOR — mevcut
+bir paydan ve basılı kurtarma parçasından `master_key`'i yeniden
+üretiyor, başka hiçbir şey yapmıyor. `reprovision_vault()` (create_vault()'un
+`anchor_share` taşıyan çağrısı) ayrı bir eylem — kurtarılan `master_key`'i
+YENİ bir hwid'e bağlayan YENİ bir vault YAZIYOR — ve bağlama tam olarak bu
+bölümün kapatmaya çalıştığı güven kararı, taze kayıttan bu açıdan farksız.
+O yüzden `create_vault()` artık `anchor_share` verilen dalı muaf
+tutmuyor: her iki dal da `_reject_if_weak_binding()`'i çağırıyor, yalnızca
+farklı bir işlem etiketiyle ("USB kaydı" vs. "USB kaydı (kurtarma sonrası
+yeniden kurulum)") — denetim satırı ve ekrandaki mesaj hangisinin
+tetiklendiğini söylesin diye. Somut olarak: tek cihazı zayıf bağlı bir
+kullanıcı hâlâ `recover_master_key()`'i çağırıp anahtarını
+görebilir/dışa aktarabilir, ama AYNI cihazda `reprovision_vault()`
+`USBAuthError` fırlatır — kurtarılan sır gerçek ve erişilebilir kalır,
+yalnızca seri numarası okunabilen bir cihaz takılana kadar YENİ, kalıcı
+olarak güvenilen bir vault'a mühürlenemez. Bu,
+`tests/test_usb_weak_binding.py::test_reprovision_YAZMA_zayif_hwid_icin_REDDEDILIR`
+içinde çekişmeli olarak doğrulandı (okuma çalışıyor, yazma reddediliyor,
+red denetleniyor) — `test_kurtarma_OKUMA_zayif_hwid_icin_MUAF` (okuma yolu
+etkilenmiyor) ve `test_reprovision_GUCLU_hwid_ile_calismaya_devam_eder`
+(normal, güçlü bağlı bir yeniden kurulum — eski hwid'den okuma, yeni
+hwid'e yazma — etkilenmiyor, zaten `tests/test_recovery_e2e.py`'nin
+kapsadığı yaygın durumda regresyona karşı) ile birlikte.
+
+`anchor_share`'in kendisi hâlâ aynı iki durumu ayırt etmek için kullanılıyor
+(`master_key`/polinom korunsun mu), ama artık `_reject_if_weak_binding()`'i
+atlamıyor.
 
 **Bunun düzeltmediği şey.** Kök neden — `get_usb_hwid()`'in yalnızca
 depolama yığınına bakması, `CORE/hwid_probe.py`'nin zaten okumayı bildiği

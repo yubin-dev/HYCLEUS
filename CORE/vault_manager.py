@@ -658,15 +658,22 @@ def create_vault(
     Raises:
         OSError      — dosya yazma hatası
         RuntimeError — DB bağlantısı yoksa (DBManager.connect() çağrılmamış)
-        USBAuthError — hwid zayıf bağlıysa (UUID yedeği) VE bu bir kurtarma
-                       yeniden kurulumu DEĞİLSE (anchor_share verilmemiş);
-                       bkz. _reject_if_weak_binding
+        USBAuthError — hwid zayıf bağlıysa (UUID yedeği) — taze kayıtta da,
+                       kurtarma sonrası yeniden kurulumda (anchor_share
+                       verilmiş) da geçerli; bkz. _reject_if_weak_binding.
+                       master_key'in KENDİSİNİN kurtarılması (recover_
+                       master_key) ayrı ve muaftır — burada reddedilen
+                       yalnızca yeni hwid'in vault'a YAZILMASI.
     """
-    if anchor_share is None:
-        # Yalnızca TAZE kayıt reddedilir. anchor_share verilmişse bu çağrı
-        # reprovision_vault() üzerinden geliyor demektir — kurtarma akışı
-        # BİLEREK muaf (bkz. _reject_if_weak_binding docstring'i).
-        _reject_if_weak_binding(hwid, "USB kaydı")
+    # BOTH dalda reddedilir. anchor_share verilmesi ("bu bir reprovisioning")
+    # yalnızca YAZILACAK master_key/polinomun korunacağı anlamına gelir —
+    # master_key'in nereden geldiği (recover_master_key, muaf) ile YENİ
+    # hwid'in vault'a kimlik olarak YAZILMASI (burası) ayrı işlemler. İkincisi
+    # bir TRUST kararı: "bu hwid'e bağlı bir vault güvenilir" diyor, tıpkı
+    # taze kayıtta olduğu gibi — bkz. _reject_if_weak_binding docstring'i.
+    _reject_if_weak_binding(
+        hwid, "USB kaydı" if anchor_share is None else "USB kaydı (kurtarma sonrası yeniden kurulum)"
+    )
     if master_key is None:
         master_key = os.urandom(_KEY_SIZE)
     elif len(master_key) != _KEY_SIZE:
@@ -915,13 +922,26 @@ def _reject_if_weak_binding(hwid: str, islem: str) -> None:
     çeviriyor — bkz. create_vault/open_vault/authenticate_usb/read_vault_role/
     change_vault_role/change_vault_pin.
 
-    NEDEN kurtarma akışı BURADAN GEÇMİYOR: recover_master_key() ve
-    reprovision_vault() (create_vault'un anchor_share verilen çağrısı)
-    BİLEREK bu kontrolden muaf — zayıf bağlı bir cihazın TEK çıkış yolu
-    kurtarma parçasıyla yeniden kurulmak; onu da kapatmak kullanıcıyı
-    kalıcı olarak kilitli bırakırdı. Kara liste kontrolünün (_reject_if_
-    blacklisted) aksine — o kurtarmayı da bilerek kapsıyor, çünkü idari bir
-    iptal — bu kontrol yapısal bir donanım kısıtı, cezai değil.
+    NEDEN recover_master_key() BURADAN GEÇMİYOR (reprovision_vault()'un
+    KENDİSİ artık geçiyor — aşağıya bakın): recover_master_key() yalnızca
+    OKUR — mevcut share_1'i (PIN ile, eski vault dosyasından) ya da
+    share_2'yi (kasadan) kurtarma parçasıyla birleştirip master_key'i geri
+    üretir. Bu, zayıf bağlı bir cihazın verisine erişebilmesinin TEK yolu;
+    onu da kapatmak kullanıcıyı kalıcı olarak kilitli bırakırdı. Kara liste
+    kontrolünün (_reject_if_blacklisted) aksine — o kurtarmayı da bilerek
+    kapsıyor, çünkü idari bir iptal — bu kontrol yapısal bir donanım kısıtı,
+    cezai değil.
+
+    reprovision_vault() İSE (create_vault'un anchor_share verilen çağrısı
+    üzerinden) BU KONTROLE TABİDİR: kurtarılan master_key'i OKUMAK ayrı bir
+    şey, o master_key'i YENİ bir vault'a, zayıf bağlı bir hwid'e YAZMAK ayrı
+    bir şey — ikincisi "bu hwid'e bağlı bir vault güvenilir" diyen bir TRUST
+    kararı, taze kayıtla (create_vault, anchor_share=None) aynı sınıfta.
+    Kullanıcı recover_master_key() ile verisini görebilir/dışa aktarabilir
+    ama seri numarası okunabilen bir cihaz takana kadar KALICI bir vault'a
+    yeniden kurulum yapamaz — B-025 madde 2'nin sessizliğini kapatmak,
+    K0-2'nin "USB kaydı reddedilsin" gereksinimini reprovisioning'e de
+    genişletmeden yarım kalırdı (bkz. SECURITY.md §4.15).
 
     Args:
         hwid  — kontrol edilecek USB donanım kimliği
@@ -1396,6 +1416,17 @@ def reprovision_vault(
 
     Returns:
         Yeni vault dosyasının yolu
+
+    Raises:
+        USBAuthError — hwid zayıf bağlıysa (UUID yedeği, seri numarası
+                       okunamıyor); bkz. create_vault Raises / _reject_if_
+                       weak_binding. master_key'in KENDİSİ zaten kurtarılmış
+                       olabilir (recover_master_key hwid'den bağımsız olarak
+                       çalışır) — burada reddedilen bu YENİ vault'un o zayıf
+                       hwid'e YAZILMASI. Kullanıcının verisi kaybolmaz (share_1/
+                       share_2 hâlâ eski vault'ta/kasada durur, recovery_share
+                       hâlâ geçerlidir) ama seri numarası okunabilen bir cihaz
+                       takılana kadar yeniden kurulum tamamlanamaz.
     """
     _parse_share(recovery_share)
     path = create_vault(

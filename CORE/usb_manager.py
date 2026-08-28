@@ -17,8 +17,12 @@ olmadan aynı kimliği yeniden üretir.
 
 Bu modül bu durumu artık SESSİZCE geçmiyor: `is_uuid_fallback_hwid()`
 verilen bir hwid'in bu yedekten gelip gelmediğini söylüyor, ve ilk kez bir
-UUID atandığında bir uyarı log'a düşüyor. Kritik işlemlerin (vault açma,
-USB kaydı, imzalama) bu durumdaki bir hwid için REDDEDİLMESİ
+UUID atandığında bir uyarı log'a düşüyor. İlk-atama uyarısı hem uygulama
+logına (`_log.warning`) HEM DE denetim zincirine (`DBManager().log(...)`,
+DB bağlıysa) düşer — yalnızca uygulama logunda kalsaydı, delil-değeri
+iddia eden HALKA zincirinin dışında kalan bu iz sessizce silinebilir/
+değiştirilebilirdi (bkz. SECURITY.md §4.15). Kritik işlemlerin (vault
+açma, USB kaydı, imzalama) bu durumdaki bir hwid için REDDEDİLMESİ
 `CORE/vault_manager.py`'nin sorumluluğu — bu modül yalnızca durumu
 GÖRÜNÜR kılıyor, politika kararını vermiyor (katman ayrımı: bu modül USB
 donanımından, vault_manager güvenlik politikasından sorumlu).
@@ -78,9 +82,14 @@ def _get_or_create_uuid(raw: str) -> str:
     İlk çağrıda uuid4 üretilir ve usb_ids.json'a kaydedilir;
     sonraki çağrılarda aynı UUID geri döner.
 
-    İlk üretim artık SESSİZ değil: bir uyarı log'a düşer. Bu, "donanıma
-    bağlı" iddiasının bu cihaz için geçerli olmadığı anın — B-025'in tam
-    olarak şikayet ettiği görünmezliğin — kayda geçtiği tek yer.
+    İlk üretim artık SESSİZ değil: bir uyarı log'a düşer VE (DB bağlıysa)
+    denetim zincirine yazılır. Bu, "donanıma bağlı" iddiasının bu cihaz
+    için geçerli olmadığı anın — B-025'in tam olarak şikayet ettiği
+    görünmezliğin — kayda geçtiği tek yer. Denetim zinciri yazımı BEST
+    EFFORT: DB henüz bağlı değilse (bu fonksiyon setup_usb.py gibi bir
+    CLI aracından, login/DB bağlantısından ÖNCE de çağrılabilir) sessizce
+    atlanır — uygulama logu her durumda düşer, hardware probu asla bir DB
+    bağlantı hatasına takılıp çökmemeli.
     """
     mapping: dict[str, str] = {}
     if _USB_IDS_FILE.exists():
@@ -105,6 +114,15 @@ def _get_or_create_uuid(raw: str) -> str:
             "bağlama, donanıma bağlı DEĞİL): uuid=%s",
             yeni_uuid,
         )
+        try:
+            from DB.db_manager import DBManager  # yerel import: döngüsel bağımlılığı önler
+
+            DBManager().log(
+                "weak_hwid_uuid_assigned",
+                detail=f"uuid={yeni_uuid} — seri numarası okunamadı, zayıf bağlama",
+            )
+        except Exception:
+            pass  # DB henüz bağlı değilse bile UUID ataması devam etmeli
 
     return mapping[raw]
 

@@ -839,6 +839,37 @@ yığınına bakması) değiştirmedi. Yani bu yola düşen bir cihaz artık
 sessizce çalışmıyor, ama hâlâ hiç çalışmıyor — kayıt/giriş için tek yol
 donanımı değiştirmek.
 
+### 2026-08-28 (devam) — reprovision'daki muafiyet deliği kapatıldı, denetim yazımı zincire taşındı
+
+Bir önceki notta `reprovision_vault()`'un (create_vault()'un `anchor_share`
+verilen çağrısı) TAMAMEN muaf olduğu yazılıydı — bu, kanıtlanmadan yapılmış
+bir varsayımdı. Denendiğinde: zayıf bağlı bir hwid, `reprovision_vault()`'tan
+sorunsuz geçip vault'u kalıcı olarak bir UUID yedeğine bağlayabiliyordu; bu,
+K0-2'nin "USB kaydı reddedilsin" gereksinimini karşılamıyordu — kayıt ANINDA
+engellenmesi gerekirken kayıt SONRASI kullanılamaz hâle geliyordu (çünkü
+`open_vault()`/`authenticate_usb()` zaten reddediyordu).
+
+Düzeltme: `create_vault()` içindeki iki alt-işlem ayrıştırıldı.
+`recover_master_key()` (eski payı/PIN'i OKUYUP `master_key`'i yeniden
+üretmek) BİLEREK muaf kaldı — zayıf bağlı bir cihazın verisine erişmenin
+tek yolu bu. Ama `reprovision_vault()`'un kendisi (kurtarılan `master_key`'i
+YENİ bir hwid'e YAZMASI) artık muaf DEĞİL — bu, taze kayıtla aynı sınıfta
+bir TRUST kararı. `create_vault()` artık her iki dalda da
+`_reject_if_weak_binding()`'i çağırıyor.
+
+Ayrıca: `_get_or_create_uuid()`'in ilk-atama uyarısı yalnızca uygulama
+logundaydı, denetim zincirinde DEĞİLDİ — sistem delil-değeri iddia eden TEK
+bir zincire güveniyor, o zincirin dışında kalan bir iz zincir bozulmadan
+silinebilirdi. Artık `weak_hwid_uuid_assigned` denetim satırı da düşüyor
+(best effort — DB bağlı değilse yutuluyor, hardware probu çökmemeli).
+
+Ayrıntılı gerekçe ve yeni testler SECURITY.md §4.15'te
+(`test_reprovision_YAZMA_zayif_hwid_icin_REDDEDILIR`,
+`test_kurtarma_OKUMA_zayif_hwid_icin_MUAF`,
+`test_reprovision_GUCLU_hwid_ile_calismaya_devam_eder`,
+`test_get_or_create_uuid_ilk_uretim_denetim_zincirine_de_dusuyor`).
+Madde 1, 3, 4 hâlâ AÇIK — bu değişmedi.
+
 ### Kapsam notu
 
 Bu madde B-016'nın devamı ama aynı şey değil. B-016 "hangi alanı

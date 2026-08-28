@@ -127,6 +127,47 @@ def test_get_or_create_uuid_ikinci_cagrida_tekrar_uyarmiyor(
     assert caplog.records == []
 
 
+def test_get_or_create_uuid_ilk_uretim_denetim_zincirine_de_dusuyor(vault_dizini, db) -> None:
+    """
+    Yalnızca uygulama logu YETMEZ: sistem delil-değeri iddia eden TEK bir
+    zincire (audit_log, HALKA ile doğrulanıyor) güveniyor. İlk-atama olayı
+    o zincirin dışında kalırsa, zincir bozulmadan sessizce silinebilir.
+    """
+    uretilen = usb_manager._get_or_create_uuid("\x07\x08")
+
+    kayitlar = db.fetchall(
+        "SELECT detail FROM audit_log WHERE action = 'weak_hwid_uuid_assigned'"
+    )
+    assert len(kayitlar) == 1
+    assert f"uuid={uretilen}" in kayitlar[0]["detail"]
+
+
+def test_get_or_create_uuid_ikinci_cagrida_denetim_zincirine_tekrar_dusmuyor(vault_dizini, db) -> None:
+    usb_manager._get_or_create_uuid("\x09\x0a")
+    usb_manager._get_or_create_uuid("\x09\x0a")
+
+    kayitlar = db.fetchall(
+        "SELECT detail FROM audit_log WHERE action = 'weak_hwid_uuid_assigned'"
+    )
+    assert len(kayitlar) == 1
+
+
+def test_get_or_create_uuid_db_baglanmasa_bile_cokmuyor(vault_dizini, monkeypatch) -> None:
+    """
+    Bu fonksiyon DB.connect() çağrılmadan önce de (ör. setup_usb.py CLI
+    aracı, login akışından önce) çağrılabilir — denetim zinciri yazımı
+    BEST EFFORT olmalı, hardware probunu çökertmemeli.
+    """
+    from DB.db_manager import DBManager
+
+    def _patlayan_log(self, *a, **kw):
+        raise RuntimeError("DB bağlı değil")
+
+    monkeypatch.setattr(DBManager, "log", _patlayan_log)
+    uretilen = usb_manager._get_or_create_uuid("\x0b\x0c")
+    assert is_uuid_fallback_hwid(uretilen) is True
+
+
 def test_sanitize_hwid_bos_ve_sifir_zayif_uretir(vault_dizini) -> None:
     assert is_uuid_fallback_hwid(usb_manager._sanitize_hwid("")) is True
     assert is_uuid_fallback_hwid(usb_manager._sanitize_hwid("0")) is True
@@ -242,20 +283,59 @@ def test_verify_vault_zayif_hwid_icin_ENGELLENMIYOR(zayif_vault, db) -> None:
     verify_vault(zayif_vault)  # istisna atmamalı
 
 
-def test_kurtarma_zayif_hwid_icin_MUAF(zayif_vault, db) -> None:
+def test_kurtarma_OKUMA_zayif_hwid_icin_MUAF(zayif_vault, db) -> None:
     """
-    Kurtarma akışı BİLEREK muaf: zayıf bağlı bir cihazın tek çıkış yolu bu.
+    Kurtarma OKUMASI (export_recovery_share / recover_master_key) BİLEREK
+    muaf: zayıf bağlı bir cihazın verisine erişebilmesinin tek yolu bu.
     Onu da kapatmak kullanıcıyı kalıcı olarak kilitlerdi.
     """
     parca = export_recovery_share(zayif_vault, _PIN)  # istisna atmamalı
     kurtarilan = recover_master_key(zayif_vault, recovery_share=parca, pin=_PIN)
     assert len(kurtarilan) == 32
 
-    # reprovision_vault (create_vault'un anchor_share'li çağrısı) de muaf —
-    # aynı (zayıf) hwid'e yeniden kurulum başarıyla tamamlanmalı.
+
+def test_reprovision_YAZMA_zayif_hwid_icin_REDDEDILIR(zayif_vault, db) -> None:
+    """
+    ASIL DÜZELTME (bu tur): recover_master_key() OKUMA olarak muaf kalsa da,
+    kurtarılan anahtarı YENİ bir vault'a zayıf hwid'e YAZMAK (reprovision_
+    vault, create_vault'un anchor_share'li çağrısı) artık reddedilir — bu,
+    taze kayıtla (create_vault, anchor_share=None) aynı sınıfta bir TRUST
+    kararı. Kullanıcının verisi kaybolmaz: eski vault/kasa değişmeden durur,
+    kurtarma parçası hâlâ geçerlidir; yalnızca KALICI yeniden kurulum, seri
+    numarası okunabilen bir cihaz takılana kadar tamamlanamaz.
+    """
+    parca = export_recovery_share(zayif_vault, _PIN)
+    kurtarilan = recover_master_key(zayif_vault, recovery_share=parca, pin=_PIN)
+
+    with pytest.raises(USBAuthError, match="donanım seri numarası okunamıyor"):
+        reprovision_vault(
+            zayif_vault, "yeni-pin-777", _ROLE,
+            master_key=kurtarilan, recovery_share=parca,
+        )
+
+    kayitlar = db.fetchall(
+        "SELECT detail FROM audit_log WHERE action = 'weak_hwid_binding_rejected'"
+    )
+    assert len(kayitlar) == 1
+    assert f"hwid={zayif_vault}" in kayitlar[0]["detail"]
+    assert "kurtarma sonrası yeniden kurulum" in kayitlar[0]["detail"]
+
+
+def test_reprovision_GUCLU_hwid_ile_calismaya_devam_eder(vault_dizini, db) -> None:
+    """
+    REGRESYON: gerçek donanımla (zayıf OLMAYAN hwid) reprovisioning hâlâ
+    normal çalışmalı — bu turdaki değişiklik yalnızca zayıf hwid'i
+    hedefliyor, kurtarma akışının kendisini kırmamalı.
+    """
+    eski_hwid = "USB-GUCLU-ESKI"
+    create_vault(eski_hwid, _PIN, _ROLE)
+    parca = export_recovery_share(eski_hwid, _PIN)
+    kurtarilan = recover_master_key(eski_hwid, recovery_share=parca, pin=_PIN)
+
+    yeni_hwid = "USB-GUCLU-YENI"
     yeni_yol = reprovision_vault(
-        zayif_vault, "yeni-pin-777", _ROLE,
+        yeni_hwid, "yeni-pin-777", _ROLE,
         master_key=kurtarilan, recovery_share=parca,
     )
     assert yeni_yol.exists()
-    verify_vault(zayif_vault)  # yeniden kurulan vault geçerli imzayla duruyor
+    verify_vault(yeni_hwid)  # yeniden kurulan vault geçerli imzayla duruyor
