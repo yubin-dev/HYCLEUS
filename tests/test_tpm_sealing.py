@@ -914,6 +914,227 @@ def test_AYNI_ANDA_IKI_golge_YAPISAL_OLARAK_var_olamiyor(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 5c. erase() — kesintiye dayanıklılık (atomiklik)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_erase_KUTUPHANENIN_KENDI_silmesi_KESINTIYE_UGRARSA_eski_deger_GERI_DONUYOR(
+    use_keyring_backend,  # type: ignore[no-untyped-def]
+) -> None:
+    """
+    ÖNCE KANITLA: `keyring.backends.Windows.WinVaultKeyring.delete_password()`
+    (kütüphanenin KENDİ kodu, `site-packages/keyring/backends/Windows.py`)
+    şunu yapıyor:
+
+        for target in service, compound:
+            ...
+            self._delete_password(target)
+
+    Yani İKİ AYRI `CredDelete`, SIRAYLA: önce bare, sonra compound —
+    aralarında doğrulama yok. Bu test, tam o aradaki kesintiyi simüle
+    ediyor: bare'i TEK BAŞINA siliyor (compound'a hiç dokunmadan) ve
+    GERÇEK Credential Manager'a soruyor.
+
+    Sonuç ölçüldü: `get_password()` — `_resolve_credential()` bare'i
+    bulamayınca compound'a DÜŞTÜĞÜ için — sildiğimizi sandığımız ESKİ
+    değeri SESSİZCE geri veriyor. "Silindi" denen bir sır hâlâ okunabilir
+    kalıyor — K0-3'ün "korunduğunu sanıp korunmuyor olma" riski, somut ve
+    ölçülmüş. Bu, `CORE/secret_store.py::_windows_erase()`'in NEDEN var
+    olduğunun kanıtı. Bkz. SECURITY.md §4.13, BACKLOG B-070.
+    """
+    if sys.platform != "win32":
+        pytest.skip("Windows Credential Manager'a özgü davranış")
+    try:
+        import pywintypes
+        import win32cred
+        from keyring.backends.Windows import WinVaultKeyring
+    except ImportError:
+        pytest.skip("pywin32 kurulu değil")
+
+    use_keyring_backend(WinVaultKeyring())
+
+    service = "HYCLEUS-ERASE-KESINTI-KANIT"
+    u1, u2 = "erase-kanit-u1", "erase-kanit-u2"
+    compound_u1 = f"{u1}@{service}"
+
+    def _sil(target: str) -> None:
+        try:
+            win32cred.CredDelete(Type=win32cred.CRED_TYPE_GENERIC, TargetName=target)
+        except pywintypes.error:
+            pass
+
+    for hedef in (u1, u2, compound_u1, f"{u2}@{service}", service):
+        _sil(hedef)
+
+    try:
+        # Gölge oluştur: u1 iki kez yazılıyor, arada u2 onu compound'a tahliye ediyor.
+        keyring.set_password(service, u1, "OLD-VALUE")
+        keyring.set_password(service, u2, "u2-value")
+        keyring.set_password(service, u1, "NEW-VALUE")
+        assert win32cred.CredRead(
+            Type=win32cred.CRED_TYPE_GENERIC, TargetName=compound_u1
+        )["CredentialBlob"].decode("utf-16-le") == "OLD-VALUE", "ön koşul: gölge OLD-VALUE taşımalı"
+
+        # Kesintiyi simüle et: SADECE bare siliniyor (kütüphanenin kendi
+        # delete_password()'ünün İLK adımı) — compound'un silinmesinden
+        # ÖNCE process çökmüş gibi.
+        win32cred.CredDelete(Type=win32cred.CRED_TYPE_GENERIC, TargetName=service)
+
+        # get_password() ESKİ değeri geri veriyor — silinmiş DEĞİL, YANLIŞ.
+        assert keyring.get_password(service, u1) == "OLD-VALUE", (
+            "beklenen risk gözlenmedi — bu makinede/kütüphane sürümünde "
+            "davranış değişmiş olabilir; SECURITY.md §4.13'ü buna göre gözden geçir"
+        )
+    finally:
+        for hedef in (u1, u2, compound_u1, f"{u2}@{service}", service):
+            _sil(hedef)
+
+
+def test_erase_WINDOWS_kesintiye_dayanikli_asla_ESKI_deger_DONDURMUYOR(
+    monkeypatch: pytest.MonkeyPatch, use_keyring_backend,  # type: ignore[no-untyped-def]
+) -> None:
+    """
+    DÜZELTMENİN KANITI: `_windows_erase()` sırayı TERS ÇEVİRİYOR — önce
+    compound (gölge), sonra bare (asıl/güncel kopya). Burada compound
+    silindikten HEMEN SONRA (bare silinmeden ÖNCE) `win32cred.CredDelete`
+    monkeypatch'lenerek gerçek bir kesinti (çökme) simüle ediliyor.
+
+    Beklenen: yarım kalan `erase()` bir istisna fırlatır (K0-3 —
+    "sessizce başarılı" DENMEZ), ama bu ANDA bile `get_password()` HÂLÂ
+    GÜNCEL değeri döndürür — ESKİ/yanlış bir değer ASLA görünmez, çünkü
+    bare'e daha dokunulmadı. Sonra erase() TEKRAR çağrılınca (idempotent
+    devam) iş tamamlanır ve iki hedef de gerçekten yok olur.
+    """
+    if sys.platform != "win32":
+        pytest.skip("Windows Credential Manager'a özgü davranış")
+    try:
+        import pywintypes
+        import win32cred
+        from keyring.backends.Windows import WinVaultKeyring
+    except ImportError:
+        pytest.skip("pywin32 kurulu değil")
+
+    use_keyring_backend(WinVaultKeyring())
+
+    service = "HYCLEUS-ERASE-KESINTI-DAYANIKLI"
+    u1, u2 = "erase-dayanikli-u1", "erase-dayanikli-u2"
+    compound_u1 = f"{u1}@{service}"
+    onceki_service = secret_store.SERVICE
+
+    def _sil(target: str) -> None:
+        try:
+            win32cred.CredDelete(Type=win32cred.CRED_TYPE_GENERIC, TargetName=target)
+        except pywintypes.error:
+            pass
+
+    for hedef in (u1, u2, compound_u1, f"{u2}@{service}", service):
+        _sil(hedef)
+
+    try:
+        secret_store.SERVICE = service
+        keyring.set_password(service, u1, "OLD-VALUE")
+        keyring.set_password(service, u2, "u2-value")
+        keyring.set_password(service, u1, "NEW-VALUE")
+        assert win32cred.CredRead(
+            Type=win32cred.CRED_TYPE_GENERIC, TargetName=compound_u1
+        )["CredentialBlob"].decode("utf-16-le") == "OLD-VALUE", "ön koşul: gölge OLD-VALUE taşımalı"
+
+        gercek_CredDelete = win32cred.CredDelete
+        cagri_sayaci = {"n": 0}
+
+        def _kesilen_sil(*a, **k):
+            cagri_sayaci["n"] += 1
+            if cagri_sayaci["n"] == 1:
+                # _windows_erase()'in İLK adımı (compound) başarıyla biter.
+                gercek_CredDelete(*a, **k)
+                raise RuntimeError("simüle edilmiş çökme — compound silindi, bare'e sıra gelmeden")
+            return gercek_CredDelete(*a, **k)
+
+        monkeypatch.setattr(win32cred, "CredDelete", _kesilen_sil)
+
+        with pytest.raises(Exception):
+            secret_store.erase(u1)
+
+        # Kesinti anında bile: GÜNCEL değer hâlâ okunuyor, ESKİ değer DEĞİL.
+        assert keyring.get_password(service, u1) == "NEW-VALUE", (
+            "kesinti sonrası get_password() ESKİ/yanlış bir değer döndürdü — "
+            "sıra tersine çevrilmesi çalışmamış olabilir"
+        )
+        # Ve gölge de henüz gitmedi (compound tarafı zaten tamamlanmıştı).
+        with pytest.raises(pywintypes.error) as ex:
+            win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=compound_u1)
+        assert ex.value.winerror == 1168, "compound zaten silinmiş olmalıydı (1. adım tamamlandı)"
+
+        monkeypatch.setattr(win32cred, "CredDelete", gercek_CredDelete)
+
+        # İkinci çağrı (idempotent devam) işi tamamlamalı.
+        assert secret_store.erase(u1) is True
+        assert secret_store.load(u1) is None
+        with pytest.raises(pywintypes.error) as ex2:
+            win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=service)
+        assert ex2.value.winerror == 1168
+    finally:
+        secret_store.SERVICE = onceki_service
+        for hedef in (u1, u2, compound_u1, f"{u2}@{service}", service):
+            _sil(hedef)
+
+
+def test_erase_gercek_kasada_HER_IKI_hedef_de_TEMIZLENIYOR_ve_IDEMPOTENT(
+    use_keyring_backend,  # type: ignore[no-untyped-def]
+) -> None:
+    """
+    Normal (kesintisiz) yol: gölgeli bir kayıt üzerinde `erase()` GERÇEK
+    kasada hem bare hem compound hedefi siliyor, `load()` None dönüyor,
+    ve ikinci `erase()` çağrısı hata SAYMIYOR (idempotent — "zaten yok").
+    """
+    if sys.platform != "win32":
+        pytest.skip("Windows Credential Manager'a özgü davranış")
+    try:
+        import pywintypes
+        import win32cred
+        from keyring.backends.Windows import WinVaultKeyring
+    except ImportError:
+        pytest.skip("pywin32 kurulu değil")
+
+    use_keyring_backend(WinVaultKeyring())
+
+    service = "HYCLEUS-ERASE-TAM-TEMIZLIK"
+    u1, u2 = "erase-tam-u1", "erase-tam-u2"
+    compound_u1 = f"{u1}@{service}"
+    onceki_service = secret_store.SERVICE
+
+    def _sil(target: str) -> None:
+        try:
+            win32cred.CredDelete(Type=win32cred.CRED_TYPE_GENERIC, TargetName=target)
+        except pywintypes.error:
+            pass
+
+    for hedef in (u1, u2, compound_u1, f"{u2}@{service}", service):
+        _sil(hedef)
+
+    try:
+        secret_store.SERVICE = service
+        keyring.set_password(service, u1, "OLD-VALUE")
+        keyring.set_password(service, u2, "u2-value")
+        keyring.set_password(service, u1, "NEW-VALUE")
+
+        assert secret_store.erase(u1) is True
+        assert secret_store.load(u1) is None
+
+        for hedef in (service, compound_u1):
+            with pytest.raises(pywintypes.error) as ex:
+                win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=hedef)
+            assert ex.value.winerror == 1168, f"{hedef} hâlâ kasada — tam temizlenmedi"
+
+        # İkinci çağrı: zaten yok, hata değil, False.
+        assert secret_store.erase(u1) is False
+    finally:
+        secret_store.SERVICE = onceki_service
+        for hedef in (u1, u2, compound_u1, f"{u2}@{service}", service):
+            _sil(hedef)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 6. Görünürlük — düşüş SESSİZ olmamalı
 # ══════════════════════════════════════════════════════════════════════════════
 

@@ -3899,4 +3899,81 @@ değil: gölge yaratan yazım servisin aldığı SON yazımsa (bir daha hiç
 `store()`/`ensure_available()` çağrısı olmazsa) tek gölge süresiz kalır,
 İYİLEŞMEMİŞ. SECURITY.md §4.13 bu turda buna göre düzeltildi.
 
+### 2026-08-28 (3. devam) — `erase()`'in kendisi de aynı iki-hedef sorununu taşıyordu, TERSİNE bir riskle
+
+Yukarıdaki notlarda geçen bir cümle ("`secret_store.erase()`
+`keyring.delete_password()`'i çağırıyor, o da her iki konumu da koşulsuz
+temizliyor") SONUÇ olarak doğruydu ama SÜREÇ hiç incelenmemişti —
+`erase()`'in kendi atomikliği bu turda ayrıca sorgulandı.
+
+**Bulgu.** Kod okunarak doğrulandı: `keyring.backends.Windows.
+WinVaultKeyring.delete_password()`'ün kendi kaynağı
+(`site-packages/keyring/backends/Windows.py`) tek bir atomik işlem DEĞİL —
+`for target in service, compound: ... self._delete_password(target)`
+şeklinde İKİ AYRI `CredDelete` çağrısı, SIRAYLA: önce çıplak (bare) hedef,
+SONRA compound. Aralarında doğrulama yok, kesinti olursa geri alma yok.
+
+Doğrudan ölçüldü (gerçek `WinVaultKeyring`, taklit değil): bir gölge
+kurulup (`u1` iki kez yazılıp), kütüphanenin kendi silmesinin yalnızca
+İLK yarısı elle yapıldı — yalnızca bare hedef silindi, compound'a hiç
+dokunulmadan (tam olarak iki `CredDelete` arasında bir çökmenin
+bırakacağı durum). Sonuç: `get_password(service, "u1")`, bare'i
+bulamayınca `_resolve_credential()` compound'a düştüğü için, silinmiş
+sanılan ESKİ değeri (`"OLD-VALUE"`) sessizce GERİ VERDİ. Bu, yukarıdaki
+`store()` gölgesinden DAHA KÖTÜ bir risk: o yalnızca görünmezdi (kimse
+bakmıyordu), bu ise GÖRÜNÜYOR ve YANLIŞ — "silindi" denen bir kayıt hâlâ
+eski veriyle cevap veriyor, K0-3'ün tam tarif ettiği "korunduğunu sanıp
+korunmuyor olma" durumu.
+
+### Düzeltme
+
+`CORE/secret_store.py::erase()` artık Windows + `WinVaultKeyring`'de
+`keyring.delete_password()`'e hiç uğramıyor — `_windows_erase()`'e
+yönlendiriliyor. O da iki hedefi TEK TEK, her birini `CredRead` ile
+geri okuyarak GERÇEKTEN yok olduğunu doğrulayarak siliyor (bir hedef
+hâlâ duruyorsa üç denemeye kadar tekrar dener, son denemede de
+başarısızsa `KeyringUnavailableError` fırlatır — sessizce "silindi"
+denmiyor). Idempotent: bir hedef zaten yoksa ya da bize ait değilse
+(UserName farklı) dokunulmuyor, hata sayılmıyor.
+
+SIRA BİLEREK TERS ÇEVRİLDİ — önce compound (gölge), SONRA bare
+(asıl/güncel kopya), kütüphanenin kendi sırasının tersi. Bunun nedeni:
+iki adım arasında bir kesinti olursa, hangi konumun kaldığı sonucu
+belirliyor. Bare önce silinirse (kütüphanenin kendi sırası), kesinti
+sonrası `get_password()` ESKİ/yanlış bir değer döndürür (yukarıdaki
+bulgu). Compound önce silinirse, kesinti sonrası bare hâlâ yerinde durur
+ve `get_password()` GÜNCEL değeri döndürmeye devam eder — `erase()`
+yalnızca YARIM kalmış olur (secret hâlâ okunabilir, tıpkı erase() hiç
+çağrılmamış gibi), ama ASLA yanlış bir değer dönmez. Yarım kalan bir
+`erase()` bir sonraki çağrıda (idempotent) tamamlanır.
+
+### Test
+
+`tests/test_tpm_sealing.py`'e üç test eklendi, hepsi GERÇEK
+`WinVaultKeyring`'e karşı (`use_keyring_backend`), Windows dışında/pywin32
+yokken atlanıyor:
+
+- `test_erase_KUTUPHANENIN_KENDI_silmesi_KESINTIYE_UGRARSA_eski_deger_GERI_DONUYOR`
+  — yukarıdaki riski ÖNCE kanıtlıyor: kütüphanenin kendi sırasıyla
+  (bare önce) kesintiyi simüle edip `get_password()`'ün ESKİ değeri
+  geri verdiğini doğruluyor.
+- `test_erase_WINDOWS_kesintiye_dayanikli_asla_ESKI_deger_DONDURMUYOR` —
+  aynı kesintiyi DÜZELTİLMİŞ `_windows_erase()`'in kendi akışına
+  enjekte ediyor (gerçek silme başarıyla biter bitmez fırlayan
+  monkeypatch'lenmiş bir `CredDelete` ile) ve `get_password()`'ün ASLA
+  eski değeri döndürmediğini, yarım kalan çağrının sessizce "başarılı"
+  DEMEYİP fırlattığını, ikinci bir `erase()` çağrısının işi idempotent
+  biçimde tamamladığını doğruluyor.
+- `test_erase_gercek_kasada_HER_IKI_hedef_de_TEMIZLENIYOR_ve_IDEMPOTENT`
+  — sıradan (kesintisiz) yolda hem bare hem compound'un gerçekten
+  silindiğini, `load()`'un `None` döndüğünü, ve zaten silinmiş bir
+  kullanıcı adını tekrar silmenin hata değil `False` olduğunu
+  doğruluyor.
+
+Bu turda kullanılan test credential'ları (`HYCLEUS-ERASE-*` servis
+adları) doğrulanmış `erase()`/`_sil()` yardımcılarıyla temizlendi ve
+gerçek Credential Manager'da `win32cred.CredEnumerate` ile bağımsızca
+teyit edildi — geriye hiçbir kalıntı kalmadı. Ayrıntı SECURITY.md
+§4.13'te.
+
 ---

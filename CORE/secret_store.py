@@ -92,6 +92,31 @@ uygulama logına düşüyor — bkz. SECURITY.md §4.13.
 erişilebilirliğini ölçüyor, TPM'inkini değil. Mühürlenseydi bir TPM
 sorunu "anahtar kasası erişilemiyor" diye rapor edilir ve açılışı
 engellerdi — TPM'in yokluğu ise açılışı engellemiyor.
+
+Erase — Windows'ta silme İKİ AYRI adım, aralarında kesinti olabilir
+--------------------------------------------------------------------
+`_windows_golge_sil()`'in belgelediği aynı compound-target hilesi
+(bkz. yukarıda) `erase()`'i de etkiliyor: `keyring` kütüphanesinin
+kendi `delete_password()`'ü bare ve compound hedefleri SIRAYLA, iki ayrı
+`CredDelete` çağrısıyla siliyor. Bare silindikten hemen sonra (compound
+silinmeden ÖNCE) bir kesinti (çökme, güç kaybı) olursa, compound'daki
+ESKİ kopya kasada kalır — VE `get_password()` bare'i bulamayınca
+compound'a düştüğü için, "silindi" denen sır aslında hâlâ okunabilir
+kalır. Ölçüldü — bu makinede, GERÇEK Windows Credential Manager'a karşı:
+bare'i tek başına silip aradaki durumu okuyunca, `get_password()`
+sildiğimizi sandığımız ESKİ değeri sessizce geri verdi (bkz.
+`tests/test_secret_store.py::
+test_erase_KESINTIYE_UGRARSA_eski_deger_GERI_DONMUYOR`). Bkz.
+SECURITY.md §4.13, BACKLOG B-070.
+
+`erase()` bu yüzden Windows + WinVaultKeyring'de `_windows_erase()`'e
+yönlendiriliyor: iki hedefi TEK TEK, her birini geri okuyarak gerçekten
+yok olduğunu DOĞRULAYARAK siliyor, gerekirse tekrar dener, ve SIRAYI
+TERS ÇEVİRİYOR — önce compound (gölge), sonra bare (asıl/güncel kopya).
+Böylece bir kesinti en kötü ihtimalle erase()'i YARIM bırakır (secret
+hâlâ okunabilir, idempotent olarak bir sonraki çağrıda tamamlanır) ama
+ASLA eski/yanlış bir değeri geri getirmez. Idempotent — bir hedef zaten
+yoksa (ya da bize ait değilse) hata sayılmıyor.
 """
 from __future__ import annotations
 
@@ -506,17 +531,25 @@ def erase(username: str) -> bool:
     """
     Kasadan bir sırrı siler.
 
+    Windows + WinVaultKeyring'de bu, keyring kütüphanesinin KENDİ
+    `delete_password()`'üne DEĞİL, `_windows_erase()`'e yönlendirilir —
+    bkz. o fonksiyonun docstring'i: kütüphanenin kendi silme sırası
+    (bare, sonra compound) bir kesintiye karşı savunmasız.
+
     Returns:
         True  — kayıt silindi
         False — kayıt zaten yoktu
 
     Raises:
-        KeyringUnavailableError — kasaya erişilemiyorsa
+        KeyringUnavailableError — kasaya erişilemiyorsa, ya da (Windows'ta)
+            bir hedef birkaç denemeden sonra hâlâ kasada duruyorsa
     """
     if _keyring is None:
         raise KeyringUnavailableError(
             f"keyring paketi kurulu değil — '{username}' silinemez. Ayrıntı: {_IMPORT_ERROR}"
         )
+    if sys.platform == "win32" and backend_name() == "WinVaultKeyring":
+        return _windows_erase(username)
     try:
         _keyring.delete_password(SERVICE, username)
         return True
@@ -530,3 +563,110 @@ def erase(username: str) -> bool:
             f"Arka uç: {backend_name()}\n"
             f"Ayrıntı: {type(exc).__name__}: {exc}"
         ) from exc
+
+
+def _windows_erase(username: str) -> bool:
+    """
+    Windows + WinVaultKeyring: `username`'e ait sırrı, KESİNTİYE DAYANIKLI
+    biçimde siler.
+
+    Ölçüldü — bu makinede, GERÇEK Windows Credential Manager'da:
+    `keyring.backends.Windows.WinVaultKeyring.delete_password()`'ün kendi
+    kaynağı (`site-packages/keyring/backends/Windows.py`) şunu yapıyor:
+
+        for target in service, compound:
+            ...
+            self._delete_password(target)
+
+    Yani İKİ AYRI `CredDelete` çağrısı, SIRAYLA: önce "çıplak" (bare)
+    `service` hedefi, SONRA `{username}@{service}` compound hedefi —
+    aralarında bir doğrulama ya da geri alma YOK. Doğrudan denendi: bare
+    silindikten hemen sonra (compound'un silinmesinden ÖNCE) bir kesinti
+    simüle edilince, `keyring.get_password()` — `_resolve_credential()`
+    bare'i bulamayınca compound'a DÜŞTÜĞÜ için — sildiğimizi sandığımız
+    ESKİ değeri sessizce GERİ VERDİ. Yani "silindi" denen bir sır aslında
+    hâlâ okunabilir kalabiliyor; tam K0-3'ün "korunduğunu sanıp
+    korunmuyor olma" riski. Bkz. SECURITY.md §4.13, BACKLOG B-070.
+
+    Bu fonksiyon aynı iki hedefi TEK TEK, HER BİRİNİ gerçekten yok
+    olduğunu OKUYARAK doğrulayarak siler; bir hedef hâlâ duruyorsa birkaç
+    kez dener. Idempotent: bir hedef zaten yoksa (ya da bize ait değilse,
+    yani UserName başka biri) hata SAYILMAZ — yalnızca dokunulmaz.
+
+    SIRA BİLEREK TERS ÇEVRİLDİ: kütüphanenin kendi `delete_password()`'ü
+    ÖNCE bare'i siliyordu — bu, tam kesinti anında (bare gitti, compound
+    hâlâ orada) `get_password()`'ün compound'a düşüp ESKİ/YANLIŞ bir
+    değeri "hâlâ geçerliymiş" gibi geri vermesine yol açıyordu (yukarıda
+    ölçülen risk). Burada ÖNCE compound (gölge), SONRA bare (asıl/güncel
+    kopya) siliniyor: bir kesinti compound silindikten hemen sonra
+    olursa, bare hâlâ yerinde durur ve `get_password()` GÜNCEL değeri
+    döndürmeye devam eder — yani en kötü ihtimalle erase() YARIM kalmış
+    olur (secret hâlâ okunabilir, tıpkı erase() hiç çağrılmamış gibi),
+    ama HİÇBİR ZAMAN eski/yanlış bir değer dönmez. Yarım kalan erase()
+    bir sonraki çağrıda (idempotent) tamamlanır.
+
+    Returns:
+        True  — en az bir hedeften gerçekten bir kayıt silindi
+        False — hiçbir hedefte bu username'e ait bir kayıt yoktu
+
+    Raises:
+        KeyringUnavailableError — bir hedef okunamıyorsa, ya da silme
+            birkaç denemeden sonra hâlâ doğrulanamıyorsa
+    """
+    import pywintypes
+    import win32cred
+
+    compound = f"{username}@{SERVICE}"
+    silindi = False
+    for hedef in (compound, SERVICE):
+        silindi = _windows_hedefi_dogrulayarak_sil(hedef, username, pywintypes, win32cred) or silindi
+    return silindi
+
+
+def _windows_hedefi_dogrulayarak_sil(
+    hedef: str, username: str, pywintypes: Any, win32cred: Any
+) -> bool:
+    """`_windows_erase()`'in tek bir hedef (bare ya da compound) üzerindeki adımı."""
+    MAX_DENEME = 3
+    for deneme in range(MAX_DENEME):
+        try:
+            mevcut = win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=hedef)
+        except pywintypes.error as exc:
+            if exc.winerror == 1168:  # ERROR_NOT_FOUND — zaten yok, idempotent
+                return False
+            raise KeyringUnavailableError(
+                f"Anahtar kasasından '{hedef}' okunamadı (silme öncesi kontrol).\n"
+                f"Ayrıntı: {type(exc).__name__}: {exc}"
+            ) from exc
+
+        if mevcut.get("UserName") != username:
+            return False  # bu hedef bize ait değil — dokunma
+
+        try:
+            win32cred.CredDelete(Type=win32cred.CRED_TYPE_GENERIC, TargetName=hedef)
+        except pywintypes.error as exc:
+            if exc.winerror == 1168:
+                pass  # aradaki bir yarışta zaten silinmiş — devam, doğrula
+            elif deneme == MAX_DENEME - 1:
+                raise KeyringUnavailableError(
+                    f"'{hedef}' silinemedi ({MAX_DENEME} deneme sonrası).\n"
+                    f"Ayrıntı: {type(exc).__name__}: {exc}"
+                ) from exc
+            else:
+                continue
+
+        # Geri okuma doğrulaması: gerçekten gitti mi?
+        try:
+            win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=hedef)
+        except pywintypes.error as exc:
+            if exc.winerror == 1168:
+                return True  # doğrulandı — gerçekten yok
+            raise KeyringUnavailableError(
+                f"Anahtar kasasından '{hedef}' okunamadı (silme sonrası doğrulama).\n"
+                f"Ayrıntı: {type(exc).__name__}: {exc}"
+            ) from exc
+        # hâlâ okunuyor — tekrar dene
+
+    raise KeyringUnavailableError(
+        f"'{hedef}' {MAX_DENEME} denemeden sonra hâlâ kasada duruyor — silme doğrulanamadı."
+    )

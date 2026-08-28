@@ -1301,6 +1301,52 @@ has a TPM, so those tests skip there and the path's health rests on one
 developer machine. Same caveat as ClamAV in B-023, stated for the same
 reason.
 
+**`erase()` had the same two-target problem, in reverse: not a stale copy
+left behind, but a stale copy resurrected.** The paragraph above notes in
+passing that `secret_store.erase()` calls `keyring.delete_password()`,
+"which purges both locations unconditionally" — true of the *outcome*,
+but the library's own source
+(`keyring/backends/Windows.py::WinVaultKeyring.delete_password()`) does it
+as two separate `CredDelete` calls in a loop, bare target first, compound
+second, with no verification between them and no recovery if the process
+dies in between. Proven directly against this machine's real Credential
+Manager, not inferred: build a shadow (write `u1` twice), then perform
+only the *first* half of what the library's own delete does — delete the
+bare target alone, leaving the compound untouched, exactly what a crash
+between the two calls would leave — and `get_password()`, unable to find
+the bare target, falls back to the compound and hands back the **old**
+value as if it were current. A credential believed erased keeps answering
+with stale data — the K0-3 failure mode by name, and worse than the
+`store()` shadow above: that one was merely invisible; this one is visible
+and wrong.
+
+Fixed by not going through the library's `delete_password()` on this
+backend at all: `_windows_erase()` deletes the two targets itself,
+**compound first, bare last** — the reverse of the library's own order,
+deliberately. Reversing it changes what an interruption between the two
+steps can leave behind: if it dies after the shadow is gone but before the
+bare copy is touched, `get_password()` still finds the bare target and
+returns the *current* value — `erase()` is simply incomplete, exactly as
+if it had not been called yet, never wrong. Each deletion is followed by
+its own read-back check (`CredRead` must come back not-found) with up to
+three retries before raising rather than returning a false success, and
+the whole operation is idempotent — a target that is already gone, or
+that belongs to a different username, is left alone and not treated as an
+error. Verified against the real backend:
+`test_erase_KUTUPHANENIN_KENDI_silmesi_KESINTIYE_UGRARSA_eski_deger_GERI_DONUYOR`
+reproduces the vulnerable half-deleted state and confirms the resurrection
+described above;
+`test_erase_WINDOWS_kesintiye_dayanikli_asla_ESKI_deger_DONDURMUYOR`
+injects the same interruption into the fixed code path (via a monkeypatched
+`CredDelete` that raises right after the real deletion succeeds) and
+confirms `get_password()` never returns anything but the current value,
+that the interrupted call raises rather than reporting success, and that a
+second `erase()` call finishes the job;
+`test_erase_gercek_kasada_HER_IKI_hedef_de_TEMIZLENIYOR_ve_IDEMPOTENT`
+confirms the ordinary, uninterrupted path removes both targets and that
+erasing an already-erased username returns `False`, not an error. Tracked
+as a dated addendum to **B-070** in `BACKLOG.md`.
+
 ---
 
 ### 4.14 The `.hclx` delivery package expires by policy, not by mathematics
@@ -2918,6 +2964,50 @@ olarak kapatıyor ve başka birinin bir daha yazmasına HİÇ bağlı değil.
 TPM yok, o yüzden ilgili testler orada atlanıyor ve bu yolun sağlığı tek
 bir geliştirici makinesinin ölçümüne dayanıyor. B-023'teki ClamAV
 çekincesinin aynısı, aynı gerekçeyle yazılıyor.
+
+**`erase()`'in de aynı iki-hedef sorunu vardı — ama TERSİNE: arkada
+kalan eski bir kopya değil, DİRİLEN eski bir kopya.** Yukarıdaki paragraf
+geçerken `secret_store.erase()`'in `keyring.delete_password()`'i
+çağırdığını, "o da HER İKİ konumu da koşulsuz temizliyor" dediğini
+söylüyor — SONUÇ olarak doğru, ama kütüphanenin kendi kaynağı
+(`keyring/backends/Windows.py::WinVaultKeyring.delete_password()`) bunu
+İKİ AYRI `CredDelete` çağrısıyla, bir döngüde, önce bare sonra compound
+hedef olacak şekilde yapıyor — aralarında doğrulama YOK, process arada
+ölürse geri alma YOK. Bu makinenin GERÇEK Credential Manager'ına karşı
+doğrudan kanıtlandı, çıkarılmadı: bir gölge kur (`u1`'i iki kez yaz),
+sonra kütüphanenin kendi silmesinin yalnızca İLK yarısını yap — bare
+hedefi TEK BAŞINA sil, compound'a hiç dokunmadan, tam olarak iki çağrı
+arasında bir çökmenin bırakacağı durum — ve `get_password()`, bare'i
+bulamayınca compound'a düşerek, ESKİ değeri sanki güncelmiş gibi geri
+veriyor. Silindiğine inanılan bir kayıt, eski veriyle cevap vermeye devam
+ediyor — tam adıyla K0-3 arızası, ve yukarıdaki `store()` gölgesinden
+daha kötü: o yalnızca GÖRÜNMEZDİ; bu GÖRÜNÜR ve YANLIŞ.
+
+Düzeltme, bu backend'de `delete_password()`'e HİÇ uğramamak: `_windows_
+erase()` iki hedefi kendisi siliyor, **önce compound, SONRA bare** —
+kütüphanenin kendi sırasının BİLEREK tersi. Sırayı ters çevirmek, iki
+adım arasındaki bir kesintinin arkada NEYİ bırakabileceğini değiştiriyor:
+gölge gittikten ama bare'e daha dokunulmadan ölürse, `get_password()`
+hâlâ bare'i bulup GÜNCEL değeri döndürüyor — `erase()` yalnızca YARIM
+kalmış oluyor, sanki hiç çağrılmamış gibi, ASLA yanlış değil. Her silme
+kendi geri-okuma kontrolüyle takip ediliyor (`CredRead` "bulunamadı"
+dönmeli), yanlış bir başarı bildirmek yerine üç denemeye kadar tekrar
+deniyor, ve tüm işlem idempotent — zaten yok olan ya da başka bir
+kullanıcı adına ait bir hedefe dokunulmuyor, hata sayılmıyor. Gerçek
+backend'e karşı doğrulandı:
+`test_erase_KUTUPHANENIN_KENDI_silmesi_KESINTIYE_UGRARSA_eski_deger_GERI_DONUYOR`
+yukarıda tarif edilen dirilişi yeniden üretip kanıtlıyor;
+`test_erase_WINDOWS_kesintiye_dayanikli_asla_ESKI_deger_DONDURMUYOR` aynı
+kesintiyi DÜZELTİLMİŞ koda enjekte edip (gerçek silme başarılı olur
+olmaz fırlayan monkeypatch'lenmiş bir `CredDelete` ile)
+`get_password()`'ün ASLA güncelden başka bir şey döndürmediğini, yarım
+kalan çağrının başarı raporlamak yerine fırlattığını, ve ikinci bir
+`erase()` çağrısının işi tamamladığını doğruluyor;
+`test_erase_gercek_kasada_HER_IKI_hedef_de_TEMIZLENIYOR_ve_IDEMPOTENT`
+sıradan, kesintisiz yolda her iki hedefin de gerçekten silindiğini ve
+zaten silinmiş bir kullanıcı adını tekrar silmenin hata değil `False`
+döndürdüğünü doğruluyor. `BACKLOG.md`'de **B-070**'e tarihli bir ek not
+olarak izleniyor.
 
 ### 4.14 `.hclx` teslim paketi POLİTİKAYLA süre doluyor, matematikle değil
 
