@@ -4551,3 +4551,114 @@ Tam test suite: 2755 passed, 4 skipped (bir önceki turdan +5 — bu dosyaya
 eklenen 5 yeni test).
 
 ---
+
+## B-072 — Önerilen WAL checkpoint hiçbir şey düzeltmiyordu; gerçek boşluk `_dump_tables()`'ın tablolar-arası tutarlılığıydı, bulundu ve kapatıldı
+
+**Durum:** Kapalı
+**Öncelik:** Orta (ölçülebilir tetikleyici koşul gerektiriyor — eşzamanlı
+yazma; ama tetiklendiğinde sonuç geri yüklendiğinde `FOREIGN KEY
+constraint failed` ile patlayan ya da yetim referans taşıyan bir yedek)
+**Bulundu ve kapatıldı:** 2026-08-29 — aynı turda
+
+### İstek ve ilk bulgu
+
+"Yedekleme akışına `PRAGMA wal_checkpoint(TRUNCATE)` çağrısını, kopyalama
+başlamadan hemen önce ekle — checkpoint yapılmadan alınan bir yedek eksik
+olabilir" isteğiyle başladı. Kod incelemesi önce yapıldı: `create_backup()`
+([CORE/backup.py](CORE/backup.py)) ham `hycleus.db` dosyasını HİÇ
+kopyalamıyor — `.hcl` kasa dosyalarını `shutil.copy2` ile kopyalıyor
+(SQLite değil, WAL'la ilgisi yok) ve veritabanı içeriğini
+`db.fetchall(f"SELECT * FROM {tablo}")` ile CANLI bağlantı üzerinden
+çekiyor. WAL modunda bir bağlantı üzerinden yapılan `SELECT`, checkpoint
+durumundan TAMAMEN bağımsız olarak her zaman tam COMMIT edilmiş durumu
+döndürür — bu SQLite'ın kendisinin garantisi. Checkpoint eklemek bu
+mekanizma için gerçek bir boşluğu KAPATMAZDI.
+
+Kullanıcıya bu bulgu sunuldu (`AskUserQuestion`); yanıt: checkpoint
+eklenmesin, gerekçe belgelensin — ama asıl soruyu çöz: `_dump_tables()`
+tüm tabloları TEK bir tutarlı anlık görüntüde mi okuyor?
+
+### Gerçek boşluk — cross-table tutarlılık
+
+`_dump_tables()`, `RESTORABLE_TABLES` (`files, folders, tags, file_tags,
+retention_profiles, quarantine`) için tablo başına AYRI bir `SELECT`
+çalıştırıyordu, aralarını bağlayan hiçbir transaction yoktu. Doğrudan
+`sqlite3` ile (kod değiştirmeden ÖNCE) ölçüldü: iki bağlantılı bir
+senaryoda, ilk tablo okunduktan SONRA ama son tablo okunmadan ÖNCE gelen
+bir COMMIT, ikinci okumaya YANSIYORDU — yani dump iki tabloyu FARKLI
+zaman noktalarında dondurabiliyordu (`python -c` ile: sarmalayıcısız
+okuma "torn? True", `BEGIN`...`COMMIT` sarmalı okuma "torn? False").
+
+`DBManager` bir singleton (`DB/db_manager.py`) ve `UI/main_window_open.py`
+`_on_create_backup()`'ta `create_backup(DBManager(), ...)` çağırıyor —
+yani yedekleme uygulamanın GERÇEK, PAYLAŞILAN bağlantısı üzerinden
+çalışıyor; eşzamanlı bir yazma (başka bir thread, gelecekte eklenecek bir
+arka plan işi) bu iki okuma arasına gerçekten girebilir.
+
+**Somut sonuç:** eşzamanlı eklenen bir dosyaya karşılık gelen bir
+`quarantine` satırı, o dosyayı hiç içermeyen bir `files` dökümüyle
+BİRLİKTE dump'a girebiliyordu — restore edildiğinde kendi foreign-key
+kısıtını ihlal edecek bir veritabanı.
+
+### Düzeltme
+
+`create_backup()`'ta `_dump_tables(db, RESTORABLE_TABLES)` ve
+`_dump_tables(db, REFERENCE_TABLES)` çağrıları artık açık bir
+`db.conn.execute("BEGIN")` ... `db.conn.execute("COMMIT")` (try/finally
+ile) içine alınıyor — WAL'ın anlık-görüntü izolasyonunu TÜM okuma
+dizisine yayıyor. `_dump_tables()`'ın kendi docstring'i, bu garantiyi
+KENDİSİNİN vermediğini, çağıranın sarmalaması gerektiğini artık açıkça
+belirtiyor.
+
+### İkinci, bağımsız bulgu — `apply_metadata()`'nın FK sırası
+
+Round-trip testi yazılırken (aşağıda) ikinci bir hata ortaya çıktı:
+`RESTORABLE_TABLES`'ta `files`, kendisinin foreign key ile bağlı olduğu
+`folders` ve `retention_profiles`'tan ÖNCE listeleniyordu. `apply_metadata()`
+bu sırayla `INSERT OR REPLACE` yapıyor ve `PRAGMA foreign_keys = ON`
+altında bu, TAMAMEN BOŞ bir veritabanına geri yüklerken
+`sqlite3.IntegrityError: FOREIGN KEY constraint failed` ile patlıyordu.
+Mevcut testler bunu hiç yakalamamıştı çünkü hepsi ZATEN DOLU bir
+veritabanına (folders/retention_profiles silinmeden) geri yüklüyordu —
+gerçek "yeni makineye geri yükleme" senaryosu hiç sınanmamıştı.
+
+`RESTORABLE_TABLES` bağımlılık-güvenli sıraya alındı:
+`folders, retention_profiles, tags, files, file_tags, quarantine` —
+önce bağımlılığı olmayanlar, sonra onlara bağımlı `files`, en son
+`files`'a bağımlı `file_tags`/`quarantine`. Sabitin üstüne bu bağımlılık
+zincirini ve ölçülen hatayı belgeleyen bir yorum eklendi.
+
+### Testler
+
+`tests/test_backup.py`'a yeni bölüm "7. Eşzamanlı yazma altında
+tutarlılık", 3 yeni test:
+
+- `test_dump_tables_building_block_is_torn_by_a_concurrent_write_if_unwrapped`
+  — KALICI regresyon kilidi: `_dump_tables()`'ı sarmalamadan (düzeltmeden
+  ÖNCEki `create_backup()`'ın yaptığı gibi) iki kez çağırıp, aradaki
+  eşzamanlı yazmanın yırtık bir görüntü ürettiğini kanıtlıyor — birisi
+  `create_backup()`'taki `BEGIN`...`COMMIT`'i yanlışlıkla kaldırırsa bu
+  test hemen kırılır.
+- `test_create_backup_dump_is_a_single_consistent_snapshot` — ANA TEST:
+  gerçek `create_backup()`'ı, `quarantine` (son tablo) okunmak ÜZEREYKEN
+  tetiklenen bir eşzamanlı yazmayla çalıştırıp, dump'ın TAMAMEN eski
+  hâli yansıttığını (ne `files`'ta ne `quarantine`'de yeni satır)
+  doğruluyor.
+- `test_restored_backup_has_no_orphaned_quarantine_reference` —
+  ROUND-TRIP: tutarlı yedeği AYRI, boş bir `DBManager` örneğine
+  (`conftest.py`'nin `db` fixture'ıyla AYNI desenle, singleton elle
+  sıfırlanarak) `apply_metadata()` ile geri yükleyip hiçbir
+  `quarantine.file_id`'nin restore edilmemiş bir `files.id`'ye işaret
+  etmediğini doğruluyor. Bu test, `db` fixture'ını doğrudan parametre
+  alarak YANLIŞ kuruldu ilk taslakta — `dolu_db(db, vault)` onu zaten
+  sarmaladığı için ikisi AYNI singleton'a işaret ediyordu; düzeltme testin
+  kendi docstring'inde belgeli.
+
+SECURITY.md §4.11 (EN+TR) iki yeni paragrafla güncellendi: (a) checkpoint
+neden eklenmedi, (b) gerçek boşluk ve düzeltmesi + FK sırası hatası.
+`test_belge_dil_paritesi.py` (27/27) ile doğrulandı.
+
+Tam test suite: 2758 passed, 4 skipped (bir önceki turdan +3 — bu dosyaya
+eklenen 3 yeni test).
+
+---

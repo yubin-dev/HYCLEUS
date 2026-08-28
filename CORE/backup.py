@@ -116,8 +116,22 @@ FILES_DIRNAME = "files"
 _CHUNK = 64 * 1024
 
 #: Yedeklenen ve geri yüklenebilen tablolar.
+#:
+#: Sıra RASTGELE DEĞİL — `apply_metadata()` bu sırayla `INSERT OR REPLACE`
+#: yapıyor ve `PRAGMA foreign_keys = ON` (bkz. `DB/db_manager.py`) altında
+#: bir FOREIGN KEY hedefi kendisinden ÖNCE var olmalı. Bağımlılıklar:
+#: `files.folder_id → folders.id`, `files.retention_profile_id →
+#: retention_profiles.id`, `file_tags.file_id/tag_id → files.id/tags.id`,
+#: `quarantine.file_id → files.id`. Bu yüzden: önce bağımlılığı OLMAYANLAR
+#: (folders, retention_profiles, tags — aralarında sıra önemsiz), sonra
+#: onlara bağımlı olan `files`, en son `files`'a bağımlı olanlar
+#: (file_tags, quarantine). Ölçüldü: eski sıra (`files` İLK) tamamen BOŞ
+#: bir veritabanına geri yüklerken `sqlite3.IntegrityError: FOREIGN KEY
+#: constraint failed` ile patlıyordu — mevcut testler bunu yakalamamıştı
+#: çünkü hep ZATEN DOLU bir veritabanına (folders/retention_profiles
+#: silinmeden) geri yüklüyorlardı, bkz. BACKLOG.md.
 RESTORABLE_TABLES = (
-    "files", "folders", "tags", "file_tags", "retention_profiles", "quarantine",
+    "folders", "retention_profiles", "tags", "files", "file_tags", "quarantine",
 )
 
 #: Yedeklenen ama geri YÜKLENMEYEN tablolar — gerekçe modül docstring'inde.
@@ -252,7 +266,14 @@ def _canonical(payload: dict) -> bytes:
 
 
 def _dump_tables(db: Any, tables: tuple[str, ...]) -> dict[str, list[dict]]:
-    """Tabloları JSON'a çevrilebilir sözlük listelerine çıkarır."""
+    """Tabloları JSON'a çevrilebilir sözlük listelerine çıkarır.
+
+    Her tablo AYRI bir SELECT ile okunuyor — bu fonksiyonun KENDİSİ tek bir
+    tutarlı anlık görüntü GARANTİ ETMİYOR. Birden fazla çağrının (ya da bu
+    fonksiyonun kendi içindeki tablo döngüsünün) birlikte tutarlı olması
+    gerekiyorsa, ÇAĞIRAN taraf `db.conn.execute("BEGIN")` ile açık bir
+    okuma transaction'ı başlatıp işi bitince `COMMIT` etmeli — bkz.
+    `create_backup()`'taki kullanım."""
     dokum: dict[str, list[dict]] = {}
     for tablo in tables:
         try:
@@ -332,11 +353,27 @@ def create_backup(
             hedef.unlink(missing_ok=True)
 
     # ── Metadata: şifreli ────────────────────────────────────────────────
+    # Tüm tablolar TEK bir tutarlı anlık görüntüde okunmalı: `_dump_tables()`
+    # her tabloyu AYRI bir SELECT ile sorguluyor; açık bir transaction
+    # olmadan araya giren eşzamanlı bir yazma, dump'ı farklı tabloları
+    # farklı zaman noktalarında dondurmuş hâle getirebilir — ölçüldü (bkz.
+    # BACKLOG.md): iki bağlantılı bir senaryoda, ikinci tablo okunmadan
+    # ÖNCE ilk tabloya yazılan bir güncelleme dump'a sızıyordu. Açık bir
+    # `BEGIN`...`COMMIT`, WAL modunun anlık-görüntü izolasyonunu TÜM okuma
+    # dizisine yayıyor — bu, SQLite'ın kendisinin garanti ettiği bir
+    # davranış, ek bir kilitleme mekanizması gerekmiyor.
+    db.conn.execute("BEGIN")
+    try:
+        tablolar = _dump_tables(db, RESTORABLE_TABLES)
+        referans = _dump_tables(db, REFERENCE_TABLES)
+    finally:
+        db.conn.execute("COMMIT")
+
     icerik = {
         "format": FORMAT,
         "created_at": rapor.created_at,
-        "tables": _dump_tables(db, RESTORABLE_TABLES),
-        "reference": _dump_tables(db, REFERENCE_TABLES),
+        "tables": tablolar,
+        "reference": referans,
         # Manifestonun şifreli kopyası: düz metin manifesto değiştirilirse
         # anahtarla yapılan doğrulama farkı görüyor.
         "entries": [

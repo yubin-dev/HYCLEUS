@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -715,3 +716,189 @@ def test_apply_metadata_never_writes_excluded_tables(dolu_db, vault, tmp_path, k
                        "role": "admin", "status": "approved", "hwid": "X"}]}
     apply_metadata(dolu_db, kotu, user_id=_USER)
     assert dolu_db.fetchone("SELECT id FROM users WHERE id = 99") is None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. Eşzamanlı yazma altında tutarlılık — TÜM tablolar TEK bir anlık görüntü
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `_dump_tables()` her tabloyu AYRI bir SELECT ile okuyor. `create_backup()`
+# bunu `RESTORABLE_TABLES` (`files` `quarantine`'den ÖNCE, `quarantine` SON
+# eleman) için `BEGIN`...`COMMIT` ile sarmalıyor — WAL modunun anlık-görüntü
+# izolasyonunu tüm okuma dizisine yayarak. Bu sarmalayıcı OLMASAYDI: `files`
+# dump'ı bir yazmadan ÖNCEKİ hâlini, `quarantine` dump'ı (döngüde SONRA
+# okunuyor) AYNI yazmadan SONRAKİ hâlini gösterebilirdi — iki tablo arasında
+# ZAMANDA YIRTIK bir görüntü. Somut sonucu: `quarantine`'de, dump'a hiç
+# girmemiş bir `files` satırına (id=99) işaret eden bir satır — restore
+# edildiğinde YETİM bir referans.
+
+_ESZAMANLI_DOSYA = "ESZAMANLI-EKLENEN-DOSYA"
+
+
+def _dolu_db_yolu(dolu_db) -> Path:
+    return dolu_db._db_path
+
+
+def _ayri_baglantiyla_yeni_dosya_ve_karantina_yaz(db_path: Path) -> None:
+    """`dolu_db`'nin bağlantısından TAMAMEN AYRI, ikinci bir bağlantıyla —
+    gerçek bir "başka bir thread/pencere eşzamanlı yazıyor" senaryosunu
+    taklit ediyor. `files`'a YENİ bir satır (id=99), `quarantine`'e ona
+    işaret eden bir satır ekleyip COMMIT ediyor."""
+    yazan = sqlite3.connect(str(db_path))
+    try:
+        yazan.execute(
+            "INSERT INTO files (id, filename, filepath) VALUES (99, ?, ?)",
+            (_ESZAMANLI_DOSYA, f"{_ESZAMANLI_DOSYA}-yol"),
+        )
+        yazan.execute(
+            "INSERT INTO quarantine (file_id, reason) VALUES (99, 'test')"
+        )
+        yazan.commit()
+    finally:
+        yazan.close()
+
+
+def test_dump_tables_building_block_is_torn_by_a_concurrent_write_if_unwrapped(
+    dolu_db,
+) -> None:
+    """
+    KALICI regresyon kilidi: `_dump_tables()`'ın KENDİSİ tek bir tutarlı
+    anlık görüntü GARANTİ ETMİYOR. `create_backup()`'taki `BEGIN`...
+    `COMMIT` sarmalayıcısı yanlışlıkla kaldırılırsa, bu test hemen kırılır
+    ve NEDEN gerektiğini gösterir — `_dump_tables()`'ı sarmalamadan iki kez
+    çağırmak (tıpkı düzeltmeden ÖNCEki `create_backup()` gibi) burada
+    KASITLI olarak tekrarlanıyor.
+    """
+    from CORE.backup import _dump_tables
+
+    ilk = _dump_tables(dolu_db, ("files",))
+    assert len(ilk["files"]) == 3, "yazmadan önce 3 dosya olmalı (vault fixture'ı)"
+
+    # "Eşzamanlı" yazma — files ZATEN okundu, quarantine HENÜZ okunmadı.
+    _ayri_baglantiyla_yeni_dosya_ve_karantina_yaz(_dolu_db_yolu(dolu_db))
+
+    son = _dump_tables(dolu_db, ("quarantine",))
+
+    # YIRTIK: files eski hâlini (99 YOK) gösterdi, ama quarantine YENİ
+    # satırı (99'a işaret eden) gösteriyor — iki tablo aynı ana ait değil.
+    assert not any(f["id"] == 99 for f in ilk["files"])
+    assert any(q["file_id"] == 99 for q in son["quarantine"]), (
+        "beklenen: sarmalanmamış çağrı yırtık bir görüntü üretir "
+        "(quarantine yeni satırı görüyor, files görmüyor)"
+    )
+
+
+def test_create_backup_dump_is_a_single_consistent_snapshot(
+    dolu_db, vault, tmp_path, key, monkeypatch,
+) -> None:
+    """
+    ANA TEST: gerçek `create_backup()` çağrısı, `_dump_tables()` çağrıları
+    ARASINDA gelen bir eşzamanlı yazmaya rağmen TEK bir tutarlı anlık
+    görüntü üretmeli — `files` VE `quarantine` AYNI ana (yazmadan ÖNCEye)
+    ait olmalı, biri eski biri yeni bir karışım DEĞİL.
+
+    Yazma, `quarantine` (RESTORABLE_TABLES'ın SON elemanı) okunmak ÜZEREYKEN
+    tetikleniyor — `files` o ana kadar ÇOKTAN okunmuş oluyor; bu da tam
+    olarak yırtığın oluşabileceği en geniş pencere.
+    """
+    from CORE.backup import METADATA_NAME, _read_metadata
+
+    orijinal_fetchall = dolu_db.fetchall
+    tetiklendi = {"yazildi": False}
+
+    def _quarantine_okunurken_araya_gir(sql, params=()):
+        if "FROM quarantine" in sql and not tetiklendi["yazildi"]:
+            tetiklendi["yazildi"] = True
+            _ayri_baglantiyla_yeni_dosya_ve_karantina_yaz(_dolu_db_yolu(dolu_db))
+        return orijinal_fetchall(sql, params)
+
+    monkeypatch.setattr(dolu_db, "fetchall", _quarantine_okunurken_araya_gir)
+
+    rapor = _yedek(dolu_db, vault, tmp_path, key)
+    assert tetiklendi["yazildi"], "test kurulumu hatalı — araya girme hiç tetiklenmedi"
+
+    icerik = _read_metadata(rapor.path / METADATA_NAME, key, hwid=_HWID)
+
+    # Tutarlı = TAMAMEN eski (yazmadan ÖNCEki) hâl: id=99 NE files'ta NE
+    # quarantine'de. (Yazma dump BAŞLADIKTAN sonra geldiği için "tamamen
+    # yeni" bir sonuç beklenmiyor — snapshot dump'ın başındaki ana sabit.)
+    assert not any(f["id"] == 99 for f in icerik["tables"]["files"]), (
+        "files dump'ı beklenmedik biçimde eşzamanlı yazmayı görüyor"
+    )
+    assert not any(q["file_id"] == 99 for q in icerik["tables"]["quarantine"]), (
+        "quarantine dump'ı eşzamanlı yazmayı görüyor — YIRTIK anlık görüntü "
+        "(BEGIN...COMMIT sarmalayıcısı çalışmıyor demektir)"
+    )
+    assert len(icerik["tables"]["files"]) == 3
+    assert icerik["tables"]["quarantine"] == []
+
+
+def test_restored_backup_has_no_orphaned_quarantine_reference(
+    dolu_db, vault, tmp_path, key, monkeypatch,
+) -> None:
+    """
+    ROUND-TRIP: yukarıdaki tutarlı yedeği GERÇEKTEN geri yükleyip
+    (`apply_metadata` ile TEMİZ bir veritabanına yazıp), `quarantine.
+    file_id`'nin restore SONRASI hâlâ `files.id`'de karşılığı olduğunu
+    doğruluyor. Tutarsız (yırtık) bir yedek bunu KIRARDI: yeni `files`
+    satırı (id=99) OLMADAN yalnızca ona işaret eden bir `quarantine`
+    satırı restore edilebilirdi — yetim bir referans.
+
+    Restore hedefi `dolu_db`'den TAMAMEN AYRI bir veritabanı olmak ZORUNDA
+    — `DBManager` bir singleton olduğu için (`dolu_db` fixture'ı da onu
+    kullanıyor) burada ELLE yeni bir örneğe geçiliyor, tıpkı
+    `conftest.py`'deki `db` fixture'ının yaptığı gibi. `db` fixture'ını
+    doğrudan parametre almak İŞE YARAMAZ: `dolu_db(db, vault)` onu zaten
+    sarmaladığı için ikisi AYNI singleton örneğine, dolayısıyla eşzamanlı
+    yazmanın da ZATEN girdiği AYNI canlı veritabanına işaret eder — bu
+    yanlış kurulum bu testin ilk taslağında yakalandı (bkz. BACKLOG.md).
+    """
+    from CORE.backup import METADATA_NAME, _read_metadata
+    from DB.db_manager import DBManager
+
+    orijinal_fetchall = dolu_db.fetchall
+    tetiklendi = {"yazildi": False}
+
+    def _quarantine_okunurken_araya_gir(sql, params=()):
+        if "FROM quarantine" in sql and not tetiklendi["yazildi"]:
+            tetiklendi["yazildi"] = True
+            _ayri_baglantiyla_yeni_dosya_ve_karantina_yaz(_dolu_db_yolu(dolu_db))
+        return orijinal_fetchall(sql, params)
+
+    monkeypatch.setattr(dolu_db, "fetchall", _quarantine_okunurken_araya_gir)
+
+    rapor = _yedek(dolu_db, vault, tmp_path, key)
+    icerik = _read_metadata(rapor.path / METADATA_NAME, key, hwid=_HWID)
+
+    onceki_instance = DBManager._instance
+    DBManager._instance = None
+    hedef_db = DBManager(tmp_path / "restore_hedefi.db")
+    hedef_db.connect(hwid="RESTORE-HEDEFI-HWID")
+    try:
+        # `users` KASITLI olarak yedeklenmiyor (bkz. modül docstring'i) —
+        # `apply_metadata()`'nın gerçek ön koşulu, hedefte kullanıcıların
+        # ZATEN var olması (aynı `dolu_db` fixture'ının kendi üzerine
+        # geri yükleyen `test_apply_metadata_restores_the_rows` testinde
+        # olduğu gibi), TAMAMEN BOŞ bir kurulum değil. `folders.owner_id`/
+        # `files.added_by`/`quarantine.quarantined_by` bu kullanıcıya
+        # işaret ettiği için FK'nın karşılığı burada da sağlanıyor.
+        hedef_db.execute(
+            "INSERT INTO users (id, username, password_hash, role, status, hwid)"
+            " VALUES (3, 'gizli_kullanici', 'ARGON2-HASH-GIZLI', 'admin',"
+            " 'approved', ?)", (_HWID,))
+        apply_metadata(hedef_db, icerik["tables"], user_id=_USER)
+        dosya_idleri = {r["id"] for r in hedef_db.fetchall("SELECT id FROM files")}
+        karantina_dosya_idleri = {
+            r["file_id"] for r in hedef_db.fetchall("SELECT file_id FROM quarantine")
+        }
+    finally:
+        hedef_db.close()
+        DBManager._instance = onceki_instance
+
+    yetimler = karantina_dosya_idleri - dosya_idleri
+    assert yetimler == set(), (
+        f"quarantine, restore sonrası files'ta karşılığı olmayan "
+        f"file_id'lere işaret ediyor: {yetimler}"
+    )
+    assert dosya_idleri == {1, 2, 3}, "yalnızca yazmadan ÖNCEki 3 dosya restore edilmeli"
+    assert karantina_dosya_idleri == set(), "quarantine boş kalmalı (yazmadan önce boştu)"

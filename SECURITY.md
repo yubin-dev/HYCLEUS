@@ -1031,6 +1031,47 @@ rewritten manifest detectable. Restore refuses to run if verification
 fails, and refuses a non-empty destination unless overwrite is explicit —
 it never writes into the live vault or database.
 
+**2026-08-29 — a proposed WAL checkpoint before the dump would have been
+a no-op; the real gap was cross-table snapshot consistency, and it is now
+fixed.** A `PRAGMA wal_checkpoint(TRUNCATE)` was proposed right before the
+table dump, on the premise that a backup taken without one could be
+incomplete. Checked first: `create_backup()` never copies the raw
+`hycleus.db` file — it reads tables through `db.fetchall()` on the live
+connection ([DB/db_manager.py](DB/db_manager.py), `self.conn.execute(sql,
+params).fetchall()`), and in WAL mode a `SELECT` through a connection
+always returns the fully committed state regardless of checkpoint status;
+checkpointing only affects how much sits in `-wal` versus the main file,
+never what a query sees. So the checkpoint was not added — it would not
+have closed any real gap.
+
+What *was* a real gap, verified directly: `_dump_tables()` reads
+`RESTORABLE_TABLES` as one `SELECT` per table, with no transaction tying
+them together. Opening a second connection to the same file and
+committing a write between two of those `SELECT`s — measured with
+`sqlite3` directly before touching any code — produced exactly the torn
+read: the earlier table reflected the pre-write state, the later table
+reflected the post-write state. Concretely, a file inserted concurrently
+with a matching `quarantine` row could land in the `quarantine` dump
+without ever appearing in the `files` dump — a reference to a row that
+was never backed up, and a database that would fail its own foreign-key
+constraints on restore. The fix wraps the whole read (`RESTORABLE_TABLES`
+*and* `REFERENCE_TABLES`) in one explicit `BEGIN`…`COMMIT`, which pins a
+single WAL snapshot for every table read inside it — confirmed both ways,
+with and without the wrapper, before and after.
+
+That investigation also surfaced a second, independent bug in
+`apply_metadata()`: `RESTORABLE_TABLES` listed `files` *before* `folders`
+and `retention_profiles`, which `files` has foreign keys into. Restoring
+into an already-populated database (the only scenario the existing tests
+exercised) never triggered it, because the referenced rows were already
+there. Restoring into a genuinely empty database — the real "new machine"
+scenario — failed with `FOREIGN KEY constraint failed`. The table order
+is now dependency-safe: tables with no dependencies first, `files` after
+what it references, `file_tags`/`quarantine` last. A round-trip test
+(`tests/test_backup.py`) now restores into a separate, empty `DBManager`
+instance and checks that no `quarantine.file_id` is left pointing at a
+`files` row that was never restored.
+
 ---
 
 ### 4.12 Shamir shares are validated at the parser, and this is hardening — not a fix for a hole
@@ -2914,6 +2955,49 @@ yapıyor (düz metin birleştirilmiyor) ve düz metin manifestoyu aynı listenin
 yakalayan şey bu. Geri yükleme, doğrulama düşerse ÇALIŞMIYOR; dolu bir
 hedefe açık onay olmadan yazmıyor ve canlı kasaya ya da veritabanına hiç
 dokunmuyor.
+
+**2026-08-29 — dump'tan önce önerilen bir WAL checkpoint hiçbir şeyi
+düzeltmezdi; gerçek boşluk tablolar-arası anlık görüntü tutarlılığıydı ve
+şimdi düzeltildi.** Tablo dökümünden hemen önce bir `PRAGMA
+wal_checkpoint(TRUNCATE)` önerildi — gerekçe: checkpoint yapılmadan
+alınan bir yedeğin eksik olabileceği. Önce kontrol edildi:
+`create_backup()` ham `hycleus.db` dosyasını HİÇ kopyalamıyor — tabloları
+canlı bağlantı üzerinden `db.fetchall()` ile okuyor
+([DB/db_manager.py](DB/db_manager.py), `self.conn.execute(sql,
+params).fetchall()`) ve WAL modunda bir bağlantı üzerinden yapılan
+`SELECT` her zaman tamamen COMMIT edilmiş durumu döndürür, checkpoint
+durumundan bağımsız olarak; checkpoint yalnızca `-wal` ile ana dosya
+arasındaki dağılımı etkiler, bir sorgunun NE gördüğünü asla. Bu yüzden
+checkpoint eklenmedi — gerçek bir boşluğu kapatmayacaktı.
+
+Gerçek bir boşluk OLAN şey, doğrudan ölçüldü: `_dump_tables()`,
+`RESTORABLE_TABLES`'ı tablo başına bir `SELECT` ile okuyor, aralarını
+bağlayan hiçbir transaction yok. Aynı dosyaya ikinci bir bağlantı açıp
+bu SELECT'lerden ikisi arasına bir yazma COMMIT etmek — koda dokunmadan
+ÖNCE doğrudan `sqlite3` ile ölçüldü — tam olarak yırtık okumayı üretti:
+erken okunan tablo yazmadan ÖNCEki hâli, geç okunan tablo yazmadan
+SONRAKİ hâli yansıtıyordu. Somut olarak: eşzamanlı eklenen bir dosyaya
+karşılık gelen bir `quarantine` satırı, o dosyayı HİÇ içermeyen bir
+`files` dökümüyle birlikte dump'a girebiliyordu — hiç yedeklenmemiş bir
+satıra referans, ve geri yüklendiğinde kendi foreign-key kısıtlarını
+ihlal edecek bir veritabanı. Düzeltme, TÜM okumayı (`RESTORABLE_TABLES`
+VE `REFERENCE_TABLES`) tek bir açık `BEGIN`...`COMMIT` içine alıyor — bu,
+içindeki HER tablo okumasına TEK bir WAL anlık görüntüsü sabitliyor;
+sarmalayıcı VARKEN ve YOKKEN, önce ve sonra, iki yönde de doğrulandı.
+
+Bu inceleme ikinci, bağımsız bir hatayı da ortaya çıkardı:
+`apply_metadata()`'da `RESTORABLE_TABLES`, `files`'ı, `files`'ın foreign
+key ile bağlı olduğu `folders` ve `retention_profiles`'tan ÖNCE
+listeliyordu. ZATEN DOLU bir veritabanına geri yüklemek (mevcut testlerin
+tek sınadığı senaryo) bunu hiç tetiklemiyordu, çünkü referans verilen
+satırlar zaten oradaydı. GERÇEKTEN BOŞ bir veritabanına geri yüklemek —
+gerçek "yeni makine" senaryosu — `FOREIGN KEY constraint failed` ile
+patlıyordu. Tablo sırası artık bağımlılık-güvenli: önce bağımlılığı
+OLMAYAN tablolar, sonra referans verdiği şeylerden SONRA `files`, en son
+`file_tags`/`quarantine`. Bir round-trip testi (`tests/test_backup.py`)
+artık ayrı, boş bir `DBManager` örneğine geri yükleyip hiçbir
+`quarantine.file_id`'nin geri yüklenmemiş bir `files` satırına işaret
+etmediğini doğruluyor.
 
 ### 4.12 Shamir payları ayrıştırıcıda doğrulanıyor — bu sertleştirme, bir açığın kapatılması değil
 
