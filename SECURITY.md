@@ -1824,6 +1824,35 @@ different function is not wrongly resolved, an assignment written after
 the `raise` is not wrongly resolved, and the real CORE/DB tree still
 produces zero violations with backtracking enabled.
 
+**2026-08-29 (continued, again) — multi-hop chains, with a depth cap and
+cycle guard.** The one-level backtracking above only recorded `name =
+"literal"` assignments — `name = other_variable` (a name-to-name
+transfer) was never recorded at all, so the chain became invisible from
+the second hop on. Measured directly: planting `tmp = "AIR-GAPPED
+doğrulama modu etkin"; msg = tmp; raise USBAuthError(msg)` in a temporary
+CORE file left the scan at zero violations (removed immediately after).
+The fix splits assignment tracking into two shapes — `("literal", value)`
+or `("name", other_name)` — and resolves a `raise Class(name)` argument
+by following that chain to a literal, up to `_MAKS_ZINCIR_DERINLIGI` (10)
+hops. Two protections, neither silent: a **cycle** (the same name
+reappearing in the chain, e.g. `a = b; b = a`) is detected and reported
+via `warnings.warn` rather than looping forever; a chain that exceeds the
+10-hop cap without resolving is reported the same way. Either case
+resolves to "no message found" (not a violation) rather than crashing or
+hanging — a chain this tangled means the scanned code is already
+unreadable, and the scanner degrading gracefully with a visible warning
+was chosen over failing the build on code the scan genuinely can't
+interpret. Reassigning a tracked name to something untraceable (e.g. a
+function call result) drops the stale entry rather than leaving a dead
+literal behind. Still not a full data-flow analysis — only straight-line
+name-to-name/name-to-literal chains resolve; anything assigned from an
+expression is untraced. Five permanent tests cover this: a two-hop chain
+resolves, a three-hop chain resolves, a cyclic assignment completes
+without hanging and emits the cycle warning, an artificial 15-hop chain
+exercises the depth cap independently of the cycle guard, and the real
+CORE/DB tree still produces zero violations with multi-hop resolution
+enabled.
+
 ---
 ---
 
@@ -3638,4 +3667,32 @@ YOK SAYILIYOR. Bunu 4 kalıcı test kapsıyor: enjekte edilen değişken
 kalıbı yakalanıyor, farklı bir fonksiyondaki aynı isimli değişken
 YANLIŞLIKLA çözülmüyor, `raise`'den SONRA yazılan bir atama
 YANLIŞLIKLA çözülmüyor, ve gerçek CORE/DB ağacı geri izleme etkinken
+hâlâ sıfır ihlal üretiyor.
+
+**2026-08-29 (devam, yine) — çok-hop zincirler, azami derinlik ve döngü
+korumasıyla.** Yukarıdaki tek-seviye geri izleme yalnızca `ad =
+"literal"` atamalarını kaydediyordu — `ad = baska_degisken` (isimden-isme
+aktarım) HİÇ kaydedilmiyordu, yani zincir ikinci hoptan itibaren
+görünmezdi. Doğrudan ölçüldü: geçici bir CORE dosyasına `tmp =
+"AIR-GAPPED doğrulama modu etkin"; msg = tmp; raise USBAuthError(msg)`
+eklenince tarama SIFIR ihlalde kaldı (kanıttan hemen sonra silindi).
+Düzeltme, atama kaydını iki biçime ayırıyor — `("literal", deger)` ya da
+`("isim", baska_ad)` — ve bir `raise Sinif(ad)` argümanını, en fazla
+`_MAKS_ZINCIR_DERINLIGI` (10) hop boyunca bu zinciri bir literal'e kadar
+takip ederek çözüyor. İki koruma var, ikisi de SESSİZ değil: bir **döngü**
+(aynı ismin zincirde tekrar görünmesi, ör. `a = b; b = a`) sonsuza dek
+dönmek yerine tespit edilip `warnings.warn` ile bildiriliyor; 10 hop
+içinde çözülmeyen bir zincir de aynı şekilde bildiriliyor. Her iki durum
+da "mesaj bulunamadı" (ihlal SAYILMAZ) sonucuna varıyor — çökme ya da
+asılı kalma yerine: bu kadar dolaşık bir zincir, taranan kodun zaten
+anlaşılmaz olduğu anlamına gelir, taramanın görünür bir uyarıyla zarifçe
+gerilemesi, yorumlayamadığı kod yüzünden derlemeyi kırmasına tercih
+edildi. İzlenemez bir değere (ör. bir fonksiyon çağrısının sonucu) yeniden
+atanan bir isim, bayat kaydını sözlükten SİLİYOR. Hâlâ tam bir veri akışı
+analizi DEĞİL — yalnızca doğrusal isimden-isme/isimden-literale zincirler
+çözülüyor, bir ifadeden atanan hiçbir şey izlenmiyor. Bunu 5 kalıcı test
+kapsıyor: iki-hop bir zincir çözülüyor, üç-hop bir zincir çözülüyor,
+döngüsel bir atama asılı kalmadan tamamlanıp döngü uyarısını üretiyor,
+yapay bir 15-hop zincir azami derinlik sınırını döngü korumasından
+BAĞIMSIZ olarak sınıyor, ve gerçek CORE/DB ağacı çok-hop çözümü etkinken
 hâlâ sıfır ihlal üretiyor.

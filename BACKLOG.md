@@ -4400,4 +4400,77 @@ SECURITY.md §6.8 (EN+TR) 2026-08-29 "devam" paragrafıyla güncellendi;
 Tam test suite: 2745 passed, 4 skipped (bir önceki turdan +4 — bu dosyaya
 eklenen 4 yeni test).
 
+### 2026-08-29 (devam 3) — ÇOK-HOP zincirleme atama atlatması ölçüldü ve kapatıldı
+
+Bir sonraki turda, bir önceki maddedeki tek-seviye geri izlemenin
+KENDİSİNİN kaç hop derinliğinde çalıştığı sorgulandı (kod satırıyla teyit
+istendi, henüz düzeltme yapılmadan). Kod incelemesi: `atamalar[hedef] =
+stmt.value.value` satırı yalnızca `isinstance(stmt.value, ast.Constant)`
+olduğunda çalışıyordu — `ad = baska_degisken` biçimindeki bir atama
+(`stmt.value` bir `ast.Name`, `ast.Constant` DEĞİL) bu koşulu hiç
+sağlamıyordu, yani sözlüğe HİÇ girmiyordu. Derinlik tam olarak **1 hop**.
+
+**Sentetik kanıt (bu turda tekrarlandı, aynı sonuç).** CORE/'ye geçici
+olarak eklendi:
+
+```python
+tmp = "AIR-GAPPED doğrulama modu etkin"
+msg = tmp
+raise USBAuthError(msg)
+```
+
+Tarama çalıştırıldı: **TOPLAM İHLAL: 0**. Atlatma teyit edildi. Geçici
+dosya kanıttan hemen sonra silindi.
+
+**Uygulanan düzeltme — iki aşamalı kayıt + zincir çözümü.**
+`_govde_icinde_raise_ve_atamalari_coz`'ün atama kaydı ikiye ayrıldı:
+`atamalar[hedef] = ("literal", deger)` (RHS bir string literal) ya da
+`("isim", baska_ad)` (RHS başka bir isim) — hangisi olursa olsun HAM
+olarak kaydediliyor, henüz çözümlenmeden. Yeni bir `_isim_zincirini_coz`
+fonksiyonu, bir `raise Sinif(ad)` görüldüğünde bu HAM haritayı `ad`'den
+başlayıp bir literal'e ulaşana kadar takip ediyor:
+
+- **Azami derinlik:** `_MAKS_ZINCIR_DERINLIGI = 10` hop. Aşılırsa
+  `warnings.warn` ile bildirilip `None` (ihlal yok) dönülüyor —
+  SESSİZCE yutulmuyor.
+- **Döngü koruması:** zincirde aynı ismin İKİNCİ kez görünmesi (`a = b; b
+  = a` gibi) sonsuz döngüye girmeden tespit ediliyor, yine `warnings.warn`
+  ile bildiriliyor.
+- **Bayat kayıt temizliği:** bir hedef izlenemez bir değere (ör. bir
+  fonksiyon çağrısı sonucu) yeniden atanırsa, eski kaydı `atamalar`'dan
+  SİLİNİYOR — aksi halde stale bir literal'e yanlışlıkla çözülebilirdi.
+
+**Doğrulama — 4 sentetik senaryo, sonuca göre raporlandı:**
+
+1. İki-hop zincir (`tmp = "..."; msg = tmp; raise X(msg)`) — CORE/'ye
+   tekrar eklendi, düzeltmeden SONRA çalıştırıldı: **TOPLAM İHLAL: 1**,
+   doğru satırda (`raise`'in satırı) yakalandı.
+2. Üç-hop zincir (`a = "..."; b = a; c = b; raise X(c)`) — aynı şekilde
+   **TOPLAM İHLAL: 1**, yakalandı.
+3. Döngüsel atama (`a = b; b = a; raise X(a)`) — tarama ÇÖKMEDEN,
+   ASILI KALMADAN tamamlandı; `warnings.warn` ile döngü uyarısı üretti;
+   sonuç 0 ihlal (beklenen — hiçbir isim bir literal'e çözülmüyor).
+4. Gerçek CORE/DB ağacına karşı: çok-hop çözümü etkinken hâlâ **sıfır
+   ihlal** (yeni mantık yeni bir yanlış pozitif üretmedi).
+
+Her sentetik kanıt sonrası geçici dosyalar hemen silindi;
+`git status --porcelain` her adımda temiz olduğu doğrulandı.
+
+**Yeni testler (5, dosyanın toplamı 22'ye çıktı):**
+`test_raise_IKI_HOP_zincirleme_atamayi_cozuyor`,
+`test_raise_UC_HOP_zincirleme_atamayi_cozuyor`,
+`test_raise_DONGUSEL_atama_COKMEDEN_ve_ASILI_KALMADAN_tamamlanir`
+(`warnings.catch_warnings` ile uyarının GERÇEKTEN üretildiğini de
+doğruluyor, yalnızca çökmediğini değil),
+`test_isim_zincirini_coz_azami_derinlik_asilinca_uyarir_ve_None_doner`
+(yapay 15-hop zincir — azami derinlik sınırının döngü korumasından
+BAĞIMSIZ çalıştığının kanıtı), `test_gercek_CORE_DB_dosyalarinda_
+cok_hop_sonrasi_ihlal_YOK`.
+
+SECURITY.md §6.8 (EN+TR) 2026-08-29 "devam, yine" paragrafıyla
+güncellendi; `test_belge_dil_paritesi.py` (27/27) ile doğrulandı.
+
+Tam test suite: 2750 passed, 4 skipped (bir önceki turdan +5 — bu dosyaya
+eklenen 5 yeni test).
+
 ---

@@ -56,6 +56,7 @@ titizliği hak ediyor.
 from __future__ import annotations
 
 import ast
+import warnings
 from pathlib import Path
 
 KOK = Path(__file__).resolve().parent.parent
@@ -167,42 +168,70 @@ def _string_sabitlerini_topla(kaynak: str, dosya_adi: str) -> list[tuple[str, in
 #: değişkeni ÇÖZMEMELİ.
 _YENI_KAPSAM_BASLATAN_DUGUMLER = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
+#: Zincir çözümünde izin verilen azami hop sayısı — 2026-08-29 (devam 3):
+#: `tmp = "..."; msg = tmp; raise X(msg)` gibi ÇOK-HOP zincirler, tek-seviye
+#: geri izlemeyi (bir önceki tur) atlatıyordu, ölçüldü (TOPLAM İHLAL: 0).
+#: Sınır, gerçekçi olmayan uzunlukta bir zincirde (ya da bir hata sonucu)
+#: sonsuz döngüye GİRMEDEN durmayı garanti eder — döngü koruması AYRICA var
+#: (`_isim_zincirini_coz`), bu sınır yalnızca döngüsel OLMAYAN ama aşırı
+#: uzun zincirlere karşı bir ikinci güvenlik ağı.
+_MAKS_ZINCIR_DERINLIGI = 10
+
 
 def _govde_icinde_raise_ve_atamalari_coz(
-    govde: list, atamalar: dict
+    govde: list, atamalar: dict[str, tuple[str, str]]
 ) -> list[tuple[str, int]]:
-    """Bir deyim listesini (`govde`) SIRAYLA gezip `ad = "literal"`
-    biçimindeki EN YAKIN ÖNCEKİ atamayı takip ederek `raise Sinif(ad)` gibi
-    bir DEĞİŞKEN üzerinden geçirilen mesajları çözer — 2026-08-29'da
-    ÖLÇÜLEN bir atlatma için: doğrudan `raise Sinif("...")` taraması
-    (`ast.walk(dugum.exc)` içinde `ast.Constant` arıyor) argüman bir
-    `ast.Name` olduğunda İÇİNDE hiçbir `Constant` düğümü BULAMIYOR — kanıt:
-    `msg = "AIR-GAPPED doğrulama modu etkin"` sonra `raise
-    USBAuthError(msg)` eklendiğinde asıl tarama 0 ihlal buldu (bkz.
-    BACKLOG.md B-071 devamı). Bu fonksiyon o boşluğu KAPATIYOR — tam bir
-    veri akışı analizi DEĞİL, tek seviyeli, sıralı bir geri izleme
-    (görevin istediği gibi): `atamalar` sözlüğü aynı fonksiyon/modül
-    kapsamı içinde İLERİYE doğru güncellenir, bir `raise` görüldüğünde o
-    ana kadar bilinen en son atama kullanılır. İç içe `if`/`for`/`try`/
-    `with` blokları AYNI kapsamdır (sözlük PAYLAŞILIR — dallanma
-    doğruluğundan çok, kaçırmamak önceliklidir); iç içe bir `def`/`class`
-    YENİ bir kapsamdır (boş sözlükle ayrıca işlenir, dışarıdakini miras
-    almaz)."""
+    """Bir deyim listesini (`govde`) SIRAYLA gezip `raise Sinif(ad)` gibi
+    bir DEĞİŞKEN üzerinden geçirilen mesajları, `ad`'e EN YAKIN ÖNCEKİ
+    atamalar zincirini takip ederek çözer.
+
+    İKİ AŞAMALI kayıt (2026-08-29 devam 3 — çok-hop zincirler için)
+    -------------------------------------------------------------------
+    Önceki tur yalnızca `ad = "literal"` biçimindeki atamaları
+    kaydediyordu (`isinstance(stmt.value, ast.Constant)` şartı) — `ad =
+    baska_degisken` (isimden-isme aktarım) HİÇ kaydedilmiyordu, yani
+    ikinci hoptan itibaren zincir görünmez kalıyordu. Ölçüldü:
+    `tmp = "AIR-GAPPED doğrulama modu etkin"; msg = tmp; raise
+    USBAuthError(msg)` eklendiğinde tarama 0 ihlal buldu (bkz. BACKLOG.md
+    B-071 devamı 3). Düzeltme: `atamalar` artık HAM biçimde tutuluyor —
+    her girdi `("literal", deger)` ya da `("isim", baska_ad)` — ve
+    `raise`'e ulaşıldığında `_isim_zincirini_coz` bu HAM zinciri (azami
+    `_MAKS_ZINCIR_DERINLIGI` hop, döngü korumalı) bir literal'e kadar
+    takip ediyor. Bu hâlâ tam bir veri akışı analizi DEĞİL — yalnızca
+    doğrusal isimden-isme/isimden-literale atama zincirlerini çözer (ör.
+    bir fonksiyon çağrısının SONUCUNA atanan bir isim çözülemez, `None`
+    döner, sessizce yanlış bir değer ÜRETMEZ).
+
+    Kapsam kuralları (önceki turdan değişmedi)
+    -------------------------------------------
+    `atamalar` sözlüğü aynı fonksiyon/modül kapsamı içinde İLERİYE doğru
+    güncellenir. İç içe `if`/`for`/`try`/`with` blokları AYNI kapsamdır
+    (sözlük PAYLAŞILIR); iç içe bir `def`/`class` YENİ bir kapsamdır (boş
+    sözlükle ayrıca işlenir, dışarıdakini miras almaz). Bir hedef, izlenemez
+    bir değere (ör. bir fonksiyon çağrısının sonucu) yeniden atanırsa eski
+    (artık BAYAT) kaydı `atamalar`'dan SİLİNİR — aksi halde stale bir
+    literal'e yanlışlıkla çözülebilirdi."""
     sonuc: list[tuple[str, int]] = []
     for stmt in govde:
         if (
             isinstance(stmt, ast.Assign)
             and len(stmt.targets) == 1
             and isinstance(stmt.targets[0], ast.Name)
-            and isinstance(stmt.value, ast.Constant)
-            and isinstance(stmt.value.value, str)
         ):
-            atamalar[stmt.targets[0].id] = stmt.value.value
+            hedef = stmt.targets[0].id
+            if isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+                atamalar[hedef] = ("literal", stmt.value.value)
+            elif isinstance(stmt.value, ast.Name):
+                atamalar[hedef] = ("isim", stmt.value.id)
+            else:
+                atamalar.pop(hedef, None)  # izlenemez değer — bayat kaydı geçersiz kıl
         elif isinstance(stmt, ast.Raise) and isinstance(stmt.exc, ast.Call):
             argumanlar = list(stmt.exc.args) + [kw.value for kw in stmt.exc.keywords]
             for arg in argumanlar:
-                if isinstance(arg, ast.Name) and arg.id in atamalar:
-                    sonuc.append((atamalar[arg.id], stmt.lineno))
+                if isinstance(arg, ast.Name):
+                    deger = _isim_zincirini_coz(arg.id, atamalar)
+                    if deger is not None:
+                        sonuc.append((deger, stmt.lineno))
 
         if isinstance(stmt, _YENI_KAPSAM_BASLATAN_DUGUMLER):
             sonuc.extend(_govde_icinde_raise_ve_atamalari_coz(stmt.body, {}))
@@ -215,6 +244,50 @@ def _govde_icinde_raise_ve_atamalari_coz(
         for handler in getattr(stmt, "handlers", None) or ():
             sonuc.extend(_govde_icinde_raise_ve_atamalari_coz(handler.body, atamalar))
     return sonuc
+
+
+def _isim_zincirini_coz(ad: str, atamalar: dict[str, tuple[str, str]]) -> str | None:
+    """`ad`'den başlayıp `atamalar` HAM haritasında ("isim" → başka bir ad,
+    "literal" → nihai değer) zinciri takip eder, bir string literal'e
+    ulaşınca onu döndürür.
+
+    İki koruma, ikisi de SESSİZCE yutmuyor — `warnings.warn` ile işaretliyor:
+    - **Döngü:** aynı ad zincirde İKİNCİ kez görünürse (`a = b; b = a` gibi)
+      hiçbir zaman bir literal'e ulaşılamaz; sonsuza dek dönmek yerine
+      döngü tespit edilir edilmez durulur.
+    - **Azami derinlik:** `_MAKS_ZINCIR_DERINLIGI` hop içinde ne bir
+      literal'e ne bir döngüye ulaşılırsa (çok uzun, döngüsüz bir zincir)
+      yine durulur — gerçekçi kod bu kadar uzun bir zincir yazmaz, bu bir
+      ikinci güvenlik ağı.
+
+    Her iki durumda da `None` dönülür (ihlal SAYILMAZ) — bu bilinçli bir
+    seçim: taranan kod muhtemelen zaten bozuk/anlaşılmaz demektir, taramanın
+    kendisinin çökmesi ya da asılı kalması YERİNE bunu görünür bir uyarıyla
+    bildirip devam etmesi tercih edildi."""
+    gorulenler: list[str] = []
+    guncel = ad
+    for _ in range(_MAKS_ZINCIR_DERINLIGI):
+        if guncel in gorulenler:
+            warnings.warn(
+                f"_isim_zincirini_coz: döngüsel atama tespit edildi: "
+                f"{' -> '.join(gorulenler + [guncel])} — çözümlenemedi",
+                stacklevel=2,
+            )
+            return None
+        gorulenler.append(guncel)
+        kayit = atamalar.get(guncel)
+        if kayit is None:
+            return None
+        tur, deger = kayit
+        if tur == "literal":
+            return deger
+        guncel = deger  # tur == "isim" — bir hop daha takip et
+    warnings.warn(
+        f"_isim_zincirini_coz: azami derinliğe ({_MAKS_ZINCIR_DERINLIGI} hop) "
+        f"ulaşıldı, çözülemedi: {' -> '.join(gorulenler)}",
+        stacklevel=2,
+    )
+    return None
 
 
 def _raise_mesaj_sabitlerini_topla(kaynak: str, dosya_adi: str) -> list[tuple[str, int]]:
@@ -622,4 +695,105 @@ def test_gercek_CORE_DB_dosyalarinda_degisken_uzerinden_gecen_ihlal_YOK() -> Non
     ihlaller = _tum_ihlalleri_tara(_core_db_dosyalari())
     assert ihlaller == [], (
         f"Geri izleme eklendikten sonra CORE/DB'de beklenmeyen ihlal: {ihlaller}"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. ÇOK-HOP zincirleme atamalar — 2026-08-29 (devam 3) ÖLÇÜLEN atlatma:
+#    tek-seviye geri izleme (§4) yalnızca `ad = "literal"` biçimini
+#    tanıyordu; `ad = baska_degisken` (isimden-isme aktarım) HİÇ
+#    kaydedilmiyordu, yani ikinci hoptan itibaren zincir görünmezdi. Gerçek
+#    kanıt (bu turda, geçici bir CORE dosyasıyla): `tmp = "AIR-GAPPED
+#    doğrulama modu etkin"; msg = tmp; raise USBAuthError(msg)` eklenip
+#    tarama çalıştırıldığında TOPLAM İHLAL: 0 ölçüldü — geçici dosya
+#    kanıttan hemen sonra silindi. `_isim_zincirini_coz` (azami
+#    `_MAKS_ZINCIR_DERINLIGI` hop, döngü korumalı) eklenince aynı örüntü,
+#    3-hop bir zincir ve döngüsel bir atama (çökmeden/asılı kalmadan) test
+#    ediliyor.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_raise_IKI_HOP_zincirleme_atamayi_cozuyor() -> None:
+    """Bu turun sentetik kanıtı, birim düzeyinde kalıcı hale getirildi:
+    `tmp = "..."; msg = tmp; raise X(msg)` — `msg`'in kendisi bir literal
+    DEĞİL, bir literal'e işaret eden BAŞKA bir isim."""
+    kaynak = (
+        'class SahteHata(Exception):\n'
+        '    pass\n\n\n'
+        'def f():\n'
+        '    tmp = "AIR-GAPPED doğrulama modu etkin"\n'
+        '    msg = tmp\n'
+        '    raise SahteHata(msg)\n'
+    )
+    dizeler = _raise_mesaj_sabitlerini_topla(kaynak, "sahte.py")
+    bulunanlar = [
+        terim for metin, _ in dizeler for terim in _metindeki_ihlalleri_bul(metin)
+    ]
+    assert "AIR-GAPPED" in bulunanlar, f"İki-hop zincir çözülmedi: {dizeler}"
+
+
+def test_raise_UC_HOP_zincirleme_atamayi_cozuyor() -> None:
+    """`a = "..."; b = a; c = b; raise X(c)` — üç hop, iki isimden-isme
+    aktarım. `_MAKS_ZINCIR_DERINLIGI` (10) sınırının çok altında, gerçek
+    çözümün doğru çalıştığının kanıtı."""
+    kaynak = (
+        'class SahteHata(Exception):\n'
+        '    pass\n\n\n'
+        'def f():\n'
+        '    a = "AIR-GAPPED doğrulama modu etkin"\n'
+        '    b = a\n'
+        '    c = b\n'
+        '    raise SahteHata(c)\n'
+    )
+    dizeler = _raise_mesaj_sabitlerini_topla(kaynak, "sahte.py")
+    bulunanlar = [
+        terim for metin, _ in dizeler for terim in _metindeki_ihlalleri_bul(metin)
+    ]
+    assert "AIR-GAPPED" in bulunanlar, f"Üç-hop zincir çözülmedi: {dizeler}"
+
+
+def test_raise_DONGUSEL_atama_COKMEDEN_ve_ASILI_KALMADAN_tamamlanir() -> None:
+    """`a = b; b = a; raise X(a)` — hiçbir isim asla bir literal'e
+    çözülmüyor (döngü). Tarama sonsuz döngüye GİRMEMELİ, bir uyarı
+    ÜRETMELİ (sessizce yutmamalı) ve boş sonuçla (ihlal YOK — çözülemeyen
+    bir zincir ihlal SAYILMAZ) tamamlanmalı."""
+    kaynak = (
+        'class SahteHata(Exception):\n'
+        '    pass\n\n\n'
+        'def f():\n'
+        '    a = b\n'
+        '    b = a\n'
+        '    raise SahteHata(a)\n'
+    )
+    with warnings.catch_warnings(record=True) as yakalanan:
+        warnings.simplefilter("always")
+        dizeler = _raise_mesaj_sabitlerini_topla(kaynak, "sahte.py")
+    assert dizeler == [], f"Döngüsel atama yanlışlıkla bir değere çözüldü: {dizeler}"
+    assert any("döngüsel atama" in str(w.message) for w in yakalanan), (
+        f"Döngü SESSİZCE yutuldu, uyarı üretilmedi: {[str(w.message) for w in yakalanan]}"
+    )
+
+
+def test_isim_zincirini_coz_azami_derinlik_asilinca_uyarir_ve_None_doner() -> None:
+    """`_MAKS_ZINCIR_DERINLIGI`'nden (10) daha uzun, döngüsüz bir zincir —
+    ikinci güvenlik ağının (azami derinlik) da çalıştığını, yalnızca döngü
+    korumasına güvenilmediğini doğruluyor."""
+    atamalar = {f"ad{i}": ("isim", f"ad{i + 1}") for i in range(15)}
+    atamalar["ad15"] = ("literal", "hiç ulaşılmaması gereken değer")
+    with warnings.catch_warnings(record=True) as yakalanan:
+        warnings.simplefilter("always")
+        sonuc = _isim_zincirini_coz("ad0", atamalar)
+    assert sonuc is None, f"Azami derinlik aşılmasına rağmen bir değer döndü: {sonuc}"
+    assert any("azami derinliğe" in str(w.message) for w in yakalanan), (
+        f"Azami derinlik SESSİZCE yutuldu: {[str(w.message) for w in yakalanan]}"
+    )
+
+
+def test_gercek_CORE_DB_dosyalarinda_cok_hop_sonrasi_ihlal_YOK() -> None:
+    """Çok-hop çözümü eklendikten SONRA gerçek CORE/DB dosyalarında hâlâ
+    sıfır ihlal olduğunu doğruluyor — yeni zincir takibi kendisi yeni bir
+    yanlış pozitif YARATMADI."""
+    ihlaller = _tum_ihlalleri_tara(_core_db_dosyalari())
+    assert ihlaller == [], (
+        f"Çok-hop çözümü eklendikten sonra CORE/DB'de beklenmeyen ihlal: {ihlaller}"
     )
