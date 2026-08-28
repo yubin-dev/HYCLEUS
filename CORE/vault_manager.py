@@ -658,7 +658,15 @@ def create_vault(
     Raises:
         OSError      — dosya yazma hatası
         RuntimeError — DB bağlantısı yoksa (DBManager.connect() çağrılmamış)
+        USBAuthError — hwid zayıf bağlıysa (UUID yedeği) VE bu bir kurtarma
+                       yeniden kurulumu DEĞİLSE (anchor_share verilmemiş);
+                       bkz. _reject_if_weak_binding
     """
+    if anchor_share is None:
+        # Yalnızca TAZE kayıt reddedilir. anchor_share verilmişse bu çağrı
+        # reprovision_vault() üzerinden geliyor demektir — kurtarma akışı
+        # BİLEREK muaf (bkz. _reject_if_weak_binding docstring'i).
+        _reject_if_weak_binding(hwid, "USB kaydı")
     if master_key is None:
         master_key = os.urandom(_KEY_SIZE)
     elif len(master_key) != _KEY_SIZE:
@@ -802,9 +810,11 @@ def migrate_vault_hmac_to_share2(hwid: str) -> str:
 
 def authenticate_usb(hwid: str) -> None:
     """
-    USB kimlik doğrulama — kara liste + 3 güvenlik katmanı.
+    USB kimlik doğrulama — kara liste + zayıf bağlama kontrolü + 3 güvenlik katmanı.
 
     Kara liste  — blacklisted=1 ise anında reddedilir
+    Zayıf bağlama — hwid UUID yedeğindense anında reddedilir (bkz.
+                    _reject_if_weak_binding)
     Katman 1    — HWID usb_tokens tablosunda kayıtlı mı?
     Katman 2    — Vault HMAC-SHA256 geçerli mi?
     Katman 3    — vault token_id == DB token_id?
@@ -835,6 +845,10 @@ def authenticate_usb(hwid: str) -> None:
     # ── Kara liste kontrolü (Katman 1 içinde, ilk kontrol) ───────────────────
     # open_vault() ile ortak yardımcı — iki giriş yolunun ayrışmaması için
     _reject_if_blacklisted(hwid)
+    # Zayıf bağlama kontrolü — open_vault() ile ortak yardımcı, aynı gerekçe:
+    # bir giriş yolu bunu atlarsa bypass geri gelir (bkz. kara liste dersi,
+    # SECURITY.md §4.1).
+    _reject_if_weak_binding(hwid, "USB yeniden kimlik doğrulama")
 
     db_token_id: str = row["token_id"]
 
@@ -888,6 +902,51 @@ def _reject_if_blacklisted(hwid: str) -> None:
     raise USBAuthError(reason)
 
 
+def _reject_if_weak_binding(hwid: str, islem: str) -> None:
+    """
+    hwid, seri numarası okunamadığı için usb_ids.json'a atanmış bir UUID
+    yedeğiyse USBAuthError fırlatır ve audit log'a yazar.
+
+    "Donanıma bağlı kasa" iddiası bu kimlik sınıfı için doğru değil (B-025,
+    SECURITY.md): kimlik USB'de değil, data/ dizinindeki bir dosyada duruyor
+    — data/'nın bir kopyasını tutan biri USB olmadan aynı kimliği yeniden
+    üretebilir. Bu fonksiyon o durumu SESSİZCE kabul etmek yerine kritik
+    işlemleri (vault açma, USB kaydı, imzalama) kapalı hataya (fail-closed)
+    çeviriyor — bkz. create_vault/open_vault/authenticate_usb/read_vault_role/
+    change_vault_role/change_vault_pin.
+
+    NEDEN kurtarma akışı BURADAN GEÇMİYOR: recover_master_key() ve
+    reprovision_vault() (create_vault'un anchor_share verilen çağrısı)
+    BİLEREK bu kontrolden muaf — zayıf bağlı bir cihazın TEK çıkış yolu
+    kurtarma parçasıyla yeniden kurulmak; onu da kapatmak kullanıcıyı
+    kalıcı olarak kilitli bırakırdı. Kara liste kontrolünün (_reject_if_
+    blacklisted) aksine — o kurtarmayı da bilerek kapsıyor, çünkü idari bir
+    iptal — bu kontrol yapısal bir donanım kısıtı, cezai değil.
+
+    Args:
+        hwid  — kontrol edilecek USB donanım kimliği
+        islem — reddedilirse mesajda/denetim kaydında görünecek işlem adı
+                (ör. "vault açma", "USB kaydı", "PIN değişikliği")
+
+    Raises:
+        USBAuthError — hwid UUID yedeğinden geliyorsa
+    """
+    from CORE.usb_manager import is_uuid_fallback_hwid  # yerel import: döngüsel bağımlılığı önler
+
+    if not is_uuid_fallback_hwid(hwid):
+        return
+    reason = (
+        f"Bu USB'nin donanım seri numarası okunamıyor — kimlik yalnızca "
+        f"bu makinedeki bir dosyadan geliyor, donanıma bağlı değil. "
+        f"{islem} reddedildi. Bkz. BACKLOG B-025 / SECURITY.md."
+    )
+    try:
+        DBManager().log("weak_hwid_binding_rejected", detail=f"hwid={hwid} islem={islem}")
+    except Exception:
+        pass  # DB'ye erişilemiyorsa bile reddetme devam etmeli
+    raise USBAuthError(reason)
+
+
 def blacklist_usb(hwid: str) -> None:
     """
     USB cihazını kara listeye alır.
@@ -927,10 +986,12 @@ def read_vault_role(hwid: str, pin: str) -> str:
         Vault'ta kayıtlı rol string'i
 
     Raises:
+        USBAuthError       — hwid zayıf bağlıysa (UUID yedeği)
         FileNotFoundError  — vault dosyası yoksa
         VaultTamperedError — HMAC doğrulaması başarısızsa
         ValueError         — PIN yanlış veya vault formatı geçersizse
     """
+    _reject_if_weak_binding(hwid, "vault açma")
     verify_vault(hwid)  # HMAC önce doğrulanır
 
     raw = _read_vault_path(hwid).read_bytes()
@@ -986,6 +1047,7 @@ def change_vault_role(hwid: str, pin: str, new_role: str) -> None:
         new_role — Yazılacak yeni rol string'i
 
     Raises:
+        USBAuthError       — hwid zayıf bağlıysa (UUID yedeği)
         FileNotFoundError  — vault dosyası yoksa
         VaultTamperedError — HMAC doğrulaması başarısızsa
         ValueError         — PIN yanlış, vault formatı geçersiz veya rol boşsa
@@ -993,6 +1055,7 @@ def change_vault_role(hwid: str, pin: str, new_role: str) -> None:
     if not new_role:
         raise ValueError("Yeni rol boş olamaz.")
 
+    _reject_if_weak_binding(hwid, "rol değişikliği")
     verify_vault(hwid)
 
     raw = _read_vault_path(hwid).read_bytes()
@@ -1050,6 +1113,7 @@ def change_vault_pin(hwid: str, old_pin: str, new_pin: str) -> None:
     Master key ve Shamir payları korunur; yalnızca şifreleme anahtarı yenilenir.
 
     Raises:
+        USBAuthError       — hwid zayıf bağlıysa (UUID yedeği)
         FileNotFoundError  — vault dosyası yoksa
         VaultTamperedError — HMAC doğrulaması başarısızsa
         ValueError         — eski PIN yanlış, vault formatı geçersiz veya yeni PIN boşsa
@@ -1057,6 +1121,7 @@ def change_vault_pin(hwid: str, old_pin: str, new_pin: str) -> None:
     if not new_pin:
         raise ValueError("Yeni PIN boş olamaz.")
 
+    _reject_if_weak_binding(hwid, "PIN değişikliği")
     verify_vault(hwid)
 
     raw = _read_vault_path(hwid).read_bytes()
@@ -1107,11 +1172,15 @@ def open_vault(hwid: str, pin: str) -> tuple[str, bytes]:
         (role, master_key) — rol string ve 32 byte AES-256 dosya şifreleme anahtarı
 
     Raises:
-        USBAuthError       — cihaz kara listedeyse
+        USBAuthError       — cihaz kara listedeyse VEYA zayıf bağlıysa
+                             (UUID yedeği — bkz. _reject_if_weak_binding);
+                             bu durumda tek çıkış yolu kurtarma parçasıyla
+                             yeniden kurulmaktır (recover_vault.py --recover)
         FileNotFoundError  — vault dosyası yoksa
         VaultTamperedError — HMAC doğrulaması başarısızsa
         ValueError         — PIN yanlış veya vault formatı geçersizse
     """
+    _reject_if_weak_binding(hwid, "vault açma")
     share_1, role = _decrypt_vault(hwid, pin)
 
     row = DBManager().fetchone("SELECT hwid FROM usb_tokens WHERE hwid = ?", (hwid,))

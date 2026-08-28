@@ -197,7 +197,12 @@ recorded as **B-025** in `BACKLOG.md`. On that device class, anyone holding
 a copy of `data/` reproduces the device identity **without the USB**. The
 HWID was never a secret (§4.2), so no confidentiality is lost, but "bound to
 this device" is weaker than it sounds and the boundary diagram above should
-be read with that in mind. Second, `DEV_MODE` installations (§4.3): there
+be read with that in mind. §4.15 closes part of this: `open_vault()`,
+`authenticate_usb()` and the other trust-granting operations now refuse
+this identity class outright, for anyone presenting it — reproducing the
+UUID no longer buys M2 ordinary vault access either, though it still says
+nothing about `share_2`, which §4.2 already covers. Second, `DEV_MODE`
+installations (§4.3): there
 the file key is derived from the HWID alone, so M2 decrypts everything. It
 is force-disabled in built executables.
 
@@ -1185,6 +1190,74 @@ trustworthy lower bound; that was not done in this version — see B-035.
 
 ---
 
+### 4.15 A device with an unreadable serial now fails closed, not silently
+
+> **Attacker models:** M2 · M3
+
+**B-025's silent half is fixed; its root cause is not.** On some USB
+storage devices the storage stack reports an empty, `"0"`, or
+control-character serial — measured on a real KIOXIA TransMemory (§4's
+sibling finding, `BACKLOG.md` B-025). `CORE/usb_manager._sanitize_hwid()`
+has always fallen back to a UUID persisted in `data/usb_ids.json` for that
+case, so the same physical device keeps the same identity across
+re-insertions — but that identity comes from a **file next to the vault**,
+not from the device. Until now, that fallback fired without a trace:
+`get_usb_hwid()` returned the UUID exactly like a real serial, and every
+caller — registration, login, USB re-authentication — treated it as an
+ordinary, hardware-bound HWID.
+
+**What changed.** Two things, at two different layers:
+
+- **Visible.** `_get_or_create_uuid()` logs a warning
+  (`CORE/usb_manager.py`) the first time it mints a UUID for a given raw
+  value — not on every subsequent read of the same device, which would
+  just be poll-loop noise. `is_uuid_fallback_hwid(hwid)` answers the
+  question for any hwid string without a live USB probe, by checking
+  whether it is one of `usb_ids.json`'s values — the file `_get_or_create_
+  uuid()` itself always writes to, so the check is canonical by
+  construction.
+- **Fail-closed.** `CORE/vault_manager._reject_if_weak_binding()` calls
+  that check at the entry to every operation that would extend *trust* to
+  such an identity — `create_vault()` for a fresh registration,
+  `open_vault()`, `authenticate_usb()`, `read_vault_role()`,
+  `change_vault_role()`, `change_vault_pin()` — and raises `USBAuthError`
+  before doing anything else. Each rejection writes a
+  `weak_hwid_binding_rejected` audit row (`hwid`, the operation name) and
+  reaches the same UI paths blacklist rejections already use
+  (`UI/login_dialog.py`'s `except USBAuthError as exc:
+  self._show_error(str(exc))`, `UI/main_window_lock.py`'s "USB Reddedildi"
+  dialog) — so the message a locked-out user sees is not the generic
+  wrong-PIN one, for the same reason §4.1 gives for blacklisting: reusing
+  it would send them into a retry loop that ends at the rate limiter.
+
+**What is deliberately exempt, and why it differs from the blacklist
+precedent.** `verify_vault()` is untouched — the weekly integrity sweep
+(§4.7) must still be able to tell whether a weakly-bound vault is corrupt,
+so detection stays available even where trust does not. `recover_master_
+key()` and `reprovision_vault()` (the `anchor_share`-carrying call to
+`create_vault()`) are untouched too, and this is the opposite choice from
+§4.1's blacklist, which **does** block recovery because it is an
+administrative revocation — someone decided this device should stop
+working. A weak binding is a hardware limitation the user did not choose;
+its only way out is recovering onto better hardware, so cutting off
+recovery would strand exactly the users this fix exists to protect, not
+punish them. `create_vault()` tells the two cases apart the same way the
+rest of the codebase already does: `anchor_share is None` means a fresh
+registration (checked), `anchor_share` set means a reprovision following a
+successful recovery (exempt) — no new parameter was needed.
+
+**What this does not fix.** The root cause — `get_usb_hwid()` reading only
+the storage stack, not the USB node identity `CORE/hwid_probe.py` already
+knows how to read — is still open (BACKLOG B-025, item 1 of its remediation
+list). This change stops the silence and stops new trust from being
+granted on a weak identity; it does not make more devices report a real
+serial. A device that hits this path is still, after this fix, unable to
+register or log in normally — the difference is that it now says so, in
+the log and on screen, instead of quietly becoming "donanıma bağlı" in
+name only.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -1535,7 +1608,12 @@ içinde saklanan bir UUID'ye düşüyor — gerçek bir cihazda ölçüldü ve
 dizininin bir kopyasını tutan kişi cihaz kimliğini **USB olmadan** yeniden
 üretiyor. HWID zaten bir sır değildi (§4.2), yani gizlilik kaybı yok; ama
 "bu cihaza bağlı" ifadesi kulağa geldiğinden zayıf ve yukarıdaki sınır
-şeması bu bilgiyle okunmalı. İkincisi: `DEV_MODE` kurulumları (§4.3) —
+şeması bu bilgiyle okunmalı. §4.15 bunun bir kısmını kapatıyor:
+`open_vault()`, `authenticate_usb()` ve diğer güven veren işlemler artık bu
+kimlik sınıfını, onu kim sunarsa sunsun, tamamen reddediyor — UUID'yi
+yeniden üretmek M2'ye artık sıradan vault erişimi de kazandırmıyor, gerçi
+bu hâlâ `share_2` hakkında hiçbir şey söylemiyor, onu zaten §4.2 kapsıyor.
+İkincisi: `DEV_MODE` kurulumları (§4.3) —
 orada dosya anahtarı yalnızca HWID'den türüyor, yani M2 her şeyi çözüyor.
 Derlenmiş çalıştırılabilirlerde zorla kapalı.
 
@@ -2515,6 +2593,73 @@ yakalanıyor. §4.11 yedek manifestosu için aynı deseni zaten kullanıyor.
 **Üretim zamanı beyandır.** `created_at` üreten makineden geliyor ve
 istediğini yazabilir. RFC 3161 damgası (§4.9) bunu güvenilir bir alt sınıra
 çevirirdi; bu sürümde yapılmadı — bkz. B-035.
+
+---
+
+### 4.15 Seri numarası okunamayan bir cihaz artık kapalı hatayla duruyor, sessizce değil
+
+> **Saldırgan modelleri:** M2 · M3
+
+**B-025'in sessiz yarısı düzeltildi; kök nedeni değil.** Bazı USB depolama
+cihazlarında depolama yığını boş, `"0"` ya da kontrol karakteri içeren bir
+seri bildiriyor — gerçek bir KIOXIA TransMemory'de ölçüldü (§4'ün kardeş
+bulgusu, `BACKLOG.md` B-025). `CORE/usb_manager._sanitize_hwid()` bu
+durumda her zaman `data/usb_ids.json`'da saklı bir UUID'ye düşüyordu — aynı
+fiziksel cihaz yeniden takıldığında aynı kimliği almaya devam ediyor, ama o
+kimlik cihazdan değil **vault'un yanındaki bir dosyadan** geliyor. Şimdiye
+kadar bu düşüş izsiz gerçekleşiyordu: `get_usb_hwid()` UUID'yi tıpkı gerçek
+bir seri gibi döndürüyordu ve her çağıran — kayıt, giriş, USB yeniden
+kimlik doğrulama — onu sıradan, donanıma bağlı bir HWID gibi ele alıyordu.
+
+**Ne değişti.** İki farklı katmanda iki şey:
+
+- **Görünür.** `_get_or_create_uuid()` verilen bir ham değer için ilk kez
+  UUID ürettiğinde bir uyarı log'a düşüyor (`CORE/usb_manager.py`) —
+  AYNI cihazın her sonraki okunuşunda değil, o yalnızca yoklama döngüsü
+  gürültüsü olurdu. `is_uuid_fallback_hwid(hwid)` bu soruyu, canlı bir USB
+  probu gerektirmeden, herhangi bir hwid dizesi için cevaplıyor —
+  `usb_ids.json`'ın DEĞERLER kümesine bakarak; `_get_or_create_uuid()`'in
+  KENDİSİ her zaman bu dosyaya yazdığı için kontrol yapı gereği kanonik.
+- **Kapalı hata (fail-closed).**
+  `CORE/vault_manager._reject_if_weak_binding()` bu kontrolü, böyle bir
+  kimliğe GÜVEN veren her işlemin
+  girişinde çağırıyor — taze kayıt için `create_vault()`, `open_vault()`,
+  `authenticate_usb()`, `read_vault_role()`, `change_vault_role()`,
+  `change_vault_pin()` — ve başka hiçbir şey yapmadan `USBAuthError`
+  fırlatıyor. Her red bir `weak_hwid_binding_rejected` denetim satırı
+  yazıyor (`hwid`, işlem adı) ve kara liste reddlerinin zaten kullandığı
+  aynı arayüz yollarına ulaşıyor (`UI/login_dialog.py`'nin `except
+  USBAuthError as exc: self._show_error(str(exc))`'ü,
+  `UI/main_window_lock.py`'nin "USB Reddedildi" diyaloğu) — yani kilitlenen bir
+  kullanıcının gördüğü mesaj genel "PIN yanlış" mesajı DEĞİL, §4.1'in kara
+  liste için verdiği aynı gerekçeyle: onu tekrar kullanmak kullanıcıyı
+  rate limiter'da biten bir tekrar deneme döngüsüne sokardı.
+
+**Neyin bilerek muaf tutulduğu, ve kara liste emsalinden neden farklı.**
+`verify_vault()` dokunulmadı — haftalık bütünlük taraması (§4.7) zayıf
+bağlı bir vault'un bozuk olup olmadığını hâlâ söyleyebilmeli, yani
+saptama güven olmayan yerde de erişilebilir kalıyor. `recover_master_
+key()` ve `reprovision_vault()` (create_vault()'un `anchor_share` taşıyan
+çağrısı) de dokunulmadı, ve bu §4.1'in kara listesinin TAM TERSİ bir
+seçim — o kurtarmayı da BİLEREK engelliyor çünkü o idari bir iptal: biri bu
+cihazın artık çalışmaması gerektiğine karar verdi. Zayıf bağlama
+kullanıcının seçmediği bir donanım kısıtı; tek çıkış yolu daha iyi bir
+donanıma kurtarmak, o yüzden kurtarmayı da kesmek tam olarak bu düzeltmenin
+korumak istediği kullanıcıları cezalandırır, korumaz. `create_vault()` iki
+durumu kod tabanının zaten kullandığı yöntemle ayırt ediyor:
+`anchor_share is None` taze kayıt demek (denetleniyor), `anchor_share`
+verilmişse bir kurtarmayı izleyen yeniden kurulum demek (muaf) — yeni bir
+parametre gerekmedi.
+
+**Bunun düzeltmediği şey.** Kök neden — `get_usb_hwid()`'in yalnızca
+depolama yığınına bakması, `CORE/hwid_probe.py`'nin zaten okumayı bildiği
+USB düğüm kimliğine değil — hâlâ açık (BACKLOG B-025, giderim listesinin 1.
+maddesi). Bu değişiklik sessizliği durduruyor ve zayıf bir kimlik üzerine
+yeni güven inşa edilmesini engelliyor; daha fazla cihazın gerçek bir seri
+bildirmesini SAĞLAMIYOR. Bu yola düşen bir cihaz, bu düzeltmeden sonra da
+normal şekilde kayıt olamıyor ya da giriş yapamıyor — fark, artık bunu
+log'da ve ekranda AÇIKÇA söylemesi, sessizce "donanıma bağlı" görünmesi
+yerine.
 
 ## 5. Kriptografik ayrıntılar
 

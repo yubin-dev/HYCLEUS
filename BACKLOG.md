@@ -740,7 +740,7 @@ döndürülen bir üretici tanım denetiminden geçmişti.
 
 ## B-025 — `get_usb_hwid()` USB düğümünü hiç okumuyor; kimlik donanımdan değil DOSYADAN türüyor
 
-**Durum:** Açık
+**Durum:** Açık — ama madde 2 (sessizlik) KAPANDI, bkz. 2026-08-28 notu
 **Öncelik:** YÜKSEK — "donanıma bağlı kasa" iddiasının doğrudan konusu
 **Bulundu:** 2026-08-19 — B-022 sonrası prototip ölçümü sırasında, ÖLÇÜLDÜ
 
@@ -806,6 +806,38 @@ geliyor:
    olmadan yapılamaz: bugün UUID ile kayıtlı bir kasa, yarın seriyle
    açılmaya çalışılırsa açılmaz. B-003'teki (PIN taşıma) gibi bir
    migration gerekiyor.
+
+### 2026-08-28 — Madde 2 kapandı, ama daha sert: bilgilendirmenin ötesine geçildi
+
+Madde 2 "kullanıcı bilgilendirilsin" diyordu; yapılan bundan fazlası oldu —
+kapalı hataya (fail-closed) çevrildi:
+
+  · `CORE/usb_manager._get_or_create_uuid()` artık ilk UUID üretiminde
+    (yalnızca ilk seferinde, her takılışta değil) bir uyarı log'a düşüyor.
+  · `CORE/usb_manager.is_uuid_fallback_hwid(hwid)` — canlı USB probu
+    gerektirmeden, verilen bir hwid'in bu yedekten gelip gelmediğini
+    söyleyen saf fonksiyon.
+  · `CORE/vault_manager._reject_if_weak_binding()` bu durumu TRUST veren
+    her işlemde reddediyor: `create_vault()` (taze kayıt), `open_vault()`,
+    `authenticate_usb()`, `read_vault_role()`, `change_vault_role()`,
+    `change_vault_pin()`. `USBAuthError` fırlatıyor, `weak_hwid_binding_
+    rejected` denetim kaydı düşüyor, aynı UI yollarından (login ekranı
+    hata etiketi, "USB Reddedildi" diyaloğu) görünür oluyor.
+  · BİLEREK muaf: `verify_vault()` (bütünlük taraması hâlâ çalışmalı) ve
+    kurtarma akışı (`recover_master_key`/`reprovision_vault`) — zayıf
+    bağlı bir cihazın tek çıkış yolu bu, kesmek kullanıcıyı kalıcı
+    kilitlerdi. Kara listenin aksine (o kurtarmayı da kapsıyor, çünkü
+    idari bir iptal), bu yapısal bir donanım kısıtı — cezai değil.
+
+Ayrıntılı gerekçe SECURITY.md §4.15'te. Testler:
+`tests/test_usb_weak_binding.py` (CORE katmanı, 18 test) ve
+`tests/test_usb_weak_binding_ui.py` (gerçek `LoginDialog`, 2 test).
+
+**Madde 1, 3, 4 hâlâ AÇIK** — bu tur yalnızca "sessizce kabul" davranışını
+düzeltti, `get_usb_hwid()`'in NEDEN bu duruma düştüğünü (yalnızca depolama
+yığınına bakması) değiştirmedi. Yani bu yola düşen bir cihaz artık
+sessizce çalışmıyor, ama hâlâ hiç çalışmıyor — kayıt/giriş için tek yol
+donanımı değiştirmek.
 
 ### Kapsam notu
 

@@ -2,14 +2,37 @@
 HYCLEUS — USB donanim kimligi okuyucu
 
 DEV_MODE=true ortam degiskeni ile gercek USB olmadan gelistirme yapilabilir.
+
+Zayıf bağlama (UUID yedeği) — B-025 / SECURITY.md
+---------------------------------------------------
+Bazı USB bellek sınıflarında depolama yığını kullanılamaz bir seri
+bildiriyor (boş, "0", kontrol karakteri — bkz. BACKLOG.md B-025, gerçek bir
+KIOXIA TransMemory cihazında ölçüldü). Bu durumda `_sanitize_hwid()`
+`usb_ids.json`'da SAKLI, KALICI bir UUID'ye düşüyor: aynı fiziksel cihaz
+sonraki takmalarda aynı kimliği almaya devam ediyor, ama o kimlik artık
+DONANIMDAN değil, `data/` dizinindeki bir dosyadan geliyor. "Donanıma bağlı
+kasa" iddiası bu cihaz sınıfı için doğru değil (SECURITY.md M2 — out of
+scope notu) — `data/`'nın bir kopyasını tutan biri, USB'nin kendisi
+olmadan aynı kimliği yeniden üretir.
+
+Bu modül bu durumu artık SESSİZCE geçmiyor: `is_uuid_fallback_hwid()`
+verilen bir hwid'in bu yedekten gelip gelmediğini söylüyor, ve ilk kez bir
+UUID atandığında bir uyarı log'a düşüyor. Kritik işlemlerin (vault açma,
+USB kaydı, imzalama) bu durumdaki bir hwid için REDDEDİLMESİ
+`CORE/vault_manager.py`'nin sorumluluğu — bu modül yalnızca durumu
+GÖRÜNÜR kılıyor, politika kararını vermiyor (katman ayrımı: bu modül USB
+donanımından, vault_manager güvenlik politikasından sorumlu).
 """
 
 import json
+import logging
 import os
 import re
 import sys
 import uuid
 from pathlib import PureWindowsPath
+
+_log = logging.getLogger("hycleus.usb")
 
 DEV_MODE: bool = os.getenv("DEV_MODE", "").lower() in ("1", "true", "yes")
 _DEV_HWID = "DEV-HWID-1234"
@@ -54,6 +77,10 @@ def _get_or_create_uuid(raw: str) -> str:
     raw seri numarası için kalıcı UUID döndürür.
     İlk çağrıda uuid4 üretilir ve usb_ids.json'a kaydedilir;
     sonraki çağrılarda aynı UUID geri döner.
+
+    İlk üretim artık SESSİZ değil: bir uyarı log'a düşer. Bu, "donanıma
+    bağlı" iddiasının bu cihaz için geçerli olmadığı anın — B-025'in tam
+    olarak şikayet ettiği görünmezliğin — kayda geçtiği tek yer.
     """
     mapping: dict[str, str] = {}
     if _USB_IDS_FILE.exists():
@@ -63,7 +90,8 @@ def _get_or_create_uuid(raw: str) -> str:
             mapping = {}
 
     if raw not in mapping:
-        mapping[raw] = str(uuid.uuid4())
+        yeni_uuid = str(uuid.uuid4())
+        mapping[raw] = yeni_uuid
         try:
             _USB_IDS_FILE.parent.mkdir(parents=True, exist_ok=True)
             _USB_IDS_FILE.write_text(
@@ -72,8 +100,36 @@ def _get_or_create_uuid(raw: str) -> str:
             )
         except Exception:
             pass  # yazma başarısız olursa geçici UUID döner ama en azından çökmez
+        _log.warning(
+            "USB seri numarası okunamadı — kalıcı UUID atandı (zayıf "
+            "bağlama, donanıma bağlı DEĞİL): uuid=%s",
+            yeni_uuid,
+        )
 
     return mapping[raw]
+
+
+def is_uuid_fallback_hwid(hwid: str) -> bool:
+    """
+    `hwid`, seri numarası okunamadığı için `usb_ids.json`'a atanmış bir
+    UUID yedeği mi?
+
+    Canlı bir USB probu GEREKMEZ — yalnızca dosyanın DEĞERLER kümesine
+    bakar. `_get_or_create_uuid()` HER ZAMAN bu dosyaya yazdığı için (yukarı
+    bakın), buradaki eşleşme kanonik: dosyada olmayan bir değer hiçbir
+    zaman bu yedek yoldan üretilmemiştir.
+
+    Bu, `CORE/vault_manager.py` gibi USB donanım algılamasından (wmi/wmic)
+    bağımsız kalması gereken modüllerin de "bu kimlik zayıf mı" sorusunu,
+    canlı algılama mantığına hiç dokunmadan sorabilmesini sağlar.
+    """
+    if not _USB_IDS_FILE.exists():
+        return False
+    try:
+        mapping: dict[str, str] = json.loads(_USB_IDS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return hwid in mapping.values()
 
 
 def _sanitize_hwid(raw: str) -> str | None:
@@ -95,7 +151,12 @@ def get_usb_hwid() -> str | None:
     DEV_MODE=true ise 'DEV-HWID-1234' dondurur (gercek USB gerekmez).
     Birden fazla USB varsa ilki alinir.
     Seri numara boş, '0' veya kontrol karakteri içeriyorsa usb_ids.json'dan
-    kalıcı UUID tahsis edilir — aynı fiziksel USB her zaman aynı kimlikle döner.
+    kalıcı UUID tahsis edilir — aynı fiziksel USB her zaman aynı kimlikle
+    döner, ama bu ZAYIF bir bağlama (bkz. modül docstring'i,
+    `is_uuid_fallback_hwid()`). Bu fonksiyon o durumda hâlâ bir kimlik
+    DÖNDÜRÜR — reddetmiyor; kritik işlemler için reddetme kararı
+    `CORE/vault_manager.py`'de, `is_uuid_fallback_hwid()`'i burada
+    tanımlanan kimliğe uygulayarak veriliyor.
 
     Returns:
         str  — USB seri numarasi (HWID veya UUID)
