@@ -388,6 +388,78 @@ independent layer over the *outer* envelope — magic, salt, nonce,
 holding the door," but it is no longer forgeable from information that sits
 in the open.
 
+**Exactly what the HMAC signs.** `_sign()` is called on the *entire*
+`protected` blob, not just the ciphertext:
+
+```
+protected = magic(4B) + version(1B) + salt(16B) + nonce(12B)
+          + token_id(16B) + ciphertext(var) + gcm_tag(16B)
+```
+
+(`CORE/vault_manager.py:691-694`, mirrored at `:1038-1039` for role changes
+and `:1095-1096` for PIN changes; signed at `:602`, `:736`, `:790` and
+verified against `:795`.) GCM's own AAD is `hwid` alone
+(`authenticate_additional_data(hwid.encode())`, e.g. `:685`) — it covers
+`ciphertext` and `gcm_tag` directly and nothing else. So three groups of
+fields inside `protected` end up covered by three different mechanisms, and
+it matters which:
+
+| Field | Covered by | How |
+|---|---|---|
+| `ciphertext`, `gcm_tag` | GCM tag | directly — GCM's own authentication |
+| `salt`, `nonce` | GCM, *indirectly* | feed `_derive_kek`/the cipher; a changed value decrypts to garbage and the GCM tag check fails — forging a passing decryption needs the KEK, i.e. the PIN |
+| `magic`, `version` | explicit checks | `_decrypt_vault` raises before touching GCM if either byte is wrong (`CORE/vault_manager.py`, the `raw[:4] != _MAGIC` / `raw[4] != _VERSION` checks) |
+| `token_id` | **the outer HMAC only** | not GCM AAD, not read before decryption, no other check anywhere in `_decrypt_vault` |
+
+`token_id` is the one field with no fallback: skip the outer HMAC and it is
+provably unauthenticated. That skip is exactly what `_decrypt_vault` now
+does when `share_2` is unavailable (below).
+
+**`verify_vault()`'s guarantee has two modes, and they are not the same
+strength.**
+
+- **`share_2` present** (`authenticate_usb`, the weekly integrity sweep, and
+  the normal login path before `share_2` is even needed for anything else):
+  `verify_vault()` runs to completion and the outer HMAC is checked. Every
+  field in `protected` — including `token_id` — is authenticated against a
+  value nobody outside the credential store and the vault file together can
+  reproduce. This is the vault-HMAC row's ✅ for M2 above.
+- **`share_2` unavailable**, exactly one path: `recover_master_key(hwid,
+  recovery_share=..., pin=...)` with the *`share_2`-is-lost* branch, via
+  `_decrypt_vault` (`CORE/vault_manager.py`, the `except ValueError: pass`
+  around `verify_vault(hwid)`). Here the outer HMAC is **not checked at
+  all** — `magic`/`version` are still caught by the explicit checks,
+  `salt`/`nonce`/`ciphertext`/`gcm_tag` are still bound together by GCM
+  (forging a passing decryption still needs the PIN), but **`token_id` is
+  unauthenticated**: nothing in this call path checks it against anything.
+
+**Is the unauthenticated `token_id` exploitable? No — traced and tested.**
+`_decrypt_vault` never reads or returns `token_id` in the first place (its
+return value is `(share_1, role)`), so `recover_master_key`'s recovered
+`master_key` is unaffected by `token_id` tampering — the Shamir math never
+touches it. The only place `token_id` is ever *checked* is
+`authenticate_usb`'s Layer 3 (`vault_token_hex == db_token_id`), and that
+path calls `verify_vault()` directly, with no `share_2`-missing bypass — if
+`share_2` is still missing there, Layer 2 rejects first and Layer 3 never
+runs. And the real recovery flow (`CORE/recover_vault.py::_cmd_recover`)
+follows a successful `recover_master_key()` with `reprovision_vault()`,
+which writes an entirely fresh `token_id` (`uuid.uuid4()`) and overwrites
+the file outright — so even a tampered value does not outlive the recovery
+session that reads it. `tests/test_vault_hmac_share2.py` asserts both
+halves of this directly: tampering `token_id` and running the `share_2`-less
+path still returns the *correct* `master_key` (`test_tampered_token_id_is_
+not_read_by_share2_less_recovery`), and reprovisioning afterward erases the
+tampered value for good (`test_tampered_token_id_does_not_survive_
+reprovisioning`).
+
+This is a narrow, load-bearing assumption, not a general excuse: it holds
+*because* nothing downstream of the `share_2`-less path currently branches
+on `token_id`. If a future change ever makes `_decrypt_vault` or
+`recover_master_key` read `token_id` for an authorization decision, this
+paragraph and the two tests above go stale together and need re-deriving —
+they are not a permanent guarantee, just an accurate description of the
+current call graph.
+
 **Migration.** A vault created before this fix carries the old, HWID-only
 signature and would fail verification under the new scheme outright.
 `run_migrations()` (`CORE/secret_migration.py`, schema v4,
@@ -958,6 +1030,31 @@ fallback is *never silent* — it lands in the audit log every session
 B-025's lesson applied deliberately: a layer that switches itself off
 quietly is worse than one that was never built, because the document keeps
 claiming it.
+
+**"Falls back to the credential store" means no hardware backing at all on
+those platforms, not just "no TPM."** `CORE/tpm_sealing.py` gates on
+`sys.platform == "win32"` — there is no Linux or macOS branch, not a weaker
+one, none. And the underlying credential store itself does not supply the
+gap by default: `keyring`'s macOS backend calls the standard Keychain
+Services generic-password API, which is encrypted with a key tied to the
+login password; Secure Enclave / Touch ID-gated protection is a *different*
+API (`kSecAttrAccessControl`) that a caller has to ask for explicitly, and
+nothing in `CORE/secret_store.py` does. `keyring`'s Linux backend talks to
+whatever Secret Service provider is running — GNOME Keyring or KWallet —
+and those are typically PAM-unlocked automatically at login with the same
+password as the session, with no TPM or hardware token in the path by
+default. So on Linux and macOS, `share_2` sits exactly where §1.2's "OS
+credential store" row already says it does, with no upgrade — the row's ✅
+is a Windows-with-TPM fact, not a cross-platform one, and §4.2's M2 upgrade
+for the vault HMAC does not depend on it (M2 is defined in §1.1 as lacking
+a usable credential store *at all*, TPM or not).
+
+**This paragraph was not measured on Linux or macOS hardware — this review
+only had Windows available.** It follows from how `keyring`'s own backends
+are documented to behave and from the absence of any platform branch in
+`CORE/tpm_sealing.py`/`CORE/secret_store.py`, not from a run on real Linux
+or macOS machines. If that ever gets measured, this note should be replaced
+with the result, the same way §4.13's Windows numbers below are.
 
 **The cost is real and it is data loss.** Clearing the TPM (BIOS "Clear
 TPM", a mainboard swap, some firmware updates) destroys the key, and every
@@ -1583,6 +1680,77 @@ nonce, `token_id` — GCM tag'inin kapsamadığı alanlar) ikinci, bağımsız b
 katman. Hiçbir zaman "kapıyı tutan" değildi, ama artık açıkta duran bir
 bilgiden forge edilebilir de değil.
 
+**HMAC'ın imzaladığı TAM alan.** `_sign()`, yalnızca ciphertext'i değil,
+`protected` blobunun TAMAMINI imzalıyor:
+
+```
+protected = magic(4B) + version(1B) + salt(16B) + nonce(12B)
+          + token_id(16B) + ciphertext(değişken) + gcm_tag(16B)
+```
+
+(`CORE/vault_manager.py:691-694`, rol değişikliğinde `:1038-1039`, PIN
+değişikliğinde `:1095-1096`'da aynı biçim tekrarlanıyor; imzalama `:602`,
+`:736`, `:790`, karşılaştırma `:795`.) GCM'in KENDİ AAD'ı yalnızca `hwid`
+(`authenticate_additional_data(hwid.encode())`, ör. `:685`) — bu yalnızca
+`ciphertext` ve `gcm_tag`'i doğrudan kapsıyor. Yani `protected` içindeki
+alanlar üç FARKLI mekanizmayla korunuyor, hangisi önemli:
+
+| Alan | Neyle korunuyor | Nasıl |
+|---|---|---|
+| `ciphertext`, `gcm_tag` | GCM tag | doğrudan — GCM'in kendi kimlik doğrulaması |
+| `salt`, `nonce` | GCM, DOLAYLI | `_derive_kek`'e/şifreye girdi; değiştirilirse çözüm çöp çıkar ve GCM tag kontrolü düşer — geçen bir çözüm forge etmek KEK'i, yani PIN'i gerektirir |
+| `magic`, `version` | açık kontroller | `_decrypt_vault`, GCM'e hiç girmeden `raw[:4] != _MAGIC` / `raw[4] != _VERSION` kontrolünde patlar (`CORE/vault_manager.py`) |
+| `token_id` | **YALNIZCA dış HMAC** | GCM AAD'ı değil, şifre çözmeden önce okunmuyor, `_decrypt_vault` içinde başka hiçbir kontrol yok |
+
+`token_id` yedeği olmayan tek alan: dış HMAC atlanırsa kanıtlanabilir
+biçimde doğrulanmamış kalıyor. `_decrypt_vault`'un `share_2` yokken
+(aşağıda) yaptığı tam olarak bu atlama.
+
+**`verify_vault()`'ın garantisi İKİ MODDA çalışıyor, ve ikisi aynı güçte
+değil.**
+
+- **`share_2` MEVCUTKEN** (`authenticate_usb`, haftalık bütünlük taraması ve
+  normal giriş yolu — `share_2` başka bir şey için gerekmeden önce bile):
+  `verify_vault()` sonuna kadar çalışır ve dış HMAC kontrol edilir.
+  `protected` içindeki HER alan — `token_id` dahil — kasa VE vault dosyası
+  birlikte olmadan hiç kimsenin yeniden üretemeyeceği bir değere karşı
+  doğrulanır. Yukarıdaki vault-HMAC satırının M2 için ✅ olmasının nedeni bu.
+- **`share_2` YOKKEN**, tam olarak tek bir yolda: `recover_master_key(hwid,
+  recovery_share=..., pin=...)`'ın *"share_2 kayıp"* dalı, `_decrypt_vault`
+  üzerinden (`CORE/vault_manager.py`, `verify_vault(hwid)` etrafındaki
+  `except ValueError: pass`). Burada dış HMAC **HİÇ KONTROL EDİLMEZ** —
+  `magic`/`version` yine açık kontrollerle yakalanıyor,
+  `salt`/`nonce`/`ciphertext`/`gcm_tag` yine GCM ile birbirine bağlı (geçen
+  bir çözüm hâlâ PIN gerektiriyor), ama **`token_id` doğrulanmıyor**: bu
+  çağrı zincirinde ona karşı hiçbir kontrol yok.
+
+**Doğrulanmayan `token_id` sömürülebilir mi? Hayır — izlendi ve test edildi.**
+`_decrypt_vault` `token_id`'yi zaten hiç okumuyor/döndürmüyor (dönüş değeri
+`(share_1, role)`), yani `recover_master_key`'in kurtardığı `master_key`
+`token_id` kurcalamasından ETKİLENMİYOR — Shamir matematiği ona hiç
+dokunmuyor. `token_id`'nin KONTROL EDİLDİĞİ tek yer `authenticate_usb`'ın
+3. Katmanı (`vault_token_hex == db_token_id`) ve o yol `verify_vault()`'ı
+DOĞRUDAN çağırıyor, `share_2`-yokluğu atlaması olmadan — orada `share_2`
+hâlâ yoksa Katman 2 önce reddeder, Katman 3 hiç çalışmaz. Gerçek kurtarma
+akışı da (`CORE/recover_vault.py::_cmd_recover`) başarılı bir
+`recover_master_key()`'i `reprovision_vault()` ile izliyor — o da TAMAMEN
+taze bir `token_id` (`uuid.uuid4()`) yazıp dosyanın üzerine tamamen yeniden
+yazıyor. Yani kurcalanan bir değer bile onu okuyan kurtarma oturumundan
+daha uzun yaşamıyor. `tests/test_vault_hmac_share2.py` bu iki yarıyı
+doğrudan doğruluyor: `token_id`'yi kurcalayıp `share_2`-siz yolu çalıştırmak
+hâlâ DOĞRU `master_key`'i döndürüyor
+(`test_tampered_token_id_is_not_read_by_share2_less_recovery`), ve
+sonrasında yeniden kurma kurcalanan değeri kalıcı olarak siliyor
+(`test_tampered_token_id_does_not_survive_reprovisioning`).
+
+Bu dar, yük taşıyan bir varsayım — genel bir bahane değil: TAM OLARAK
+`share_2`-siz yolun altında hiçbir şeyin şu an `token_id`'ye göre dallanmaması
+YÜZÜNDEN geçerli. Gelecekte bir değişiklik `_decrypt_vault`'u ya da
+`recover_master_key`'i bir yetkilendirme kararı için `token_id` okuyacak
+hâle getirirse, bu paragraf ve yukarıdaki iki test BİRLİKTE bayatlar ve
+yeniden türetilmeleri gerekir — bunlar kalıcı bir garanti değil, mevcut çağrı
+grafiğinin doğru bir tasviri.
+
 **Migration.** Bu düzeltmeden önce oluşturulmuş bir vault eski, yalnızca
 HWID'e dayanan imzayı taşıyor ve yeni şemayla doğrudan doğrulanamaz.
 `run_migrations()` (`CORE/secret_migration.py`, şema v4,
@@ -2154,6 +2322,33 @@ kasasına düşüyor; TPM'i olmayan bir Windows makinesi de öyle. O düşüş
 kutusuna düşüyor. Bu, B-025'in dersinin bilinçli uygulaması: kendini
 sessizce kapatan bir katman, hiç kurulmamış olandan kötüdür, çünkü belge
 onu iddia etmeye devam eder.
+
+**"Anahtar kasasına düşüyor" o platformlarda hiç donanım desteği yok
+demektir, yalnızca "TPM yok" değil.** `CORE/tpm_sealing.py`,
+`sys.platform == "win32"` kapısında duruyor — Linux ya da macOS dalı yok,
+zayıf bir dalı bile yok, hiç yok. Ve altındaki anahtar kasasının kendisi de
+bu boşluğu varsayılan olarak doldurmuyor: `keyring`'in macOS arka ucu
+standart Keychain Services generic-password API'sini çağırıyor, bu da
+giriş parolasına bağlı bir anahtarla şifreleniyor; Secure Enclave / Touch
+ID korumalı erişim FARKLI bir API (`kSecAttrAccessControl`) ve çağıranın
+onu AÇIKÇA istemesi gerekiyor — `CORE/secret_store.py` içinde hiçbir yer
+bunu yapmıyor. `keyring`'in Linux arka ucu hangi Secret Service sağlayıcısı
+çalışıyorsa onunla konuşuyor — GNOME Keyring ya da KWallet — ve bunlar
+genellikle PAM ile oturum parolasıyla girişte otomatik açılıyor,
+varsayılan olarak yolda hiçbir TPM ya da donanım token'ı yok. Yani Linux ve
+macOS'ta `share_2`, §1.2'nin "OS anahtar kasası" satırının zaten söylediği
+yerde duruyor, hiçbir yükseltme olmadan — o satırın ✅'si Windows+TPM'e özgü
+bir gerçek, platformlar arası değil, ve §4.2'nin vault HMAC için M2
+yükseltmesi buna bağlı DEĞİL (M2, §1.1'de kullanılabilir bir anahtar
+kasasından TAMAMEN yoksun olarak tanımlanıyor, TPM olsun olmasın).
+
+**Bu paragraf Linux ya da macOS donanımında ÖLÇÜLMEDİ — bu incelemede
+yalnızca Windows vardı.** `keyring`'in kendi arka uçlarının belgelenen
+davranışından ve `CORE/tpm_sealing.py`/`CORE/secret_store.py` içinde hiçbir
+platform dalı olmamasından çıkıyor, gerçek bir Linux ya da macOS
+makinesinde çalıştırılmış bir ölçümden değil. Bir gün ölçülürse bu not,
+aşağıdaki §4.13'ün Windows rakamlarıyla aynı şekilde, sonuçla
+değiştirilmeli.
 
 **Bedeli gerçek ve adı veri kaybı.** TPM temizlenirse (BIOS'ta "Clear TPM",
 anakart değişimi, bazı firmware güncellemeleri) anahtar yok oluyor ve

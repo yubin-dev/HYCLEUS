@@ -21,7 +21,14 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from CORE import vault_manager
-from CORE.vault_manager import VaultTamperedError, create_vault, verify_vault
+from CORE.vault_manager import (
+    VaultTamperedError,
+    create_vault,
+    export_recovery_share,
+    recover_master_key,
+    reprovision_vault,
+    verify_vault,
+)
 
 _HWID = "USB-HMAC-MIGRATION-TEST"
 _PIN = "gizli-pin-456"
@@ -225,3 +232,91 @@ def test_migration_skips_when_share_2_missing(vault_dizini, db) -> None:
     vault_manager.delete_usb_token(_HWID)  # share_2'yi kasadan siler
 
     assert vault_manager.migrate_vault_hmac_to_share2(_HWID) == "skipped_no_share_2"
+
+
+# ── Adversarial: share_2-siz kurtarma yolunda AAD-dışı alan (token_id) ────────
+#
+# _rewrite_vault() outer HMAC'ı `protected` üzerinden hesaplıyor —
+# magic + version + salt + nonce + token_id + ciphertext + gcm_tag (bkz.
+# CORE/vault_manager.py::create_vault, `protected = (...)` satırı). GCM'in
+# KENDİ AAD'ı yalnızca hwid'dir (`authenticate_additional_data(hwid.encode())`)
+# — token_id GCM'in kapsamı DIŞINDA, salt/nonce'un aksine yanlış olduklarında
+# GCM'i de bozmuyor (token_id şifre çözmeye hiç girmiyor). Yani token_id'nin
+# TEK koruması outer HMAC.
+#
+# _decrypt_vault() share_2 yokken (recover_master_key'in "share_2 kayıp, PIN
+# + share_1 + kurtarma parçası" dalı) outer HMAC kontrolünü ATLIYOR — bu
+# testler o atlamanın token_id'yi GERÇEKTEN korumasız bıraktığını VE bunun
+# bu akışta sömürülebilir bir sonucu olmadığını (SECURITY.md §4.2'deki
+# gerekçe) kanıtlıyor: recover_master_key token_id'yi hiç okumuyor/kullanmıyor
+# ve hemen ardından gelen reprovision_vault() dosyayı zaten TAMAMEN yeniden
+# yazıyor (taze token_id dahil).
+
+def test_tampered_token_id_is_not_read_by_share2_less_recovery(vault_dizini, db) -> None:
+    """
+    ASIL SORU: token_id kurcalandığında share_2-siz kurtarma reddediliyor mu?
+
+    Ampirik cevap: HAYIR — kurtarma token_id'yi hiç okumuyor, bu yüzden
+    doğru master_key'i üretmeye devam ediyor. Bu, "sessizce atlama" değil;
+    SECURITY.md §4.2 bu davranışı ve neden zararsız olduğunu açıkça
+    belgeliyor. Bu test o belgelenen gerçeği koda bağlıyor: biri ileride
+    _decrypt_vault'a token_id okuma/GÜVENME ekler de bu testi fark etmezse,
+    aşağıdaki `master_key == orijinal` doğrulaması hâlâ geçer ama en azından
+    davranış burada sabitlenmiş olur.
+    """
+    master_key = bytes(range(32))  # sabit, tanınabilir bir anahtar
+    create_vault(_HWID, _PIN, _ROLE, master_key=master_key)
+    recovery_share = export_recovery_share(_HWID, _PIN)  # share_2 hâlâ kasadayken
+
+    path = _vault_path(_HWID)
+    raw = bytearray(path.read_bytes())
+    offset = vault_manager._TOKEN_ID_OFFSET
+    once_token_id = bytes(raw[offset : offset + vault_manager._TOKEN_ID_SIZE])
+    raw[offset] ^= 0xFF  # token_id içinde tek bir bit çevir
+    with vault_manager._writable(path):
+        path.write_bytes(bytes(raw))
+
+    vault_manager.delete_usb_token(_HWID)  # share_2 kaybı simülasyonu
+
+    kurtarilan = recover_master_key(_HWID, recovery_share=recovery_share, pin=_PIN)
+
+    assert kurtarilan == master_key, (
+        "kurtarma token_id kurcalamasından ETKİLENMEMELİ — Shamir matematiği "
+        "token_id'yi hiç kullanmıyor (bkz. SECURITY.md §4.2)"
+    )
+    # Kurcalanan değer dosyada hâlâ duruyor — kurtarma onu OKUMADIĞI için,
+    # SİLMEDİĞİ için de değil.
+    guncel = path.read_bytes()[offset : offset + vault_manager._TOKEN_ID_SIZE]
+    assert guncel != once_token_id
+
+
+def test_tampered_token_id_does_not_survive_reprovisioning(vault_dizini, db) -> None:
+    """
+    Kurtarmanın ASIL akışı (recover_vault.py --recover) recover_master_key'i
+    HEP reprovision_vault() izler. Bu test o adımın kurcalanan token_id'yi
+    KALICI OLARAK sildiğini kanıtlıyor — token_id'nin korumasız kalması yalnızca
+    reprovisioning'e kadar süren, geçici bir pencere.
+    """
+    master_key = bytes(range(32))
+    create_vault(_HWID, _PIN, _ROLE, master_key=master_key)
+    recovery_share = export_recovery_share(_HWID, _PIN)
+
+    path = _vault_path(_HWID)
+    raw = bytearray(path.read_bytes())
+    offset = vault_manager._TOKEN_ID_OFFSET
+    raw[offset] ^= 0xFF
+    with vault_manager._writable(path):
+        path.write_bytes(bytes(raw))
+    tampered_token_id = path.read_bytes()[offset : offset + vault_manager._TOKEN_ID_SIZE]
+
+    vault_manager.delete_usb_token(_HWID)
+    kurtarilan = recover_master_key(_HWID, recovery_share=recovery_share, pin=_PIN)
+
+    reprovision_vault(
+        _HWID, "yeni-pin-789", _ROLE,
+        master_key=kurtarilan, recovery_share=recovery_share,
+    )
+
+    yeni_token_id = path.read_bytes()[offset : offset + vault_manager._TOKEN_ID_SIZE]
+    assert yeni_token_id != tampered_token_id, "kurcalanan token_id reprovision sonrası hâlâ duruyor"
+    verify_vault(_HWID)  # taze share_2 + taze outer HMAC — istisna atmamalı
