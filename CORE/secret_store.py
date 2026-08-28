@@ -62,6 +62,32 @@ metin döndürüyor. Mühür bu iki fonksiyonun içinde açılıp kapanıyor ve
 sistemdeki BAŞKA hiçbir yer `tpm_sealing.belki_muhurle/belki_coz`
 çağırmıyor — `tests/test_tpm_sealing.py` bunu AST ile denetliyor.
 
+Re-seal — mühürsüz bir kayıt "bir sonraki yazımı" hiç görmeyebilir
+--------------------------------------------------------------------
+`share_2` WRITE-ONCE bir sır: `_save_usb_token()` onu yalnızca
+`create_vault()` içinde bir kez kasaya yazıyor (bkz. `CORE/vault_manager.py`).
+TPM bu ilk yazım anında yoksa (makine henüz TPM'i etkinleştirmemiş, sürücü
+kurulu değil, vb.) ve SONRA kullanılabilir hâle gelirse, "bir sonraki
+yazım" hiçbir zaman gelmez — kayıt kasada SONSUZA KADAR mühürsüz kalırdı,
+belge (SECURITY.md §4.13) mühürlemenin varlığını iddia etmeye devam ederken.
+
+Bunu kapatmak için `load()` OKUMA sırasında fırsatçı bir yeniden mühürleme
+yapıyor: okunan kayıt mühürsüzse VE TPM şu an kullanılabiliyorsa, değeri
+hemen yeniden yazıyor — kullanıcı ayrıca bir şey yapmadan, İLK açılışta.
+Karar kendi `.kullanilabilir` okuması YAPMIYOR (bu ikinci bir düşüş karar
+noktası olurdu, `tests/test_tpm_sealing.py::
+test_kullanilabilir_karari_baska_modulde_TEKRARLANMIYOR` bunu engelliyor);
+`belki_muhurle()`'nin döndürdüğü değerin mühürlü olup olmadığına bakarak
+çıkarım yapıyor — TPM yoksa `belki_muhurle()` zaten değeri değiştirmeden
+döndürür, o durumda hiçbir yazma denenmiyor.
+
+Yeniden mühürleme BAŞARISIZ olursa (TPM hatası, kasa yazma hatası) okuma
+YİNE DE BAŞARILI dönüyor — zaten başarıyla okunmuş bir değeri, arkadaki
+iyileştirme denemesi patladı diye kullanıcıya vermemek yeni bir kilitlenme
+yüzeyi açardı. Ama "sessiz atlama" burada da yok: başarı da başarısızlık
+da denetim kaydına (`tpm_reseal_completed` / `tpm_reseal_failed`) ve
+uygulama logına düşüyor — bkz. SECURITY.md §4.13.
+
 `ensure_available()`'ın sonda kaydı BİLEREK mühürsüz: o yoklama kasanın
 erişilebilirliğini ölçüyor, TPM'inkini değil. Mühürlenseydi bir TPM
 sorunu "anahtar kasası erişilemiyor" diye rapor edilir ve açılışı
@@ -69,10 +95,13 @@ engellerdi — TPM'in yokluğu ise açılışı engellemiyor.
 """
 from __future__ import annotations
 
+import logging
 import secrets
 from typing import Any
 
 from CORE import tpm_sealing
+
+_log = logging.getLogger("hycleus.secret_store")
 
 SERVICE = "HYCLEUS"
 
@@ -176,6 +205,11 @@ def load(username: str) -> str | None:
     yok" demektir ve çağıran tarafı sırrı yeniden kurmaya, yani mevcut
     olanı kaybetmeye iterdi. O durumda istisna fırlıyor.
 
+    Kayıt MÜHÜRSÜZSE ve TPM ŞU AN kullanılabiliyorsa, dönmeden önce fırsatçı
+    bir yeniden mühürleme (re-seal) deneniyor — bkz. modül docstring'i
+    "Re-seal". Bu deneme başarısız olsa bile fonksiyon YİNE DE değeri
+    döndürür; başarı/başarısızlık ayrıca kayda geçer, `_reseal_firsatci()`.
+
     Raises:
         KeyringUnavailableError — kasaya erişilemiyorsa (kayıt yokluğu ile
             karıştırma), ya da kayıt TPM'e mühürlü olduğu hâlde açılamıyorsa
@@ -197,7 +231,7 @@ def load(username: str) -> str | None:
     if saklanan is None:
         return None
     try:
-        return tpm_sealing.belki_coz(saklanan, baglam=username)
+        deger = tpm_sealing.belki_coz(saklanan, baglam=username)
     except tpm_sealing.TpmSealingError as exc:
         # Tip BİLEREK korunuyor. Çağıranların hepsi zaten
         # KeyringUnavailableError'ı "sır güvenli biçimde elde edilemedi"
@@ -207,6 +241,84 @@ def load(username: str) -> str | None:
         raise KeyringUnavailableError(
             f"'{username}' kaydı TPM'e mühürlü ve AÇILAMADI.\nAyrıntı: {exc}"
         ) from exc
+
+    if not tpm_sealing.muhurlu_mu(saklanan):
+        # Mühürsüz kayıt: TPM ilk yazımda yoktu (ya da hiç yoktu) ve share_2
+        # gibi write-once sırlar için "bir sonraki yazım" hiç gelmeyebilir —
+        # bkz. modül docstring'i "Re-seal". Okuma zaten başarılı olduğu
+        # için burada bir hata olursa BLOKLAMIYORUZ, yalnızca kayda geçiyoruz.
+        _reseal_firsatci(username, deger)
+
+    return deger
+
+
+def _denetim_log(eylem: str, detay: str) -> None:
+    """
+    Best-effort denetim kaydı. DB henüz bağlı değilse (bu modül login'den
+    önce, ör. bir öz-test/CLI aracından da çağrılabilir) sessizce atlanır —
+    bu bir OKUMA yolunun yan etkisi, kasa erişimini asla çökertmemeli.
+    """
+    try:
+        from DB.db_manager import DBManager
+
+        DBManager().log(eylem, detail=detay)
+    except Exception:
+        pass
+
+
+def _reseal_firsatci(username: str, deger: str) -> None:
+    """
+    Mühürsüz okunan bir kaydı, TPM şu an kullanılabiliyorsa hemen yeniden
+    mühürler. Bkz. modül docstring'i "Re-seal".
+
+    `.kullanilabilir` kararını burada TEKRARLAMIYOR — `belki_muhurle()`nin
+    döndürdüğü değerin mühürlü olup olmadığına bakarak çıkarım yapıyor.
+    TPM yoksa `belki_muhurle()` `deger`i değiştirmeden döndürür, o zaman
+    hiçbir kasa yazması denenmiyor (bugünkü TPM'siz makinelerin ezici
+    çoğunluğunda bu fonksiyon her okumada tek bir ucuz kontrolden fazlası
+    değil).
+
+    Başarısızlık (TPM hatası, kasa yazma hatası) YUKARI FIRLATILMIYOR —
+    `load()` zaten okuduğu değeri döndürmeye devam etmeli. Ama "sessiz
+    atlama" yok: başarı da başarısızlık da hem uygulama logına hem denetim
+    zincirine düşüyor.
+    """
+    try:
+        yeni = tpm_sealing.belki_muhurle(deger, baglam=username)
+    except tpm_sealing.TpmSealingError as exc:
+        _log.warning("tpm_yeniden_muhur_basarisiz  username=%s hata=%s", username, exc)
+        _denetim_log(
+            tpm_sealing.EYLEM_YENIDEN_MUHUR_BASARISIZ,
+            f"username={username} hata={exc}",
+        )
+        return
+
+    if not tpm_sealing.muhurlu_mu(yeni):
+        return  # TPM kullanılamıyor — belki_muhurle() zaten deger'i degistirmedi
+
+    try:
+        _keyring.set_password(SERVICE, username, yeni)
+        dogrulama = _keyring.get_password(SERVICE, username)
+    except Exception as exc:
+        _log.warning("tpm_yeniden_muhur_basarisiz  username=%s hata=%s", username, exc)
+        _denetim_log(
+            tpm_sealing.EYLEM_YENIDEN_MUHUR_BASARISIZ,
+            f"username={username} hata={type(exc).__name__}: {exc}",
+        )
+        return
+
+    if dogrulama != yeni:
+        _log.warning(
+            "tpm_yeniden_muhur_basarisiz  username=%s hata=round-trip tutmadi", username
+        )
+        _denetim_log(
+            tpm_sealing.EYLEM_YENIDEN_MUHUR_BASARISIZ,
+            f"username={username} hata=round-trip tutmadi",
+        )
+        return
+
+    _log.info("tpm_yeniden_muhurlendi  username=%s", username)
+    _denetim_log(tpm_sealing.EYLEM_YENIDEN_MUHUR, f"username={username}")
 
 
 def store(username: str, value: str) -> None:

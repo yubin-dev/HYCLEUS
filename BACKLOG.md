@@ -1982,28 +1982,28 @@ ve §1.3'e migration öncesi kopya istisnası (madde 3) ile B-025 atfı
 
 ## B-042 — TPM mühürlemesinin kapsamadıkları
 
-**Durum:** Açık — bilinçli kapsam sınırları, hata değil
-**Öncelik:** Orta (1. madde), Düşük (kalanlar)
+**Durum:** Açık — ama madde 1 (asıl eksik) KAPANDI, bkz. 2026-08-28 notu
+**Öncelik:** ~~Orta (1. madde)~~ ÇÖZÜLDÜ, Düşük (kalan 2-4)
 **Bulundu:** 2026-08-21 — TPM 2.0 mühürlemesi eklenirken
 
 `CORE/tpm_sealing.py` eklendi ve SECURITY.md §4.13'te belgelendi. Bilerek
 YAPILMAYAN dört şey burada; hiçbiri gizlenmiyor.
 
-### 1. Mevcut kayıtlar geriye dönük mühürlenmiyor — ASIL EKSİK
+### 1. Mevcut kayıtlar geriye dönük mühürlenmiyordu — ASIL EKSİK (KAPANDI, bkz. 2026-08-28)
 
-Mühürleme yalnızca YAZMA anında oluyor. `share_2` ise yalnızca kasa
-kurulurken ya da yeniden sağlanırken yazılıyor. Sonuç:
+Mühürleme yalnızca YAZMA anında oluyordu. `share_2` ise yalnızca kasa
+kurulurken ya da yeniden sağlanırken yazılıyor. Sonuç, bu düzeltmeden önce:
 
 > **TPM'li bir makinedeki YERLEŞİK bir kurulum, kasa yeniden sağlanana
-> kadar bu özellikten hiçbir kazanım görmüyor.**
+> kadar bu özellikten hiçbir kazanım görmüyordu.**
 
-Ve bunu hiçbir arayüz söylemiyor. Kullanıcı Hakkında kutusunda "TPM
+Ve bunu hiçbir arayüz söylemiyordu. Kullanıcı Hakkında kutusunda "TPM
 mühürlemesi ETKİN" görüyor — ki doğru, mühürleme etkin — ama KENDİ
-`share_2` kaydı hâlâ mühürsüz olabilir. Bu, B-025'in şeklinin bir tık
+`share_2` kaydı hâlâ mühürsüz olabiliyordu. Bu, B-025'in şeklinin bir tık
 yumuşamış hâli: katman açık, ama o kayda uygulanmamış.
 
-Neden bu turda yapılmadı: göç iki yoldan biriyle olurdu ve ikisi de
-istenen "saf ekleme" sınırını aşıyor.
+O zaman bu turda yapılmama gerekçesi iki göç yolunun da "saf ekleme"
+sınırını aştığı düşünülmesiydi:
 
   (a) **Okurken yeniden mühürle.** `load()` mühürsüz bir kayıt görünce
       mühürleyip geri yazar. Ucuz ama `open_vault()` bir OKUMA işlemine
@@ -2012,10 +2012,34 @@ istenen "saf ekleme" sınırını aşıyor.
       defter SQLite şeması için; anahtar kasası kayıtları şema değil.
       Ayrı bir göç noktası gerekir.
 
-Yapılacak: önce ÖLÇÜM. `share_2` kaydının mühürlü olup olmadığı
-`muhurlu_mu()` ile bakılabiliyor; AdminPanel'e "bu kasa TPM'e mühürlü:
-evet/hayır" satırı eklemek göçten önce gelmeli — göç edilmemiş kurulumun
-görünmemesi, göçün kendisinden daha büyük sorun.
+**2026-08-28 — (a) uygulandı.** `CORE/secret_store.py::load()` artık
+mühürsüz okuduğu bir kaydı, TPM şu an kullanılabiliyorsa hemen yeniden
+mühürlüyor (`_reseal_firsatci()`) — kullanıcı ayrıca bir şey yapmadan,
+İLK açılışta (`open_vault()`). "Okuma işlemine yazma ekleniyor" endişesi
+aşıldı: yeniden mühürleme başarısız olsa bile OKUMA yine de değeri
+döndürüyor (zaten başarıyla okunmuş bir değeri arkadaki iyileştirme
+denemesi patladı diye vermemek yeni bir kilitlenme yüzeyi açardı) — ama
+sessiz de değil: başarı `tpm_reseal_completed`, başarısızlık
+`tpm_reseal_failed` olarak denetim zincirine düşüyor. TPM kararı
+(`.kullanilabilir`) `tpm_sealing.py` dışında TEKRARLANMIYOR —
+`belki_muhurle()`'nin döndürdüğü değerin mühürlü olup olmadığına bakarak
+çıkarım yapılıyor (`tests/test_tpm_sealing.py::
+test_kullanilabilir_karari_baska_modulde_TEKRARLANMIYOR` bunu zaten
+koruyordu, yeni kod da ihlal etmiyor).
+
+Test: `tests/test_tpm_sealing.py::
+test_ESKI_kurulum_ILK_ACILISTA_otomatik_yeniden_muhurleniyor` (sahte TPM,
+eski/mühürsüz bir kurulumu simüle ediyor, ilk `open_vault()`'un share_2'yi
+yeniden mühürlediğini VE yeni mührün doğru anahtarı verdiğini VE tek bir
+denetim kaydı düştüğünü doğruluyor) ve
+`test_gercek_TPM_ile_ESKI_kayit_ilk_okumada_yeniden_muhurleniyor`
+(`gercek_tpm` fixture'ıyla, bu geliştirme makinesindeki GERÇEK AMD fTPM
+üzerinde aynı iddia). Ayrıntı SECURITY.md §4.13'te.
+
+AdminPanel'e "bu kasa TPM'e mühürlü: evet/hayır" satırı eklemek hâlâ
+YAPILMADI — artık bir düzeltme önkoşulu değil (mühürleme kendiliğinden
+oluyor), ama görünürlük için hâlâ faydalı olurdu; ayrı, düşük öncelikli
+bir iyileştirme olarak burada not düşülüyor.
 
 ### 2. CI'da TPM yolu HİÇ çalışmıyor (B-023 sınıfı)
 

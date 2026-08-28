@@ -1111,11 +1111,32 @@ second factor. Unsealing failure is never reported as "no record": that
 would read as *not configured* and push the caller into re-provisioning,
 which is how a recoverable vault becomes an unrecoverable one.
 
-**Existing records are not sealed retroactively.** A record written before
-this feature stays unsealed until something rewrites it — for `share_2`,
-that means re-provisioning. So an established installation on a TPM machine
-gets no benefit until then, and no part of the UI currently says so. Tracked
-as **B-042** in `BACKLOG.md`.
+**Existing records get resealed the first time they are read, not left
+waiting for a rewrite.** This used to be a real gap (tracked as **B-042**
+item 1) — sealing only happened on write, `share_2` is written once (at
+registration or reprovisioning), and "a subsequent write" that never comes
+meant an established installation on a TPM machine got no benefit, silently,
+forever. A 2026-08-28 follow-up closed it: `CORE/secret_store.py::load()`
+now attempts an opportunistic re-seal whenever it reads an unsealed record
+and the TPM is currently available (`_reseal_firsatci()`) — so the first
+`open_vault()` after a TPM becomes available reseals `share_2` without the
+user doing anything extra. This does not read `tpm_sealing.durum().kullanilabilir`
+itself (that would be a second decision point — `tests/test_tpm_sealing.py::
+test_kullanilabilir_karari_baska_modulde_TEKRARLANMIYOR` guards exactly this);
+it infers availability from whether `belki_muhurle()`'s return value comes
+back sealed. A re-seal failure does **not** fail the read — the value was
+already decrypted successfully, and refusing to hand it back because a
+best-effort improvement attempt failed would be a new lockout surface that
+nobody asked for — but it is not silent either: both outcomes are audited
+(`tpm_reseal_completed` / `tpm_reseal_failed`). Verified with a fake-but-
+consistent TPM (`test_ESKI_kurulum_ILK_ACILISTA_otomatik_yeniden_muhurleniyor`
+— old unsealed install, first `open_vault()` reseals, the reseal actually
+decrypts to the right key, exactly one audit row) and, since this development
+machine has a real chip, on genuine hardware too
+(`test_gercek_TPM_ile_ESKI_kayit_ilk_okumada_yeniden_muhurleniyor`). The
+remaining B-042 items (CI never exercising the TPM path, only one vendor
+measured, a real Clear-TPM never physically tried) are unrelated to this and
+still open.
 
 **What was measured and what was not.** The path was exercised on real
 hardware (AMD fTPM 2.0, rev 1.59): seal 1.2 ms, unseal 38 ms, one-time key
@@ -2549,12 +2570,36 @@ bildirilseydi *kurulmamış* diye okunur ve çağıran tarafı yeniden kurmaya
 iterdi — kurtarılabilir bir kasanın kurtarılamaz hâle gelmesi tam olarak
 böyle olur.
 
-**Mevcut kayıtlar geriye dönük MÜHÜRLENMİYOR.** Bu özellikten önce
-yazılmış bir kayıt, onu bir şey yeniden yazana kadar mühürsüz kalıyor;
-`share_2` için bu, yeniden sağlama demek. Yani TPM'li bir makinedeki
-yerleşik bir kurulum o güne kadar hiçbir kazanım görmüyor ve arayüzün
-hiçbir yeri bunu söylemiyor. `BACKLOG.md` içinde **B-042** olarak
-izleniyor.
+**Mevcut kayıtlar artık ilk OKUNDUKLARINDA yeniden mühürleniyor —
+bir yazımı beklemiyor.** Bu gerçek bir boşluktu (`BACKLOG.md` **B-042**
+madde 1) — mühürleme yalnızca YAZMA anında oluyordu, `share_2` yalnızca
+bir kez yazılıyor (kayıt ya da yeniden sağlama sırasında), ve hiç gelmeyen
+"bir sonraki yazım" demek, TPM'li bir makinedeki yerleşik bir kurulumun
+bu özellikten SESSİZCE, SONSUZA KADAR hiçbir kazanım görmemesi demekti.
+2026-08-28 tarihli bir takip bunu kapattı: `CORE/secret_store.py::load()`
+artık mühürsüz okuduğu bir kaydı, TPM şu an kullanılabiliyorsa hemen
+fırsatçı bir şekilde yeniden mühürlüyor (`_reseal_firsatci()`) — yani TPM
+bu özelliği kazandıktan sonraki İLK `open_vault()`, kullanıcı ekstra
+hiçbir şey yapmadan `share_2`'yi yeniden mühürlüyor. Bu, `tpm_sealing.
+durum().kullanilabilir`'i KENDİSİ okumuyor (bu ikinci bir karar noktası
+olurdu — `tests/test_tpm_sealing.py::
+test_kullanilabilir_karari_baska_modulde_TEKRARLANMIYOR` tam olarak bunu
+engelliyor); `belki_muhurle()`'nin döndürdüğü değerin mühürlü dönüp
+dönmediğine bakarak çıkarım yapıyor. Yeniden mühürleme başarısız olursa
+OKUMA yine de BAŞARISIZ OLMUYOR — değer zaten başarıyla çözülmüştü, bir
+iyileştirme denemesinin patlaması yüzünden onu vermemek kimsenin
+istemediği yeni bir kilitlenme yüzeyi açardı — ama sessiz de değil: her
+iki sonuç da denetleniyor (`tpm_reseal_completed` / `tpm_reseal_failed`).
+Sahte ama iç-tutarlı bir TPM'le doğrulandı
+(`test_ESKI_kurulum_ILK_ACILISTA_otomatik_yeniden_muhurleniyor` — eski/
+mühürsüz bir kurulumu simüle ediyor, ilk `open_vault()`'un yeniden
+mühürlediğini, yeni mührün gerçekten doğru anahtarı verdiğini ve tam
+olarak bir denetim kaydı düştüğünü doğruluyor) ve bu geliştirme
+makinesinde GERÇEK donanımla da
+(`test_gercek_TPM_ile_ESKI_kayit_ilk_okumada_yeniden_muhurleniyor`).
+B-042'nin kalan maddeleri (CI'da TPM yolunun hiç çalışmaması, tek
+üreticinin ölçülmüş olması, gerçek bir Clear-TPM'in fiziksel olarak hiç
+denenmemiş olması) bununla ilgisiz ve hâlâ açık.
 
 **Ne ölçüldü, ne ölçülmedi.** Yol gerçek donanımda çalıştırıldı (AMD fTPM
 2.0, rev 1.59): mühürleme 1.2 ms, açma 38 ms, tek seferlik anahtar üretimi

@@ -117,6 +117,10 @@ _RSA_BITS = 2048
 #: Denetim kaydı eylem adları.
 EYLEM_ETKIN = "tpm_sealing_active"
 EYLEM_DUSUS = "tpm_sealing_unavailable"
+#: `CORE/secret_store.py::_reseal_firsatci()` — mühürsüz okunan bir kaydın
+#: fırsatçı yeniden mühürlenmesi (bkz. o modülün docstring'i "Re-seal").
+EYLEM_YENIDEN_MUHUR = "tpm_reseal_completed"
+EYLEM_YENIDEN_MUHUR_BASARISIZ = "tpm_reseal_failed"
 
 # ── CNG sabitleri ────────────────────────────────────────────────────────────
 _NCRYPT_PAD_PKCS1_FLAG = 0x00000002
@@ -510,7 +514,11 @@ def belki_coz(saklanan: str, *, baglam: str) -> str:
 
     Öneksiz kayıtlar mühürlemeden ÖNCE yazılmış olanlar; onları
     reddetmek, çalışan kurulumları kilitlerdi. Bir kayıt bir sonraki
-    yazımda kendiliğinden mühürlenir.
+    YAZIMDA kendiliğinden mühürlenir — ama `share_2` gibi write-once
+    sırlar için o yazım hiç gelmeyebilir, bu yüzden `CORE/secret_store.py`
+    OKUMA sırasında da fırsatçı bir yeniden mühürleme deniyor (bkz. o
+    modülün docstring'i "Re-seal"); bu fonksiyon (`belki_coz`) o mekanizmaya
+    dokunmuyor, yalnızca açmayı yapıyor.
 
     Mühürlü bir kaydın açılamaması SESSİZ GEÇMİYOR — `coz()` fırlatıyor.
     """
@@ -524,6 +532,8 @@ __all__ = [
     "ETIKET",
     "EYLEM_DUSUS",
     "EYLEM_ETKIN",
+    "EYLEM_YENIDEN_MUHUR",
+    "EYLEM_YENIDEN_MUHUR_BASARISIZ",
     "SAGLAYICI",
     "TpmDurum",
     "TpmSealingError",

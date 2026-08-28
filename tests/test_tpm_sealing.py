@@ -51,6 +51,8 @@ from CORE.tpm_sealing import (
     ETIKET,
     EYLEM_DUSUS,
     EYLEM_ETKIN,
+    EYLEM_YENIDEN_MUHUR,
+    EYLEM_YENIDEN_MUHUR_BASARISIZ,
     TpmDurum,
     TpmSealingError,
     belki_coz,
@@ -385,6 +387,146 @@ def test_TPM_li_kasa_TPM_gidince_ACILMIYOR(
     tpm_sealing.zorla_durum(TpmDurum(False, "test: TPM temizlendi"))
     with pytest.raises(KeyringUnavailableError, match="AÇILAMADI"):
         open_vault("TPM-GIDEN-HWID", "123456")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5b. Re-seal — mühürsüz ESKİ kurulum, TPM sonradan geldi
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `store()` yalnızca YAZIMDA mühürlüyor ve share_2 write-once bir sır
+# (_save_usb_token, yalnızca create_vault() içinde). TPM ilk kayıt anında
+# yoksa ve SONRA gelirse, "bir sonraki yazım" hiç gelmeyebilir — kayıt
+# kasada sonsuza dek mühürsüz kalırdı. `CORE/secret_store.py::load()`
+# bunu OKUMA sırasında fırsatçı bir yeniden mühürleme ile kapatıyor.
+#
+# Aşağıdaki ilk test GERÇEK donanıma dokunmuyor: ham `muhurle`/`coz`'u
+# sahte ama iç-tutarlı bir şemayla değiştiriyor. Asıl sınanan şey belirli
+# bir TPM sağlayıcısının davranışı değil, `secret_store.load()`'un
+# ORKESTRASYONU — ne zaman yeniden yazmaya karar verdiği, kaç kez yazdığı,
+# denetim kaydına ne düştüğü. Bunun ardından `gercek_tpm` fixture'ıyla
+# aynı iddiayı GERÇEK donanımda da doğrulayan ikinci, daha dar bir test var.
+
+
+def _sahte_muhurle(deger: str, *, baglam: str) -> str:
+    """Gerçek CNG'ye dokunmadan, `muhurlu_mu()`'nun tanıyacağı bir blob üretir."""
+    return f"{ETIKET}:SAHTE|{baglam}|{deger}"
+
+
+def _sahte_coz(saklanan: str, *, baglam: str) -> str:
+    govde = saklanan[len(ETIKET) + 1:]  # "SAHTE|<baglam>|<deger>"
+    if not govde.startswith("SAHTE|"):
+        raise TpmSealingError("sahte mühür tanınmadı — test kurulumu bozuk")
+    _, kayitli_baglam, deger = govde.split("|", 2)
+    if kayitli_baglam != baglam:
+        raise TpmSealingError(f"bağlam uyuşmuyor (sahte TPM): {kayitli_baglam!r} != {baglam!r}")
+    return deger
+
+
+def test_ESKI_kurulum_ILK_ACILISTA_otomatik_yeniden_muhurleniyor(
+    monkeypatch: pytest.MonkeyPatch, db, tmp_path: Path,  # type: ignore[no-untyped-def]
+) -> None:
+    """
+    ASIL DENETİM: TPM mühürlemesi bu makineye eklenmeden ÖNCE kaydolmuş
+    bir kullanıcıyı simüle ediyor (share_2 kasada MÜHÜRSÜZ). TPM sonradan
+    gelince, kullanıcı hiçbir şey yapmadan, İLK açılışta (open_vault)
+    kayıt otomatik olarak yeniden mühürlenmeli — "bir sonraki yazımı"
+    beklemek share_2 için hiç gerçekleşmeyebilir (bkz. secret_store.py
+    docstring'i "Re-seal").
+    """
+    monkeypatch.setattr(vault_manager, "_VAULT_DIR", tmp_path / "vaults")
+    monkeypatch.setattr(vault_manager, "_VAULT_PATH_LEGACY", tmp_path / ".hcl_vault")
+
+    hwid = "TPM-RESEAL-ESKI-HWID"
+    username = secret_store.share_2_username(hwid)
+
+    # ── ESKİ KURULUM: TPM yokken kaydol → share_2 mühürsüz yazılır ──────────
+    assert not durum().kullanilabilir  # ön koşul: tpm_kapali (autouse)
+    create_vault(hwid, "123456", "Yönetici")
+    ham_once = keyring.get_password(secret_store.SERVICE, username)
+    assert ham_once is not None and not muhurlu_mu(ham_once), (
+        "ön koşul: kayıt mühürsüz başlamalı"
+    )
+
+    # ── TPM SONRADAN GELDİ (yeni makine, sürücü kuruldu, vb.) ───────────────
+    tpm_sealing.zorla_durum(TpmDurum(True, "", "sahte-TPM"))
+    monkeypatch.setattr(tpm_sealing, "muhurle", _sahte_muhurle)
+    monkeypatch.setattr(tpm_sealing, "coz", _sahte_coz)
+
+    # ── İLK AÇILIŞ: re-seal başka hiçbir şey yapılmadan tetiklenmeli ───────
+    rol, anahtar = open_vault(hwid, "123456")
+    assert rol == "Yönetici"
+
+    ham_sonra = keyring.get_password(secret_store.SERVICE, username)
+    assert ham_sonra is not None and muhurlu_mu(ham_sonra), (
+        "ilk açılıştan sonra share_2 HÂLÂ mühürsüz — re-seal tetiklenmedi"
+    )
+    assert ham_sonra != ham_once, "kasadaki ham kayıt değişmemiş"
+
+    # ── Yeni mühür GERÇEKTEN doğru sırrı taşıyor mu (yalnızca prefix değil) ─
+    _, anahtar2 = open_vault(hwid, "123456")
+    assert anahtar2 == anahtar, "yeniden mühürlenmiş share_2 farklı bir anahtar veriyor"
+
+    # ── Görünürlük: TEK bir tamamlanma kaydı (ikinci open_vault tekrar
+    # yazmamalı — kayıt artık mühürlü, muhurlu_mu() ikinci turda True) ──────
+    kayitlar = db.fetchall(
+        "SELECT detail FROM audit_log WHERE action = ?", (EYLEM_YENIDEN_MUHUR,)
+    )
+    assert len(kayitlar) == 1, "re-seal denetim kaydına düşmedi ya da fazla düştü"
+    assert username in kayitlar[0]["detail"]
+
+    basarisiz = db.fetchall(
+        "SELECT detail FROM audit_log WHERE action = ?", (EYLEM_YENIDEN_MUHUR_BASARISIZ,)
+    )
+    assert basarisiz == []
+
+
+def test_reseal_basarisiz_olursa_OKUMA_YINE_DE_calisir(
+    monkeypatch: pytest.MonkeyPatch, db,  # type: ignore[no-untyped-def]
+) -> None:
+    """
+    Yeniden mühürleme denemesi patlarsa (TPM hatası) OKUMA engellenmemeli
+    — zaten başarıyla okunmuş bir değeri, arkadaki iyileştirme denemesi
+    yüzünden vermemek yeni bir kilitlenme yüzeyi açardı. Ama "sessiz
+    atlama" da yok: başarısızlık denetim kaydına düşüyor.
+    """
+    keyring.set_password(secret_store.SERVICE, "eski-kayit-patlayan", "kiymetli-deger")
+
+    tpm_sealing.zorla_durum(TpmDurum(True, "", "sahte-TPM"))
+    monkeypatch.setattr(
+        tpm_sealing, "muhurle",
+        lambda *a, **k: (_ for _ in ()).throw(TpmSealingError("TPM koptu")),
+    )
+
+    assert secret_store.load("eski-kayit-patlayan") == "kiymetli-deger", (
+        "re-seal denemesi patladığında OKUMA da başarısız oldu"
+    )
+    ham = keyring.get_password(secret_store.SERVICE, "eski-kayit-patlayan")
+    assert ham == "kiymetli-deger", "kayıt hâlâ mühürsüz kalmalıydı (yazma denenmemiş sayılır)"
+
+    kayitlar = db.fetchall(
+        "SELECT detail FROM audit_log WHERE action = ?", (EYLEM_YENIDEN_MUHUR_BASARISIZ,)
+    )
+    assert len(kayitlar) == 1
+    assert "eski-kayit-patlayan" in kayitlar[0]["detail"]
+
+
+def test_gercek_TPM_ile_ESKI_kayit_ilk_okumada_yeniden_muhurleniyor(
+    gercek_tpm: TpmDurum,
+) -> None:
+    """
+    `test_TPM_li_makinede_ESKI_muhursuz_kayit_okunuyor`'un devamı: GERÇEK
+    donanımla, okumanın çalışması YETMİYOR — kayıt bu okumadan SONRA
+    gerçekten mühürlü olmalı, aksi hâlde "ilk açılışta zorunlu re-seal"
+    iddiası yalnızca sahte-TPM testinde doğru olur.
+    """
+    keyring.set_password(secret_store.SERVICE, "eski-share2-gercek-tpm", "2:eskiyedegim")
+
+    assert secret_store.load("eski-share2-gercek-tpm") == "2:eskiyedegim"
+
+    ham = keyring.get_password(secret_store.SERVICE, "eski-share2-gercek-tpm")
+    assert ham is not None and muhurlu_mu(ham), (
+        "gerçek TPM kullanılabilirken bile ilk okuma kaydı yeniden mühürlemedi"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
