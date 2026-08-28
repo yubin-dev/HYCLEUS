@@ -345,8 +345,8 @@ HYCLEUS/
 │   ├── backup_reminder.py       # "Have you backed up lately" gate (B-015)
 │   ├── hclx.py                  # `.hclx` signed delivery package — code only, no UI/CLI yet (B-043)
 │   ├── inventory.py             # Retention/disposal inventory report — code only, no UI/CLI yet
-│   ├── timestamp.py             # RFC 3161 trusted timestamps, single-file + Merkle batch
-│   ├── merkle.py                # Domain-separated Merkle tree for batch timestamps
+│   ├── timestamp.py             # RFC 3161 trusted timestamps — creation side has no UI/CLI caller yet (B-035)
+│   ├── merkle.py                # Domain-separated Merkle tree for batch timestamps — write side not wired (B-035), verify side is
 │   ├── timestamp_verify.py      # Offline timestamp verification (no network)
 │   ├── timestamp_report.py      # Verification result → plain language (UI)
 │   ├── verify_timestamp_cli.py  # CLI: --verify-timestamp <file>
@@ -757,8 +757,8 @@ HYCLEUS/
 │   ├── backup_reminder.py       # "En son ne zaman yedek aldın" kapısı (B-015)
 │   ├── hclx.py                  # `.hclx` imzalı teslim paketi — yalnızca kod, henüz UI/CLI yok (B-043)
 │   ├── inventory.py             # Saklama/imha envanter raporu — yalnızca kod, henüz UI/CLI yok
-│   ├── timestamp.py             # RFC 3161 zaman damgası, tekil dosya + Merkle toplu
-│   ├── merkle.py                # Toplu damgalama için alan-ayrımlı Merkle ağacı
+│   ├── timestamp.py             # RFC 3161 zaman damgası — üretme tarafının henüz UI/CLI çağıranı yok (B-035)
+│   ├── merkle.py                # Toplu damgalama için alan-ayrımlı Merkle ağacı — yazma tarafı bağlı değil (B-035), okuma tarafı bağlı
 │   ├── timestamp_verify.py      # Çevrimdışı damga doğrulama (ağ gerekmez)
 │   ├── timestamp_report.py      # Doğrulama sonucu → sade Türkçe (arayüz)
 │   ├── verify_timestamp_cli.py  # CLI: --verify-timestamp <dosya>

@@ -1,6 +1,17 @@
 """
 HYCLEUS — `.hclx` imzalı teslim paketi (kullanıcı verisi paylaşımı)
 
+DURUM: EXPERIMENTAL / NOT-WIRED
+--------------------------------
+`create_package()` ve `open_package()` çalışıyor ve test ediliyor
+(`tests/test_hclx.py`) ama şu an üretimde HİÇBİR menüden, CLI'dan ya da
+zamanlanmış işten çağrılmıyor — yalnızca testlerden. Ölçüldü ve
+`tests/test_deneysel_bagli_degil.py` bunu her koşuda yeniden doğruluyor;
+biri bunu bir arayüz akışına bağlarsa o test kırılır ve bu notun,
+BACKLOG B-043'ün ve SECURITY.md §4.14'ün güncellenmesi gerekir. Neyin
+eksik olduğu (gönderme akışı, açma akışı, reddedilen paket diyaloğu)
+BACKLOG B-043'te.
+
 Ne İÇİN — ve ne için DEĞİL
 ---------------------------
 `.hclx`, kasadaki belgelerin kasa DIŞINA, süreli ve doğrulanabilir biçimde

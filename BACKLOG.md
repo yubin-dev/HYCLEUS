@@ -1462,6 +1462,28 @@ içine günlük bir toplu damgalama görevi, `ZamanKapisi` deseniyle
 (`timestamp_last_run`), ve AdminPanel'de bir "Şimdi damgala" düğmesi.
 Ağ hatası görevi düşürmeli ama uygulamayı DEĞİL.
 
+### 2026-08-28 (devam) — bu bulgu kalıcı bir testle sabitlendi, tek seferlik ölçüm olmaktan çıktı
+
+`merkle.py`/`hclx.py`'nin (B-043) gerçekten üretimden çağrılıp
+çağrılmadığı soruldu. Bu maddedeki `grep` ölçümü doğruydu ama tek
+seferlikti — kod tabanı büyüdükçe biri fark ettirmeden bağlayabilir ya da
+biri "zaten kullanılmıyor" diye yanlışlıkla silebilir, ikisi de sessiz.
+
+`tests/test_deneysel_bagli_degil.py` eklendi: `ast` ile CORE/, UI/, DB/ ve
+`main.py`'yi tarayıp `timestamp_file()`/`timestamp_batch()`'in (bu madde)
+ve `create_package()`/`open_package()`'ın (B-043) hâlâ testler dışında
+sıfır çağırana sahip olduğunu her koşuda yeniden kanıtlıyor — biri
+bağlarsa test KIRILIYOR, sessizce eskimiyor. Ayrıca `verify_merkle_path()`
+zincirinin (`CORE/timestamp_verify.py` → `UI/main_window_files.py`
+"Damgayı Doğrula") GERÇEKTEN bağlı olduğunu da ayrı bir testle kanıtlıyor
+— `merkle.py`'yi `hclx.py` ile aynı kefeye koymamak için: okuma tarafı
+çalışıyor, sadece hiç girdi görmüyor (ağacı KURACAK tek yol olan
+`timestamp_batch()` bağlı olmadığı için).
+
+`CORE/hclx.py` ve `CORE/merkle.py`'nin modül docstring'lerine
+EXPERIMENTAL/NOT-WIRED notu eklendi; SECURITY.md §4.9 ve §4.14 (EN+TR)
+bu kalıcı testi anıyor. Ayrıntı SECURITY.md §4.9/§4.14'te.
+
 ---
 
 ## B-036 — USB fiziksel olarak kaybolduğunda çalışan bir kurtarma yolu YOK
@@ -2152,6 +2174,19 @@ Akış tabanlı bir gövde (base64 yerine uzunluk önekli ikili çerçeveleme)
 sınırı kaldırırdı ama ikinci bir ayrıştırıcı demek. Belge teslimi için
 gerekli görülmedi; gerekirse sürüm `0x02` ile gelir — `SUPPORTED_VERSIONS`
 o gün için hazır.
+
+### 2026-08-28 (devam) — madde 1'in "hiçbir menüden çağrılmıyor" iddiası kalıcı bir testle sabitlendi
+
+`merkle.py` ile birlikte sorulan: `.hclx` gerçekten üretimden çağrılıyor
+mu? Madde 1'deki bulgu doğruydu ama tek seferlik bir gözlemdi.
+`tests/test_deneysel_bagli_degil.py` eklendi — `create_package()`/
+`open_package()`'ın CORE/, UI/, DB/ ve `main.py` genelinde testler
+dışında hâlâ sıfır çağırana sahip olduğunu her koşuda `ast` ile yeniden
+kanıtlıyor; biri bunu bir menüye/CLI'a bağlarsa (madde 1'in önerdiği
+gönderme/açma akışı gibi) test KIRILIR ve bu maddenin, SECURITY.md
+§4.14'ün, README'nin ve `CORE/hclx.py`'nin kendi EXPERIMENTAL/NOT-WIRED
+docstring notunun bilinçli olarak güncellenmesi gerekir — sessiz drift
+yerine. Ayrıntı SECURITY.md §4.14'te, aynı yaklaşım B-035'e de uygulandı.
 
 ---
 

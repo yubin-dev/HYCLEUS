@@ -1,6 +1,26 @@
 """
 HYCLEUS — Merkle ağacı (toplu zaman damgası için)
 
+DURUM: YAZMA tarafı EXPERIMENTAL / NOT-WIRED, OKUMA tarafı GERÇEKTEN BAĞLI
+---------------------------------------------------------------------------
+İkisini KARIŞTIRMA — biri diğerinin tersi:
+
+  · `build_leaves()`/`build_tree()` (bu modül) — üretimde TEK çağıranı
+    `CORE/timestamp.py::timestamp_batch()`, ve O da üretimde hiçbir
+    menüden/CLI'dan çağrılmıyor (BACKLOG B-035). Yani bir Merkle ağacı
+    bu uygulamada ŞU AN hiç KURULMUYOR.
+  · `verify_proof()`/`leaf_hash()` (bu modül) — `CORE/timestamp.py::
+    verify_merkle_path()` üzerinden `CORE/timestamp_verify.py::
+    verify_timestamp()`'e, oradan da `UI/main_window_files.py`'nin
+    "Damgayı Doğrula" eylemine GERÇEKTEN bağlı. Ama görecek gerçek bir
+    ağaç hiç olmadığı için (yukarıdaki madde) bu yol bugün her dosyada
+    sadece "v1, doğrulanacak yol yok" dalını işletiyor — kod çalışıyor,
+    sadece hiç anlamlı bir girdi görmüyor.
+
+`tests/test_deneysel_bagli_degil.py` her iki iddiayı da (yazma bağlı
+değil, okuma bağlı) her koşuda yeniden doğruluyor. Ayrıntı SECURITY.md
+§4.9'da.
+
 Neden var
 ---------
 RFC 3161 damgalaması bugün DOSYA BAŞINA bir TSA çağrısı yapıyor. Yüz

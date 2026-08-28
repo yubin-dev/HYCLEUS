@@ -899,7 +899,16 @@ hash — only the token is shared, not the guarantee. **The batch
 primitive is implemented and tested but, like single-file stamping
 itself, has no caller in the shipped application** — nothing currently
 calls `timestamp_file()` or `timestamp_batch()` outside the test suite,
-so no file in a real vault carries a timestamp yet. See **B-035**.
+so no file in a real vault carries a timestamp yet. See **B-035**. This
+means `CORE/merkle.py`'s tree-building side (`build_leaves`/`build_tree`,
+only ever reached through `timestamp_batch()`) never actually runs on
+real data either — its *verification* side is a different story:
+`verify_merkle_path()` above genuinely is called from the real "Damgayı
+Doğrula" UI action, it just never sees a real tree to check, for the same
+reason. `CORE/merkle.py`'s own module docstring states both halves
+precisely. Both claims — write side dark, read side live but starved of
+real input — are re-checked by AST on every test run in
+`tests/test_deneysel_bagli_degil.py`, not just measured once.
 
 ### 4.10 Transparent access puts plaintext on disk for as long as you edit
 
@@ -1447,6 +1456,20 @@ already uses for backup manifests.
 **Creation time is self-declared.** `created_at` comes from the producing
 machine and can say anything. An RFC 3161 stamp (§4.9) would turn it into a
 trustworthy lower bound; that was not done in this version — see B-035.
+
+**None of the above currently happens to a real user's data — `create_package()`
+and `open_package()` have no caller in the shipped application.** Everything
+stated in this section is true of the code and is exercised by
+`tests/test_hclx.py`, but nothing in the UI, the CLI surface, or any
+scheduled job calls either function outside the test suite — measured the
+same way §4.9 measured `timestamp_file()`/`timestamp_batch()`, and kept
+honest the same way: `tests/test_deneysel_bagli_degil.py` re-checks this
+claim by AST on every run, so wiring either function to a real menu or CLI
+action without updating this section will fail a test, not drift silently.
+`CORE/hclx.py`'s own module docstring carries the same
+EXPERIMENTAL/NOT-WIRED marker. See **B-043** for what is missing (a send
+flow, an open flow, and a dialog for a rejected package) and why it was
+deliberately left for a separate decision.
 
 ---
 
@@ -2594,7 +2617,16 @@ token, garanti değil. **Toplu ilkel uygulanmış ve test edilmiş ama, tekil
 damgalamanın kendisi gibi, dağıtılan uygulamada hiçbir çağıranı yok** —
 `timestamp_file()`'ı ya da `timestamp_batch()`'i test paketi dışında hiçbir
 şey çağırmıyor, yani gerçek bir kasadaki hiçbir dosya henüz damgalı değil.
-Bkz. **B-035**.
+Bkz. **B-035**. Bunun anlamı, `CORE/merkle.py`'nin ağaç KURMA tarafının
+(`build_leaves`/`build_tree`, yalnızca `timestamp_batch()` üzerinden
+erişiliyor) da gerçek veri üzerinde hiç çalışmadığı — DOĞRULAMA tarafı
+farklı bir hikâye: yukarıdaki `verify_merkle_path()` gerçek "Damgayı
+Doğrula" arayüz eyleminden GERÇEKTEN çağrılıyor, sadece aynı nedenle
+görecek gerçek bir ağaç hiç bulmuyor. `CORE/merkle.py`'nin kendi modül
+docstring'i iki yarıyı da net biçimde yazıyor. İki iddia da — yazma
+tarafı kör, okuma tarafı bağlı ama girdisiz — her test koşusunda AST ile
+yeniden doğrulanıyor: `tests/test_deneysel_bagli_degil.py`, tek seferlik
+bir ölçüm değil.
 
 ### 4.10 Şeffaf erişim, düzenlediğiniz sürece düz metni diskte tutuyor
 
@@ -3141,6 +3173,21 @@ yakalanıyor. §4.11 yedek manifestosu için aynı deseni zaten kullanıyor.
 **Üretim zamanı beyandır.** `created_at` üreten makineden geliyor ve
 istediğini yazabilir. RFC 3161 damgası (§4.9) bunu güvenilir bir alt sınıra
 çevirirdi; bu sürümde yapılmadı — bkz. B-035.
+
+**Yukarıdakilerin HİÇBİRİ şu an gerçek bir kullanıcının verisine olmuyor —
+`create_package()` ve `open_package()`'ın dağıtılan uygulamada hiçbir
+çağıranı yok.** Bu bölümde anlatılan her şey KOD için doğru ve
+`tests/test_hclx.py` tarafından çalıştırılıyor, ama arayüzde, CLI
+yüzeyinde ya da zamanlanmış bir işte bu iki fonksiyonu test paketi
+dışında çağıran hiçbir şey yok — §4.9'un `timestamp_file()`/
+`timestamp_batch()` için yaptığı ölçümün aynısı, aynı dürüstlükle:
+`tests/test_deneysel_bagli_degil.py` bu iddiayı her koşuda AST ile
+yeniden doğruluyor, yani bu iki fonksiyon bu bölüm güncellenmeden gerçek
+bir menüye/CLI eylemine bağlanırsa bir test SESSİZCE değil, KIRILARAK
+haber verir. `CORE/hclx.py`'nin kendi modül docstring'i aynı
+EXPERIMENTAL/NOT-WIRED notunu taşıyor. Neyin eksik olduğu (gönderme
+akışı, açma akışı, reddedilen paket için bir diyalog) ve bunun neden
+bilinçli olarak ayrı bir karara bırakıldığı **B-043**'te.
 
 ---
 
