@@ -124,7 +124,7 @@ can end up in any of the three hands, and §4.4 is where that is worked out.
 | Shamir 2-of-3 | — | ✅ the vault yields one share, and one share is nothing | ❌ `share_2` is already theirs |
 | OS credential store holding `share_2` | — | ⚠️ the blob travels with the disk; the OS account password opens it — unless the record is TPM-sealed | ❌ it answers them |
 | TPM 2.0 sealing of stored secrets (Windows only) | — | ✅ where present: the blob is useless without that chip (§4.13) | ❌ the TPM answers them too |
-| Vault HMAC, key = HKDF(HWID) | — | ❌ the HWID is not a secret (§4.2) | ❌ |
+| Vault HMAC, key = HKDF(share_2, info=HWID) | — | ✅ `share_2` is not on a stolen disk (§4.2, §4.13) | ❌ the credential store answers M3 too (§1.2 above) |
 | Device binding via the HWID | — | ❌ see §1.3 | ❌ |
 | Login rate limit / lockout | — | ❌ they are not using the application (§4.5) | ⚠️ one `DELETE` removes it (§3) |
 | TOTP second factor | — | ❌ not in the path they take | ❌ the secret is in the store that answers them |
@@ -183,9 +183,11 @@ copy that already left the machine.
 **M2 — what does not.** Everything in §3's first paragraph: the database is
 plaintext on disk, so filenames, user records, roles, HWIDs and the whole
 audit log are readable, and the AAD in each `.hcl` header is readable too.
-The vault HMAC is forgeable by anyone who knows the HWID (§4.2). Every
-application-level control — rate limit, blacklist, idle lock, TOTP — is
-simply absent, because M2 is not running the application (§4.5).
+Every application-level control — rate limit, blacklist, idle lock, TOTP —
+is simply absent, because M2 is not running the application (§4.5). The
+vault HMAC no longer belongs in this list: it used to be forgeable by
+anyone who knew the HWID, but the signing key now comes from `share_2`,
+which is not in `data/` and does not travel with a stolen disk (§4.2).
 
 **M2 — out of scope, and both cases are real.** First, **the HWID is not a
 hardware secret and on some devices is not hardware-derived at all.** When
@@ -345,20 +347,57 @@ credential-store entry (`delete_usb_token()`) and re-keying the vault.
 > calls `open_vault()` directly and only `authenticate_usb()` consulted the
 > blacklist. Fixed after this document first reported it.
 
-### 4.2 The vault HMAC key is derived from a non-secret
+### 4.2 The vault HMAC key is derived from share_2, not the HWID
 
 > **Attacker models:** M2 · M3
 
-The vault's HMAC-SHA256 signing key is `HKDF(hwid)` — and the HWID is a USB
-serial number, not a secret. It is stored in `data/usb_ids.json`, in the DB,
-and can be read from the device itself. **Anyone who knows the HWID can
-forge a valid vault HMAC.**
+Until this fix, the vault's HMAC-SHA256 signing key was `HKDF(hwid)` — and
+the HWID is a USB serial number, not a secret. It is the vault file's own
+name (`vaults/<hwid>.hclv`), it is stored in `data/usb_ids.json` and in the
+DB, and it can be read from the device itself. **Anyone who knew the HWID
+could forge a valid vault HMAC** — no PIN, no Shamir share, nothing beyond
+the filename.
 
-The HMAC therefore provides tamper-*evidence* against someone who does not
-know the HWID, which is a weak assumption. Confidentiality does not rest on
-it: the ciphertext is protected by AES-256-GCM under the Argon2id/PIN-derived
-KEK, with the HWID as AAD. The HMAC is a second, weaker layer — not the one
-holding the door.
+The signing key is now `HKDF(share_2, info=hwid)`
+(`CORE/vault_manager.py::_derive_signing_key`): `share_2` supplies the key
+*material*, `hwid` only binds the signature to a device through HKDF's
+`info` parameter and is never used as key material itself. `share_2` is a
+single Shamir share — below the 2-of-3 threshold it reveals nothing about
+the master key on its own (§4.4) — but unlike the HWID it never appears in
+a filename, the database, or the GCM AAD. It lives only in the OS
+credential store, optionally TPM-sealed on Windows (§4.13). Verification
+still needs no PIN: `share_2` is read from the store the same way
+`open_vault()` already reads it, so `authenticate_usb()` (USB
+re-insertion) and the weekly integrity sweep (§4.7) work exactly as before.
+
+**What this buys, by model.** Under M2 (a stolen disk or backup, no OS
+session) the attacker never had `share_2` — §1.2's Shamir row already
+establishes that a stolen disk yields only `share_1`, which is
+information-theoretically nothing on its own. The vault-HMAC row above
+moves from ❌ to ✅ for M2: forging it now costs exactly what decrypting the
+file already cost. **Under M3 nothing changes**: the credential store
+answers the logged-in OS user directly (§1.2), so `share_2` was always
+reachable there, and the row stays ❌ for M3 — the same limit every
+credential-store-backed control in this document already has.
+
+**What did not change.** Confidentiality never rested on the HMAC: the
+ciphertext is protected by AES-256-GCM under the Argon2id/PIN-derived KEK,
+with the HWID as AAD, and that did not move. The HMAC is a second,
+independent layer over the *outer* envelope — magic, salt, nonce,
+`token_id` — fields the GCM tag does not cover. It was never "the one
+holding the door," but it is no longer forgeable from information that sits
+in the open.
+
+**Migration.** A vault created before this fix carries the old, HWID-only
+signature and would fail verification under the new scheme outright.
+`run_migrations()` (`CORE/secret_migration.py`, schema v4,
+`migrate_vault_hmac`) re-signs every registered HWID's vault at startup,
+before login — `share_2` is all it needs, so no PIN prompt is involved. A
+file is only re-signed if it verifies under the *old* scheme first; one
+that verifies under neither is left untouched and logged as a warning, on
+the assumption that "doesn't verify under either scheme" means genuinely
+corrupted or tampered rather than merely un-migrated — the weekly integrity
+sweep (§4.7) is where that distinction gets made, not the migration step.
 
 ### 4.3 DEV_MODE derives the file key from the HWID alone
 
@@ -1017,7 +1056,7 @@ trustworthy lower bound; that was not done in this version — see B-035.
 | Integrity of plaintext | SHA-256 computed before encryption, bound into the AAD |
 | Vault KEK | Argon2id(PIN, 16-byte salt), time=3, memory=64 MB, parallelism=4, 32-byte output |
 | Vault sealing | AES-256-GCM, AAD = HWID (device binding) |
-| Vault signature | HMAC-SHA256, key = HKDF-SHA256(HWID) — see §4.2 |
+| Vault signature | HMAC-SHA256, key = HKDF-SHA256(share_2, info=HWID) — see §4.2 |
 | Key splitting | Shamir 2-of-3 over GF(p), p = 2²⁵⁶ + 297 (verified prime); `f(x) = s + a₁x`, `a₁ ← [1, p−1]`; shares at x = 1, 2, 3 |
 | Audit log integrity | SHA-256 hash chain, `hash_n = SHA256(hash_(n-1) ‖ canonical(entry_n))`, `hash_0` = 32 zero bytes; unkeyed — see §4.6 |
 | Audit record encoding | Fixed field order, length-prefixed UTF-8, `NULL` distinct from `""` — deterministic and library-independent |
@@ -1283,7 +1322,7 @@ anahtar malzemesi ve bunun hesabı §4.4'te veriliyor.
 | Shamir 2-of-3 | — | ✅ kasa tek pay veriyor, tek pay hiçbir şey | ❌ `share_2` zaten onda |
 | `share_2`'yi tutan OS anahtar kasası | — | ⚠️ blob diskle birlikte gidiyor; OS hesap parolası onu açar — kayıt TPM'e mühürlü DEĞİLSE | ❌ ona cevap veriyor |
 | Saklanan sırların TPM 2.0 mührü (yalnızca Windows) | — | ✅ varsa: blob o yonga olmadan işe yaramaz (§4.13) | ❌ TPM de onlara cevap veriyor |
-| Kasa HMAC'i, anahtar = HKDF(HWID) | — | ❌ HWID bir sır değil (§4.2) | ❌ |
+| Kasa HMAC'i, anahtar = HKDF(share_2, info=HWID) | — | ✅ `share_2` çalınan diskte yok (§4.2, §4.13) | ❌ anahtar kasası M3'e de cevap veriyor (yukarıda §1.2) |
 | HWID üzerinden cihaz bağı | — | ❌ bkz. §1.3 | ❌ |
 | Giriş hız sınırı / kilitleme | — | ❌ uygulamayı kullanmıyorlar (§4.5) | ⚠️ tek bir `DELETE` kaldırıyor (§3) |
 | TOTP ikinci faktörü | — | ❌ izledikleri yolda değil | ❌ sır, onlara cevap veren kasada |
@@ -1343,10 +1382,12 @@ ulaşamıyor.
 
 **M2 — ne dayanmıyor.** §3'ün ilk paragrafındaki her şey: veritabanı diskte
 düz metin, yani dosya adları, kullanıcı kayıtları, roller, HWID'ler ve tüm
-denetim günlüğü okunabilir; her `.hcl` başlığındaki AAD de okunabilir. Kasa
-HMAC'i, HWID'yi bilen herkes tarafından üretilebilir (§4.2). Uygulama
-seviyesindeki her kontrol — hız sınırı, kara liste, hareketsizlik kilidi,
-TOTP — basitçe YOK, çünkü M2 uygulamayı çalıştırmıyor (§4.5).
+denetim günlüğü okunabilir; her `.hcl` başlığındaki AAD de okunabilir.
+Uygulama seviyesindeki her kontrol — hız sınırı, kara liste, hareketsizlik
+kilidi, TOTP — basitçe YOK, çünkü M2 uygulamayı çalıştırmıyor (§4.5). Kasa
+HMAC'i artık bu listede değil: eskiden HWID'yi bilen herkes tarafından
+üretilebiliyordu, ama imza anahtarı artık `share_2`'den geliyor — o da
+`data/` içinde değil, çalınan diskle birlikte gitmiyor (§4.2).
 
 **M2 — kapsam dışı, ve iki durum da gerçek.** Birincisi: **HWID bir donanım
 sırrı değil ve bazı cihazlarda donanımdan hiç türemiyor.** Depolama yığını
@@ -1501,19 +1542,57 @@ tutarlı biçimde uygulanıyor. Gerçek iptal, kasadaki kaydın silinmesini
 > `authenticate_usb()` bakıyordu. Bu belge sorunu ilk raporladıktan sonra
 > düzeltildi.
 
-### 4.2 Vault HMAC anahtarı sır olmayan bir şeyden türetiliyor
+### 4.2 Vault HMAC anahtarı share_2'den türetiliyor, HWID'den değil
 
 > **Saldırgan modelleri:** M2 · M3
 
-Vault'un HMAC-SHA256 imza anahtarı `HKDF(hwid)`'dir — ve HWID bir USB seri
-numarasıdır, sır değil. `data/usb_ids.json` içinde, veritabanında saklanır ve
-cihazın kendisinden okunabilir. **HWID'i bilen herkes geçerli bir vault HMAC'ı
-üretebilir.**
+Bu düzeltmeden önce vault'un HMAC-SHA256 imza anahtarı `HKDF(hwid)`'ydi —
+ve HWID bir USB seri numarasıdır, sır değil. Vault dosyasının kendi adı
+(`vaults/<hwid>.hclv`), `data/usb_ids.json` içinde ve veritabanında saklanır,
+cihazın kendisinden de okunabilir. **HWID'i bilen herkes geçerli bir vault
+HMAC'ı üretebiliyordu** — ne PIN, ne bir Shamir payı, dosya adından fazlası
+gerekmiyordu.
 
-Dolayısıyla HMAC yalnızca HWID'i bilmeyen birine karşı kurcalama *kanıtı*
-sağlar ki bu zayıf bir varsayımdır. Gizlilik buna dayanmıyor: ciphertext,
-Argon2id/PIN türevli KEK altında AES-256-GCM ile korunuyor ve HWID AAD olarak
-bağlanıyor. HMAC ikinci, daha zayıf bir katmandır — kapıyı tutan o değildir.
+İmza anahtarı artık `HKDF(share_2, info=hwid)`
+(`CORE/vault_manager.py::_derive_signing_key`): anahtar *materyalini*
+`share_2` sağlıyor, `hwid` yalnızca HKDF'nin `info` parametresinde geçip
+imzayı bir cihaza bağlıyor — anahtar materyali olarak asla kullanılmıyor.
+`share_2` tek bir Shamir payı — 2-of-3 eşiğinin altında, master_key
+hakkında tek başına hiçbir bilgi vermiyor (§4.4) — ama HWID'in aksine bir
+dosya adında, veritabanında ya da GCM AAD'ında hiç görünmüyor. Yalnızca OS
+anahtar kasasında duruyor, Windows'ta isteğe bağlı olarak TPM-mühürlü
+(§4.13). Doğrulama hâlâ PIN gerektirmiyor: `share_2`, `open_vault()`'un
+zaten okuduğu yerden okunuyor — bu yüzden `authenticate_usb()` (USB yeniden
+takma) ve haftalık bütünlük taraması (§4.7) eskisi gibi çalışmaya devam
+ediyor.
+
+**Bu neyi değiştiriyor, modele göre.** M2'de (çalınan disk/yedek, OS
+oturumu yok) saldırganın hiçbir zaman `share_2`'si olmadı — §1.2'deki
+Shamir satırı zaten çalınan bir diskin yalnızca `share_1` verdiğini, bunun
+da bilgi-teorik olarak hiçbir şey olduğunu söylüyor. Yukarıdaki vault-HMAC
+satırı M2 için ❌'den ✅'ye taşınıyor: onu forge etmek artık dosyayı zaten
+çözmenin maliyetiyle aynı. **M3'te hiçbir şey değişmiyor**: anahtar kasası
+oturum açmış OS kullanıcısına doğrudan cevap veriyor (§1.2), yani
+`share_2` orada zaten erişilebilirdi ve satır M3 için ❌ kalıyor — bu
+belgedeki anahtar-kasası-destekli her kontrolün zaten taşıdığı aynı sınır.
+
+**Ne değişmedi.** Gizlilik hiçbir zaman HMAC'e dayanmadı: ciphertext,
+Argon2id/PIN türevli KEK altında AES-256-GCM ile korunuyor, HWID AAD olarak
+bağlanıyor, ve bu hiç değişmedi. HMAC, *dış* zarf üzerinde (magic, salt,
+nonce, `token_id` — GCM tag'inin kapsamadığı alanlar) ikinci, bağımsız bir
+katman. Hiçbir zaman "kapıyı tutan" değildi, ama artık açıkta duran bir
+bilgiden forge edilebilir de değil.
+
+**Migration.** Bu düzeltmeden önce oluşturulmuş bir vault eski, yalnızca
+HWID'e dayanan imzayı taşıyor ve yeni şemayla doğrudan doğrulanamaz.
+`run_migrations()` (`CORE/secret_migration.py`, şema v4,
+`migrate_vault_hmac`) kayıtlı her HWID'in vault'unu açılışta, girişten
+önce yeniden imzalıyor — yalnızca `share_2` gerekiyor, PIN istemi yok. Bir
+dosya YALNIZCA önce *eski* şemayla doğrulanıyorsa yeniden imzalanıyor;
+ikisiyle de doğrulanmayan bir dosyaya dokunulmuyor ve bir uyarı olarak
+kaydediliyor — "ikisiyle de doğrulanmıyor" gerçekten bozulmuş/kurcalanmış
+anlamına geldiği varsayımıyla, yalnızca göç edilmemiş değil; bu ayrımı
+yapan yer haftalık bütünlük taraması (§4.7), migration adımı değil.
 
 ### 4.3 DEV_MODE dosya anahtarını yalnızca HWID'den türetir
 
@@ -2167,7 +2246,7 @@ istediğini yazabilir. RFC 3161 damgası (§4.9) bunu güvenilir bir alt sınır
 | Düz metin bütünlüğü | Şifrelemeden önce hesaplanan SHA-256, AAD'a bağlanır |
 | Vault KEK | Argon2id(PIN, 16 byte tuz), time=3, bellek=64 MB, paralellik=4, 32 byte |
 | Vault mühürleme | AES-256-GCM, AAD = HWID (cihaz bağlama) |
-| Vault imzası | HMAC-SHA256, anahtar = HKDF-SHA256(HWID) — bkz. §4.2 |
+| Vault imzası | HMAC-SHA256, anahtar = HKDF-SHA256(share_2, info=HWID) — bkz. §4.2 |
 | Anahtar bölme | GF(p) üzerinde Shamir 2-of-3, p = 2²⁵⁶ + 297 (asallığı doğrulandı); `f(x) = s + a₁x`, `a₁ ← [1, p−1]`; paylar x = 1, 2, 3 |
 | Denetim kaydı bütünlüğü | SHA-256 hash zinciri, `hash_n = SHA256(hash_(n-1) ‖ kanonik(kayıt_n))`, `hash_0` = 32 sıfır byte; anahtarsız — bkz. §4.6 |
 | Denetim kaydı kodlaması | Sabit alan sırası, uzunluk önekli UTF-8, `NULL` ile `""` ayrı — deterministik ve kütüphaneden bağımsız |

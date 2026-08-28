@@ -11,9 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from CORE import secret_migration, secret_store
+from CORE import secret_migration, secret_store, vault_manager
 from CORE.secret_migration import MigrationError
 from CORE.secret_store import KeyringUnavailableError
+from CORE.vault_manager import VaultTamperedError, create_vault, verify_vault
 
 from conftest import BrokenKeyring, SilentlyFailingKeyring
 
@@ -257,6 +258,79 @@ def test_totp_migration_rejects_corrupt_file(tmp_path: Path) -> None:
 
 def test_totp_migration_missing_file_is_noop(tmp_path: Path) -> None:
     assert secret_migration.migrate_totp_secret(tmp_path / "yok.json") is None
+
+
+# ── Vault HMAC migration (SECURITY.md §4.2) ────────────────────────────────────
+#
+# CORE.vault_manager.migrate_vault_hmac_to_share2() taşıyor bu satırı;
+# ayrıntılı testleri tests/test_vault_hmac_share2.py'de. Burada yalnızca
+# run_migrations()'ın onu doğru şema adımında ÇAĞIRDIĞINI ve gerçek bir
+# dosyayı gerçekten yeniden imzaladığını doğruluyoruz.
+
+_HWID_VAULT = "USB-HMAC-MIG-INTEGRATION"
+_PIN_VAULT = "gizli-pin-789"
+
+
+@pytest.fixture
+def vault_dizini(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(vault_manager, "_VAULT_DIR", tmp_path / "vaults")
+    monkeypatch.setattr(vault_manager, "_VAULT_PATH_LEGACY", tmp_path / "legacy.hclv")
+    return tmp_path
+
+
+def _resign_with_legacy_scheme(hwid: str) -> None:
+    """"Üretimde kalmış eski vault" simülasyonu — bkz. test_vault_hmac_share2.py."""
+    path = vault_manager._read_vault_path(hwid)
+    raw = path.read_bytes()
+    protected = raw[: -vault_manager._HMAC_SIZE]
+    eski_imza = vault_manager._sign(
+        vault_manager._derive_signing_key_legacy_hwid(hwid), protected
+    )
+    with vault_manager._writable(path):
+        path.write_bytes(protected + eski_imza)
+
+
+def test_run_migrations_resigns_legacy_vault_hmac(db, vault_dizini) -> None:
+    """
+    Eski şemayla imzalanmış GERÇEK bir vault dosyası, run_migrations()
+    çağrıldıktan sonra yeni share_2-bazlı şemayla doğrulanmalı.
+    """
+    create_vault(_HWID_VAULT, _PIN_VAULT, "Standart")
+    _resign_with_legacy_scheme(_HWID_VAULT)
+
+    with pytest.raises(VaultTamperedError):
+        verify_vault(_HWID_VAULT)  # ön koşul: migration öncesi geçmiyor
+
+    rapor = secret_migration.run_migrations(db)
+
+    assert rapor.vault_hmac_migrated == 1
+    assert rapor.to_version == secret_migration.CURRENT_SCHEMA_VERSION
+    verify_vault(_HWID_VAULT)  # artık istisna atmamalı
+
+
+def test_run_migrations_vault_hmac_step_is_idempotent(db, vault_dizini) -> None:
+    create_vault(_HWID_VAULT, _PIN_VAULT, "Standart")
+    _resign_with_legacy_scheme(_HWID_VAULT)
+
+    ilk = secret_migration.run_migrations(db)
+    assert ilk.vault_hmac_migrated == 1
+
+    # Şema versiyonu zaten güncel — ikinci çağrı hiçbir adımı çalıştırmamalı
+    ikinci = secret_migration.run_migrations(db)
+    assert ikinci.ran is False
+    assert ikinci.vault_hmac_migrated == 0
+    verify_vault(_HWID_VAULT)
+
+
+def test_run_migrations_vault_hmac_step_noop_for_new_vault(db, vault_dizini) -> None:
+    """create_vault() zaten yeni şemayla imzalıyor — migration'ın taşıyacak bir şeyi yok."""
+    create_vault(_HWID_VAULT, _PIN_VAULT, "Standart")
+
+    rapor = secret_migration.run_migrations(db)
+
+    assert rapor.vault_hmac_migrated == 0
+    assert rapor.vault_hmac_already_new == 1
+    verify_vault(_HWID_VAULT)
 
 
 # ── Uçtan uca: iki migration birlikte ─────────────────────────────────────────

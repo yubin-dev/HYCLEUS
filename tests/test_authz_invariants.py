@@ -335,7 +335,7 @@ def test_migration_eski_global_sir_ilk_onayli_kullaniciya_devrediyor(
     rapor = secret_migration.run_migrations(db)
 
     assert rapor.ran
-    assert rapor.to_version == secret_migration.SCHEMA_TOTP_PER_HWID
+    assert rapor.to_version == secret_migration.CURRENT_SCHEMA_VERSION
     assert rapor.totp_per_hwid_migrated_to == "USB-MIG-ILK"
 
     # İlk onaylı kullanıcı KESİNTİSİZ çalışmaya devam ediyor: eski kodu
@@ -401,7 +401,7 @@ def test_migration_global_sir_YOKSA_hicbir_sey_yapmiyor(db, kasa_dizini) -> None
 
     rapor = secret_migration.run_migrations(db)
 
-    assert rapor.to_version == secret_migration.SCHEMA_TOTP_PER_HWID
+    assert rapor.to_version == secret_migration.CURRENT_SCHEMA_VERSION
     assert rapor.totp_per_hwid_migrated_to is None
 
 

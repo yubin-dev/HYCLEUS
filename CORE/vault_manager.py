@@ -45,8 +45,20 @@ Kara liste (_reject_if_blacklisted):
 Şifreleme güvenlik katmanları:
   · KEK   — Argon2id(password=pin, salt=salt) → 32 byte şifreleme anahtarı
   · GCM   — Şifreleme + bütünlük; HWID cihaz bağlayıcı AAD olarak iletilir
-  · HMAC  — HWID'den HKDF ile türetilen 32 byte imza anahtarıyla dosya bütünlüğü
+  · HMAC  — share_2'den HKDF ile türetilen 32 byte imza anahtarıyla dosya
+            bütünlüğü; HWID yalnızca HKDF info parametresinde (bağlam),
+            ANAHTAR MATERYALİ olarak asla kullanılmaz (bkz. SECURITY.md §4.2 —
+            eski HWID-bazlı şema HWID'i bilen herkes tarafından forge
+            edilebiliyordu, çünkü HWID vault dosyasının kendi adında,
+            vaults/<hwid>.hclv, açık yazıyor)
   · SSS   — master_key üç paydan herhangi ikisi olmadan kurtarılamaz (2-of-3)
+
+HMAC imza anahtarı geçmişi (migrate_vault_hmac_to_share2 ile taşınır):
+  · v3 vault, eski şema — imza anahtarı HKDF(info=hwid); HWID sır olmadığı
+    için dosyayı eline geçiren herkes aynı anahtarı türetip geçerli bir HMAC
+    üretebiliyordu
+  · v3 vault, yeni şema — imza anahtarı HKDF(share_2, info=hwid); share_2
+    yalnızca OS anahtar kasasında durur, dosyada ya da AAD'da hiç görünmez
 """
 from __future__ import annotations
 
@@ -88,6 +100,13 @@ _A2_PARA = 4
 
 # HKDF türetme etiketi — sürüm değişirse güncelle
 _HKDF_LABEL = b"hycleus-vault-sign-v1"
+
+# HMAC imza anahtarının HKDF info parametresi — versiyonlu ve hwid'e özgü.
+# Bu değer anahtar MATERYALİ değil, yalnızca bağlam (domain separation +
+# cihaz bağlama); tek başına anahtar üretmeye yetmez. Kodda HKDF çağıran
+# TEK yer burası — ileride share_2'yi başka bir amaçla HKDF'e sokan bir çağrı
+# eklenirse ayrı, çakışmayan bir info etiketi kullanmalı.
+_HMAC_INFO_PREFIX = b"vault-hmac-v1:"
 
 # Shamir alanı: 257-bit asal, 32-byte (256-bit) sırları barındırır
 # GF(p) içinde derece-1 polinom: f(x) = s + a1*x mod p
@@ -170,8 +189,38 @@ class USBAuthError(Exception):
 
 # ── Yardımcı fonksiyonlar ─────────────────────────────────────────────────────
 
-def _derive_signing_key(hwid: str) -> bytes:
-    """HWID'den HKDF-SHA256 ile 32 byte HMAC imza anahtarı türetir."""
+def _derive_signing_key(hwid: str, share_2: str) -> bytes:
+    """
+    share_2'den HKDF-SHA256 ile 32 byte HMAC imza anahtarı türetir.
+
+    share_2 tek bir Shamir payı — eşiğin (2-of-3) altında, master_key
+    hakkında bilgi-teorik olarak HİÇBİR ŞEY açığa çıkarmaz (bkz. modül
+    docstring'i, SSS) ama HWID'in aksine dosya ADINDA (vaults/<hwid>.hclv),
+    DB'de ya da GCM AAD'ında açık yazmaz — yalnızca OS anahtar kasasında
+    durur. `hwid` yalnızca HKDF `info` parametresinde geçer: anahtarı cihaza
+    bağlar ama anahtar MATERYALİ olarak KULLANILMAZ.
+
+    Bkz. SECURITY.md §4.2 ve _derive_signing_key_legacy_hwid() — eski şema
+    tam da bunun tersini yapıyordu.
+    """
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=_KEY_SIZE,
+        salt=_HKDF_LABEL,
+        info=_HMAC_INFO_PREFIX + hwid.encode(),
+    ).derive(share_2.encode())
+
+
+def _derive_signing_key_legacy_hwid(hwid: str) -> bytes:
+    """
+    ESKİ (bu düzeltme öncesi) imza şeması — YALNIZCA
+    migrate_vault_hmac_to_share2() eski imzayı tanıyıp yeniden imzalayabilsin
+    diye burada duruyor. Yeni kod ASLA bunu çağırmamalı.
+
+    HWID sır değildi (vault dosyasının kendi adı, vaults/<hwid>.hclv, onu
+    açık ediyordu) — yani bu şemayla üretilmiş bir HMAC, dosyayı eline
+    geçiren HERKES tarafından forge edilebiliyordu. Bkz. SECURITY.md §4.2.
+    """
     return HKDF(
         algorithm=hashes.SHA256(),
         length=_KEY_SIZE,
@@ -533,20 +582,24 @@ def _writable(path: Path) -> Iterator[None]:
 
 
 def _rewrite_vault(
-    hwid: str, protected: bytes, target: Path | None = None
+    hwid: str, protected: bytes, share_2: str, target: Path | None = None
 ) -> None:
     """
     Vault dosyasını güvenli biçimde yeniden yazar:
       1. Readonly korumasını geçici olarak kaldırır
-      2. HMAC-SHA256 imzası hesaplar
+      2. HMAC-SHA256 imzası hesaplar (share_2-bazlı anahtarla)
       3. protected + signature'ı diske yazar
       4. Readonly bitini geri uygular
+
+    share_2 çağıran tarafından verilir, burada kasadan OKUNMAZ: create_vault()
+    çağrıldığı anda share_2 henüz kasaya yazılmamış olabilir (bkz. o
+    fonksiyonun adım sırası) — parametre olarak almak bu sırayı bozmuyor.
 
     target verilmezse _read_vault_path(hwid) kullanılır.
     Yeni vault oluştururken target=_new_vault_path(hwid) geçilmeli.
     """
     path = target if target is not None else _read_vault_path(hwid)
-    signature = _sign(_derive_signing_key(hwid), protected)
+    signature = _sign(_derive_signing_key(hwid, share_2), protected)
     with _writable(path=path):
         path.write_bytes(protected + signature)
 
@@ -640,7 +693,7 @@ def create_vault(
         + token_id_bytes + ciphertext + tag
     )
     vault_file = _new_vault_path(hwid)
-    _rewrite_vault(hwid, protected, target=vault_file)
+    _rewrite_vault(hwid, protected, share_2, target=vault_file)
 
     # ── share_2 + token_id → DB ───────────────────────────────────────────────
     _save_usb_token(hwid, share_2, token_id_hex)
@@ -652,7 +705,12 @@ def verify_vault(hwid: str) -> None:
     """
     Vault dosyasının HMAC-SHA256 imzasını doğrular.
 
-    Her açılışta çağrılmalıdır; şifre çözme gerçekleştirmez.
+    Her açılışta çağrılmalıdır; şifre çözme gerçekleştirmez. PIN GEREKMEZ:
+    imza anahtarı share_2'den türetiliyor ve share_2 PIN'siz, doğrudan OS
+    anahtar kasasından okunuyor — tıpkı open_vault()'un share_2'yi okuma
+    biçimi gibi (bkz. _load_share_2). Bu yüzden authenticate_usb() ve
+    haftalık bütünlük taraması PIN girilmeden önce bu fonksiyonu çağırabiliyor.
+
     Vault değiştirildikten sonra _rewrite_vault() yeni HMAC'ı otomatik
     hesaplar — bu fonksiyonu tekrar çağırmak yeterlidir.
 
@@ -660,8 +718,11 @@ def verify_vault(hwid: str) -> None:
         hwid — USB donanım kimliği
 
     Raises:
-        FileNotFoundError  — vault dosyası bulunamazsa
-        VaultTamperedError — dosya çok kısaysa veya HMAC geçersizse
+        FileNotFoundError      — vault dosyası bulunamazsa
+        VaultTamperedError     — dosya çok kısaysa veya HMAC geçersizse
+        ValueError              — share_2 anahtar kasasında yoksa (USB kaydı
+                                   silinmiş ya da migration hiç çalışmamış)
+        KeyringUnavailableError — anahtar kasasına erişilemiyorsa
     """
     raw = _read_vault_path(hwid).read_bytes()
 
@@ -671,10 +732,72 @@ def verify_vault(hwid: str) -> None:
     stored_hmac = raw[-_HMAC_SIZE:]
     protected = raw[:-_HMAC_SIZE]
 
-    expected_hmac = _sign(_derive_signing_key(hwid), protected)
+    share_2 = _load_share_2(hwid)
+    expected_hmac = _sign(_derive_signing_key(hwid, share_2), protected)
 
     if not _stdlib_hmac.compare_digest(expected_hmac, stored_hmac):
         raise VaultTamperedError("Vault HMAC doğrulaması başarısız: dosya değiştirilmiş.")
+
+
+def migrate_vault_hmac_to_share2(hwid: str) -> str:
+    """
+    Bir vault'un HMAC imzasını eski HWID-bazlı şemadan share_2-bazlı yeni
+    şemaya taşır (bkz. SECURITY.md §4.2, _derive_signing_key_legacy_hwid).
+
+    PIN GEREKMEZ — hem eski hem yeni şema yalnızca hwid + share_2'ye
+    dayanıyor, ikisi de PIN olmadan elde edilebiliyor. Bu yüzden migration,
+    CORE/secret_migration.py'nin diğer adımları gibi girişten önce, uygulama
+    açılırken tek seferde çalıştırılabiliyor.
+
+    Idempotent: dosya zaten yeni şemayla imzalıysa hiçbir şey yapmaz.
+    Doğrulanamayan bir dosyaya ASLA dokunmaz — "belki bozuk, belki eski
+    şema" belirsizliğinde sessizce yeniden imzalamak, gerçek bir kurcalamayı
+    gizlemiş olurdu; o karar bütünlük taramasına (CORE/integrity.py) bırakılır.
+
+    Args:
+        hwid — USB donanım kimliği
+
+    Returns:
+        "migrated"            — eski imza doğrulandı, yeni şemayla yeniden imzalandı
+        "already_new"         — dosya zaten yeni şemayla imzalı, dokunulmadı
+        "skipped_no_vault"    — bu HWID için vault dosyası yok
+        "skipped_no_share_2"  — share_2 kasada yok, migration yapılamadı
+        "skipped_unverifiable" — dosya ne eski ne yeni şemayla doğrulanıyor
+                                  (kısa/bozuk olabilir) — DOKUNULMADI
+
+    Raises:
+        KeyringUnavailableError — anahtar kasasına erişilemiyorsa (share_2
+                                   YOKLUĞUYLA karıştırılmamalı; o durum ayrı
+                                   ele alınıp "skipped_no_share_2" döner)
+    """
+    path = _read_vault_path(hwid)
+    if not path.exists():
+        return "skipped_no_vault"
+
+    try:
+        share_2 = _load_share_2(hwid)
+    except ValueError:
+        return "skipped_no_share_2"
+
+    raw = path.read_bytes()
+    if len(raw) < _MIN_VAULT_SIZE:
+        return "skipped_unverifiable"
+
+    stored_hmac = raw[-_HMAC_SIZE:]
+    protected = raw[:-_HMAC_SIZE]
+
+    if _stdlib_hmac.compare_digest(
+        _sign(_derive_signing_key(hwid, share_2), protected), stored_hmac
+    ):
+        return "already_new"
+
+    if not _stdlib_hmac.compare_digest(
+        _sign(_derive_signing_key_legacy_hwid(hwid), protected), stored_hmac
+    ):
+        return "skipped_unverifiable"
+
+    _rewrite_vault(hwid, protected, share_2, target=path)
+    return "migrated"
 
 
 def authenticate_usb(hwid: str) -> None:
@@ -721,6 +844,10 @@ def authenticate_usb(hwid: str) -> None:
     except FileNotFoundError:
         _reject("Vault dosyası bulunamadı.")
     except VaultTamperedError as exc:
+        _reject(str(exc))
+    except ValueError as exc:
+        # share_2 kasada yok — verify_vault artık imza anahtarını ondan
+        # türetiyor, bu yüzden PIN'e hiç gelmeden burada netleşmeli.
         _reject(str(exc))
 
     # ── Katman 3: Token ID eşleşiyor mu? ─────────────────────────────────────
@@ -912,7 +1039,7 @@ def change_vault_role(hwid: str, pin: str, new_role: str) -> None:
         _MAGIC + bytes([_VERSION]) + salt + new_nonce
         + token_id_b + new_ct + new_tag
     )
-    _rewrite_vault(hwid, new_protected)
+    _rewrite_vault(hwid, new_protected, _load_share_2(hwid))
 
 
 def change_vault_pin(hwid: str, old_pin: str, new_pin: str) -> None:
@@ -969,7 +1096,7 @@ def change_vault_pin(hwid: str, old_pin: str, new_pin: str) -> None:
         _MAGIC + bytes([_VERSION]) + new_salt + new_nonce
         + token_id_b + new_ct + new_tag
     )
-    _rewrite_vault(hwid, new_protected)
+    _rewrite_vault(hwid, new_protected, _load_share_2(hwid))
 
 
 def open_vault(hwid: str, pin: str) -> tuple[str, bytes]:
@@ -1012,7 +1139,19 @@ def _decrypt_vault(hwid: str, pin: str) -> tuple[str, str]:
     # maliyetine girmeden reddedilmeli. authenticate_usb ile aynı kontrol.
     _reject_if_blacklisted(hwid)
 
-    verify_vault(hwid)
+    try:
+        verify_vault(hwid)
+    except ValueError:
+        # share_2 kasada yok. verify_vault artık imza anahtarını share_2'den
+        # türetiyor (SECURITY.md §4.2) — ama share_2 kaybı TAM DA
+        # recover_master_key()'in "share_2 kayıp, PIN + share_1 + kurtarma
+        # parçası" dalının var saydığı durum: o yol share_2'ye hiç
+        # dokunmadan (1,3) ile kurtarıyor. Dış HMAC'ı share_2'siz kontrol
+        # edemeyiz, ama asıl güvenlik sınırı zaten aşağıdaki GCM — PIN'i
+        # bilmeyen biri ciphertext'i forge edemez. Normal open_vault() için
+        # bu bir erteleme, açık kapı değil: share_2 hâlâ yoksa birazdan
+        # _load_share_2() (bkz. open_vault) zaten aynı hatayla patlayacak.
+        pass
 
     raw = _read_vault_path(hwid).read_bytes()
 

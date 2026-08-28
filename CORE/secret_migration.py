@@ -17,6 +17,8 @@ tutmuyordu, ALTER TABLE'ları try/except ile idare ediyordu).
   1 → share_2 anahtar kasasında
   2 → TOTP sırrı anahtar kasasında (HENÜZ global — tek kayıt)
   3 → TOTP sırrı HWID başına (B-059) — bkz. migrate_totp_to_per_hwid()
+  4 → vault HMAC imza anahtarı share_2-bazlı (SECURITY.md §4.2) —
+      bkz. migrate_vault_hmac()
 
 Her adım tamamlandığında versiyon ayrı ayrı yükseltilir; yarıda kesilen bir
 migration yeniden başlatıldığında tamamlanmış adımı tekrarlamaz.
@@ -50,7 +52,8 @@ _log = logging.getLogger("hycleus.migration")
 SCHEMA_SHARE_2 = 1
 SCHEMA_TOTP = 2
 SCHEMA_TOTP_PER_HWID = 3
-CURRENT_SCHEMA_VERSION = SCHEMA_TOTP_PER_HWID
+SCHEMA_VAULT_HMAC_SHARE2 = 4
+CURRENT_SCHEMA_VERSION = SCHEMA_VAULT_HMAC_SHARE2
 
 _TOTP_FILE = _data_dir() / "totp_secret.json"
 
@@ -70,6 +73,8 @@ class MigrationReport:
     share_2_already_in_keyring: int = 0
     totp_migrated: bool = False
     totp_per_hwid_migrated_to: str | None = None
+    vault_hmac_migrated: int = 0
+    vault_hmac_already_new: int = 0
     notes: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -85,7 +90,9 @@ class MigrationReport:
             f"share_2 taşınan={self.share_2_migrated} "
             f"zaten kasada={self.share_2_already_in_keyring}; "
             f"totp taşındı={self.totp_migrated}; "
-            f"totp-per-hwid: {totp_per_hwid}"
+            f"totp-per-hwid: {totp_per_hwid}; "
+            f"vault hmac yeniden imzalanan={self.vault_hmac_migrated} "
+            f"zaten yeni şema={self.vault_hmac_already_new}"
         )
 
 
@@ -285,6 +292,76 @@ def migrate_totp_to_per_hwid(db: object, report: MigrationReport) -> None:
         _log.warning(note)
 
 
+# ── Vault HMAC migration (SECURITY.md §4.2) ────────────────────────────────────
+
+def migrate_vault_hmac(db: object, report: MigrationReport) -> None:
+    """
+    Her kayıtlı USB'nin vault HMAC imzasını share_2-bazlı yeni şemaya taşır.
+
+    Gerçek işi CORE/vault_manager.migrate_vault_hmac_to_share2() yapıyor —
+    dosya biçimi bilgisi orada kalsın diye. Bu fonksiyon yalnızca kayıtlı
+    HWID'ler üzerinde döner ve sonucu MigrationReport'a toplar.
+
+    PIN GEREKMEZ (bkz. migrate_vault_hmac_to_share2 docstring'i) — bu yüzden
+    diğer adımlar gibi uygulama açılırken, girişten önce çalışabiliyor.
+
+    Bozuk/kurcalanmış olduğu için doğrulanamayan bir dosyaya DOKUNULMAZ;
+    o karar haftalık bütünlük taramasına bırakılır — burası yalnızca bir
+    uyarı notu düşer.
+
+    KeyringUnavailableError kasıtlı olarak burada YAKALANMAZ ve yukarı
+    fırlar — registration.py'nin de izlediği kural (bkz. o modülün
+    docstring'i): kasa gerçekten erişilemezse migration sessizce "bu HWID'i
+    atladım" demek yerine tamamen durmalı, aksi hâlde bir sonraki adım
+    (login) share_2'ye zaten güvenemeyecek bir durumda devam ederdi.
+    """
+    from CORE import vault_manager  # yerel import: döngüsel bağımlılığı önler
+    from CORE.secret_store import KeyringUnavailableError
+
+    rows = db.fetchall("SELECT hwid FROM usb_tokens")  # type: ignore[attr-defined]
+    if not rows:
+        _log.info("vault HMAC migration: kayıtlı USB token yok")
+        return
+
+    for row in rows:
+        hwid = row["hwid"]
+        try:
+            sonuc = vault_manager.migrate_vault_hmac_to_share2(hwid)
+        except KeyringUnavailableError:
+            raise
+        except Exception as exc:
+            note = (
+                f"UYARI: hwid={hwid} vault HMAC migration hata verdi — "
+                f"{type(exc).__name__}: {exc}"
+            )
+            report.notes.append(note)
+            _log.warning(note)
+            continue
+
+        if sonuc == "migrated":
+            report.vault_hmac_migrated += 1
+            _log.info("vault HMAC yeni şemaya taşındı  hwid=%s", hwid)
+        elif sonuc == "already_new":
+            report.vault_hmac_already_new += 1
+        elif sonuc == "skipped_unverifiable":
+            note = (
+                f"UYARI: hwid={hwid} vault HMAC ne yeni ne eski şemayla "
+                "doğrulanamadı — dosya bozuk/kurcalanmış olabilir, migration "
+                "DOKUNMADI. Bütünlük taraması bunu ayrıca işaretleyecek."
+            )
+            report.notes.append(note)
+            _log.warning(note)
+        elif sonuc == "skipped_no_share_2":
+            note = (
+                f"UYARI: hwid={hwid} için share_2 kasada yok — vault HMAC "
+                "migration atlandı; bu HWID zaten açılamaz durumda."
+            )
+            report.notes.append(note)
+            _log.warning(note)
+        # "skipped_no_vault": sessiz — eski paylaşılan tek-dosya yoluna
+        # düşen ya da dosyası elle silinmiş bir kayıt olabilir, uyarıya değmez.
+
+
 # ── Giriş noktası ─────────────────────────────────────────────────────────────
 
 def run_migrations(db: object) -> MigrationReport:
@@ -325,6 +402,11 @@ def run_migrations(db: object) -> MigrationReport:
         migrate_totp_to_per_hwid(db, report)
         set_schema_version(db, SCHEMA_TOTP_PER_HWID)
         report.to_version = SCHEMA_TOTP_PER_HWID
+
+    if report.from_version < SCHEMA_VAULT_HMAC_SHARE2:
+        migrate_vault_hmac(db, report)
+        set_schema_version(db, SCHEMA_VAULT_HMAC_SHARE2)
+        report.to_version = SCHEMA_VAULT_HMAC_SHARE2
 
     _log.info("Migration tamamlandı: %s", report.summary())
     return report
