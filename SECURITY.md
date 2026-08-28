@@ -1347,6 +1347,43 @@ confirms the ordinary, uninterrupted path removes both targets and that
 erasing an already-erased username returns `False`, not an error. Tracked
 as a dated addendum to **B-070** in `BACKLOG.md`.
 
+**Does `_windows_erase()` check ownership before touching the bare slot,
+or could it delete or corrupt someone else's still-valid credential
+sitting there?** Checked by reading the code, not assumed: each target
+step (`CORE/secret_store.py::_windows_hedefi_dogrulayarak_sil()`) reads
+the target first and compares its `UserName` against the one being
+erased — `if mevcut.get("UserName") != username: return False` — before
+any `CredDelete` is attempted, for *both* the compound and the bare
+target the same way. The check already existed (added when `_windows_
+erase()` was first written, to stay correct under the "someone else's
+value legitimately occupies bare right now" case that `store()`'s own
+eviction logic produces constantly), so nothing needed adding — but
+"the code has a branch for it" and "the branch actually works" are
+different claims, and only the second was tested here.
+
+Proven against the real Credential Manager: write `A` (takes bare), then
+write `B` (evicts `A` to compound, `B` now holds bare) — precisely the
+state `store()` leaves behind on every ordinary second write — then call
+`erase(A)`. Result: `B`'s bare entry is read back afterward byte-for-byte
+identical (same `UserName`, same blob), `keyring.get_password(service,
+B)` still returns `B`'s value, and `A`'s own compound copy is genuinely
+gone (`CredRead` → not-found) while `secret_store.load(A)` returns
+`None`. `erase(A)` never touches a target it does not own — a wrong-owner
+match returns `False` and moves on rather than deleting or overwriting
+what it finds. Permanent regression test: `test_erase_CAPRAZ_SAHIPLIK_
+bare_yuvasindaki_BASKA_kullanicinin_kaydina_DOKUNMUYOR`.
+
+**Independently confirmed against this machine's ten real production
+credentials, not assumed safe because the synthetic test passed.** A
+snapshot of all ten (`TargetName`, `UserName`, SHA-256 of the credential
+blob) was taken before this turn's test run and compared against a second
+snapshot taken after the full suite (2713 tests, including every
+Windows-only real-backend test in this file) finished: identical count,
+identical `UserName` per entry, identical hash per entry — zero deleted,
+zero added, zero changed. The cross-ownership guarantee tested above
+holds in practice, not just in the synthetic scenario built to exercise
+it.
+
 ---
 
 ### 4.14 The `.hclx` delivery package expires by policy, not by mathematics
@@ -3008,6 +3045,44 @@ sıradan, kesintisiz yolda her iki hedefin de gerçekten silindiğini ve
 zaten silinmiş bir kullanıcı adını tekrar silmenin hata değil `False`
 döndürdüğünü doğruluyor. `BACKLOG.md`'de **B-070**'e tarihli bir ek not
 olarak izleniyor.
+
+**`_windows_erase()` bare yuvasına dokunmadan önce sahiplik kontrolü
+yapıyor mu, yoksa orada duran BAŞKASININ hâlâ geçerli kaydını silebilir/
+bozabilir mi?** Varsayılmadı, kod okunarak doğrulandı: her hedef adımı
+(`CORE/secret_store.py::_windows_hedefi_dogrulayarak_sil()`) önce hedefi
+okuyup `UserName`'ini silinmek istenen kullanıcı adıyla karşılaştırıyor —
+`if mevcut.get("UserName") != username: return False` — herhangi bir
+`CredDelete` denenmeden ÖNCE, hem compound hem bare hedef için AYNI
+şekilde. Kontrol zaten vardı (`_windows_erase()` ilk yazıldığında
+eklenmiş — `store()`'un kendi tahliye mantığının sürekli ürettiği
+"bare'i o an başka birinin geçerli değeri işgal ediyor" durumunda doğru
+kalmak için), o yüzden eklenecek bir şey yoktu — ama "kodda bunun için
+bir dal var" ile "o dal gerçekten işe yarıyor" farklı iddialar, ve
+burada yalnızca ikincisi test edildi.
+
+Gerçek Credential Manager'a karşı kanıtlandı: `A` yazılır (bare'i alır),
+sonra `B` yazılır (`A` compound'a tahliye edilir, `B` artık bare'i
+tutuyor) — tam olarak `store()`'un HER sıradan ikinci yazımda bıraktığı
+durum — sonra `erase(A)` çağrılır. Sonuç: `B`'nin bare kaydı sonradan
+bayt bayt aynı okunuyor (aynı `UserName`, aynı blob),
+`keyring.get_password(service, B)` hâlâ `B`'nin değerini döndürüyor, ve
+`A`'nın kendi compound kopyası gerçekten gitmiş (`CredRead` → bulunamadı)
+while `secret_store.load(A)` `None` dönüyor. `erase(A)` sahibi olmadığı
+bir hedefe ASLA dokunmuyor — yanlış sahiplik eşleşmesi `False` dönüp
+geçiyor, silmiyor ya da üzerine yazmıyor. Kalıcı regresyon testi:
+`test_erase_CAPRAZ_SAHIPLIK_bare_yuvasindaki_BASKA_kullanicinin_
+kaydina_DOKUNMUYOR`.
+
+**Bu makinedeki on gerçek üretim credential'ına karşı BAĞIMSIZCA teyit
+edildi — sentetik test geçti diye güvenli varsayılmadı.** Bu turun test
+koşusundan ÖNCE onunun tamamının (`TargetName`, `UserName`, credential
+blobunun SHA-256'sı) bir anlık görüntüsü alındı ve tam suite (2713 test,
+bu dosyadaki her Windows'a özgü gerçek-backend testi dahil) bittikten
+SONRA alınan ikinci bir anlık görüntüyle karşılaştırıldı: aynı sayı, her
+kayıt için aynı `UserName`, her kayıt için aynı hash — sıfır silinen,
+sıfır eklenen, sıfır değişen. Yukarıda test edilen çapraz-sahiplik
+garantisi yalnızca onu sınamak için kurulan sentetik senaryoda değil,
+pratikte de tutuyor.
 
 ### 4.14 `.hclx` teslim paketi POLİTİKAYLA süre doluyor, matematikle değil
 

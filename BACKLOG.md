@@ -3976,4 +3976,41 @@ gerçek Credential Manager'da `win32cred.CredEnumerate` ile bağımsızca
 teyit edildi — geriye hiçbir kalıntı kalmadı. Ayrıntı SECURITY.md
 §4.13'te.
 
+### 2026-08-28 (4. devam) — `_windows_erase()`'in sahiplik kontrolü doğrulandı, üretim credential'larına karşı bağımsızca teyit edildi
+
+Bir önceki notta `_windows_erase()`'in iki hedefi (compound, sonra bare)
+sildiği anlatılıyordu ama bare'de O AN duran kaydın GERÇEKTEN silinmek
+istenen kullanıcıya ait olup olmadığı — yani `store()`'un normal
+işleyişinde bare'i sürekli işgal eden BAŞKA kullanıcıların kayıtlarına
+`erase()`'in dokunup dokunmadığı — ayrıca sorgulandı.
+
+**Kod incelemesi.** `CORE/secret_store.py::_windows_hedefi_dogrulayarak_sil()`
+her hedef için, herhangi bir `CredDelete` denemeden ÖNCE, `CredRead` ile
+okuyup `UserName`'i karşılaştırıyor: `if mevcut.get("UserName") !=
+username: return False` (satır ~642-643). Kontrol ZATEN vardı — hem
+compound hem bare hedef için aynı şekilde, `_windows_erase()`'in ilk
+yazıldığı turdan beri. Eklenecek bir şey yoktu.
+
+**Sentetik çapraz-sahiplik testi.** Gerçek Credential Manager'a karşı:
+`A` yazıldı (bare'i aldı), `B` yazıldı (`A` compound'a tahliye edildi,
+`B` bare'i aldı) — `store()`'un HER sıradan ikinci yazımda ürettiği
+durumun aynısı. `erase(A)` çağrıldı. Doğrulandı: `B`'nin bare kaydı
+sonradan bayt bayt aynı (`UserName`, `CredentialBlob` değişmedi),
+`keyring.get_password(service, B)` hâlâ `B`'nin değerini döndürüyor,
+`A`'nın compound kopyası gerçekten silinmiş, `secret_store.load(A)`
+`None`. Kalıcı test: `tests/test_tpm_sealing.py::
+test_erase_CAPRAZ_SAHIPLIK_bare_yuvasindaki_BASKA_kullanicinin_
+kaydina_DOKUNMUYOR`.
+
+**Üretim verisi bütünlük denetimi.** Bu makinedeki 10 gerçek HYCLEUS
+credential'ının (5× `share_2:<hwid>`, 5× `totp_secret:<hwid>`)
+`TargetName`/`UserName`/credential-blob-SHA-256 anlık görüntüsü bu
+turun test koşusundan ÖNCE ve tam suite (2713 test, bkz. yukarı)
+BİTTİKTEN SONRA ayrı ayrı alındı ve karşılaştırıldı: sayı aynı (10),
+her kayıt için `UserName` aynı, her kayıt için hash aynı — sıfır
+silinen, sıfır eklenen, sıfır değişen. Regresyon YOK. Bu turda kullanılan
+sentetik test credential'ları (`HYCLEUS-CAPRAZ-SAHIPLIK-*` servis
+adları) `win32cred.CredEnumerate` ile bağımsızca teyit edilerek
+temizlendi. Ayrıntı SECURITY.md §4.13'te.
+
 ---

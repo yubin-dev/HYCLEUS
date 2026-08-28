@@ -1134,6 +1134,93 @@ def test_erase_gercek_kasada_HER_IKI_hedef_de_TEMIZLENIYOR_ve_IDEMPOTENT(
             _sil(hedef)
 
 
+def test_erase_CAPRAZ_SAHIPLIK_bare_yuvasindaki_BASKA_kullanicinin_kaydina_DOKUNMUYOR(
+    use_keyring_backend,  # type: ignore[no-untyped-def]
+) -> None:
+    """
+    `_windows_hedefi_dogrulayarak_sil()`'in sahiplik kontrolü
+    (`CORE/secret_store.py`: `if mevcut.get("UserName") != username: return
+    False`) HER hedef için, silmeden ÖNCE çalışıyor — hem bare hem compound.
+    Bu, `erase(A)` çağrıldığında A'nın kendi gölgesi bare'i DEĞİL de B'nin
+    (tamamen alakasız, hâlâ geçerli) bir kaydı işgal ediyorsa ne olduğunu
+    kanıtlıyor.
+
+    Senaryo: A yazılır (bare'i alır), sonra B yazılır (A compound'a
+    tahliye edilir, bare artık B'nin). `erase(A)` çağrılınca:
+
+    - bare hedefte A DEĞİL B'nin kaydı var — sahiplik kontrolü bunu
+      görüp bare'e HİÇ dokunmuyor (B'nin kaydı hem içerik hem varlık
+      olarak bozulmadan kalıyor).
+    - compound hedefte GERÇEKTEN A'nın kaydı var — o siliniyor.
+
+    Bu davranış olmasaydı (ör. `keyring.delete_password()`'ün TargetName
+    başına, kullanıcı adına bakmadan silen bir varyantı kullanılsaydı),
+    `erase(A)` B'nin hâlâ aktif kullandığı bir sırrı yanlışlıkla silebilir
+    ya da bozabilirdi — üretim ortamında bu tam olarak share_2/totp_secret
+    gibi başka bir HWID'e ait bir kaydın kazayla silinmesi anlamına gelirdi.
+    """
+    if sys.platform != "win32":
+        pytest.skip("Windows Credential Manager'a özgü davranış")
+    try:
+        import pywintypes
+        import win32cred
+        from keyring.backends.Windows import WinVaultKeyring
+    except ImportError:
+        pytest.skip("pywin32 kurulu değil")
+
+    use_keyring_backend(WinVaultKeyring())
+
+    service = "HYCLEUS-CAPRAZ-SAHIPLIK-TEST"
+    A, B = "capraz-sahiplik-A", "capraz-sahiplik-B"
+    compound_A = f"{A}@{service}"
+    onceki_service = secret_store.SERVICE
+
+    def _sil(target: str) -> None:
+        try:
+            win32cred.CredDelete(Type=win32cred.CRED_TYPE_GENERIC, TargetName=target)
+        except pywintypes.error:
+            pass
+
+    for hedef in (A, B, compound_A, f"{B}@{service}", service):
+        _sil(hedef)
+
+    try:
+        secret_store.SERVICE = service
+        keyring.set_password(service, A, "A-DEGERI")
+        keyring.set_password(service, B, "B-DEGERI")  # A compound'a tahliye edildi
+
+        # ÖN KOŞUL: bare şu an B'ye ait, A'nın gölgesi compound'da.
+        bare_once = win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=service)
+        assert bare_once["UserName"] == B
+        assert win32cred.CredRead(
+            Type=win32cred.CRED_TYPE_GENERIC, TargetName=compound_A
+        )["UserName"] == A
+
+        sonuc = secret_store.erase(A)
+        assert sonuc is True, "A'nın compound kaydı gerçekten silinmeliydi"
+
+        # B'NİN bare kaydı DOKUNULMAMIŞ olmalı — ne silinmiş ne değişmiş.
+        bare_sonra = win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=service)
+        assert bare_sonra["UserName"] == B, (
+            "erase(A) yanlışlıkla bare'deki B'nin kaydını silmiş/üzerine "
+            "yazmış olabilir — sahiplik kontrolü çalışmıyor"
+        )
+        assert bare_sonra["CredentialBlob"].decode("utf-16-le") == "B-DEGERI", (
+            "B'nin değeri değişmiş — sahiplik kontrolü çalışmıyor"
+        )
+        assert keyring.get_password(service, B) == "B-DEGERI"
+
+        # A'nın KENDİ (compound'daki) kaydı gerçekten silinmiş olmalı.
+        with pytest.raises(pywintypes.error) as ex:
+            win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=compound_A)
+        assert ex.value.winerror == 1168, "A'nın kendi gölgesi silinmemiş"
+        assert secret_store.load(A) is None
+    finally:
+        secret_store.SERVICE = onceki_service
+        for hedef in (A, B, compound_A, f"{B}@{service}", service):
+            _sil(hedef)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. Görünürlük — düşüş SESSİZ olmamalı
 # ══════════════════════════════════════════════════════════════════════════════
