@@ -4473,4 +4473,81 @@ güncellendi; `test_belge_dil_paritesi.py` (27/27) ile doğrulandı.
 Tam test suite: 2750 passed, 4 skipped (bir önceki turdan +5 — bu dosyaya
 eklenen 5 yeni test).
 
+### 2026-08-29 (devam 4) — f-string (`ast.JoinedStr`) kapsamı ölçüldü; `+`-birleştirmesi kontrol edildi, bugün gerekmiyor
+
+Bir sonraki turda taramanın f-string'lere (`raise X(f"...")`) karşı
+davranışı sorgulandı — iki senaryo, CORE/'ye geçici kod eklenerek ayrı
+ayrı ölçüldü:
+
+**Senaryo 1 — doğrudan f-string:**
+```python
+raise USBAuthError(f"AIR-GAPPED doğrulama modu: {hwid}")
+```
+Tarama çalıştırıldı: **TOPLAM İHLAL: 1**, doğru yakalandı, **hiçbir kod
+değişikliği gerekmedi**. Sebep: `_raise_mesaj_sabitlerini_topla`'nın
+doğrudan-literal taraması `ast.walk(dugum.exc)` ile TÜM alt ağacı geziyor
+— bir `ast.JoinedStr`'ın `values` listesindeki `ast.Constant` parçaları da
+bu genel gezinmeyle bulunuyor, `ast.FormattedValue` (interpolasyon)
+düğümleri zaten `ast.Constant` OLMADIĞI için otomatik olarak atlanıyor.
+
+**Senaryo 2 — değişkene atanmış f-string (zincir üzerinden):**
+```python
+msg = f"AIR-GAPPED doğrulama modu: {hwid}"
+raise USBAuthError(msg)
+```
+Tarama çalıştırıldı: **TOPLAM İHLAL: 0**. Atlatma gerçekti — `_govde_
+icinde_raise_ve_atamalari_coz`'ün atama kaydedicisi yalnızca `ast.Constant`
+(doğrudan literal) ve `ast.Name` (isimden-isme) durumlarını tanıyordu;
+`stmt.value` bir `ast.JoinedStr` olduğunda `else: atamalar.pop(hedef,
+None)` dalına düşüp "izlenemez" sayılıyordu. Her iki senaryonun geçici
+dosyaları kanıttan hemen sonra silindi.
+
+**Uygulanan düzeltme.** Yeni bir `_joinedstr_literal_kismini_coz(dugum)`
+fonksiyonu, bir `JoinedStr`'ın `values` listesindeki YALNIZCA düz literal
+(`ast.Constant`, str) parçalarını sırayla birleştiriyor, `ast.FormattedValue`
+düğümlerini (interpolasyonun kendisini) atlıyor. Atama kaydedicisine
+üçüncü bir dal eklendi: `ad = f"..."` artık `("literal",
+_joinedstr_literal_kismini_coz(...))` olarak kaydediliyor — normal bir
+literal atama gibi, sonraki hop'lar tarafından şeffafça takip edilebiliyor
+(ayrı bir kod yolu değil, mevcut `_isim_zincirini_coz` ile birleşik).
+
+Senaryo 2 düzeltmeden SONRA tekrar çalıştırıldı: **TOPLAM İHLAL: 1**,
+doğru satırda yakalandı.
+
+**`+`-birleştirmesi (`ast.BinOp`, `ast.Add`) kontrolü.** Görevin istediği
+hızlı kontrol yapıldı: kod tabanında GERÇEKTEN kullanılıyor mu?
+`raise` çağrıları İÇİNDE 3 gerçek kullanım bulundu (`CORE/timestamp.py:988,
+998, 1041` — literal + `", ".join(...)` + literal), ama ÜÇÜ DE doğrudan
+`raise` argümanı, bir değişkene atanıp SONRA raise edilen bir `BinOp`
+DEĞİL — bu yüzden zaten aynı `ast.walk` mekanizmasıyla (f-string'lerle
+aynı sebepten) hiçbir ek kod olmadan yakalanıyorlar (doğrulandı:
+`_raise_mesaj_sabitlerini_topla` bu üç satırın tüm literal parçalarını
+doğru döndürüyor). CORE/DB genelinde (`raise` dışında dahil) string-içeren
+8 `BinOp(+)` ataması daha bulundu, ama hepsi byte-paketleme
+(`tpm_sealing.py`, `vault_manager.py`), SQL sorgu kurma (`duplicates.py`)
+ya da sayaç aritmetiği (`rate_limit.py`) — hiçbiri bir exception mesajı
+değil, hiçbiri bir `raise`'e akmıyor. Sonuç: `+`-birleştirmesi ZİNCİR
+üzerinden (`msg = "a" + "b"; raise X(msg)`) bugün kod tabanında
+KULLANILMIYOR, o yüzden görevin izin verdiği ikinci seçenek uygulandı —
+kod değişikliği YAPILMADI, SECURITY.md §6.8'e bilinen bir sınır olarak not
+düşüldü.
+
+**Yeni testler (4, dosyanın toplamı 27'ye çıktı):**
+`test_raise_DOGRUDAN_fstring_yakalaniyor`,
+`test_raise_DEGISKEN_uzerinden_gecen_fstring_yakaliyor`,
+`test_fstring_interpolasyon_kismi_TARANMIYOR_ve_HATAYA_YOL_ACMIYOR`
+(interpolasyondaki bir değişken adının kendisi bir terim İÇERSE bile
+yanlış pozitif üretmediğini VE hataya yol açmadığını kanıtlıyor),
+`test_gercek_CORE_DB_dosyalarinda_fstring_sonrasi_ihlal_YOK` (gerçek
+`CORE/tpm_sealing.py`'deki GERÇEK bir f-string tabanlı raise mesajıyla
+sınanıyor) — artı birim düzeyinde `test_joinedstr_literal_kismini_coz_
+interpolasyonu_atlar`.
+
+SECURITY.md §6.8 (EN+TR) 2026-08-29 "devam, bir kez daha" paragrafıyla
+güncellendi (hem f-string desteği hem `+`-birleştirmesinin bilinen sınırı);
+`test_belge_dil_paritesi.py` (27/27) ile doğrulandı.
+
+Tam test suite: 2755 passed, 4 skipped (bir önceki turdan +5 — bu dosyaya
+eklenen 5 yeni test).
+
 ---

@@ -1853,6 +1853,39 @@ exercises the depth cap independently of the cycle guard, and the real
 CORE/DB tree still produces zero violations with multi-hop resolution
 enabled.
 
+**2026-08-29 (continued, once more) — f-strings (`ast.JoinedStr`), and a
+check for `+`-concatenation.** Tested directly: `raise
+USBAuthError(f"AIR-GAPPED doğrulama: {hwid}")` planted straight in a
+`raise` call was already caught with no code change — `ast.walk` finds a
+`JoinedStr`'s literal `Constant` fragments the same way it finds any
+other string constant in the subtree. But assigning the f-string to a
+variable first — `msg = f"AIR-GAPPED doğrulama: {hwid}"; raise
+USBAuthError(msg)` — measured at zero violations, because the chain
+tracker's assignment recorder only understood a direct string literal or
+a name-to-name transfer; a `JoinedStr` value fell through to "untraceable,
+drop the entry." A third case was added: `ad = f"..."` now records
+`("literal", joined_literal_only)`, where the literal text is only the
+plain segments of `values` — `ast.FormattedValue` nodes (the
+`{interpolation}` itself) are skipped, so the interpolated content (a
+variable name, never user data at scan time) never enters the scan and
+can't produce a false positive from an oddly-named variable. Checked
+whether `+`-concatenation (`ast.BinOp` with `ast.Add`) appears in raise
+messages too: it does, in three places in `CORE/timestamp.py` (literal +
+`", ".join(...)` + literal), all as direct `raise` arguments — none go
+through an assignment first. Those are already caught with no extra code,
+by the same `ast.walk` mechanism that already covered f-strings directly.
+No CORE/DB assignment builds a message with `+` before raising it (checked
+directly — the eight `BinOp`-with-string assignments outside of `raise`
+calls are all byte-packing, SQL-query, or count arithmetic, none of them
+exception text), so chain resolution for `+`-concatenation remains an
+unimplemented, documented gap: `msg = "a" + "b"; raise X(msg)` would not
+resolve today. Four permanent tests cover the f-string work: a direct
+f-string is caught, a variable-assigned f-string is caught, the
+interpolated segment is proven to never enter the scan (and not to raise
+an exception itself), and the real CORE/DB tree — which contains a real
+f-string-based raise message in `CORE/tpm_sealing.py` — still produces
+zero violations.
+
 ---
 ---
 
@@ -3696,3 +3729,36 @@ döngüsel bir atama asılı kalmadan tamamlanıp döngü uyarısını üretiyor
 yapay bir 15-hop zincir azami derinlik sınırını döngü korumasından
 BAĞIMSIZ olarak sınıyor, ve gerçek CORE/DB ağacı çok-hop çözümü etkinken
 hâlâ sıfır ihlal üretiyor.
+
+**2026-08-29 (devam, bir kez daha) — f-string'ler (`ast.JoinedStr`) ve
+`+` birleştirmesi için kontrol.** Doğrudan ölçüldü: `raise
+USBAuthError(f"AIR-GAPPED doğrulama: {hwid}")` bir `raise` çağrısına
+doğrudan eklenince hiçbir kod değişikliği olmadan zaten yakalanıyordu —
+`ast.walk`, bir `JoinedStr`'ın düz literal `Constant` parçalarını, alt
+ağaçtaki başka herhangi bir string sabiti bulduğu gibi buluyor. Ama
+f-string'i önce bir değişkene atamak — `msg = f"AIR-GAPPED doğrulama:
+{hwid}"; raise USBAuthError(msg)` — SIFIR ihlalde ölçüldü, çünkü zincir
+takipçisinin atama kaydedicisi yalnızca doğrudan bir string literal ya da
+isimden-isme aktarımı anlıyordu; bir `JoinedStr` değeri "izlenemez, kaydı
+sil" dalına düşüyordu. Üçüncü bir biçim eklendi: `ad = f"..."` artık
+`("literal", yalnizca_birlesmis_literal)` kaydediyor, burada literal metin
+yalnızca `values`'ın düz parçaları — `ast.FormattedValue` düğümleri
+(`{interpolasyon}`'un kendisi) ATLANIYOR, yani interpolasyon içeriği (tarama
+anında bir değişken adı, asla kullanıcı verisi değil) hiçbir zaman taramaya
+girmiyor ve tuhaf isimli bir değişkenden yanlış pozitif üretemiyor.
+`+`-birleştirmesinin (`ast.BinOp`, `ast.Add`) de raise mesajlarında geçip
+geçmediği kontrol edildi: geçiyor, `CORE/timestamp.py`'de üç yerde
+(literal + `", ".join(...)` + literal), hepsi DOĞRUDAN `raise` argümanı
+olarak — hiçbiri önce bir atamadan geçmiyor. Bunlar, f-string'leri zaten
+doğrudan kapsayan AYNI `ast.walk` mekanizmasıyla, hiçbir ek kod olmadan
+zaten yakalanıyor. Hiçbir CORE/DB ataması bir mesajı `+` ile kurup SONRA
+raise etmiyor (doğrudan kontrol edildi — `raise` çağrıları DIŞINDAKİ sekiz
+string-içeren `BinOp` ataması byte-paketleme, SQL sorgusu ya da sayaç
+aritmetiği, hiçbiri exception metni değil), o yüzden `+`-birleştirmesi
+için zincir çözümü bugün UYGULANMAMIŞ, belgelenmiş bir sınır olarak
+kalıyor: `msg = "a" + "b"; raise X(msg)` bugün çözülmez. F-string
+çalışmasını 4 kalıcı test kapsıyor: doğrudan bir f-string yakalanıyor,
+değişkene atanmış bir f-string yakalanıyor, interpolasyon parçasının
+hiçbir zaman taramaya girmediği (ve kendisinin bir hataya yol açmadığı)
+kanıtlanıyor, ve gerçek CORE/DB ağacı — `CORE/tpm_sealing.py`'de GERÇEK
+bir f-string tabanlı raise mesajı içeriyor — hâlâ sıfır ihlal üretiyor.

@@ -168,6 +168,26 @@ def _string_sabitlerini_topla(kaynak: str, dosya_adi: str) -> list[tuple[str, in
 #: değişkeni ÇÖZMEMELİ.
 _YENI_KAPSAM_BASLATAN_DUGUMLER = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
+
+def _joinedstr_literal_kismini_coz(dugum: ast.JoinedStr) -> str:
+    """Bir f-string'in (`ast.JoinedStr`) yalnızca DÜZ LİTERAL parçalarını
+    sırayla birleştirir — `values` listesindeki `ast.FormattedValue`
+    (`{degisken}` interpolasyonu) düğümleri ATLANIR. Bu ATLAMA bilinçli:
+    interpolasyonun içeriği ÇALIŞMA ZAMANINDA belirlenir (ör. `{hwid}` bir
+    değişken adı taşır, kullanıcı verisi değil) — statik olarak
+    değerlendirilemez ve taramaya YANLIŞLIKLA karıştırılmamalı; `raise
+    X(f"AIR-GAPPED: {hwid}")` içindeki `{hwid}` parçası hiçbir zaman
+    `_metindeki_ihlalleri_bul`'a girmez, yalnızca "AIR-GAPPED: " düz metni
+    girer — doğrudan `ast.walk`'ın zaten yaptığı gibi (bkz.
+    `_raise_mesaj_sabitlerini_topla`), burada zincir çözümü için AYNI
+    davranış tekrarlanıyor."""
+    return "".join(
+        parca.value
+        for parca in dugum.values
+        if isinstance(parca, ast.Constant) and isinstance(parca.value, str)
+    )
+
+
 #: Zincir çözümünde izin verilen azami hop sayısı — 2026-08-29 (devam 3):
 #: `tmp = "..."; msg = tmp; raise X(msg)` gibi ÇOK-HOP zincirler, tek-seviye
 #: geri izlemeyi (bir önceki tur) atlatıyordu, ölçüldü (TOPLAM İHLAL: 0).
@@ -198,9 +218,22 @@ def _govde_icinde_raise_ve_atamalari_coz(
     `raise`'e ulaşıldığında `_isim_zincirini_coz` bu HAM zinciri (azami
     `_MAKS_ZINCIR_DERINLIGI` hop, döngü korumalı) bir literal'e kadar
     takip ediyor. Bu hâlâ tam bir veri akışı analizi DEĞİL — yalnızca
-    doğrusal isimden-isme/isimden-literale atama zincirlerini çözer (ör.
-    bir fonksiyon çağrısının SONUCUNA atanan bir isim çözülemez, `None`
-    döner, sessizce yanlış bir değer ÜRETMEZ).
+    doğrusal isimden-isme/isimden-literale/isimden-f-string'e atama
+    zincirlerini çözer (ör. bir fonksiyon çağrısının SONUCUNA atanan bir
+    isim çözülemez, `None` döner, sessizce yanlış bir değer ÜRETMEZ).
+
+    F-STRING atamaları (2026-08-29 devam 4 — `ad = f"..."` için)
+    -------------------------------------------------------------------
+    `ad = "literal"`/`ad = baska_ad`'in yanına ÜÇÜNCÜ bir biçim eklendi:
+    `ad = f"AIR-GAPPED: {hwid}"`. DOĞRUDAN `raise X(f"...")` biçimi zaten
+    `ast.walk`'ın kendiliğinden bulduğu `Constant` alt-düğümleri sayesinde
+    yakalanıyordu (özel kod gerekmiyordu) — ama bir DEĞİŞKENE atanıp SONRA
+    raise edilen bir f-string (`msg = f"..."; raise X(msg)`) bu üçüncü dal
+    eklenene kadar ÖLÇÜLEN bir atlatmaydı (TOPLAM İHLAL: 0). Eklenen dal,
+    `_joinedstr_literal_kismini_coz` ile YALNIZCA düz literal parçaları
+    (interpolasyon DEĞİL) birleştirip normal bir `("literal", ...)` kaydı
+    gibi saklıyor — sonraki hop'lar bunu şeffafça takip edebiliyor, ayrı
+    bir yol değil.
 
     Kapsam kuralları (önceki turdan değişmedi)
     -------------------------------------------
@@ -223,6 +256,18 @@ def _govde_icinde_raise_ve_atamalari_coz(
                 atamalar[hedef] = ("literal", stmt.value.value)
             elif isinstance(stmt.value, ast.Name):
                 atamalar[hedef] = ("isim", stmt.value.id)
+            elif isinstance(stmt.value, ast.JoinedStr):
+                # f-string ataması (`ad = f"AIR-GAPPED: {hwid}"`) — 2026-08-29
+                # (devam 4): yalnızca DOĞRUDAN `raise X(f"...")` biçimi
+                # `ast.walk`'ın kendiliğinden bulduğu `Constant` parçaları
+                # sayesinde zaten yakalanıyordu; bir DEĞİŞKENE atanıp SONRA
+                # raise edilen bir f-string (`msg = f"..."; raise X(msg)`)
+                # ise bu dal yokken ÖLÇÜLEN bir atlatmaydı (TOPLAM İHLAL: 0,
+                # bkz. BACKLOG.md). Yalnızca DÜZ LİTERAL parçalar (interpolasyon
+                # DEĞİL) `_joinedstr_literal_kismini_coz` ile birleştirilip
+                # normal bir literal atama gibi kaydediliyor — sonraki hop'lar
+                # bunu şeffafça takip edebiliyor.
+                atamalar[hedef] = ("literal", _joinedstr_literal_kismini_coz(stmt.value))
             else:
                 atamalar.pop(hedef, None)  # izlenemez değer — bayat kaydı geçersiz kıl
         elif isinstance(stmt, ast.Raise) and isinstance(stmt.exc, ast.Call):
@@ -797,3 +842,107 @@ def test_gercek_CORE_DB_dosyalarinda_cok_hop_sonrasi_ihlal_YOK() -> None:
     assert ihlaller == [], (
         f"Çok-hop çözümü eklendikten sonra CORE/DB'de beklenmeyen ihlal: {ihlaller}"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. F-STRING (`ast.JoinedStr`) raise mesajları — 2026-08-29 (devam 4):
+#    DOĞRUDAN `raise X(f"...")` zaten `ast.walk`'ın kendiliğinden bulduğu
+#    `Constant` alt-düğümleri sayesinde yakalanıyordu (ÖLÇÜLDÜ: CORE/'ye
+#    geçici `raise USBAuthError(f"AIR-GAPPED doğrulama: {hwid}")` eklenip
+#    tarama çalıştırıldığında TOPLAM İHLAL: 1, doğru yakalandı — hiçbir kod
+#    değişikliği gerekmedi). Ama bir DEĞİŞKENE atanıp SONRA raise edilen
+#    bir f-string (`msg = f"..."; raise X(msg)`) ÖLÇÜLEN bir atlatmaydı:
+#    aynı turda TOPLAM İHLAL: 0. `_joinedstr_literal_kismini_coz` eklenince
+#    ikisi de yakalandı; interpolasyon içeriği (`{hwid}`) hiçbir zaman
+#    taramaya karışmıyor.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_raise_DOGRUDAN_fstring_yakalaniyor() -> None:
+    """`raise X(f"AIR-GAPPED: {hwid}")` — bu turun sentetik kanıtı
+    (CORE/'ye geçici eklenip TOPLAM İHLAL: 1 ölçüldü), birim düzeyinde
+    kalıcı hale getirildi."""
+    kaynak = (
+        'class SahteHata(Exception):\n'
+        '    pass\n\n\n'
+        'def f():\n'
+        '    hwid = "abc123"\n'
+        '    raise SahteHata(f"AIR-GAPPED doğrulama: {hwid}")\n'
+    )
+    dizeler = _raise_mesaj_sabitlerini_topla(kaynak, "sahte.py")
+    bulunanlar = [
+        terim for metin, _ in dizeler for terim in _metindeki_ihlalleri_bul(metin)
+    ]
+    assert "AIR-GAPPED" in bulunanlar, f"Doğrudan f-string yakalanmadı: {dizeler}"
+
+
+def test_raise_DEGISKEN_uzerinden_gecen_fstring_yakaliyor() -> None:
+    """`msg = f"AIR-GAPPED: {hwid}"; raise X(msg)` — bu turun sentetik
+    atlatma kanıtı (CORE/'ye geçici eklenip TOPLAM İHLAL: 0 ölçüldü,
+    düzeltmeden sonra TOPLAM İHLAL: 1'e döndü), birim düzeyinde kalıcı
+    hale getirildi."""
+    kaynak = (
+        'class SahteHata(Exception):\n'
+        '    pass\n\n\n'
+        'def f():\n'
+        '    hwid = "abc123"\n'
+        '    msg = f"AIR-GAPPED doğrulama: {hwid}"\n'
+        '    raise SahteHata(msg)\n'
+    )
+    dizeler = _raise_mesaj_sabitlerini_topla(kaynak, "sahte.py")
+    bulunanlar = [
+        terim for metin, _ in dizeler for terim in _metindeki_ihlalleri_bul(metin)
+    ]
+    assert "AIR-GAPPED" in bulunanlar, (
+        f"Değişken üzerinden geçen f-string yakalanmadı: {dizeler}"
+    )
+
+
+def test_fstring_interpolasyon_kismi_TARANMIYOR_ve_HATAYA_YOL_ACMIYOR() -> None:
+    """İnterpolasyon içeriği (`{hwid}`, `{terim_iceren_degisken}`) hiçbir
+    zaman taramaya KARIŞMAMALI — ne yanlış-pozitif üretmeli (değişken adının
+    kendisi bir terim içeriyor gibi görünse bile) ne de bir hataya (ör.
+    `ast.FormattedValue`'yu bir `Constant` sanıp `.value`'sunu string
+    beklemek) yol açmalı."""
+    kaynak = (
+        'class SahteHata(Exception):\n'
+        '    pass\n\n\n'
+        'def f():\n'
+        '    AIR_GAPPED_degiskeni = "zararsız içerik"\n'
+        '    msg = f"Temiz önek: {AIR_GAPPED_degiskeni}"\n'
+        '    raise SahteHata(msg)\n'
+    )
+    dizeler = _raise_mesaj_sabitlerini_topla(kaynak, "sahte.py")  # hata fırlatmamalı
+    bulunanlar = [
+        terim for metin, _ in dizeler for terim in _metindeki_ihlalleri_bul(metin)
+    ]
+    assert bulunanlar == [], (
+        f"İnterpolasyondaki değişken ADI yanlışlıkla taramaya karıştı: {dizeler}"
+    )
+    metinler = [m for m, _ in dizeler]
+    assert metinler == ["Temiz önek: "], (
+        f"Beklenen yalnızca düz literal önek, bulunan: {metinler}"
+    )
+
+
+def test_gercek_CORE_DB_dosyalarinda_fstring_sonrasi_ihlal_YOK() -> None:
+    """F-string çözümü eklendikten SONRA gerçek CORE/DB dosyalarında hâlâ
+    sıfır ihlal olduğunu doğruluyor — CORE/timestamp.py, CORE/tpm_sealing.py
+    gibi dosyalarda GERÇEK f-string tabanlı raise mesajları var (ör.
+    `CORE/tpm_sealing.py:428`); yeni mantık bunlarda yanlış pozitif
+    ÜRETMEMELİ."""
+    ihlaller = _tum_ihlalleri_tara(_core_db_dosyalari())
+    assert ihlaller == [], (
+        f"F-string çözümü eklendikten sonra CORE/DB'de beklenmeyen ihlal: {ihlaller}"
+    )
+
+
+def test_joinedstr_literal_kismini_coz_interpolasyonu_atlar() -> None:
+    """`_joinedstr_literal_kismini_coz` — birim düzeyinde: yalnızca düz
+    literal parçaları birleştiriyor, `ast.FormattedValue` düğümlerini
+    (interpolasyonları) atlıyor mu?"""
+    agac = ast.parse('f"önce {degisken} sonra"')
+    joinedstr = agac.body[0].value
+    assert isinstance(joinedstr, ast.JoinedStr)
+    sonuc = _joinedstr_literal_kismini_coz(joinedstr)
+    assert sonuc == "önce  sonra", f"Beklenmedik birleştirme: {sonuc!r}"
