@@ -460,6 +460,47 @@ paragraph and the two tests above go stale together and need re-deriving —
 they are not a permanent guarantee, just an accurate description of the
 current call graph.
 
+**The full call graph, audited.** `recover_master_key()` has exactly one
+production call site: `CORE/recover_vault.py:146`, inside `_cmd_recover()`
+(`tests/test_recovery_call_graph.py::test_recover_master_key_TEK_uretim_
+cagri_yeri_var` pins this — it fails, visibly, the day a second one is
+added). No GUI flow, no API, no other script calls it; `UI/AdminPanel.py`
+and `UI/main_window_open.py` only point the user at the CLI in prose. That
+one call site does **not** unconditionally reprovision: `_cmd_recover()`
+lets the user decline (`CORE/recover_vault.py:168-174`, the "Atlandı"
+branch) and return with the vault still signed under the old key and
+`token_id` still tampered, if it was. The reprovision-happens-immediately
+story is therefore false as a blanket claim — what actually holds is
+narrower, and it holds regardless of which branch runs:
+
+- The one audit-log write in this whole path is `recover_master_key()`'s
+  own `db.log("vault_recovered", detail=f"hwid={hwid} kaynak=...")`
+  (`CORE/vault_manager.py:1283-1286`) — `detail` is built from exactly two
+  values, `hwid` and a fixed source label; `token_id` is not a variable in
+  scope for that f-string, buffered or not. `_cmd_recover()` itself never
+  calls `DBManager().log(...)` at all. Its only console output about the
+  recovered key is the byte length and a SHA-256 digest
+  (`CORE/recover_vault.py:156-160`) — again, nothing about `token_id`.
+- `_read_vault_token_id()` — the *only* function that ever reads the field
+  back out of a vault file — has exactly one caller in the codebase,
+  `authenticate_usb()`'s Layer 3 (`CORE/vault_manager.py:857`), and that
+  path calls `verify_vault()` without the `share_2`-missing bypass. So the
+  decline branch does not create a state where `token_id` gets trusted
+  later without `share_2` being available again — and if `share_2` *does*
+  become available again, `verify_vault()` re-checks the full outer HMAC,
+  `token_id` included, and a tampered value fails it then.
+
+`tests/test_recovery_call_graph.py` makes both of these checks executable:
+`test_recover_master_key_her_cagri_yerinde_reprovision_erisilebilir` is the
+structural half — an AST scan asserting every function that calls
+`recover_master_key()` also calls `reprovision_vault()` somewhere in the
+same body, which is *reachability*, not a claim that the decline branch
+doesn't exist. `test_token_id_okuyan_TEK_yer_authenticate_usb` pins
+`_read_vault_token_id()`'s single caller by AST, and
+`test_vault_recovered_denetim_kaydi_token_id_icermez` tampers `token_id`,
+runs the `share_2`-less recovery, and asserts the resulting `vault_recovered`
+row contains neither the tampered bytes nor the string `token_id` at all.
+
 **Migration.** A vault created before this fix carries the old, HWID-only
 signature and would fail verification under the new scheme outright.
 `run_migrations()` (`CORE/secret_migration.py`, schema v4,
@@ -1750,6 +1791,49 @@ YÜZÜNDEN geçerli. Gelecekte bir değişiklik `_decrypt_vault`'u ya da
 hâle getirirse, bu paragraf ve yukarıdaki iki test BİRLİKTE bayatlar ve
 yeniden türetilmeleri gerekir — bunlar kalıcı bir garanti değil, mevcut çağrı
 grafiğinin doğru bir tasviri.
+
+**Denetlenmiş tam çağrı grafiği.** `recover_master_key()`'in TEK bir üretim
+çağrı yeri var: `CORE/recover_vault.py:146`, `_cmd_recover()` içinde
+(`tests/test_recovery_call_graph.py::test_recover_master_key_TEK_uretim_
+cagri_yeri_var` bunu sabitliyor — ikinci bir yer eklenirse görünür biçimde
+kırılır). Hiçbir GUI akışı, hiçbir API, başka hiçbir betik onu çağırmıyor;
+`UI/AdminPanel.py` ve `UI/main_window_open.py` kullanıcıyı yalnızca METİNLE
+CLI'ye yönlendiriyor. O TEK çağrı yeri KOŞULSUZ yeniden kurmuyor:
+`_cmd_recover()` kullanıcının reddetmesine izin veriyor
+(`CORE/recover_vault.py:168-174`, "Atlandı" dalı) ve vault eski anahtarla
+imzalı, `token_id` de kurcalanmışsa kurcalanmış olarak dönüyor. Yani
+"reprovision hemen çalışır" hikâyesi genel bir iddia olarak YANLIŞ —
+gerçekte geçerli olan daha dar, ve hangi dal çalışırsa çalışsın geçerli:
+
+- Bu yolun tamamındaki TEK denetim kaydı yazma işlemi `recover_master_key()`'in
+  kendi `db.log("vault_recovered", detail=f"hwid={hwid} kaynak=...")`
+  çağrısı (`CORE/vault_manager.py:1283-1286`) — `detail` yalnızca İKİ
+  değerden kuruluyor, `hwid` ve sabit bir kaynak etiketi; `token_id` o
+  f-string'in kapsamında bir değişken bile değil, tamponlanmış olsun
+  olmasın. `_cmd_recover()`'ın kendisi hiçbir yerde `DBManager().log(...)`
+  çağırmıyor. Kurtarılan anahtar hakkındaki tek konsol çıktısı byte uzunluğu
+  ve bir SHA-256 özeti (`CORE/recover_vault.py:156-160`) — yine `token_id`
+  hakkında hiçbir şey yok.
+- `_read_vault_token_id()` — bir vault dosyasından bu alanı GERİ OKUYAN TEK
+  fonksiyon — kod tabanında tek bir çağırana sahip, `authenticate_usb()`'ın
+  3. Katmanı (`CORE/vault_manager.py:857`), ve o yol `verify_vault()`'ı
+  `share_2`-yokluğu atlaması OLMADAN çağırıyor. Yani reddetme dalı,
+  `token_id`'nin `share_2` tekrar mevcut olmadan sonradan güvenilir hâle
+  geldiği bir durum YARATMIYOR — ve `share_2` GERÇEKTEN tekrar mevcut
+  olursa, `verify_vault()` dış HMAC'ın TAMAMINI (`token_id` dahil) yeniden
+  kontrol ediyor ve o noktada kurcalanmış bir değer başarısız oluyor.
+
+`tests/test_recovery_call_graph.py` bu iki iddiayı çalıştırılabilir hâle
+getiriyor: `test_recover_master_key_her_cagri_yerinde_reprovision_
+erisilebilir` yapısal yarı — `recover_master_key()`'i çağıran her
+fonksiyonun AYNI gövdede `reprovision_vault()`'u da çağırdığını doğrulayan
+bir AST taraması, yani *erişilebilirlik*, reddetme dalının yokluğunu
+İDDİA ETMİYOR. `test_token_id_okuyan_TEK_yer_authenticate_usb`,
+`_read_vault_token_id()`'in tek çağıranını AST ile sabitliyor, ve
+`test_vault_recovered_denetim_kaydi_token_id_icermez` `token_id`'yi
+kurcalıyor, `share_2`-siz kurtarmayı çalıştırıyor ve ortaya çıkan
+`vault_recovered` satırının ne kurcalanan baytları ne de "token_id" dizesini
+hiçbir biçimde içermediğini doğruluyor.
 
 **Migration.** Bu düzeltmeden önce oluşturulmuş bir vault eski, yalnızca
 HWID'e dayanan imzayı taşıyor ve yeni şemayla doğrudan doğrulanamaz.
