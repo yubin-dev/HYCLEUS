@@ -1212,6 +1212,62 @@ eviction, confirms the shadow exists, triggers the cleanup path, and
 confirms the shadow is gone and the live value is untouched. Tracked as
 **B-070**, closed the same turn it was opened, in `BACKLOG.md`.
 
+**Did the pre-fix code actually leave a real shadow on this machine?
+Checked directly, not assumed.** Before writing a cleanup mechanism for
+pre-`_windows_golge_sil()` writes, this was measured rather than guessed
+at — B-025's own lesson applied to itself. `win32cred.CredEnumerate`
+against this machine's real Credential Manager found ten genuine HYCLEUS
+credentials predating this fix (five `share_2:<hwid>`, five
+`totp_secret:<hwid>`; the legacy global `totp_secret` was never written on
+this machine at all). None of the ten currently has a shadow: `CredRead`
+for the bare `HYCLEUS` target returns "not found" — the bare slot is
+empty — so every one of the ten exists in exactly one physical location
+(its compound target, `{username}@HYCLEUS`), and a shadow requires *two*
+locations for the same username to disagree. All ten are already sealed
+(`TPM1:` prefix). The `6c748dd` re-seal test specifically named in this
+question (`test_gercek_TPM_ile_ESKI_kayit_ilk_okumada_yeniden_muhurleniyor`)
+turns out not to be relevant here at all: it requests only the `gercek_tpm`
+fixture, not `use_keyring_backend`, so its `keyring.set_password`/
+`get_password` calls ran against the autouse in-memory test double, not
+the real Windows store — it exercised genuine TPM sealing hardware but
+never touched real Credential Manager storage, so it could not have left
+anything there regardless of timing.
+
+Why the other ten — genuinely written by real `main.py` runs, before this
+fix existed — show no shadow is a mechanism, not luck asserted after the
+fact: `main.py` calls `ensure_available()` once at every startup, before
+any `store()` call in that session. `ensure_available()`'s probe write
+(write a canary to the bare slot, read it back, delete it) evicts
+whatever currently occupies the bare slot into its compound target as a
+pure side effect of `WinVaultKeyring.set_password()` — and because that
+eviction is a full overwrite, not an append, it *overwrites* the compound
+target with whatever value was at the bare slot at that moment, healing
+any stale shadow for that username in the process, with no shadow-aware
+code involved at all. This was reproduced directly, not inferred: writing
+`u1`, then `u2` (evicting `u1`'s old value to its compound target), then
+`u1` again (bare now holds the new value, compound still holds the old
+one — a synthetic pre-fix shadow, exactly B-070's shape) leaves the
+compound target holding `"OLD-VALUE"`; calling
+`secret_store.ensure_available()` once afterward changes that same target
+to `"NEW-VALUE"` with no other code touching it. Given ten different
+hwids across three days of credentials, at least one further app launch
+happened after each write — enough restarts for this accidental healing
+to have already run.
+
+**This is not a general guarantee, and the fixed code does not depend on
+it.** The healing above only happens because `main.py` restarts between
+writes on this particular machine's usage pattern; a shadow inspected in
+the window between an overwrite and the next restart — or on an
+installation that stays running for a long session with multiple resealed
+secrets and no restart in between — would be exactly as exploitable as
+B-070 originally described, unhealed. Because no *currently* unhealed
+shadow could be found to fix, no separate startup migration/cleanup pass
+was written for this turn, per the instruction that governed this
+check — the fix that matters is the one already in `store()`/
+`_reseal_firsatci()` (`91a4e21`), which closes this on every write
+deterministically and does not rely on `ensure_available()` ever running
+again afterward.
+
 **What was measured and what was not.** The path was exercised on real
 hardware (AMD fTPM 2.0, rev 1.59): seal 1.2 ms, unseal 38 ms, one-time key
 generation 1.33 s. Not measured: any other TPM vendor, and CI — no runner
@@ -2749,6 +2805,62 @@ yeniden üretiyor, gölgenin var olduğunu doğruluyor, temizlik yolunu
 tetikliyor, ve gölgenin gittiğini VE canlı değerin dokunulmamış kaldığını
 doğruluyor. `BACKLOG.md`'de **B-070** olarak izleniyor, bulunduğu turda
 kapandı.
+
+**Düzeltme-öncesi kod bu makinede GERÇEKTEN bir gölge bırakmış mıydı?
+Doğrudan kontrol edildi, varsayılmadı.** `_windows_golge_sil()`'den önceki
+yazımlar için bir temizlik mekanizması yazmadan önce bu tahmin edilmedi,
+ÖLÇÜLDÜ — B-025'in kendi dersinin kendisine uygulanması. Bu makinenin
+gerçek Credential Manager'ına karşı `win32cred.CredEnumerate` çalıştırıldı
+ve bu düzeltmeden ÖNCEye ait on gerçek HYCLEUS kimlik bilgisi bulundu (beş
+`share_2:<hwid>`, beş `totp_secret:<hwid>`; eski global `totp_secret` bu
+makinede hiç yazılmamış). Onundan HİÇBİRİNDE şu an bir gölge yok: çıplak
+`HYCLEUS` hedefi için `CredRead` "bulunamadı" döndürüyor — çıplak yuva
+BOŞ — yani onun her biri TAM OLARAK TEK bir fiziksel konumda duruyor
+(kendi compound hedefi, `{username}@HYCLEUS`), ve bir gölge için AYNI
+kullanıcı adının İKİ konumda ÇELİŞMESİ gerekir. Onu da tam olarak
+mühürlü (`TPM1:` öneki). Bu soruda özellikle adı geçen `6c748dd` reseal
+testi (`test_gercek_TPM_ile_ESKI_kayit_ilk_okumada_yeniden_muhurleniyor`)
+burada hiç ilgili çıkmadı: yalnızca `gercek_tpm` fixture'ını istiyor,
+`use_keyring_backend`'i DEĞİL — yani `keyring.set_password`/`get_password`
+çağrıları autouse bellek-içi test taklidine gitti, gerçek Windows kasasına
+değil; gerçek TPM mühürleme donanımını kullandı ama gerçek Credential
+Manager depolamasına hiç dokunmadı, o yüzden zamanlamadan bağımsız olarak
+orada bir şey bırakmış OLAMAZ.
+
+Diğer on kaydın — bu düzeltme var olmadan ÖNCE, gerçek `main.py`
+koşularıyla yazılmış — neden gölge GÖSTERMEDİĞİ bir mekanizma, sonradan
+uydurulmuş bir şans değil: `main.py` her başlangıçta, o oturumdaki HERHANGİ
+bir `store()` çağrısından ÖNCE, tek bir kez `ensure_available()` çağırıyor.
+`ensure_available()`'ın sonda yazımı (çıplak yuvaya bir kanarya yaz, geri
+oku, sil) o an çıplak yuvayı işgal eden ne varsa `WinVaultKeyring.
+set_password()`'ün SAF bir yan etkisi olarak onun compound hedefine
+TAHLİYE EDİYOR — ve bu tahliye bir EKLEME değil TAM BİR ÜZERİNE YAZMA
+olduğu için, compound hedefi o andaki çıplak yuva değeriyle EZİYOR, o
+kullanıcı adı için varsa herhangi bir eski gölgeyi, hiçbir gölge-farkında
+kod devreye girmeden, İYİLEŞTİRİYOR. Bu tahmin değil, doğrudan yeniden
+üretildi: `u1` yazılıp, sonra `u2` yazılıp (`u1`'in eski değeri kendi
+compound hedefine tahliye edilip), sonra `u1` TEKRAR yazılınca (çıplak
+yuva artık yeni değeri tutuyor, compound hâlâ eskiyi tutuyor — TAM OLARAK
+B-070'in şeklinde, düzeltme-öncesi sentetik bir gölge) compound hedef
+`"OLD-VALUE"` tutmaya devam ediyor; ardından bir kez
+`secret_store.ensure_available()` çağırmak AYNI hedefi, başka HİÇBİR kod
+dokunmadan, `"NEW-VALUE"`'ya çeviriyor. Üç güne yayılmış on farklı hwid'e
+sahip kayıtlar göz önüne alındığında, her yazımdan sonra en az bir
+uygulama başlatması daha olmuş demek — bu kazara iyileşmenin çoktan
+çalışmış olması için yeterli.
+
+**Bu genel bir garanti DEĞİL, ve düzeltilmiş kod buna DAYANMIYOR.**
+Yukarıdaki iyileşme yalnızca bu MAKİNENİN kullanım örüntüsünde `main.py`
+yazımlar arasında yeniden başladığı İÇİN oluyor; bir üzerine-yazma ile bir
+sonraki yeniden başlatma ARASINDAKİ pencerede incelenen bir gölge — ya da
+uzun bir oturum boyunca birden fazla resealed sırla ARADA yeniden
+başlamadan çalışan bir kurulum — B-070'in ORİJİNAL olarak tarif ettiği
+kadar sömürülebilir kalırdı, İYİLEŞMEMİŞ. Şu an İYİLEŞMEMİŞ bir gölge
+BULUNAMADIĞI için, bu turda ayrı bir başlangıç göçü/temizlik geçişi
+YAZILMADI — bu denetimi yöneten talimata göre; asıl önemli düzeltme zaten
+`store()`/`_reseal_firsatci()` içinde (`91a4e21`), bu her yazımda
+DETERMİNİSTİK olarak kapatıyor ve `ensure_available()`'ın bir daha
+çalışmasına HİÇ bağlı değil.
 
 **Ne ölçüldü, ne ölçülmedi.** Yol gerçek donanımda çalıştırıldı (AMD fTPM
 2.0, rev 1.59): mühürleme 1.2 ms, açma 38 ms, tek seferlik anahtar üretimi

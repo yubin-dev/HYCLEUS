@@ -3833,4 +3833,34 @@ kayıt ile reseal denetim zincirinde asla karışmıyor),
 gibi share_2 dışı bir çağrı yerinde reseal sahte tetiklenmiyor). Ayrıntı
 SECURITY.md §4.13'te.
 
+### 2026-08-28 (devam) — düzeltme-öncesi kod bu makinede GERÇEKTEN gölge bırakmış mı, ölçüldü
+
+Varsayılmadı: bu makinenin GERÇEK Credential Manager'ı
+`win32cred.CredEnumerate` ile tarandı. Düzeltmeden ÖNCEye ait 10 gerçek
+kayıt bulundu (5× `share_2:<hwid>`, 5× `totp_secret:<hwid>`) — hiçbirinde
+ŞU AN bir gölge yok (çıplak `HYCLEUS` yuvası boş, her biri tek bir
+compound konumda, hepsi zaten mühürlü). `6c748dd`'deki reseal testi
+(`test_gercek_TPM_ile_ESKI_kayit_ilk_okumada_yeniden_muhurleniyor`)
+yalnızca `gercek_tpm` istiyor, `use_keyring_backend` DEĞİL — yani gerçek
+Credential Manager'a hiç dokunmadı, orada bir şey bırakmış olamaz.
+
+Diğer 10 kaydın gölge göstermemesinin nedeni doğrudan yeniden üretilip
+kanıtlandı: `main.py` her başlangıçta `ensure_available()`'ı, o oturumdaki
+herhangi bir `store()`'dan ÖNCE çağırıyor; onun sonda yazımı, çıplak
+yuvayı işgal edeni compound hedefine tahliye ederken bunu bir EKLEME değil
+TAM ÜZERİNE YAZMA olarak yapıyor — yani hiçbir gölge-farkında kod
+olmadan, o kullanıcı adının eski gölgesini KENDİLİĞİNDEN iyileştiriyor.
+Bu, GERÇEK bir düzeltme-öncesi gölge sentetik olarak üretilip
+`ensure_available()` bir kez çağrılarak DOĞRUDAN gösterildi (compound
+değer "OLD-VALUE"'dan "NEW-VALUE"'ya değişti).
+
+Bu genel bir garanti DEĞİL — yalnızca bu makinenin "yazım, sonra yeniden
+başlatma" örüntüsünde işliyor; bir üzerine-yazma ile bir sonraki
+başlatma ARASINDA incelenen bir gölge hâlâ B-070'in tarif ettiği kadar
+sömürülebilir kalırdı. Şu an iyileşmemiş bir gölge BULUNAMADIĞI için ayrı
+bir başlangıç göçü/temizlik geçişi bu turda YAZILMADI — asıl düzeltme
+zaten `store()`/`_reseal_firsatci()` içinde (`91a4e21`) ve
+`ensure_available()`'ın bir daha çalışmasına bağlı değil. Ayrıntı
+SECURITY.md §4.13'te.
+
 ---

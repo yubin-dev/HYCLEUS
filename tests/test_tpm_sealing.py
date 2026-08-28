@@ -728,6 +728,82 @@ def test_windows_golge_kopya_gercek_kasada_TEMIZLENIYOR(
             _sil(hedef)
 
 
+def test_ensure_available_YAN_ETKI_OLARAK_eski_golgeyi_iyilestiriyor(
+    use_keyring_backend,  # type: ignore[no-untyped-def]
+) -> None:
+    """
+    Bu makinenin GERÇEK Credential Manager'ı `_windows_golge_sil()'den
+    ÖNCEki yazımlar için tarandığında (BACKLOG B-070'in 2026-08-28 devam
+    notu) hiçbir gölge bulunamadı — SECURITY.md §4.13'ün açıkladığı, bu
+    testin kanıtladığı nedenle: `main.py` her açılışta `ensure_available()`'ı
+    o oturumdaki HERHANGİ bir `store()`'dan ÖNCE çağırıyor, ve onun sonda
+    yazımı çıplak yuvayı işgal edeni compound hedefine bir EKLEME değil TAM
+    ÜZERİNE YAZMA olarak tahliye ediyor — hiçbir gölge-farkında kod
+    olmadan, o kullanıcı adının varsa eski gölgesini kendiliğinden
+    iyileştiriyor.
+
+    Bu, `_windows_golge_sil()`'in DÜZELTMESİNİN yerine geçmiyor —
+    `ensure_available()` yalnızca BİR SONRAKİ açılışta çalışır, açık
+    kalan bir oturumdaki tazecik bir gölgeyi korumaz (bkz. SECURITY.md'nin
+    "genel bir garanti DEĞİL" notu) — ama bu makinede gözlemlenen "gölge
+    yok" durumunun ŞANS değil, ölçülebilir bir mekanizma olduğunu
+    kanıtlıyor.
+    """
+    if sys.platform != "win32":
+        pytest.skip("Windows Credential Manager'a özgü davranış")
+    try:
+        import pywintypes
+        import win32cred
+        from keyring.backends.Windows import WinVaultKeyring
+    except ImportError:
+        pytest.skip("pywin32 kurulu değil")
+
+    use_keyring_backend(WinVaultKeyring())
+
+    service = "HYCLEUS-VERIFY-HEAL-TEST"
+    u1, u2 = "heal-test-u1", "heal-test-u2"
+    compound_u1 = f"{u1}@{service}"
+
+    def _sil(target: str) -> None:
+        try:
+            win32cred.CredDelete(Type=win32cred.CRED_TYPE_GENERIC, TargetName=target)
+        except pywintypes.error:
+            pass
+
+    for hedef in (u1, u2, compound_u1, f"{u2}@{service}", service):
+        _sil(hedef)
+
+    try:
+        # DÜZELTME-ÖNCESİ ham üzerine-yazma şekli — secret_store.store()
+        # DEĞİL, doğrudan keyring.set_password (o zamanki gibi
+        # _windows_golge_sil() olmadan): u1, u2 tarafından compound'a
+        # tahliye edilir, sonra u1 tekrar yazılır — sentetik bir gölge.
+        keyring.set_password(service, u1, "OLD-VALUE")
+        keyring.set_password(service, u2, "u2-value")
+        keyring.set_password(service, u1, "NEW-VALUE")
+
+        golge_once = win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=compound_u1)
+        assert golge_once["CredentialBlob"].decode("utf-16-le") == "OLD-VALUE", (
+            "ön koşul: sentetik gölge OLD-VALUE taşımalı"
+        )
+
+        onceki_service = secret_store.SERVICE
+        secret_store.SERVICE = service
+        try:
+            secret_store.ensure_available()
+        finally:
+            secret_store.SERVICE = onceki_service
+
+        golge_sonra = win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=compound_u1)
+        assert golge_sonra["CredentialBlob"].decode("utf-16-le") == "NEW-VALUE", (
+            "ensure_available() eski gölgeyi iyileştirmedi — SECURITY.md'nin "
+            "'gölge bulunamadı' açıklaması artık geçersiz olabilir"
+        )
+    finally:
+        for hedef in (u1, u2, compound_u1, f"{u2}@{service}", service):
+            _sil(hedef)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. Görünürlük — düşüş SESSİZ olmamalı
 # ══════════════════════════════════════════════════════════════════════════════
