@@ -1554,6 +1554,23 @@ Alternatif karar: akış EKLENMEZ ve sınır belgelenir. O durumda kurulum
 akışı kullanıcıya **iki USB kaydettirmeli** (yedek anahtar gibi) —
 bugün böyle bir şey yok.
 
+### 2026-08-28 (devam) — bu maddenin "teknik olarak doğru" dediği öncül, B-069'un gerekçe düzeltmesinde netleştirildi
+
+B-069'un wontfix gerekçesi koddan yeniden doğrulanırken bu maddenin de
+konusu olan soru netleşti: yukarıdaki "Sebebi teknik olarak doğru... USB
+yoksa hangi kaydın okunacağı bilinmiyor" ifadesi hâlâ doğru ama eksik —
+bilgi (hwid dizesi) fiziksel cihaza kilitli DEĞİL, `data/vaults/<hwid>.
+hclv` dosya adında, `keyring`deki `share_2:<hwid>` kullanıcı adında ve
+`usb_tokens.hwid` sütununda düz metin olarak zaten duruyor; `--recover`
+onu yalnızca USB'den OKUMAYI kabul ediyor, başka bir girişe İZİN
+VERMİYOR. Ayrıca yukarıdaki "AAD'de hwid bağı olup olmadığı kontrol
+edilmeli, ÖLÇÜLMEDİ" notu artık ölçüldü: EVET, `_decrypt_vault()`
+(`CORE/vault_manager.py:1260`) hwid'i GCM AAD'i olarak kullanıyor — ama
+bu bir SIR değil, yalnızca doğru DİZENİN verilmesini istiyor. Tam analiz
+ve satır referansları **B-069**'da. Bu maddenin kendi kararı
+(bir "yeni USB'ye taşı" akışı eklenip eklenmeyeceği) DEĞİŞMEDİ — hâlâ
+açık, hâlâ karar bekliyor.
+
 ---
 
 ## B-037 — Kurtarma ve yedek CLI'ları dağıtılan pakete GİRMİYOR
@@ -3732,7 +3749,8 @@ açmamak için — bkz. B-056'daki benzer "tek kaynak" dersi).
 
 ## B-069 — "Kurtarma parçasıyla giriş" ekranı — wontfix
 
-**Durum:** Kapalı — wontfix, kod DEĞİŞTİRİLMEDİ
+**Durum:** Kapalı — wontfix, kod DEĞİŞTİRİLMEDİ (karar aynı; gerekçe
+2026-08-28'de koddan yeniden doğrulanıp düzeltildi — bkz. altta)
 **Öncelik:** —
 **Bulundu:** 2026-08-26 — Arayüz güncellemesi (BÖLÜM B) mockup taraması,
 Giriş ekranı restyle turu
@@ -3744,31 +3762,86 @@ sıfırlayarak kasayı açabiliyor. Gerçek kodda bu ekranın karşılığı yok
 bile yok. Restyle turunda bu yüzden atlandı; bu madde neden EKLENMEYECEĞİNİ
 kayda geçiriyor.
 
-Gerçek kurtarma mekanizması (`CORE/recovery_share.py`,
-`python CORE/recover_vault.py --recover`) yalnızca AdminPanel'den,
-yönetici oturumu İÇİNDEN bir payın (`share_3`) DIŞA AKTARILMASINI
-sağlıyor — kullanım rehberi bunu açıkça "USB takılıyken" senaryosu olarak
-tanımlıyor, çünkü `--recover` payı hangi HWID'e ait olduğunu bilmek için
-kayıtlı USB'nin fiziksel olarak takılı olmasını ZORUNLU kılıyor. Yani
-mekanizma yalnızca "USB elimde, PIN'i unuttum" senaryosunu çözüyor —
-"USB gerçekten kayıp" senaryosunu CLI'da bile çözmüyor, oraya yalnızca bir
-yönetici müdahalesiyle (USB kaydını silip yeniden kayıt) çıkılabiliyor.
+### Gerekçe koddan yeniden doğrulandı (2026-08-28) — önceki metnin merkezi iddiası YANLIŞTI
 
-İki sebeple bu ekran eklenmeyecek:
+Önceki metin şöyle diyordu: "`--recover` payı hangi HWID'e ait olduğunu
+bilmek için kayıtlı USB'nin fiziksel olarak takılı olmasını ZORUNLU
+kılıyor" — yani USB gereksinimini KRİPTOGRAFİK/YAPISAL bir zorunluluk gibi
+sunuyordu. `CORE/recover_vault.py` ve `CORE/vault_manager.py` satır satır
+okunarak bu **YANLIŞ** bulundu: kalan payların hiçbiri hwid'i fiziksel
+cihazdan OKUMAYA ihtiyaç duymuyor, hwid'i yalnızca bir dize olarak
+BİLMEYE ihtiyaç duyuyor — ve o dize USB olmadan da makinede birden fazla
+yerde açık biçimde duruyor.
 
-1. **Kullanıcının asıl ihtiyacını karşılamıyor.** Mockup'taki "kurtarma
-   parçasıyla giriş" senaryosu tam olarak "USB kayıp" durumunda çekici
-   görünüyor, ama gerçek `--recover` akışı bu senaryoyu ZATEN çözmüyor
-   (HWID'i bilmek için USB gerekiyor). UI'a bu ekranı eklemek, çözmediği
-   bir sorunu çözüyormuş gibi görünen sahte bir kapı açardı.
-2. **USB'siz gerçek bir kurtarma yolu kurmak güvenlik amacını bozar.**
-   HWID kilidinin var oluş sebebi "sahip olunan şey" (fiziksel USB)
-   faktörü — bunu atlayan bir kurtarma yolu (yalnızca `share_3` + PIN ile
-   HWID doğrulaması olmadan açılan bir kasa) bu faktörü tamamen ortadan
-   kaldırır. Mockup'ın gösterdiği ekranı gerçek yapmak, restyle kapsamının
-   çok ötesinde bir mimari değişiklik olurdu.
+**1. `recover_master_key()`'in hiçbir dalı hwid'i donanımdan türetmiyor**
+(`CORE/vault_manager.py:1326-1376`):
 
-Test: yok — yalnızca belge girişi, kod değişikliği yapılmadı.
+* Seçenek 1 (share_2 kayıp, PIN + share_1): `_read_share_1()` →
+  `_decrypt_vault()` (`vault_manager.py:1214`) hwid'i YALNIZCA iki yerde
+  kullanıyor — `_read_vault_path(hwid)` ile dosya adını hesaplamak için
+  (`vault_manager.py:143-148`: `data/vaults/<hwid>.hclv`) ve GCM'in AAD'i
+  olarak (`vault_manager.py:1260`: `authenticate_additional_data(hwid.
+  encode())`). AAD gizli DEĞİLDİR — yalnızca doğru dizenin verilmesini
+  ister, cihazdan okunmasını değil. Anahtarın kendisi PIN'den türüyor
+  (`_derive_kek(pin, salt)`, `vault_manager.py:1258`), hwid'den değil.
+* Seçenek 2 (share_1 kayıp, share_2 kasadan): `_load_share_2(hwid)`
+  (`vault_manager.py:478-496`) hwid'i yalnızca `keyring` kullanıcı adının
+  bir parçası olarak kullanıyor (`share_2:<hwid>`) — yine bir ADRESLEME
+  dizesi, cihazdan okunan bir sır değil. **Ve bu dalda PIN de İSTENMİYOR**
+  (`recover_vault.py:143`: `pin = ... if secim == "1" else None`) — yani
+  bu dalda master_key'i yeniden kurmak için gereken TEK şey doğru hwid
+  dizesi + elde bulunan `share_3`.
+
+**2. hwid dizesi USB olmadan zaten açıkça makinede duruyor.** Aynı vault'u
+oluşturan kayıt işlemi onu üç ayrı düz-metin konuma yazıyor: vault
+DOSYA ADI (`data/vaults/<hwid>.hclv`), `keyring`'deki kullanıcı adı
+(`share_2:<hwid>`), ve DB'nin `usb_tokens.hwid` sütunu. Makineye erişimi
+olan biri (`data/vaults/` dizinini listeleyerek ya da DB'yi okuyarak) bu
+dizeyi USB'ye hiç dokunmadan öğrenebilir. B-036'nın "USB yoksa hangi
+kaydın okunacağı bilinmiyor" ifadesi de aynı ölçüde gevşetilmeli — bilgi
+FİZİKSEL olarak cihaza kilitli değil, yalnızca aracın bugünkü arayüzü
+başka bir yoldan girilmesine İZİN VERMİYOR.
+
+**3. USB gereksinimini fiilen dayatan TEK şey, `_require_hwid()`'in
+bilinçli reddi — kriptografik bir zorunluluk değil, uygulama seviyesi
+bir kapı.** `_require_hwid()` (`recover_vault.py:59-67`) ve `main()`'in
+kendi `DBManager().connect(hwid=hwid, key=None)` çağrısı
+(`recover_vault.py:248-252`, hwid `None` ise `DB/db_manager.py:152-156`
+`HWIDMissingError` fırlatıyor) `get_usb_hwid()` `None` dönerse programı
+`--export`/`--recover`/`--status` FARK ETMEKSİZİN daha başlamadan
+durduruyor. (İkisi de aynı koşulu kontrol ediyor — `main()`'in kendi
+kapısı zaten `None` iken önce patladığı için `_cmd_recover()` içindeki
+`_require_hwid()` çağrısı pratikte hiç tetiklenmiyor, yedek/vestigial.)
+Program hwid'i BAŞKA bir yoldan (komut satırı argümanı, `data/vaults/`
+listesinden otomatik bulma, elle giriş) kabul edecek biçimde
+yazılabilirdi — kriptografi buna itiraz etmez.
+
+**4. Sonuç: eski metnin 1. maddesi (mekanizma zaten "USB kayıp"
+senaryosunu çözmüyor, o yüzden ekran sahte bir kapı) TEKNİK OLARAK
+YANLIŞ öncüle dayanıyordu — bir "kurtarma parçasıyla giriş" ekranı,
+hwid'i USB yerine diskten/DB'den otomatik bularak, GERÇEKTEN çalışacak
+biçimde inşa EDİLEBİLİRDİ. Ama tam da bu yüzden eski metnin 2. maddesi
+düzeltilmiş haliyle TEK BAŞINA yeterli ve daha da güçlü bir gerekçe:**
+böyle bir ekran `_require_hwid()`'in bugün sağladığı fiziksel-sahiplik
+kapısını KALDIRMAK zorunda kalırdı — ve Seçenek 2'nin PIN istemediği
+gerçeğiyle birleşince (madde 1), bu tam olarak SECURITY.md §4.4'ün zaten
+belgelediği saldırı yolunu üretir: **basılı kurtarma parçası + makineye
+erişim (USB YOK, PIN YOK) → master_key.** §4.4 bunu "disk erişimi"
+(oturum açmış OS kullanıcısı olarak `keyring`'den `share_2` okumak)
+üzerinden anlatıyor; buradaki bulgu onu tamamlıyor — o saldırı yolunun
+BUGÜN çalışmamasının TEK nedeni, `--recover`'ın USB'siz çalışmayı hiç
+kabul etmemesi. `_require_hwid()`, göründüğünden farklı olarak, bu
+belirli saldırı yolu için FİİLEN devrede olan tek savunma.
+
+**Karar DEĞİŞMEDİ — wontfix kalıyor, ama artık daha net bir zeminde:**
+mockup'taki ekranı gerçek koda dönüştürmek, teknik olarak "çözülemeyen
+bir sorunu çözüyormuş gibi görünen sahte bir kapı" değil, "bugün fiilen
+duran tek savunmayı bilerek kaldıran, §4.4'ün zaten uyardığı saldırı
+yolunu açan gerçek bir mimari gerileme" olurdu. Restyle kapsamının çok
+ötesinde bir karar, ve kapsam dışı kalmaya devam ediyor.
+
+Test: yok — yalnızca belge girişi, kod değişikliği yapılmadı (bu tur da
+dahil: yalnızca gerekçe metni koddan yeniden doğrulandı).
 
 ---
 
