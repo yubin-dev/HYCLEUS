@@ -1212,61 +1212,87 @@ eviction, confirms the shadow exists, triggers the cleanup path, and
 confirms the shadow is gone and the live value is untouched. Tracked as
 **B-070**, closed the same turn it was opened, in `BACKLOG.md`.
 
-**Did the pre-fix code actually leave a real shadow on this machine?
-Checked directly, not assumed.** Before writing a cleanup mechanism for
-pre-`_windows_golge_sil()` writes, this was measured rather than guessed
-at — B-025's own lesson applied to itself. `win32cred.CredEnumerate`
-against this machine's real Credential Manager found ten genuine HYCLEUS
-credentials predating this fix (five `share_2:<hwid>`, five
-`totp_secret:<hwid>`; the legacy global `totp_secret` was never written on
-this machine at all). None of the ten currently has a shadow: `CredRead`
-for the bare `HYCLEUS` target returns "not found" — the bare slot is
-empty — so every one of the ten exists in exactly one physical location
-(its compound target, `{username}@HYCLEUS`), and a shadow requires *two*
-locations for the same username to disagree. All ten are already sealed
-(`TPM1:` prefix). The `6c748dd` re-seal test specifically named in this
-question (`test_gercek_TPM_ile_ESKI_kayit_ilk_okumada_yeniden_muhurleniyor`)
-turns out not to be relevant here at all: it requests only the `gercek_tpm`
-fixture, not `use_keyring_backend`, so its `keyring.set_password`/
-`get_password` calls ran against the autouse in-memory test double, not
-the real Windows store — it exercised genuine TPM sealing hardware but
-never touched real Credential Manager storage, so it could not have left
-anything there regardless of timing.
+**Did the pre-fix code actually leave a real shadow on this machine? The
+first pass at this answer overclaimed; here is the corrected version,
+checked against write history, not just current state.** `win32cred.
+CredEnumerate` against this machine's real Credential Manager found ten
+genuine HYCLEUS credentials predating this fix (five `share_2:<hwid>`,
+five `totp_secret:<hwid>`; the legacy global `totp_secret` was never
+written on this machine at all), none currently showing a shadow. An
+earlier version of this note treated that absence as evidence that
+`ensure_available()`'s accidental healing had already run for all ten —
+but *absence of a shadow is also exactly what "only ever written once"
+looks like*, and the audit log cannot rule that out for most of them:
+`create_vault()` writes no audit entry of its own on a fresh registration
+(only `reprovision_vault()`'s wrapper logs anything), and this database's
+`usb_tokens` table currently holds only two rows against five distinct
+`share_2` hwids ever seen in the keyring — meaning its bookkeeping has been
+reset at least once since some of those credentials were written, so it
+cannot testify to their full history either. For nine of the ten, no
+reliable evidence of a second write exists either way; the honest
+statement is that they show no shadow, and it is not known whether that is
+because they were written once or because they were written twice and
+already healed.
 
-Why the other ten — genuinely written by real `main.py` runs, before this
-fix existed — show no shadow is a mechanism, not luck asserted after the
-fact: `main.py` calls `ensure_available()` once at every startup, before
-any `store()` call in that session. `ensure_available()`'s probe write
-(write a canary to the bare slot, read it back, delete it) evicts
-whatever currently occupies the bare slot into its compound target as a
-pure side effect of `WinVaultKeyring.set_password()` — and because that
-eviction is a full overwrite, not an append, it *overwrites* the compound
-target with whatever value was at the bare slot at that moment, healing
-any stale shadow for that username in the process, with no shadow-aware
-code involved at all. This was reproduced directly, not inferred: writing
-`u1`, then `u2` (evicting `u1`'s old value to its compound target), then
-`u1` again (bare now holds the new value, compound still holds the old
-one — a synthetic pre-fix shadow, exactly B-070's shape) leaves the
-compound target holding `"OLD-VALUE"`; calling
-`secret_store.ensure_available()` once afterward changes that same target
-to `"NEW-VALUE"` with no other code touching it. Given ten different
-hwids across three days of credentials, at least one further app launch
-happened after each write — enough restarts for this accidental healing
-to have already run.
+The tenth is different, and *was* pinned down directly: `audit_log`
+contains exactly one `vault_reprovisioned` row, `hwid=USB-PROBE-TOKEN-ID`,
+timestamped `2026-08-28T12:32:05Z`. `reprovision_vault()` only runs after
+`recover_master_key()`, which (in its PIN branch, the one this row's
+`kaynak=share_1+share_3` records) requires an *existing* vault file to read
+`share_1` from — so this hwid necessarily had a `share_2` in the keyring
+from an original registration, then a second, different `share_2` written
+by the reprovision itself: a real, confirmed double write, and — compared
+against this fix's commit (`91a4e21`, `19:31:03+03:00` local; the
+reprovision was `15:32:05+03:00` local) — one that happened hours *before*
+`_windows_golge_sil()` existed. Whether it left a shadow can no longer be
+checked: the credential is gone from the keyring entirely now (`CredRead`
+finds it at neither the bare nor the compound target), almost certainly
+erased during unrelated manual cleanup after the throwaway hwid's use in
+an earlier investigation — `secret_store.erase()` calls `keyring.
+delete_password()`, which purges both locations unconditionally, taking
+any shadow with it. The evidence needed to answer that one specific
+question was destroyed before this question was asked.
 
-**This is not a general guarantee, and the fixed code does not depend on
-it.** The healing above only happens because `main.py` restarts between
-writes on this particular machine's usage pattern; a shadow inspected in
-the window between an overwrite and the next restart — or on an
-installation that stays running for a long session with multiple resealed
-secrets and no restart in between — would be exactly as exploitable as
-B-070 originally described, unhealed. Because no *currently* unhealed
-shadow could be found to fix, no separate startup migration/cleanup pass
-was written for this turn, per the instruction that governed this
-check — the fix that matters is the one already in `store()`/
-`_reseal_firsatci()` (`91a4e21`), which closes this on every write
-deterministically and does not rely on `ensure_available()` ever running
-again afterward.
+**So the real question moved from "did a shadow exist" to "does the
+healing mechanism actually work, and how completely" — and that was
+answered directly, independent of any specific credential's fate.**
+Reproduced against the real backend, not inferred: writing `u1` twice in a
+row, nothing else in between, leaves `u1`'s old value sitting at its
+compound target while the new one sits at bare — a shadow forms from a
+second write alone, no third username required. Then, whether a *second,
+independent* shadow can coexist with the first was tested directly by
+trying to build one: writing an unrelated `u3` (to start its own shadow)
+evicts whatever currently occupies the bare slot — which, at that moment,
+is `u1` holding its shadowed value — and that eviction is a full overwrite
+of `u1`'s compound target, not an append, so it **heals `u1`'s shadow as a
+side effect of doing something else entirely**, before `u3`'s own shadow
+even exists. Only after that does writing `u3` twice produce a second
+shadow — and by then `u1`'s is already gone. The result, checked at every
+step (`test_AYNI_ANDA_IKI_golge_YAPISAL_OLARAK_var_olamiyor`): **two
+shadows can never coexist in the `HYCLEUS` service.** The single bare slot
+means the *next* `set_password()` call for any different username always
+heals whatever shadow currently exists before it can create a second one.
+`ensure_available()`'s probe write is one reliable source of such a call —
+proven separately
+(`test_ensure_available_YAN_ETKI_OLARAK_eski_golgeyi_iyilestiriyor`) — but
+it is not special; any real `store()` for a different username does the
+same healing as a side effect.
+
+**This makes the guarantee where it applies *complete*, not partial — but
+it still is not universal, and the fixed code does not depend on it.**
+Because at most one shadow can ever exist, one further write for anyone
+else always closes it entirely — there is no "healed some, missed others"
+outcome to guard against, contrary to what motivated this question. The
+gap that remains is exactly the one already documented: if the
+shadow-creating overwrite is the *last* write this service ever receives —
+no further `store()`, no further `ensure_available()` call, ever — the
+single shadow persists indefinitely, unhealed, exactly as exploitable as
+B-070 originally described. Because no currently-unhealed shadow could be
+found on this machine to verify a cleanup pass against, none was written
+this turn, per the instruction governing this check — the fix that matters
+is the one already in `store()`/`_reseal_firsatci()` (`91a4e21`), which
+closes this on every write deterministically and does not depend on
+anyone else ever writing again afterward.
 
 **What was measured and what was not.** The path was exercised on real
 hardware (AMD fTPM 2.0, rev 1.59): seal 1.2 ms, unseal 38 ms, one-time key
@@ -2806,61 +2832,85 @@ tetikliyor, ve gölgenin gittiğini VE canlı değerin dokunulmamış kaldığı
 doğruluyor. `BACKLOG.md`'de **B-070** olarak izleniyor, bulunduğu turda
 kapandı.
 
-**Düzeltme-öncesi kod bu makinede GERÇEKTEN bir gölge bırakmış mıydı?
-Doğrudan kontrol edildi, varsayılmadı.** `_windows_golge_sil()`'den önceki
-yazımlar için bir temizlik mekanizması yazmadan önce bu tahmin edilmedi,
-ÖLÇÜLDÜ — B-025'in kendi dersinin kendisine uygulanması. Bu makinenin
-gerçek Credential Manager'ına karşı `win32cred.CredEnumerate` çalıştırıldı
-ve bu düzeltmeden ÖNCEye ait on gerçek HYCLEUS kimlik bilgisi bulundu (beş
-`share_2:<hwid>`, beş `totp_secret:<hwid>`; eski global `totp_secret` bu
-makinede hiç yazılmamış). Onundan HİÇBİRİNDE şu an bir gölge yok: çıplak
-`HYCLEUS` hedefi için `CredRead` "bulunamadı" döndürüyor — çıplak yuva
-BOŞ — yani onun her biri TAM OLARAK TEK bir fiziksel konumda duruyor
-(kendi compound hedefi, `{username}@HYCLEUS`), ve bir gölge için AYNI
-kullanıcı adının İKİ konumda ÇELİŞMESİ gerekir. Onu da tam olarak
-mühürlü (`TPM1:` öneki). Bu soruda özellikle adı geçen `6c748dd` reseal
-testi (`test_gercek_TPM_ile_ESKI_kayit_ilk_okumada_yeniden_muhurleniyor`)
-burada hiç ilgili çıkmadı: yalnızca `gercek_tpm` fixture'ını istiyor,
-`use_keyring_backend`'i DEĞİL — yani `keyring.set_password`/`get_password`
-çağrıları autouse bellek-içi test taklidine gitti, gerçek Windows kasasına
-değil; gerçek TPM mühürleme donanımını kullandı ama gerçek Credential
-Manager depolamasına hiç dokunmadı, o yüzden zamanlamadan bağımsız olarak
-orada bir şey bırakmış OLAMAZ.
+**Düzeltme-öncesi kod bu makinede GERÇEKTEN bir gölge bırakmış mıydı? İlk
+geçiş fazla iddialıydı; bu, yazım GEÇMİŞİNE karşı doğrulanmış düzeltilmiş
+hâli.** Bu makinenin gerçek Credential Manager'ına karşı
+`win32cred.CredEnumerate` çalıştırıldı ve bu düzeltmeden ÖNCEye ait on
+gerçek HYCLEUS kimlik bilgisi bulundu (beş `share_2:<hwid>`, beş
+`totp_secret:<hwid>`; eski global `totp_secret` bu makinede hiç
+yazılmamış), hiçbiri şu an bir gölge göstermiyor. Bu notun ÖNCEKİ bir
+sürümü bu yokluğu, `ensure_available()`'ın kazara iyileşmesinin onuncusu
+için de ÇALIŞMIŞ olduğunun kanıtı sayıyordu — ama *bir gölgenin yokluğu,
+"yalnızca bir kez yazıldı" durumunun da TAM OLARAK görünüşüdür*, ve
+denetim kaydı bunu çoğu için EKARTE EDEMİYOR: `create_vault()` taze bir
+kayıtta KENDİ hiçbir denetim satırı yazmıyor (yalnızca
+`reprovision_vault()`'un sarmalayıcısı bir şey logluyor), ve bu
+veritabanının `usb_tokens` tablosu şu an, keyring'de görülmüş beş farklı
+`share_2` hwid'ine karşı yalnızca İKİ satır tutuyor — yani defteri, o
+kayıtların bazıları yazıldığından beri en az bir kez sıfırlanmış, o yüzden
+onların TAM geçmişine de tanıklık edemiyor. Ondan dokuzu için, iki yönde de
+güvenilir bir kanıt yok; dürüst ifade, hiçbirinin gölge göstermediği ama
+bunun "bir kez yazıldılar" mı yoksa "iki kez yazılıp ÇOKTAN iyileştiler"
+mi olduğunun bilinmediğidir.
 
-Diğer on kaydın — bu düzeltme var olmadan ÖNCE, gerçek `main.py`
-koşularıyla yazılmış — neden gölge GÖSTERMEDİĞİ bir mekanizma, sonradan
-uydurulmuş bir şans değil: `main.py` her başlangıçta, o oturumdaki HERHANGİ
-bir `store()` çağrısından ÖNCE, tek bir kez `ensure_available()` çağırıyor.
-`ensure_available()`'ın sonda yazımı (çıplak yuvaya bir kanarya yaz, geri
-oku, sil) o an çıplak yuvayı işgal eden ne varsa `WinVaultKeyring.
-set_password()`'ün SAF bir yan etkisi olarak onun compound hedefine
-TAHLİYE EDİYOR — ve bu tahliye bir EKLEME değil TAM BİR ÜZERİNE YAZMA
-olduğu için, compound hedefi o andaki çıplak yuva değeriyle EZİYOR, o
-kullanıcı adı için varsa herhangi bir eski gölgeyi, hiçbir gölge-farkında
-kod devreye girmeden, İYİLEŞTİRİYOR. Bu tahmin değil, doğrudan yeniden
-üretildi: `u1` yazılıp, sonra `u2` yazılıp (`u1`'in eski değeri kendi
-compound hedefine tahliye edilip), sonra `u1` TEKRAR yazılınca (çıplak
-yuva artık yeni değeri tutuyor, compound hâlâ eskiyi tutuyor — TAM OLARAK
-B-070'in şeklinde, düzeltme-öncesi sentetik bir gölge) compound hedef
-`"OLD-VALUE"` tutmaya devam ediyor; ardından bir kez
-`secret_store.ensure_available()` çağırmak AYNI hedefi, başka HİÇBİR kod
-dokunmadan, `"NEW-VALUE"`'ya çeviriyor. Üç güne yayılmış on farklı hwid'e
-sahip kayıtlar göz önüne alındığında, her yazımdan sonra en az bir
-uygulama başlatması daha olmuş demek — bu kazara iyileşmenin çoktan
-çalışmış olması için yeterli.
+Onuncusu farklı, ve GERÇEKTEN sabitlendi: `audit_log`'da tam olarak bir
+`vault_reprovisioned` satırı var, `hwid=USB-PROBE-TOKEN-ID`,
+`2026-08-28T12:32:05Z` damgalı. `reprovision_vault()` yalnızca
+`recover_master_key()`'den SONRA çalışır — o da (bu satırın kaydettiği
+`kaynak=share_1+share_3` PIN dalında) `share_1`'i okumak için MEVCUT bir
+vault dosyası GEREKTİRİR — yani bu hwid'in özgün bir kayıttan gelen bir
+`share_2`'si zaten kasadaydı, sonra reprovision'ın kendisi İKİNCİ, FARKLI
+bir `share_2` yazdı: gerçek, doğrulanmış bir çift yazım — ve bu düzeltmenin
+commit'iyle (`91a4e21`, yerel `19:31:03+03:00`; reprovision yerel
+`15:32:05+03:00`'teydi) karşılaştırıldığında, `_windows_golge_sil()` var
+olmadan SAATLER önce olmuş bir çift yazım. Bunun bir gölge bırakıp
+bırakmadığı artık kontrol EDİLEMİYOR: kayıt artık kasada HİÇ yok (`CredRead`
+ne çıplak ne compound hedefte buluyor), neredeyse kesin biçimde daha önceki
+bir soruşturmada bu tek kullanımlık hwid'in kullanımından SONRA yapılan
+ilgisiz manuel bir temizlik sırasında silindi — `secret_store.erase()`
+`keyring.delete_password()`'i çağırıyor, o da HER İKİ konumu da koşulsuz
+temizliyor, varsa gölgeyi de birlikte götürerek. Bu soru sorulmadan ÖNCE,
+cevaplamak için gereken kanıt zaten yok edilmişti.
 
-**Bu genel bir garanti DEĞİL, ve düzeltilmiş kod buna DAYANMIYOR.**
-Yukarıdaki iyileşme yalnızca bu MAKİNENİN kullanım örüntüsünde `main.py`
-yazımlar arasında yeniden başladığı İÇİN oluyor; bir üzerine-yazma ile bir
-sonraki yeniden başlatma ARASINDAKİ pencerede incelenen bir gölge — ya da
-uzun bir oturum boyunca birden fazla resealed sırla ARADA yeniden
-başlamadan çalışan bir kurulum — B-070'in ORİJİNAL olarak tarif ettiği
-kadar sömürülebilir kalırdı, İYİLEŞMEMİŞ. Şu an İYİLEŞMEMİŞ bir gölge
-BULUNAMADIĞI için, bu turda ayrı bir başlangıç göçü/temizlik geçişi
-YAZILMADI — bu denetimi yöneten talimata göre; asıl önemli düzeltme zaten
-`store()`/`_reseal_firsatci()` içinde (`91a4e21`), bu her yazımda
-DETERMİNİSTİK olarak kapatıyor ve `ensure_available()`'ın bir daha
-çalışmasına HİÇ bağlı değil.
+**Yani asıl soru "bir gölge var mıydı"dan "iyileşme mekanizması GERÇEKTEN
+çalışıyor mu, ne kadar TAM"a kaydı — ve bu, belirli bir kaydın kaderinden
+BAĞIMSIZ olarak doğrudan cevaplandı.** Gerçek backend'e karşı yeniden
+üretildi, çıkarılmadı: `u1`'i art arda iki kez yazmak, arada BAŞKA HİÇBİR
+şey olmadan, `u1`'in eski değerini kendi compound hedefinde bırakırken
+yenisi çıplak yuvaya gidiyor — bir gölge, İKİNCİ bir kullanıcı adına HİÇ
+gerek kalmadan, yalnızca ikinci bir yazımdan oluşuyor. Sonra, BAĞIMSIZ
+İKİNCİ bir gölgenin BİRLİKTE var olup olamayacağı doğrudan denenerek
+sınandı: alakasız bir `u3` yazmak (kendi gölgesini kurmaya başlamak için)
+o an çıplak yuvayı işgal edeni tahliye ediyor — ki o an bu, gölgelenmiş
+değerini tutan `u1` — ve bu tahliye, `u1`'in compound hedefinin bir EKLEME
+değil TAM BİR ÜZERİNE YAZMASI, yani **`u1`'in gölgesini, tamamen BAŞKA bir
+şey yaparken, yan etki olarak İYİLEŞTİRİYOR** — `u3`'ün kendi gölgesi daha
+VAR OLMADAN. Ancak ONDAN SONRA `u3`'ü iki kez yazmak ikinci bir gölge
+üretiyor — ve o zamana kadar `u1`'inki çoktan gitmiş oluyor. Her adımda
+kontrol edilen sonuç
+(`test_AYNI_ANDA_IKI_golge_YAPISAL_OLARAK_var_olamiyor`): **`HYCLEUS`
+servisinde iki gölge ASLA bir arada var olamıyor.** Tek çıplak yuva demek,
+farklı bir kullanıcı adı için BİR SONRAKİ `set_password()` çağrısının,
+ikinci bir gölge oluşturmadan ÖNCE, o an var olan gölgeyi HER ZAMAN
+iyileştirmesi demek. `ensure_available()`'ın sonda yazımı böyle bir
+çağrının güvenilir bir kaynağı — ayrıca kanıtlandı
+(`test_ensure_available_YAN_ETKI_OLARAK_eski_golgeyi_iyilestiriyor`) — ama
+ÖZEL değil; farklı bir kullanıcı adı için yapılan HERHANGİ gerçek `store()`
+de aynı iyileşmeyi yan etki olarak yapıyor.
+
+**Bu, geçerli olduğu yerde garantiyi PARÇALI değil TAM yapıyor — ama hâlâ
+evrensel değil, ve düzeltilmiş kod buna DAYANMIYOR.** En fazla bir gölge
+var olabildiği için, başka herhangi biri için yapılan bir sonraki yazım
+HER ZAMAN onu TAMAMEN kapatıyor — bu soruyu doğuran "bazılarını iyileştirdi,
+bazılarını kaçırdı" sonucu diye bir şey yok. Kalan boşluk zaten belgelenmiş
+olanla AYNI: gölge yaratan üzerine-yazma bu servisin aldığı SON yazımsa —
+bir daha `store()` yok, bir daha `ensure_available()` çağrısı yok, HİÇ —
+tek gölge süresiz kalıyor, İYİLEŞMEMİŞ, B-070'in ORİJİNAL olarak tarif
+ettiği kadar sömürülebilir. Bu makinede doğrulanacak İYİLEŞMEMİŞ bir gölge
+BULUNAMADIĞI için bu turda bir temizlik geçişi YAZILMADI — bu denetimi
+yöneten talimata göre; asıl önemli düzeltme zaten `store()`/
+`_reseal_firsatci()` içinde (`91a4e21`), bu her yazımda DETERMİNİSTİK
+olarak kapatıyor ve başka birinin bir daha yazmasına HİÇ bağlı değil.
 
 **Ne ölçüldü, ne ölçülmedi.** Yol gerçek donanımda çalıştırıldı (AMD fTPM
 2.0, rev 1.59): mühürleme 1.2 ms, açma 38 ms, tek seferlik anahtar üretimi

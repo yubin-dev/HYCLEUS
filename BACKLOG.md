@@ -3863,4 +3863,40 @@ zaten `store()`/`_reseal_firsatci()` içinde (`91a4e21`) ve
 `ensure_available()`'ın bir daha çalışmasına bağlı değil. Ayrıntı
 SECURITY.md §4.13'te.
 
+### 2026-08-28 (2. devam) — yukarıdaki not fazla iddialıydı: "gölge yok" ile "hiç yazılmadı" ayırt edilemiyordu
+
+Yukarıdaki not "10 kaydın hepsi düzeltme-öncesi çift yazıldı ve iyileşti"
+gibi okunuyordu. Bu iddia GÖLGE OLMAMASINDAN çıkarılmıştı — ama gölgenin
+olmaması "bir kez yazıldı, hiç iyileşmeye gerek yoktu" durumunun da TAM
+OLARAK aynı görünüşü. `create_vault()` taze kayıtta hiçbir denetim satırı
+yazmıyor ve bu veritabanının `usb_tokens` tablosu (2 satır) keyring'de
+görülen 5 farklı `share_2` hwid'inin çok gerisinde — yani en az bir kez
+sıfırlanmış, tam yazım geçmişine tanıklık edemiyor. Ondan DOKUZU için
+gerçekte hiç çift yazım olup olmadığı BİLİNMİYOR.
+
+Onuncusu (`USB-PROBE-TOKEN-ID`) farklı ve GERÇEKTEN doğrulandı:
+`audit_log`'daki tek `vault_reprovisioned` satırı (`2026-08-28T12:32:05Z`,
+`kaynak=share_1+share_3`) yapısal olarak bir ÖNCEKİ `share_2`'nin var
+olmasını gerektiriyor (PIN dalı `share_1`'i MEVCUT bir vault dosyasından
+okuyor) — yani gerçek, çift bir yazım oldu, ve bu düzeltmenin commit'inden
+(`91a4e21`, yerel 19:31) SAATLER önce (reprovision yerel 15:32). Ama bu
+kaydın kendisi artık kasada YOK (`CredRead` ne çıplak ne compound'da
+buluyor) — muhtemelen daha önceki bir soruşturmadan kalan bu tek kullanımlık
+hwid'in `secret_store.erase()` ile temizlenmesi sırasında (o, hem çıplak
+hem compound'u koşulsuz siliyor). Gölge bırakıp bırakmadığı artık kontrol
+EDİLEMİYOR — kanıt, soru sorulmadan önce yok edilmişti.
+
+O yüzden asıl soru mekanizmanın KENDİSİNE kaydırıldı, belirli bir kaydın
+kaderinden bağımsız: gerçek backend'e karşı doğrudan denendi, İKİ gölge
+AYNI ANDA var olabiliyor mu? Cevap HAYIR — YAPISAL OLARAK olamıyor. Tek
+çıplak yuva demek, ikinci bir gölge oluşmadan ÖNCE, farklı bir kullanıcı
+adı için yapılan BİR SONRAKİ yazımın, o an var olan (en fazla TEK) gölgeyi
+her zaman iyileştirmesi demek —
+`tests/test_tpm_sealing.py::test_AYNI_ANDA_IKI_golge_YAPISAL_OLARAK_var_olamiyor`
+bunu adım adım kanıtlıyor. Yani healing garantisi, geçerli olduğu yerde,
+"bazılarını iyileştirir bazılarını kaçırır" değil — TAM. Ama hâlâ evrensel
+değil: gölge yaratan yazım servisin aldığı SON yazımsa (bir daha hiç
+`store()`/`ensure_available()` çağrısı olmazsa) tek gölge süresiz kalır,
+İYİLEŞMEMİŞ. SECURITY.md §4.13 bu turda buna göre düzeltildi.
+
 ---

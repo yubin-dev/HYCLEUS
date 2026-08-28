@@ -804,6 +804,115 @@ def test_ensure_available_YAN_ETKI_OLARAK_eski_golgeyi_iyilestiriyor(
             _sil(hedef)
 
 
+def test_AYNI_ANDA_IKI_golge_YAPISAL_OLARAK_var_olamiyor(
+    use_keyring_backend,  # type: ignore[no-untyped-def]
+) -> None:
+    """
+    B-070'in 2026-08-28 (2. devam) notunun sorduğu soru: "tek bir
+    ensure_available() çağrısı AYNI ANDA var olan İKİ farklı kullanıcının
+    gölgesini de mi iyileştiriyor, yoksa yalnızca o an çıplak (bare) yuvayı
+    işgal edeni mi?" GERÇEK Windows Credential Manager'da doğrudan denendi
+    ve cevap beklenenden daha güçlü çıktı: **iki gölge aynı anda VAR
+    OLAMIYOR bile** — tek bir "çıplak" (bare) yuva olduğu için, YENİ bir
+    kullanıcı adı yazmak HER ZAMAN o an bare'i işgal edeni compound'a
+    tahliye ediyor ve bu tahliye bir EKLEME değil TAM ÜZERİNE YAZMA olduğu
+    için, ikinci bir gölge inşa etmeye başlamadan ÖNCE ilk gölge zaten
+    kendiliğinden iyileşmiş oluyor.
+
+    Bu testte: u1 iki kez yazılıp bir gölge oluşturuluyor (c1=ESKİ),
+    sonra TAMAMEN alakasız bir üçüncü kullanıcı (u3) yazılıyor — bu, u1'i
+    tahliye ederken c1'i GÜNCEL değerle EZİYOR (gölge #1 burada, herhangi
+    bir ensure_available() çağrısı OLMADAN, iyileşiyor). Ancak SONRA u3
+    kendisi de iki kez yazılarak KENDİ gölgesi (c3=ESKİ) oluşturuluyor —
+    bu noktada sistemde YALNIZCA TEK bir gölge var (c3), c1 zaten sağlam.
+    Son olarak `ensure_available()` bir kez çağrılıyor ve o TEK gölgeyi de
+    iyileştiriyor — sistemde HİÇ gölge kalmıyor.
+
+    Sonuç: SECURITY.md'nin healing garantisi "birden fazla gölgeden
+    yalnızca biri iyileşir" diye SINIRLI değil — sistemde birden fazla
+    gölge zaten YAPISAL OLARAK bulunamıyor, o yüzden tek bir sonraki yazım
+    (ensure_available() dahil, ama onunla sınırlı değil) her zaman TÜM
+    (yani tek olan) gölgeyi kapatıyor.
+    """
+    if sys.platform != "win32":
+        pytest.skip("Windows Credential Manager'a özgü davranış")
+    try:
+        import pywintypes
+        import win32cred
+        from keyring.backends.Windows import WinVaultKeyring
+    except ImportError:
+        pytest.skip("pywin32 kurulu değil")
+
+    use_keyring_backend(WinVaultKeyring())
+
+    service = "HYCLEUS-COKLU-GOLGE-TEST"
+    u1, u2, u3, u4 = "cg-u1", "cg-u2", "cg-u3", "cg-u4"
+    c1, c2, c3, c4 = (f"{u}@{service}" for u in (u1, u2, u3, u4))
+
+    def _sil(target: str) -> None:
+        try:
+            win32cred.CredDelete(Type=win32cred.CRED_TYPE_GENERIC, TargetName=target)
+        except pywintypes.error:
+            pass
+
+    def _oku(target: str) -> str | None:
+        try:
+            c = win32cred.CredRead(Type=win32cred.CRED_TYPE_GENERIC, TargetName=target)
+            return c["CredentialBlob"].decode("utf-16-le")
+        except pywintypes.error:
+            return None
+
+    for hedef in (u1, u2, u3, u4, c1, c2, c3, c4, service):
+        _sil(hedef)
+
+    try:
+        # ── Gölge #1: u1 iki kez yazılıyor (u2 arada onu tahliye ediyor) ────
+        keyring.set_password(service, u1, "U1-ESKI")
+        keyring.set_password(service, u2, "u2-degeri")
+        keyring.set_password(service, u1, "U1-YENI")
+        assert _oku(c1) == "U1-ESKI", "ön koşul: gölge #1 oluşmalıydı"
+
+        # ── u3 yazılınca u1 TEKRAR tahliye edilir — bu, herhangi bir
+        # ensure_available() çağrısı OLMADAN, gölge #1'i GÜNCEL değerle
+        # ezerek kendiliğinden iyileştirir. ────────────────────────────────
+        keyring.set_password(service, u3, "U3-ESKI")
+        assert _oku(c1) == "U1-YENI", (
+            "gölge #1, u3'ün yazımı sırasında kendiliğinden İYİLEŞMEDİ — "
+            "yapısal iddia yanlış olabilir"
+        )
+
+        # ── Gölge #2: u3 TEKRAR yazılıyor (u4 arada onu tahliye ediyor) ────
+        keyring.set_password(service, u4, "u4-degeri")
+        keyring.set_password(service, u3, "U3-YENI")
+        assert _oku(c3) == "U3-ESKI", "ön koşul: gölge #2 oluşmalıydı"
+
+        # ── BU ANDA sistemde YALNIZCA gölge #2 var; gölge #1 çoktan
+        # iyileşmişti. İki gölge AYNI ANDA hiç bir arada bulunmadı. ─────────
+        assert _oku(c1) == "U1-YENI", "gölge #1 tekrar canlanmış olamaz"
+
+        # ── Tek bir ensure_available() çağrısı, o TEK kalan gölgeyi de
+        # kapatmalı. ─────────────────────────────────────────────────────
+        onceki_service = secret_store.SERVICE
+        secret_store.SERVICE = service
+        try:
+            secret_store.ensure_available()
+        finally:
+            secret_store.SERVICE = onceki_service
+
+        assert _oku(c3) == "U3-YENI", (
+            "ensure_available() sistemdeki TEK gölgeyi bile iyileştiremedi"
+        )
+        assert _oku(c1) == "U1-YENI", "gölge #1 hâlâ sağlam olmalı"
+
+        # Hiçbir kullanıcı adının kendi değeri, kendi gölgesiyle asla
+        # ÇELİŞMİYOR — sistemde ŞU AN hiçbir gölge yok.
+        assert keyring.get_password(service, u1) == "U1-YENI"
+        assert keyring.get_password(service, u3) == "U3-YENI"
+    finally:
+        for hedef in (u1, u2, u3, u4, c1, c2, c3, c4, service):
+            _sil(hedef)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. Görünürlük — düşüş SESSİZ olmamalı
 # ══════════════════════════════════════════════════════════════════════════════
