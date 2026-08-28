@@ -4284,4 +4284,61 @@ kanıtı gerçek dosyalara dokunmadan sağlıyor).
 Tam test suite: 2735 passed, 4 skipped (bir önceki turdan +6: yeni
 dosyanın 7 testi eksi silinen dosyanın 1 testi).
 
+### 2026-08-29 (devam) — kapsam kanıtlandı ve genişletildi: alt dizinler + CORE/DB exception mesajları
+
+Bir sonraki turda taramanın KENDİSİNİN kapsam iddiası (§ "Kalıcı çözüm")
+iki yönden sınandı — kanıtlanmadan varsayılmaması istendi:
+
+**1. `UI/` alt dizinleri.** `UI/*.py` glob'u yalnızca üst düzeydi.
+`UI/` bugün alt dizin içermiyor (yalnızca `__pycache__`), ama gerçek bir
+kanıt gerekiyordu: geçici `UI/_gecici_altdizin_kaniti/sahte.py` dosyasına
+bir `AIR-GAPPED` dizesi ekilip tarama çalıştırıldı — 7/7 test YEŞİL
+kaldı, yani desen bir alt dizindeki dosyayı SESSİZCE atlıyordu. `glob`
+`rglob`'a (`__pycache__` hariç) çevrildi; aynı ekili dosya bu kez
+yakalandı. Geçici dosya/dizin kanıttan hemen sonra silindi; kalıcı bir
+`tmp_path` regresyon testi (`test_tarayici_ALT_DIZINDEKI_dosyayi_da_
+yakaliyor`) düzeltmeyi koruyor.
+
+**2. CORE/DB exception mesajları.** `USBAuthError`, `VaultTamperedError`,
+`AuthenticationError`, `BackupError`, `CheckoutError`, `TrustedRootError`,
+`PinRotationError` gibi CORE/DB'de tanımlı exception sınıflarının
+mesajlarının `str(exc)` yoluyla UI'ye HAM ulaşıp ulaşmadığı grep ile
+izlendi. Sonuç: ULAŞIYOR — `AdminPanel.py:729,1282`,
+`main_window_open.py:131,237,342`, `main_window_lock.py:230,234,258`,
+`ProfileDialog.py:355,358`, `main_window_files.py:313`,
+`login_dialog.py:1094`, `PinRotationDialog.py:207` hepsi bir exception'ı
+doğrudan `QMessageBox`'a geçiriyor. Bu yüzden bir CORE/DB exception mesajı
+da bir UI string'i kadar kullanıcıya açık — tarama genişletildi.
+
+CORE/DB'nin TÜM string sabitlerini (UI/'deki yöntemin aynısıyla) taramak
+önce denendi. Sonuç 8 ihlal, 7'si YANLIŞ POZİTİF: `backup.py`, `hclx.py`,
+`rate_limit.py`, `timestamp.py`, `timestamp_verify.py`'nin modül
+docstring'leri "çevrimdışı kaba kuvvet" (saldırganın yapabileceği) ve
+"ÇEVRİMDIŞI DOĞRULANMASI" (isim-fiil, konu tanıtımı) gibi hiçbir
+kullanıcının görmediği, izinli listenin kapsamadığı biçimlerde metin
+içeriyordu. Tarama bunun yerine yalnızca `raise SinifAdi(...)`
+çağrılarının İÇİNDEKİ string sabitlerine daraltıldı
+(`_raise_mesaj_sabitlerini_topla`) — CORE/DB'nin `str(exc)` yoluyla
+gerçekten sızabilecek TEK kaynağı. Bu yedi yanlış pozitifi ortadan
+kaldırdı ve tek gerçek isabeti korudu: `CORE/timestamp.py:672`'nin
+`"...bu damga sonradan çevrimdışı doğrulanamaz."` mesajı — bir SINIRLAMA
+bildirimi (sertifika gömülmemişse doğrulama YAPILAMAZ), bir mimari iddia
+değil; izin verilen bağlam listesine "çevrimdışı doğrulanamaz" olarak
+eklendi.
+
+**Yeni testler (5, dosyanın toplamı 13'e çıktı):**
+`test_mevcut_CORE_dosyalarindaki_docstring_mesru_kullanimlar_YANLIS_
+POZITIF_URETMIYOR`, `test_raise_icindeki_enjekte_edilen_terim_CORE_
+taramasinda_yakalaniyor`, `test_raise_DISINDAKI_docstring_CORE_
+taramasinda_YAKALANMIYOR`, `test_core_db_dosyasi_mi_yol_ayrimi_dogru`,
+`test_gercek_CORE_timestamp_dosyasinin_raise_mesaji_UYGUN_ALLOWLIST_ile_
+GECIYOR` — artı alt dizin kapsamı için `test_tarayici_ALT_DIZINDEKI_
+dosyayi_da_yakaliyor`. Toplam 13 test, hepsi yeşil.
+
+SECURITY.md §6.8 (EN+TR) 2026-08-29 tarihli bir paragrafla güncellendi;
+`test_belge_dil_paritesi.py` (27/27) ile doğrulandı.
+
+Tam test suite: 2741 passed, 4 skipped (bir önceki turdan +6 — bu dosyaya
+eklenen 6 yeni test: yukarıda sayılan 5 + alt dizin kapsamı testi).
+
 ---

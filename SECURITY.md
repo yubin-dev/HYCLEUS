@@ -1749,7 +1749,7 @@ failure mode a second pair of eyes catches.
 
 **A fourth, project-specific check runs in the same `pytest` suite as
 everything else in this document:** `tests/test_ui_yasakli_iddia_terimleri.py`
-parses every string constant in every `UI/*.py` file (via `ast`, so
+parses every string constant in every `UI/**/*.py` file (via `ast`, so
 comments are never scanned — only what could actually reach the screen)
 and fails the build if a banned, unverified architecture claim appears.
 The list, and why each entry is on it:
@@ -1768,6 +1768,40 @@ a mockup into `UI/login_dialog.py`, 2026-08-26). The fix that caught the
 second leak checked one file; this one checks every file `UI/` will ever
 have, the same structural move B-056 made for a drifting module count
 in this README. Full incident history: **B-071** in `BACKLOG.md`.
+
+**2026-08-29 — extended to `UI/`'s subdirectories and to `CORE`/`DB`
+exception messages.** Two follow-up gaps were measured and closed in the
+same file:
+
+1. The glob was `UI/*.py` (top level only). `UI/` has no subdirectory
+   today, but a planted file under a temporary `UI/_gecici_altdizin_kaniti/`
+   proved the pattern would have silently skipped one — the scan stayed
+   green with a live `AIR-GAPPED` string sitting one level down. Switched
+   to a recursive walk (excluding `__pycache__`); the same planted file was
+   then caught, and a permanent `tmp_path` regression test now guards the
+   fix.
+2. `CORE`/`DB` define the exception classes (`USBAuthError`,
+   `VaultTamperedError`, `AuthenticationError`, `BackupError`,
+   `CheckoutError`, `TrustedRootError`, `PinRotationError`, and others) whose
+   `str(exc)` reaches the user raw in several places — `AdminPanel.py`,
+   `main_window_open.py`, `main_window_lock.py`, `ProfileDialog.py`,
+   `main_window_files.py`, `login_dialog.py`, `PinRotationDialog.py` all
+   pass an exception straight into a `QMessageBox`. A CORE/DB exception
+   message is therefore exactly as user-facing as a UI string and needed
+   the same scan. Scanning *every* string constant in CORE/DB (the same
+   method used for `UI/`) was tried first and measured to produce real
+   false positives: module docstrings in `backup.py`, `hclx.py`,
+   `rate_limit.py`, `timestamp.py`, and `timestamp_verify.py` discuss
+   offline verification and offline brute-force attacks in prose no user
+   ever sees, using grammatical forms (negations, nominalizations) the
+   allowlist didn't cover. The scan was narrowed instead to only the string
+   arguments of `raise SomeError(...)` calls — the one part of CORE/DB that
+   can actually leak through `str(exc)`. That eliminated all seven false
+   positives and kept the one genuine hit
+   (`CORE/timestamp.py:672`'s `"...bu damga sonradan çevrimdışı
+   doğrulanamaz."`, a limitation notice, not an architecture claim), which
+   was added to the allowed-context list alongside the existing
+   "çevrimdışı doğrula-" forms.
 
 ---
 ---
@@ -3508,7 +3542,7 @@ ikinci bir çift gözün yakaladığı şey tam olarak budur.
 
 **Dördüncü, projeye özgü bir kontrol de bu belgedeki her şeyle AYNI
 `pytest` suite'inde çalışıyor:** `tests/test_ui_yasakli_iddia_terimleri.py`
-`UI/*.py` altındaki HER dosyadaki her string sabitini (`ast` ile, yani
+`UI/**/*.py` altındaki HER dosyadaki her string sabitini (`ast` ile, yani
 yorumlar HİÇ taranmıyor — yalnızca ekrana gerçekten çıkabilecek şeyler)
 ayrıştırıyor ve yasaklı, doğrulanmamış bir mimari iddia bulursa yapıyı
 kırıyor. Liste, ve her maddenin neden orada olduğu:
@@ -3528,3 +3562,37 @@ bir mockup'tan doğrudan `UI/login_dialog.py`'ye kopyaladı, 2026-08-26).
 kontrol `UI/`'nin bundan sonra sahip olacağı HER dosyayı kapsıyor —
 B-056'nın bu README'deki sürüklenen modül sayısı için yaptığı AYNI
 yapısal hamle. Olayın tam geçmişi: `BACKLOG.md`'de **B-071**.
+
+**2026-08-29 — `UI/`'nin alt dizinlerine ve `CORE`/`DB` exception
+mesajlarına genişletildi.** Aynı dosyada iki takip boşluğu ölçüldü ve
+kapatıldı:
+
+1. Desen `UI/*.py`'ydi (yalnızca üst düzey). `UI/` bugün alt dizin
+   içermiyor, ama geçici bir `UI/_gecici_altdizin_kaniti/` altına ekilen
+   bir dosya, deseninin bir alt dizindekini sessizce atlayacağını
+   kanıtladı — bir seviye aşağıda duran canlı bir `AIR-GAPPED` dizesiyle
+   tarama yeşil kaldı. Özyinelemeli bir taramaya geçildi (`__pycache__`
+   hariç); aynı ekili dosya sonra yakalandı ve düzeltmeyi kalıcı bir
+   `tmp_path` regresyon testi koruyor.
+2. `CORE`/`DB`, `str(exc)` yoluyla kullanıcıya HAM ulaşan exception
+   sınıflarını (`USBAuthError`, `VaultTamperedError`, `AuthenticationError`,
+   `BackupError`, `CheckoutError`, `TrustedRootError`, `PinRotationError` ve
+   diğerleri) tanımlıyor — `AdminPanel.py`, `main_window_open.py`,
+   `main_window_lock.py`, `ProfileDialog.py`, `main_window_files.py`,
+   `login_dialog.py`, `PinRotationDialog.py` hepsi bir exception'ı doğrudan
+   bir `QMessageBox`'a geçiriyor. Bir CORE/DB exception mesajı bu yüzden bir
+   UI dizesi kadar kullanıcıya açık ve aynı taramayı gerektiriyordu.
+   CORE/DB'nin TÜM string sabitlerini taramak (`UI/`'de kullanılan yöntemin
+   aynısı) önce denendi ve gerçek yanlış-pozitifler ürettiği ölçüldü:
+   `backup.py`, `hclx.py`, `rate_limit.py`, `timestamp.py`,
+   `timestamp_verify.py`'nin modül docstring'leri, hiçbir kullanıcının
+   görmediği düz yazıda çevrimdışı doğrulamayı ve çevrimdışı kaba kuvvet
+   saldırılarını, izin verilen listenin kapsamadığı dilbilgisi biçimleriyle
+   (olumsuzlar, isim-fiiller) tartışıyor. Tarama bunun yerine yalnızca
+   `raise SomeError(...)` çağrılarının string argümanlarına daraltıldı —
+   CORE/DB'nin `str(exc)` yoluyla gerçekten sızabilecek TEK parçası. Bu,
+   yedi yanlış pozitifin tamamını ortadan kaldırdı ve tek gerçek isabeti
+   korudu (`CORE/timestamp.py:672`'nin
+   `"...bu damga sonradan çevrimdışı doğrulanamaz."` mesajı — bir SINIRLAMA
+   bildirimi, bir mimari iddia değil), bu da mevcut "çevrimdışı doğrula-"
+   biçimlerinin yanına izin verilen bağlam listesine eklendi.
