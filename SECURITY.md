@@ -548,6 +548,32 @@ stored somewhere the machine's attacker cannot reach: a safe, a deposit box,
 a different building. A recovery share photographed onto a phone, stored in
 a password manager or left in a cloud note reduces the scheme to 1-of-2.
 
+**That "disk access" path also needs to know which hwid to combine the
+share with — and whether that is hard depends entirely on which layer is
+asked to do it.** `CORE/recover_vault.py`'s CLI entry points
+(`_cmd_export`/`_cmd_recover`/`_cmd_status`) each call `_require_hwid()`
+as the *first line of their own body*, not from `main()`'s dispatch —
+proven by calling them directly, bypassing `main()` entirely, and
+watching the USB check still fire (`tests/test_kurtarma_usb_kapisi.py`).
+But `CORE/vault_manager.py::recover_master_key()` — the function that
+actually does the math — has no such check anywhere in its source
+(confirmed by reading it, not inferring it): it takes `hwid` as a plain
+string argument and never calls `get_usb_hwid()`. Called directly,
+bypassing the CLI script entirely, with an hwid read off the
+`data/vaults/<hwid>.hclv` filename (no USB, and in the "share_1 lost"
+branch, no PIN either), it reconstructs the real master key — proven
+end to end, not asserted. This is not a bug and was not fixed: baking a
+physical-USB check into `recover_master_key()` itself would foreclose
+the very design **B-036** is still deciding whether to build (a
+paper-share-plus-PIN recovery path for a *genuinely* lost USB) — the
+core function deliberately does not police how its caller came to know
+`hwid`, only the CLI script does. The practical reading: `_require_hwid()`
+is a real defense *only when the vault is operated through its standard
+CLI entry point as intended* — it adds nothing against an attacker who
+already has the code-execution capability this document's M2/M3 models
+assume, which is exactly the class §4.5 says application-level controls
+never reach. Full analysis and line references: **B-069**.
+
 The recovery share is **derivable, not random**: it is `f(3)` of the same
 polynomial, so anyone holding the other two shares can reproduce it at any
 time. Re-exporting does not rotate it. Rotating it means re-splitting, which
@@ -2266,6 +2292,33 @@ Dolayısıyla kurtarma parçası master key'e denk muamele görmeli ve makinenin
 saldırganının ulaşamayacağı bir yerde saklanmalıdır: kasa, kiralık kasa,
 başka bir bina. Telefona fotoğraflanmış, parola yöneticisine konmuş ya da
 bulut notunda bırakılmış bir kurtarma parçası şemayı 1-of-2'ye düşürür.
+
+**Yukarıdaki "disk erişimi" yolu da payı hangi hwid ile birleştireceğini
+bilmeyi gerektiriyor — bunun ne kadar zor olduğu TAMAMEN hangi katmana
+sorulduğuna bağlı.** `CORE/recover_vault.py`'nin CLI giriş noktaları
+(`_cmd_export`/`_cmd_recover`/`_cmd_status`) her biri `_require_hwid()`'i
+KENDİ gövdesinin ilk satırında çağırıyor, `main()`'in dispatch'inden
+değil — `main()` hiç çalıştırılmadan bu fonksiyonlar doğrudan çağrılıp
+USB kontrolünün yine de tetiklendiği kanıtlandı
+(`tests/test_kurtarma_usb_kapisi.py`). Ama asıl matematiği yapan
+`CORE/vault_manager.py::recover_master_key()`'in kaynağında böyle bir
+kontrol HİÇ yok (okunarak doğrulandı, çıkarım yapılmadı): hwid'i sıradan
+bir string parametresi olarak alıyor ve hiçbir zaman `get_usb_hwid()`
+çağırmıyor. CLI script'ine hiç uğramadan, `data/vaults/<hwid>.hclv`
+dosya adından okunan bir hwid ile (USB yok, "share_1 kayıp" dalında PIN
+de yok) doğrudan çağrıldığında gerçek master_key'i geri getiriyor —
+uçtan uca kanıtlandı, varsayılmadı. Bu bir hata değil ve düzeltilmedi:
+`recover_master_key()`'in kendisine koşulsuz bir fiziksel-USB kontrolü
+gömmek, **B-036**'nın hâlâ karar bekleyen tasarımını (gerçekten kaybolan
+bir USB için basılı parça + PIN ile kurtarma) YAPISAL OLARAK imkânsız
+kılardı — çekirdek fonksiyon, çağıranın `hwid`'i NASIL bildiğini
+bilerek denetlemiyor, yalnızca CLI script'i denetliyor. Pratik okuma:
+`_require_hwid()` YALNIZCA kasa standart CLI giriş noktasından, olağan
+şekilde çalıştırıldığında gerçek bir savunma — bu belgenin M2/M3
+modellerinin zaten varsaydığı kod-çalıştırma yeteneğine sahip bir
+saldırgana karşı hiçbir şey katmıyor, ki bu tam olarak §4.5'in
+"uygulama seviyesi kontroller asla ulaşmaz" dediği sınıf. Tam analiz ve
+satır referansları: **B-069**.
 
 Kurtarma parçası **rastgele değil, türetilebilirdir**: aynı polinomun
 `f(3)`'ü olduğu için diğer iki paya sahip olan onu her an yeniden

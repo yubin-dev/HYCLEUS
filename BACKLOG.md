@@ -3840,8 +3840,76 @@ duran tek savunmayı bilerek kaldıran, §4.4'ün zaten uyardığı saldırı
 yolunu açan gerçek bir mimari gerileme" olurdu. Restyle kapsamının çok
 ötesinde bir karar, ve kapsam dışı kalmaya devam ediyor.
 
-Test: yok — yalnızca belge girişi, kod değişikliği yapılmadı (bu tur da
-dahil: yalnızca gerekçe metni koddan yeniden doğrulandı).
+### 2026-08-28 (devam 2) — `_require_hwid()`'in TAM OLARAK nerede uygulandığı sorgulandı: kapı KISMEN atlanabiliyor, "fiili tek savunma" ifadesi düzeltildi
+
+Yukarıdaki 3. madde "USB gereksinimini fiilen dayatan TEK şey
+`_require_hwid()`'in bilinçli reddi" diyordu ama HANGİ katmanda
+uygulandığını ayırt etmiyordu. İki ayrı katman var, doğrudan çağrı ile
+denendi (`tests/test_kurtarma_usb_kapisi.py`):
+
+**Katman 1 — `CORE/recover_vault.py::_cmd_export`/`_cmd_recover`/
+`_cmd_status` (satır 105/127/215): kapı fonksiyonun KENDİ gövdesine
+gömülü, `main()`'in dispatch'ine değil.** `main()` hiç çalıştırılmadan,
+modül doğrudan içe aktarılıp bu üç fonksiyon tek tek çağrıldığında
+(`get_usb_hwid()` `None` dönecek şekilde) üçü de `SystemExit` ile
+duruyor — kanıtlandı, kapı bu katmanda ATLANAMIYOR.
+
+**Katman 2 — `CORE/vault_manager.py::recover_master_key()`: kapı hiç
+YOK.** Fonksiyonun kaynağında (`inspect.getsource()`) `get_usb_hwid` ya
+da `_require_hwid` geçen TEK satır bile yok. Doğrudan kanıtlandı: gerçek
+bir vault kurulup, hwid USB'ye HİÇ dokunmadan yalnızca `data/vaults/`
+dizin listesinden okunup, `recover_master_key()` `CORE/recover_vault.py`'ye,
+`main()`'e, `_require_hwid()`'e hiç uğramadan doğrudan çağrıldı —
+Seçenek 2'de (share_1 kayıp dalı) **PIN bile verilmeden** — ve doğru
+master_key GERİ GELDİ.
+
+**Sonuç: "kapı atlanabiliyor mu" sorusunun tek bir cevabı yok — katmana
+göre değişiyor.** `python CORE/recover_vault.py --recover` standart
+giriş noktasından çağrıldığında kapı sağlam. Ama bu makineye Python kod
+çalıştırma erişimi olan biri — bu depoda zaten M2/M3'ün varsayılan
+yeteneği, §4.5'in "uygulama arayüzünü değil, dosyaları/kodu doğrudan
+işleten saldırganı sınırlamaz" dediği tam o sınıf — `CORE.vault_manager.
+recover_master_key()`'i doğrudan içe aktarıp çağırarak kapıyı TAMAMEN
+atlayabilir.
+
+**Kapı `recover_master_key()`'e BİLEREK TAŞINMADI.** Bunun mimari bir
+sebebi var: B-069'un bu maddesi zaten kapıyı kaldırmanın riskini
+tartışıyor, ama B-036 (açık, karar bekliyor) tam olarak "USB fiziksel
+kaybolduğunda basılı parça + PIN ile" bir kurtarma akışı EKLEME
+olasılığını değerlendiriyor. `recover_master_key()`'in kendisine
+koşulsuz bir fiziksel-USB kontrolü gömmek, B-036'nın öngördüğü o
+gelecekteki tasarımı YAPISAL OLARAK imkânsız kılardı — çekirdek
+fonksiyon kasıtlı olarak "hwid'i BİLEN çağıranın" ne yoldan bildiğine
+karışmıyor; hangi girdinin GÜVENİLİR sayılacağına dış katman
+(`recover_vault.py` bugün, olası bir B-036 akışı yarın) karar veriyor.
+
+**Düzeltme — "fiili tek savunma" ifadesi daraltıldı:** yukarıdaki 3. ve
+4. maddelerdeki "`_require_hwid()` bu saldırı yolu için fiilen devrede
+olan TEK savunma" ifadesi, "`_require_hwid()`, YALNIZCA standart CLI
+giriş noktasından (`python CORE/recover_vault.py --recover`) olağan
+şekilde çağrıldığında geçerli olan bir savunma — kod çalıştırma erişimi
+olan bir saldırgana karşı hiçbir koruma sağlamıyor" şeklinde okunmalı.
+Bu, §4.5'in zaten kurduğu çerçeveyle TUTARLI: uygulama seviyesi
+kontroller uygulamanın arayüzünü sınırlar, dosya/kod erişimi olan
+saldırganı değil — `_require_hwid()` de bir istisna değil, aynı sınıfın
+bir örneği.
+
+**Karar YİNE DE DEĞİŞMEDİ.** Katman 1'in (CLI script) sağlam olması,
+mockup'taki ekranın Katman 1'e (yani `_cmd_recover()`'ın KENDİSİNE, USB
+kontrolünü atlamadan) eklenmesi hâlâ mümkün OLMADIĞI anlamına gelmiyor
+— tam tersi, tam da bu yüzden hâlâ eklenmeyecek: böyle bir ekran, tanım
+gereği, Katman 1'in USB kontrolünü YOKSAYAN yeni bir giriş noktası
+olurdu (aksi hâlde "USB kayıp" senaryosunu hiç çözmezdi), yani Katman
+2'nin zaten sahip olduğu USB'siz erişimi UYGULAMANIN KENDİ ARAYÜZÜNE
+taşırdı — bugün yalnızca kod çalıştırma erişimi gerektiren bir şeyi,
+uygulamayı normal şekilde kullanan HERKESE açardı.
+
+SECURITY.md §4.4 bu ayrıma göre güncellendi.
+
+Test: `tests/test_kurtarma_usb_kapisi.py` — 5 test, ikisi Katman 1'in
+sağlam olduğunu (üç `_cmd_*` fonksiyonu doğrudan çağrıldığında bile
+`SystemExit`), ikisi Katman 2'de kapının YOKLUĞUNU (kaynak taraması +
+uçtan uca gerçek kurtarma, PIN'siz dal dahil) kanıtlıyor.
 
 ---
 
