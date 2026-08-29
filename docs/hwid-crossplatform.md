@@ -230,3 +230,50 @@ değil ama fiziksel erişim gerektiriyor.
 
 Önerinin kendisi o ölçüme **bağlı değil**: serisiz aygıtların makineler
 arasında farklı HWID alması tek başına yeterli gerekçe ve o zaten ölçüldü.
+
+---
+
+## 2026-08-29 — yeniden doğrulama denendi, sonuç: fiziksel erişim hâlâ yok; onun yerine karşılaştırma bir araca dönüştürüldü
+
+Görev "hwid_probe.py'nin sonucunu doğrula: üç platformda (veya elindeki
+platformlarda) test et" idi. Dürüst sonuç: **bu oturumun ortamında elde
+hiçbir platform yok** — takılı bir USB depolama aygıtı bulunmuyor
+(`python -m CORE.hwid_probe` bugün burada çalıştırıldı, çıktı: `USB
+depolama aygıtı bulunamadı.`) ve bu ortamdan yalnızca Windows'a
+erişilebiliyor, Linux ya da macOS makinesi yok. Yani yukarıdaki "Sonraki
+adım için gereken" bölümünün beklediği ölçüm — aynı çubuğun Linux'ta
+`ID_SERIAL_SHORT` ile okunması — bugün de alınamadı. Bu, B-016'nın
+Windows tarafında gerçek donanımla (2026-08-16, 2026-08-19) vardığı
+sonucu ZAYIFLATMIYOR; yalnızca bu turun onu TEKRARLAYAMADIĞINI söylüyor.
+
+Elde donanım olmadan yapılabilecek gerçek iş şuydu: yukarıdaki adımı
+"aynı çubuğu üç OS'a takıp elle karşılaştır"dan çıkarıp **çalıştırılabilir
+bir araca** çevirmek. `CORE/hwid_probe.py`'ye eklendi:
+
+- `python -m CORE.hwid_probe --json > <platform>.json` — bu platformun
+  okumasını (ham alanlar, `stable_id` HARİÇ — o türetilmiş, her yüklemede
+  yeniden hesaplanıyor) dosyaya yazar.
+- `python -m CORE.hwid_probe --compare A.json B.json` — iki dosyayı
+  karşılaştırır, `CORE/backup_cli.py` ile aynı çıkış kodu deseniyle döner
+  (0 eşleşti, 1 eşleşmedi, 2 kullanım hatası) — bir CI adımı ya da betik
+  bunu okuyabilir.
+
+`tests/test_hwid_probe.py`'ye bu iki bayrağı ve altındaki serileştirme
+mantığını (`to_dict`/`from_dict`/`dump_json`/`load_json`/`compare_all`)
+sınayan 15 yeni test eklendi (§7). Bunların hiçbiri donanım gerektirmiyor
+— sınanan JSON round-trip'i ve karşılaştırma/çıkış-kodu mantığı, aşağıdaki
+tablonun zaten söylediği sınırın DIŞINDA kalan bir katman. `--compare`'in
+çıkış kodu canlı bir mutasyonla doğrulandı: satır geçici olarak her zaman
+`0` dönecek şekilde bozuldu, `test_cli_compare_ESLESMEZSE_cikis_kodu_1`
+beklendiği gibi kırıldı, sonra geri alındı.
+
+**Değişmeyen şey — aşağıdaki tablo hâlâ doğru:** `pyudev`/sysfs ve
+`ioreg`'in gerçek Linux/macOS makinelerinde belgelenmiş biçimde çıktı
+verdiği bugün de doğrulanamadı. Kazanılan şey, o doğrulamanın günü
+geldiğinde iki komuttan ibaret olması — elle karşılaştırma değil.
+
+Ayrı bir mimari madde açılmadı: aşağıdaki "Öneri: dosya tabanlı token'a
+geçiş" zaten var ve B-016'nın gerçek donanım ölçümüyle daralttığı
+kapsamla (serili aygıtlar geçiş gerektirmiyor, serisiz aygıtlar asıl
+kalan boşluk) hâlâ tutarlı — bu tur onu yeniden açmadı, yalnızca yeniden
+doğruladı.

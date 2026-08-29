@@ -23,6 +23,11 @@ import pytest
 from CORE.hwid_probe import (
     UsbIdentity,
     compare,
+    compare_all,
+    dump_json,
+    from_dict,
+    load_json,
+    main,
     normalize_serial,
     parse_ioreg,
     parse_windows_pnp_id,
@@ -30,6 +35,7 @@ from CORE.hwid_probe import (
     summarise,
     read_windows,
     build_windows_identity,
+    to_dict,
     usbstor_instance,
 )
 
@@ -534,6 +540,151 @@ def test_reading_the_current_platform_does_not_crash() -> None:
     aygitlar = read_current_platform()
     assert isinstance(aygitlar, list)
     assert all(isinstance(d, UsbIdentity) for d in aygitlar)
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. Gerçek çapraz platform karşılaştırması — JSON dump + --compare (2026-08-29)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Bu bölümden ÖNCEKİ testler (1-6) yalnızca AYRIŞTIRMA mantığını sınıyor.
+# Burada sınanan, "aynı USB çubuğu üç işletim sisteminde de takılıp
+# çıktılar karşılaştırılmalı" adımının kendisini gerçekleştiren ARAÇ:
+# `--json` bir platformun okumasını dosyaya yazılabilir hâle getiriyor,
+# `--compare` iki dosyayı karşılaştırıyor. Bu araç da GERÇEK donanım
+# gerektirmiyor — girdisi zaten serileştirilmiş veri, sınanan şey
+# round-trip'in ve karşılaştırma mantığının kendisi.
+
+
+def _kimlik(platform: str, seri: str | None, *, vid="0781", generated=False):
+    return UsbIdentity(
+        platform=platform, source="test", vendor_id=vid, product_id="5567",
+        descriptor_serial=seri, generated=generated,
+    )
+
+
+def test_to_dict_from_dict_ROUND_TRIP() -> None:
+    """Serileştirme kayıpsız olmalı — `stable_id` hariç, o türetilmiş."""
+    orijinal = _kimlik("windows", "4C53AAAA")
+    geri = from_dict(to_dict(orijinal))
+    assert geri == orijinal
+    assert geri.stable_id == orijinal.stable_id
+
+
+def test_to_dict_stable_id_YAZMIYOR() -> None:
+    """
+    `stable_id` bir `@property` — sözlükte AYRI bir anahtar olarak
+    durmamalı, yoksa ham alanlarla yazılmış değer birbirinden sapabilir
+    (bkz. fonksiyon docstring'i, CORE/pin_rotation.py'nin aynı gerekçesi).
+    """
+    d = to_dict(_kimlik("windows", "4C53AAAA"))
+    assert "stable_id" not in d
+
+
+def test_dump_json_load_json_ROUND_TRIP() -> None:
+    orijinal = [_kimlik("windows", "4C53AAAA"), _kimlik("windows", None, generated=True)]
+    geri = load_json(dump_json(orijinal))
+    assert geri == orijinal
+
+
+def test_dump_json_turkce_karakterleri_KACIRMIYOR() -> None:
+    """`ensure_ascii=False` — kaynak alanı Türkçe metin içerebiliyor
+    (ör. `build_windows_identity`'nin "eşleşmedi" mesajı)."""
+    d = _kimlik("windows", "4C53AAAA")
+    d = UsbIdentity(**{**to_dict(d), "source": "Win32_DiskDrive (eşleşmedi)"})
+    metin = dump_json([d])
+    assert "eşleşmedi" in metin
+    assert "\\u" not in metin
+
+
+def test_compare_all_ESLESEN_cifti_buluyor() -> None:
+    a = [_kimlik("windows", "AAAA", vid="0781"), _kimlik("windows", None, generated=True)]
+    b = [_kimlik("linux", "AAAA", vid="0781")]
+    sonuclar = compare_all(a, b)
+    assert len(sonuclar) == 2, "kartezyen çarpım eksik — bazı çiftler atlanmış"
+    eslesenler = [(x, y) for x, y, ok, _ in sonuclar if ok]
+    assert len(eslesenler) == 1
+    assert eslesenler[0][0].descriptor_serial == "AAAA"
+
+
+def test_compare_all_HICBIR_cift_eslesmezse_BOS_donmuyor() -> None:
+    """Eşleşme yokluğu, karşılaştırmanın YAPILMADIĞI anlamına gelmemeli —
+    her çift kendi (False, gerekçe) sonucuyla dönmeli."""
+    a = [_kimlik("windows", "AAAA")]
+    b = [_kimlik("linux", "BBBB")]
+    (sonuc,) = compare_all(a, b)
+    _x, _y, ok, neden = sonuc
+    assert ok is False
+    assert "farklı" in neden
+
+
+def test_compare_all_bos_listeyle_BOS_donuyor() -> None:
+    assert compare_all([], [_kimlik("linux", "AAAA")]) == []
+
+
+# ── CLI: --json ve --compare ─────────────────────────────────────────────────
+
+
+def test_cli_json_bayragi_gecerli_JSON_basiyor(capsys, monkeypatch) -> None:
+    """`--json` çıktısı `load_json()` ile GERİ okunabilmeli — bu, bir
+    platformda üretilip diğerine taşınacak dosyanın ta kendisi."""
+    from CORE import hwid_probe as modul
+
+    monkeypatch.setattr(modul, "read_current_platform", lambda: [_kimlik("windows", "AAAA")])
+    rc = main(["--json"])
+    assert rc == 0
+    cikti = capsys.readouterr().out
+    (aygit,) = load_json(cikti)
+    assert aygit.descriptor_serial == "AAAA"
+
+
+def test_cli_compare_ESLESIRSE_cikis_kodu_0(tmp_path, capsys) -> None:
+    a = tmp_path / "windows.json"
+    b = tmp_path / "linux.json"
+    a.write_text(dump_json([_kimlik("windows", "AAAA")]), encoding="utf-8")
+    b.write_text(dump_json([_kimlik("linux", "aaaa")]), encoding="utf-8")
+
+    rc = main(["--compare", str(a), str(b)])
+    assert rc == 0
+    assert "ESLESIYOR" in capsys.readouterr().out
+
+
+def test_cli_compare_ESLESMEZSE_cikis_kodu_1(tmp_path, capsys) -> None:
+    """
+    Bu paketin ana iddiası — MUTASYON KANITI olmadan da doğrudan gözlenir:
+    `--compare` başarısız bir eşleşmede sıfırdan farklı çıkış kodu
+    dönmezse, bir CI/betik akışı sessizce "sorun yok" sanabilirdi.
+    """
+    a = tmp_path / "windows.json"
+    b = tmp_path / "linux.json"
+    a.write_text(dump_json([_kimlik("windows", "AAAA")]), encoding="utf-8")
+    b.write_text(dump_json([_kimlik("linux", "ZZZZ")]), encoding="utf-8")
+
+    rc = main(["--compare", str(a), str(b)])
+    assert rc == 1
+
+
+def test_cli_compare_esitsiz_uzunluktaki_dosyalarda_da_calisiyor(tmp_path) -> None:
+    """Bir tarafta 3 aygıt, diğerinde 1 — kartezyen karşılaştırma hâlâ
+    doğru çifti bulmalı, aygıt sayıları eşit olmasa bile."""
+    a = tmp_path / "windows.json"
+    b = tmp_path / "linux.json"
+    a.write_text(dump_json([
+        _kimlik("windows", None, generated=True),
+        _kimlik("windows", "AAAA"),
+        _kimlik("windows", None, generated=True),
+    ]), encoding="utf-8")
+    b.write_text(dump_json([_kimlik("linux", "AAAA")]), encoding="utf-8")
+
+    assert main(["--compare", str(a), str(b)]) == 0
+
+
+def test_cli_gecersiz_bayrak_KULLANIM_HATASI_veriyor() -> None:
+    """argparse kullanım hatası — `backup_cli.py`'deki `2` çıkış kodu
+    deseniyle AYNI (`SystemExit(2)`)."""
+    with pytest.raises(SystemExit) as exc:
+        main(["--boyle-bir-bayrak-yok"])
+    assert exc.value.code == 2
 
 
 def test_the_prototype_is_not_wired_into_the_app() -> None:

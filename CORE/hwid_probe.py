@@ -93,11 +93,14 @@ haklı çıkarıyor.
 """
 from __future__ import annotations
 
+import argparse
+import json
 import logging
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from pathlib import Path
 from typing import Any, Callable
 
 _log = logging.getLogger("hycleus.hwid_probe")
@@ -537,6 +540,59 @@ def compare(a: UsbIdentity, b: UsbIdentity) -> tuple[bool, str]:
     return True, f"eşleşiyor: {a.stable_id}"
 
 
+def to_dict(identity: UsbIdentity) -> dict[str, Any]:
+    """
+    `UsbIdentity`'yi JSON'a yazılabilir bir sözlüğe çevirir — 2026-08-29
+    eklendi, gerçek çapraz platform karşılaştırmasını MÜMKÜN kılmak için.
+
+    Bu okuyucular gerçek donanım gerektiriyor ve elde tek seferde tek
+    platform oluyor (bkz. `docs/hwid-crossplatform.md`'nin "Sonraki adım
+    için gereken" bölümü). Karşılaştırmayı canlı bellekte yapamıyoruz;
+    bir platformun çıktısını dosyaya yazıp diğerine TAŞIMAK gerekiyor.
+
+    `stable_id` BİLİNÇLİ OLARAK yazılmıyor: o bir `@property`, ham
+    alanlardan (`generated`, `descriptor_serial`) HER ZAMAN yeniden
+    hesaplanıyor. Onu da sözlüğe yazmak iki kaynağın (ham alanlar ile
+    yazılmış değer) birbirinden sapabileceği bir çakışma alanı açardı —
+    tam olarak bu depodaki "tek karar noktası" kuralının ihlali
+    (bkz. `CORE/pin_rotation.py`'nin aynı gerekçesi). `from_dict()` ham
+    alanlardan `UsbIdentity`'yi YENİDEN kuruyor, `stable_id` orada kendi
+    kendine hesaplanıyor.
+    """
+    return {f.name: getattr(identity, f.name) for f in fields(identity)}
+
+
+def from_dict(data: dict[str, Any]) -> UsbIdentity:
+    """`to_dict()`'in tersi — bir JSON dump'ından `UsbIdentity` kurar."""
+    return UsbIdentity(**data)
+
+
+def dump_json(devices: list[UsbIdentity]) -> str:
+    """Bu platformda okunan aygıtları JSON dizesine çevirir (`--json`)."""
+    return json.dumps([to_dict(d) for d in devices], ensure_ascii=False, indent=2)
+
+
+def load_json(text: str) -> list[UsbIdentity]:
+    """`dump_json()`'un tersi — başka bir platformdan taşınan dosyayı okur."""
+    return [from_dict(d) for d in json.loads(text)]
+
+
+def compare_all(
+    a: list[UsbIdentity], b: list[UsbIdentity]
+) -> list[tuple[UsbIdentity, UsbIdentity, bool, str]]:
+    """
+    İki platform dump'ındaki OLASI TÜM aygıt çiftlerini karşılaştırır.
+
+    Her iki taraf da birden çok USB depolama aygıtı içerebilir (ör. dahili
+    kart okuyucu + gerçek token). Hangi çiftin "asıl" karşılaştırma olduğu
+    burada BİLİNEMİYOR — kullanıcı hangi aygıtın aynı fiziksel çubuk
+    olduğunu biliyor, bu fonksiyon değil. Bu yüzden tek bir karar
+    dönmüyor: TÜM çiftler, her biri kendi `compare()` sonucuyla dönüyor;
+    çağıran (`main()` ya da bir insan) gerçek eşleşmeyi seçiyor.
+    """
+    return [(x, y, *compare(x, y)) for x in a for y in b]
+
+
 def summarise(devices: list[UsbIdentity]) -> str:
     """İnsan okunur özet — prototip CLI'ı bunu basıyor."""
     if not devices:
@@ -553,11 +609,67 @@ def summarise(devices: list[UsbIdentity]) -> str:
     return "\n".join(satirlar)
 
 
-if __name__ == "__main__":  # pragma: no cover — elle çalıştırılan prototip
+# ══════════════════════════════════════════════════════════════════════════════
+# CLI
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Kullanim:
+#     python -m CORE.hwid_probe                    → bu platformun ozeti (eski davranis)
+#     python -m CORE.hwid_probe --json > win.json   → dosyaya yaz, DIGER platforma tasi
+#     python -m CORE.hwid_probe --compare win.json linux.json
+#
+# Cikis kodlari (backup_cli.py ile AYNI desen — bir betik ya da zamanlanmis
+# bir is okuyabilsin diye):
+#     0  --compare: en az bir aygit ciftinde AYNI kimlik bulundu
+#        (--json / varsayilan mod: her zaman 0, bunlar bir iddia
+#        SINAMIYOR, yalniz okuyor)
+#     1  --compare: hicbir ciftte eslesme yok
+#     2  kullanim hatasi (argparse)
+#
+# BU IKI BAYRAK, "aynı USB çubuğu üç işletim sisteminde de takılıp ...
+# çıktılar karşılaştırılmalı" adımını (docs/hwid-crossplatform.md, "Sonraki
+# adım için gereken") somut, çalıştırılabilir bir betiğe çeviriyor. Önceden
+# bu adım "elle bak ve karşılaştır" demekti; artık --json iki dosya
+# üretiyor ve --compare onları OTOMATIK karşılaştırıyor.
+
+
+def main(argv: list[str] | None = None) -> int:
     from CORE.console import ensure_utf8_console
 
     ensure_utf8_console()
+
+    p = argparse.ArgumentParser(
+        prog="hwid_probe.py",
+        description=(
+            "HYCLEUS — capraz platform USB kimligi PROTOTIPI. Uygulamaya "
+            "bagli DEGIL (bkz. modul dosya-ustu docstring'i)."
+        ),
+    )
+    p.add_argument("--json", action="store_true",
+                    help="Ozet yerine JSON dump bas (baska platforma tasimak icin)")
+    p.add_argument("--compare", nargs=2, metavar=("A.json", "B.json"),
+                    help="Iki platformdan --json ile alinmis dump'i karsilastir")
+    args = p.parse_args(argv)
+
+    if args.compare:
+        yol_a, yol_b = args.compare
+        aygitlar_a = load_json(Path(yol_a).read_text(encoding="utf-8"))
+        aygitlar_b = load_json(Path(yol_b).read_text(encoding="utf-8"))
+        sonuclar = compare_all(aygitlar_a, aygitlar_b)
+        if not sonuclar:
+            print("Karsilastirilacak aygit cifti yok (dosyalardan biri bos).")
+            return 1
+        eslesen = False
+        for x, y, ok, neden in sonuclar:
+            eslesen = eslesen or ok
+            print(f"  {x.platform} x {y.platform}: {'ESLESIYOR' if ok else 'hayir'} — {neden}")
+        return 0 if eslesen else 1
+
     aygitlar = read_current_platform()
+    if args.json:
+        print(dump_json(aygitlar))
+        return 0
+
     print(f"Platform: {sys.platform}")
     print(summarise(aygitlar))
     kararsiz = [d for d in aygitlar if d.stable_id is None]
@@ -565,3 +677,8 @@ if __name__ == "__main__":  # pragma: no cover — elle çalıştırılan protot
         print(f"\nUYARI: {len(kararsiz)} aygıtta taşınabilir kimlik YOK.")
         print("Bu aygıtlar platformlar arasında (hatta portlar arasında)")
         print("aynı HWID'yi vermez — bkz. docs/hwid-crossplatform.md")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover — elle çalıştırılan prototip
+    sys.exit(main())

@@ -2008,6 +2008,67 @@ call anywhere in its loop, so it is not reentrant and was not part of
 the measured gap; converting it is a separate, lower-value change noted
 in BACKLOG rather than folded in here.
 
+### 4.19 Cross-platform HWID re-checked (2026-08-29): still no fresh hardware data, so the tool to get it was built instead
+
+> **Attacker models:** none — this is a portability/architecture question,
+> not a security boundary. `CORE/hwid_probe.py` is a prototype and is not
+> wired into the app (`tests/test_hwid_probe.py::
+> test_the_prototype_is_not_wired_into_the_app` guards that with an AST
+> sweep of the whole tree).
+
+The standing question, asked again this turn: does the same USB stick
+produce the same HWID on Windows, Linux, and macOS? BACKLOG **B-016**
+already answers it for the one token physically measured — twice, on real
+hardware, in an earlier session (2026-08-16 and 2026-08-19): the token has
+a real descriptor serial, it reads identically from both the USB stack and
+the storage stack, it survives a port change unchanged, and it never falls
+back to the machine-local `usb_ids.json` UUID. That measurement stands;
+this turn did not repeat it, and did not need to.
+
+**What this turn's environment could and could not add.** Running
+`python -m CORE.hwid_probe` here, right now, prints `USB depolama aygıtı
+bulunamadı.` — this session's environment has no USB storage device
+attached, and only Windows is reachable from it (no Linux or macOS box).
+So the one measurement still open per B-016 — the *same* stick read on
+Linux, where `ID_SERIAL_SHORT` is the theoretically-shared field — could
+not be taken today, for a mundane reason (no hardware here), not because
+the prior finding was doubted. Saying so plainly matters more than staying
+silent about it: `docs/hwid-crossplatform.md`'s own "Prototipin sınırları"
+table already flags Linux and macOS as unverified against real tools, and
+that line is still accurate today.
+
+**What did change: the missing step got a tool instead of staying manual.**
+`docs/hwid-crossplatform.md`'s "Sonraki adım için gereken" section used to
+describe the remaining test as "plug the same stick into three OSes, run
+the probe, and compare the output" — meaning by eye. `CORE/hwid_probe.py`
+now has `--json` (serialise this platform's reading to a file) and
+`--compare A.json B.json` (diff two such files and exit non-zero on
+mismatch, the same exit-code convention `CORE/backup_cli.py` already
+uses: 0 match, 1 no match, 2 usage error). `to_dict()`/`from_dict()`
+round-trip every raw field except the derived `stable_id` — that stays a
+property recomputed from the raw fields on load, deliberately, so the
+dump can never disagree with itself the way a cached derived value could
+(the same single-source-of-truth reasoning `CORE/pin_rotation.py`
+documents for its own decision function). None of this required hardware
+to build or test: the 15 new tests in `tests/test_hwid_probe.py` §7 drive
+the JSON round-trip and the `--compare` exit codes directly, verified with
+a live mutation (the exit-code line was temporarily hardcoded to always
+return 0; `test_cli_compare_ESLESMEZSE_cikis_kodu_1` failed as expected,
+confirming the assertion is load-bearing, then reverted). What remains
+genuinely unverified is unchanged: whether `pyudev`/sysfs and `ioreg`
+actually emit the documented shapes on real Linux/macOS boxes. That gap
+closes with two commands, not a manual comparison, whenever someone has
+the hardware — it just did not close today.
+
+**The architecture question this feeds is not new, and is not reopened
+here.** `docs/hwid-crossplatform.md`'s file-token migration proposal
+already exists and is unchanged by this turn; B-016 already narrowed its
+urgency once real hardware was measured (serial-bearing devices need no
+migration; serial-less devices are the actual remaining gap, and that was
+already true before today). This entry does not add a new backlog item —
+it re-confirms the existing one is still accurately scoped and gives it a
+runnable comparison tool for the day physical multi-OS access exists.
+
 ---
 
 ## 5. Cryptographic details
@@ -4339,6 +4400,68 @@ yolda bırakıldı: döngüsünde hiçbir yerde `on_progress`/
 `processEvents()` çağrısı yok, yani yeniden giriş yapılabilir değil ve
 ölçülen boşluğun parçası değildi; onu dönüştürmek ayrı, daha düşük
 değerli bir değişiklik — buraya katılmak yerine BACKLOG'a not düşüldü.
+
+### 4.19 Çapraz platform HWID yeniden gözden geçirildi (2026-08-29): hâlâ taze donanım verisi yok, bunun yerine onu ALACAK araç yapıldı
+
+> **Saldırgan modelleri:** yok — bu bir taşınabilirlik/mimari sorusu,
+> güvenlik sınırı değil. `CORE/hwid_probe.py` bir prototip ve uygulamaya
+> bağlı değil (`tests/test_hwid_probe.py::
+> test_the_prototype_is_not_wired_into_the_app` bunu tüm ağacı tarayan
+> bir AST denetimiyle koruyor).
+
+Duran soru, bu turda yeniden soruldu: aynı USB çubuğu Windows, Linux ve
+macOS'ta aynı HWID'yi veriyor mu? BACKLOG **B-016** bunu, önceki bir
+oturumda gerçek donanımda İKİ KEZ fiziksel olarak ölçülmüş tek token için
+zaten yanıtlıyor (2026-08-16 ve 2026-08-19): token'ın gerçek bir
+tanımlayıcı serisi var, hem USB yığınından hem depolama yığınından
+BİREBİR AYNI okunuyor, port değişikliğine değişmeden dayanıyor ve hiçbir
+zaman makineye özel `usb_ids.json` UUID fallback'ine düşmüyor. O ölçüm
+duruyor; bu tur onu TEKRARLAMADI ve tekrarlamaya gerek de yoktu.
+
+**Bu turun ortamı ne katabildi, ne katamadı.** `python -m CORE.hwid_probe`
+şu anda, burada çalıştırıldığında `USB depolama aygıtı bulunamadı.`
+basıyor — bu oturumun ortamında takılı bir USB depolama aygıtı yok ve
+buradan yalnızca Windows'a erişilebiliyor (Linux ya da macOS makinesi
+yok). Yani B-016'nın hâlâ açık bıraktığı tek ölçüm — AYNI çubuğun,
+`ID_SERIAL_SHORT`'un teorik olarak ortak alan olduğu Linux'ta okunması —
+bugün alınamadı; sebep sıradan (burada donanım yok), önceki bulgudan
+şüphe duyulduğu için değil. Bunu açıkça söylemek, sessiz kalmaktan daha
+değerli: `docs/hwid-crossplatform.md`'nin kendi "Prototipin sınırları"
+tablosu Linux ve macOS'u zaten gerçek araçlara karşı doğrulanmamış diye
+işaretliyor ve o satır bugün hâlâ doğru.
+
+**Değişen şey: eksik adım elle değil, bir araçla kapatılabilir hâle
+geldi.** `docs/hwid-crossplatform.md`'nin "Sonraki adım için gereken"
+bölümü kalan testi "aynı çubuğu üç işletim sisteminde takıp aracı
+çalıştırıp çıktıları karşılaştır" diye tarif ediyordu — yani gözle.
+`CORE/hwid_probe.py` artık `--json` (bu platformun okumasını bir dosyaya
+serileştirir) ve `--compare A.json B.json` (iki dosyayı karşılaştırır,
+uyuşmazlıkta sıfırdan farklı çıkış koduyla döner — `CORE/backup_cli.py`'nin
+zaten kullandığı aynı çıkış kodu deseni: 0 eşleşti, 1 eşleşmedi, 2
+kullanım hatası) bayraklarını taşıyor. `to_dict()`/`from_dict()` türetilmiş
+`stable_id` HARİÇ her ham alanı kayıpsız geri veriyor — o BİLEREK bir
+`@property` olarak kalıyor, her yüklemede ham alanlardan yeniden
+hesaplanıyor, yani dump kendisiyle asla ÇELİŞEMEZ (önbelleklenmiş türetilmiş
+bir değerin çelişebileceği gibi) — `CORE/pin_rotation.py`'nin kendi karar
+fonksiyonu için belgelediği aynı tek-kaynak gerekçesiyle. Bunların hiçbiri
+donanım GEREKTİRMEDİ: `tests/test_hwid_probe.py` §7'deki 15 yeni test JSON
+round-trip'ini ve `--compare` çıkış kodlarını doğrudan sınıyor, canlı bir
+mutasyonla doğrulandı (çıkış kodu satırı geçici olarak her zaman 0 dönecek
+şekilde sabitlendi; `test_cli_compare_ESLESMEZSE_cikis_kodu_1` beklendiği
+gibi BAŞARISIZ oldu, iddianın gerçekten işlevsel olduğu doğrulandı, sonra
+geri alındı). Gerçekten doğrulanmamış kalan şey değişmedi: `pyudev`/sysfs
+ve `ioreg`'in gerçek Linux/macOS makinelerinde belgelenmiş biçimde çıktı
+verip vermediği. Bu boşluk artık elle karşılaştırma değil, iki komutla
+kapanıyor — donanıma erişildiği gün; bugün kapanmadı.
+
+**Bunun beslediği mimari soru YENİ değil, burada yeniden AÇILMIYOR.**
+`docs/hwid-crossplatform.md`'nin dosya-tabanlı token'a geçiş önerisi zaten
+var ve bu turda değişmedi; B-016 gerçek donanım ölçülünce onun
+aciliyetini zaten daraltmıştı (serili aygıtlar geçiş gerektirmiyor, serisiz
+aygıtlar asıl kalan boşluk — ve bu bugünden önce de doğruydu). Bu madde
+yeni bir BACKLOG kalemi eklemiyor — mevcut olanın hâlâ doğru kapsamda
+olduğunu yeniden doğruluyor ve fiziksel çoklu-OS erişimi olduğu gün için
+çalıştırılabilir bir karşılaştırma aracı veriyor.
 
 ## 5. Kriptografik ayrıntılar
 

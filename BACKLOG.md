@@ -438,6 +438,36 @@ dosyası da seri numarası kadar kopyalanabilir; HWID zaten uygulama
 seviyesi bir kontrol (SECURITY.md §4.5). "Daha güvenli oldu" denirse
 yanlış olur.
 
+### 2026-08-29 — yeniden doğrulama denendi: bu ortamda donanım yok, karşılaştırma bir araca çevrildi
+
+Görev "hwid_probe.py'nin sonucunu doğrula, üç platformda (veya elindeki
+platformlarda) test et" idi. Bu oturumun ortamında **hiçbir platform**
+elde değil: `python -m CORE.hwid_probe` çalıştırıldı, çıktı `USB depolama
+aygıtı bulunamadı.` — takılı USB depolama yok, ve yalnızca Windows'a
+erişilebiliyor (Linux/macOS makinesi yok). "Kalan tek ölçüm" (Linux'ta
+`ID_SERIAL_SHORT` okuması) bugün de alınamadı — üstteki tespiti
+zayıflatmıyor, yalnızca bu turun onu tekrarlayamadığını söylüyor.
+
+Bunun yerine yapılan: "aynı çubuğu üç OS'a takıp elle karşılaştır" adımı
+çalıştırılabilir bir araca çevrildi. `CORE/hwid_probe.py`'ye `--json`
+(bu platformun okumasını dosyaya serileştirir) ve `--compare A.json
+B.json` (iki dosyayı karşılaştırır, `backup_cli.py` ile aynı çıkış kodu
+deseniyle: 0 eşleşti, 1 eşleşmedi, 2 kullanım hatası) eklendi;
+`to_dict`/`from_dict`/`dump_json`/`load_json`/`compare_all` yardımcıları
+ve `tests/test_hwid_probe.py`'ye bunları sınayan 15 yeni test (§7)
+eklendi — mutasyon kanıtıyla: `--compare`'in çıkış kodu satırı geçici
+olarak her zaman `0` dönecek şekilde bozuldu,
+`test_cli_compare_ESLESMEZSE_cikis_kodu_1` beklendiği gibi kırıldı, geri
+alındı. Ayrıntı ve tam gerekçe: `docs/hwid-crossplatform.md`'nin
+"2026-08-29" bölümü, SECURITY.md §4.19 (EN+TR).
+
+Ayrı bir mimari madde açılmadı — dosya tabanlı token'a geçiş önerisi
+zaten `docs/hwid-crossplatform.md`'de var ve bu maddenin (B-016) gerçek
+donanım ölçümüyle daralttığı kapsamla hâlâ tutarlı.
+
+Tam test suite: 2871 passed, 4 skipped (bir önceki turdan +12). Ruff/mypy/
+bandit temiz.
+
 ---
 
 ## B-018 — bandit'in susturulan denetimleri temizlenmedi
