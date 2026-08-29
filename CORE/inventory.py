@@ -268,48 +268,65 @@ def generate_retention_inventory(
     destruction_to_d = parse_date(destruction_to) if destruction_to else None
 
     rows: list[InventoryRow] = []
-    for raw in db.fetchall(_BASE_QUERY):
-        if profile_id is not None and raw["profile_id"] != profile_id:
-            continue
-
-        if added_from_d or added_to_d:
-            try:
-                added = parse_date(raw["added_at"])
-            except RetentionError:
-                continue  # tarihi okunamayan satır aralık filtresine giremez
-            if added_from_d and added < added_from_d:
-                continue
-            if added_to_d and added > added_to_d:
-                continue
-
-        row_status, destruction, note = _row_status_and_date(db, raw, today)
-
-        if status_filter is not None and row_status not in status_filter:
-            continue
-
-        if destruction_from_d or destruction_to_d:
-            if destruction is None:
-                continue  # imha tarihi olmayan satır tarih aralığına giremez
-            if destruction_from_d and destruction < destruction_from_d:
-                continue
-            if destruction_to_d and destruction > destruction_to_d:
+    # Tutarlılık — TEK bir anlık görüntü, `_BASE_QUERY` İLE per-satır
+    # kontroller ARASINDA değil. `_BASE_QUERY` tek bir JOIN (files +
+    # retention_profiles + users + audit_log alt sorgusu), ama HER satır
+    # için `_row_status_and_date()`'in çağırdığı `check_disposal()`
+    # `files`/`retention_profiles`'ı N+1 deseninde AYRICA, YENİDEN okuyor
+    # (bkz. modülün "Bu N+1 sorgu demektir" notu). Bu iki okuma kümesi
+    # AYNI transaction'da olmazsa, rapor üretimi sırasında araya giren bir
+    # yazma (ör. bir saklama profilinin süresi değiştirilmesi, bir dosyanın
+    # İmha Odası'na taşınması) bazı satırları ESKİ bazılarını YENİ kurala
+    # göre değerlendirebilir — modülün kendi "rapor ile uygulama
+    # ayrışamaz" güvencesini KIRAR. Açık bir `BEGIN`...`COMMIT`, WAL'ın
+    # anlık-görüntü izolasyonunu TÜM okuma dizisine yayıyor — aynı desen
+    # `CORE/backup.py::create_backup()`'ta kullanılıyor.
+    db.conn.execute("BEGIN")
+    try:
+        for raw in db.fetchall(_BASE_QUERY):
+            if profile_id is not None and raw["profile_id"] != profile_id:
                 continue
 
-        rows.append(
-            InventoryRow(
-                file_id=raw["file_id"],
-                filename=raw["filename"],
-                filepath=raw["filepath"],
-                profile_id=raw["profile_id"],
-                profile_name=raw["profile_name"] or NO_PROFILE_TEXT,
-                owner=raw["owner"] or UNKNOWN_OWNER_TEXT,
-                added_at=raw["added_at"],
-                destruction_date=destruction,
-                status=row_status,
-                last_activity=raw["last_activity"],
-                note=note,
+            if added_from_d or added_to_d:
+                try:
+                    added = parse_date(raw["added_at"])
+                except RetentionError:
+                    continue  # tarihi okunamayan satır aralık filtresine giremez
+                if added_from_d and added < added_from_d:
+                    continue
+                if added_to_d and added > added_to_d:
+                    continue
+
+            row_status, destruction, note = _row_status_and_date(db, raw, today)
+
+            if status_filter is not None and row_status not in status_filter:
+                continue
+
+            if destruction_from_d or destruction_to_d:
+                if destruction is None:
+                    continue  # imha tarihi olmayan satır tarih aralığına giremez
+                if destruction_from_d and destruction < destruction_from_d:
+                    continue
+                if destruction_to_d and destruction > destruction_to_d:
+                    continue
+
+            rows.append(
+                InventoryRow(
+                    file_id=raw["file_id"],
+                    filename=raw["filename"],
+                    filepath=raw["filepath"],
+                    profile_id=raw["profile_id"],
+                    profile_name=raw["profile_name"] or NO_PROFILE_TEXT,
+                    owner=raw["owner"] or UNKNOWN_OWNER_TEXT,
+                    added_at=raw["added_at"],
+                    destruction_date=destruction,
+                    status=row_status,
+                    last_activity=raw["last_activity"],
+                    note=note,
+                )
             )
-        )
+    finally:
+        db.conn.execute("COMMIT")
     return rows
 
 

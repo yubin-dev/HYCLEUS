@@ -1635,6 +1635,106 @@ name only.
 
 ---
 
+### 4.16 Torn-read risk in multi-table reports — a codebase-wide sweep, one real hit
+
+> **Attacker models:** none — this section is about internal consistency,
+> not about an adversary. A concurrent *legitimate* write during report
+> generation is the trigger, not an attack.
+
+§4.11's backup fix (`create_backup()` reading `RESTORABLE_TABLES` and
+`REFERENCE_TABLES` as separate, unwrapped `SELECT`s) raised an obvious
+follow-up: is that pattern — multiple sequential table reads with no
+transaction tying them to a single snapshot — used anywhere else,
+specifically in export/report code, where a torn result could look like a
+clean one?
+
+**Swept, and what was found.** Every export/report/CSV/PDF generator in
+`CORE/` and `UI/` was checked for multi-table reads without a wrapping
+transaction:
+
+- `CORE/export.py`'s `aad_map()` — one query, one table (`files`), chunked
+  only for SQLite's placeholder limit. No cross-table risk.
+- `CORE/audit_chain.py`'s `verify_audit_chain()` — reads `settings` once
+  and `audit_log` two or three times, unwrapped. Technically multiple
+  reads, but `audit_log` is append-only and the extra reads are counts
+  used for *informational* framing ("N kayıt kapsam dışı"), not values the
+  hash-chain math depends on matching exactly — a row appended mid-read
+  just means one more entry gets verified, not a corrupted verdict. Left
+  as-is.
+- `CORE/inventory.py`'s `generate_retention_inventory()` — **a real hit,
+  fixed.** See below.
+- `UI/AuditLogDialog.py`'s `_export_txt()` — a related but *differently
+  shaped* problem, not fixed here: the exported row list comes from
+  `self._table`, populated by an earlier `_load()` query, while the header
+  line's record count and chain state come from a **fresh**
+  `zincir_raporu()` call made at export time. If the audit log grows
+  between opening the dialog and clicking "Dışa Aktar" — a realistic gap,
+  since audit logging runs continuously — the header can describe a later
+  moment than the rows below it. This is not a transaction problem (the
+  stale side is a Qt widget, not a second query) and needs a different
+  fix — re-deriving the export from one query at export time, not two data
+  sources from two moments. `txt_basligi()` already states plainly that
+  the export is not signed, which caps how much weight the mismatch can
+  carry, but it is a real gap and is tracked (BACKLOG B-072, follow-up
+  item) rather than silently left for later.
+
+**The real hit: `generate_retention_inventory()`.** This function
+generates HYCLEUS's KVKK (Turkish data-protection law) retention
+inventory — a report explicitly meant to be handed to a regulator or
+auditor as evidence that data retention policy is being followed
+(`export_inventory_csv()`, `export_inventory_pdf()`). Its own module
+docstring already states the design goal in the strongest terms
+available: *"rapor ile uygulama ayrışamaz"* — the report and the app's
+actual enforcement logic can never disagree, because the report computes
+status by calling the exact same functions (`check_disposal()`) that gate
+real deletion. That guarantee held for *logic* consistency. It did not
+hold for *temporal* consistency: `generate_retention_inventory()` opens
+with one JOIN across `files`, `retention_profiles`, `users` and an
+`audit_log` subquery, then — by the module's own documented design,
+"Bu N+1 sorgu demektir" — calls `check_disposal()` once per row, which
+issues four **more**, separate re-reads of `files`/`retention_profiles`,
+all unwrapped.
+
+Measured directly: two files on the same 10-year retention profile,
+reassign the *second* file to a 1-year profile via a second connection
+right as that file's `check_disposal()` call is about to read its
+`retention_profile_id` — the resulting row showed `profile_name` from the
+**old** profile (already captured by the first JOIN) next to a `status`
+computed against the **new** one, an internally self-contradictory line in
+a document meant to prove compliance to a regulator. A row like that isn't
+just "wrong" the way a stale count is wrong — it is the exact failure mode
+the module's own docstring calls out as unacceptable: the report claiming
+one policy while the underlying data reflects another, in the same
+sentence.
+
+**Fix — identical in shape to §4.11's.** The whole read (the base JOIN and
+every row's `check_disposal()` calls) is now wrapped in one explicit
+`BEGIN`…`COMMIT`, pinning a single WAL snapshot for the entire report.
+Confirmed both ways: the raw building blocks (base query + per-row check,
+called directly, unwrapped) reproduce the torn row; the real function,
+under the same injected concurrent write, does not.
+
+**Not exploitable today, worth fixing anyway.** `generate_retention_inventory()`
+has no UI entry point yet — `UI/AdminPanel.py` carries it only as a
+commented-out usage sample, and BACKLOG.md's PyInstaller entry already
+tracks it as a real, packaged (its `reportlab` dependency is bundled),
+tested, just-not-wired feature. The bug was real in the code regardless of
+whether a button calls it today, and fixing it now — while the failure
+mode is fresh and a test can pin it — is cheaper than rediscovering it
+after the feature is wired into a compliance workflow.
+
+**Error path checked too.** `create_backup()`'s new transaction (§4.11)
+and this one both wrap the read in `try/…/finally: db.conn.execute
+("COMMIT")`. Verified directly, for both: inject a synthetic exception
+partway through the read (past `BEGIN`, mid-loop), confirm the exception
+still propagates to the caller (the `finally` does not swallow it), and
+confirm `sqlite3.Connection.in_transaction` is `False` immediately after —
+the transaction does not hang open. An open transaction left behind by a
+half-finished report would matter beyond that one report: it can block a
+later `PRAGMA wal_checkpoint` from truncating the WAL file.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -3562,6 +3662,108 @@ bildirmesini SAĞLAMIYOR. Bu yola düşen bir cihaz, bu düzeltmeden sonra da
 normal şekilde kayıt olamıyor ya da giriş yapamıyor — fark, artık bunu
 log'da ve ekranda AÇIKÇA söylemesi, sessizce "donanıma bağlı" görünmesi
 yerine.
+
+### 4.16 Çok tablolu raporlarda yırtık-okuma riski — kod tabanı genelinde bir tarama, bir gerçek isabet
+
+> **Saldırgan modelleri:** yok — bu bölüm iç tutarlılıkla ilgili, bir
+> düşmanla değil. Rapor üretimi sırasında eşzamanlı, MEŞRU bir yazma
+> tetikleyici, saldırı değil.
+
+§4.11'in yedekleme düzeltmesi (`create_backup()`'ın `RESTORABLE_TABLES` ve
+`REFERENCE_TABLES`'ı ayrı, sarmalanmamış `SELECT`'lerle okuması) doğal bir
+takip sorusu doğurdu: bu desen — birden fazla ardışık tablo okuması, tek
+bir anlık görüntüye bağlayan hiçbir transaction olmadan — başka bir yerde,
+özellikle export/rapor kodunda kullanılıyor mu; kullanılıyorsa, yırtık bir
+sonuç temiz görünebilir mi?
+
+**Tarandı, ne bulundu.** `CORE/` ve `UI/`'deki her export/rapor/CSV/PDF
+üreticisi, sarmalayıcısız çok-tablolu okumalar için kontrol edildi:
+
+- `CORE/export.py`'nin `aad_map()`'i — tek sorgu, tek tablo (`files`),
+  yalnızca SQLite'ın yer tutucu sınırı için parçalanmış. Tablolar-arası
+  risk yok.
+- `CORE/audit_chain.py`'nin `verify_audit_chain()`'i — `settings`'i bir
+  kez, `audit_log`'u iki-üç kez, sarmalanmamış okuyor. Teknik olarak
+  birden fazla okuma, ama `audit_log` yalnızca-ekleme (append-only) ve ek
+  okumalar hash-zincir matematiğinin TAM eşleşmesine bağlı olmayan,
+  BİLGİLENDİRİCİ çerçeveleme için kullanılan sayaçlar ("N kayıt kapsam
+  dışı") — okuma sırasında eklenen bir satır yalnızca bir kayıt daha
+  doğrulanmış olması demek, bozuk bir hüküm değil. Olduğu gibi bırakıldı.
+- `CORE/inventory.py`'nin `generate_retention_inventory()`'si — **gerçek
+  bir isabet, düzeltildi.** Aşağıda.
+- `UI/AuditLogDialog.py`'nin `_export_txt()`'i — ilişkili ama FARKLI
+  BİÇİMLİ bir sorun, burada düzeltilmedi: dışa aktarılan satır listesi
+  `self._table`'dan geliyor (daha önceki bir `_load()` sorgusuyla
+  dolduruldu), başlık satırının kayıt sayısı ve zincir durumuysa dışa
+  aktarım ANINDA yapılan TAZE bir `zincir_raporu()` çağrısından geliyor.
+  Diyalog açıldıktan sonra "Dışa Aktar"a tıklanana kadar denetim günlüğü
+  büyürse — gerçekçi bir aralık, çünkü denetim kaydı sürekli çalışıyor —
+  başlık, altındaki satırlardan DAHA SONRAKİ bir anı anlatabilir. Bu bir
+  transaction sorunu değil (bayat taraf bir Qt widget'ı, ikinci bir sorgu
+  değil) ve farklı bir düzeltme gerektiriyor — iki farklı andan gelen iki
+  veri kaynağı yerine, dışa aktarım anında TEK bir sorgudan türetmek.
+  `txt_basligi()` zaten dışa aktarımın imzalı OLMADIĞINI açıkça
+  söylüyor, bu da uyuşmazlığın taşıyabileceği ağırlığı sınırlıyor, ama
+  gerçek bir boşluk ve sessizce sonraya bırakılmak yerine takip ediliyor
+  (BACKLOG B-072, takip maddesi).
+
+**Gerçek isabet: `generate_retention_inventory()`.** Bu fonksiyon
+HYCLEUS'un KVKK saklama envanterini üretiyor — bir denetçiye ya da
+düzenleyiciye, veri saklama politikasına UYULDUĞUNUN KANITI olarak
+verilmesi açıkça amaçlanan bir rapor (`export_inventory_csv()`,
+`export_inventory_pdf()`). Modülün kendi docstring'i tasarım hedefini
+elden gelen en güçlü ifadeyle zaten söylüyor: *"rapor ile uygulama
+ayrışamaz"* — rapor ile uygulamanın GERÇEK uygulama mantığı asla
+çelişemez, çünkü rapor durumu, GERÇEK silmeyi kapı gibi kullanan AYNI
+fonksiyonları (`check_disposal()`) çağırarak hesaplıyor. Bu güvence
+MANTIK tutarlılığı için geçerliydi. ZAMANSAL tutarlılık için geçerli
+değildi: `generate_retention_inventory()` `files`, `retention_profiles`,
+`users` ve bir `audit_log` alt sorgusu üzerinde TEK bir JOIN ile başlıyor,
+sonra — modülün kendi belgelediği tasarımla, "Bu N+1 sorgu demektir" —
+her satır için BİR KEZ `check_disposal()` çağırıyor, o da
+`files`/`retention_profiles`'ı DÖRT KEZ DAHA, ayrı ayrı, sarmalanmadan
+yeniden okuyor.
+
+Doğrudan ölçüldü: aynı 10 yıllık saklama profilindeki iki dosyadan
+İKİNCİSİ, tam da `check_disposal()`'ı `retention_profile_id`'sini okumak
+ÜZEREYKEN ikinci bir bağlantıyla 1 yıllık bir profile YENİDEN ATANDI —
+sonuç satırı, `profile_name`'i (İLK JOIN'den, ESKİ profil) YENİ profile
+göre hesaplanmış bir `status`'ün YANINDA gösterdi — bir düzenleyiciye
+uyumu kanıtlamak İÇİN üretilen bir belgede, kendi içinde ÇELİŞEN bir
+satır. Böyle bir satır yalnızca bayat bir sayı gibi "yanlış" değil — tam
+olarak modülün kendi docstring'inin KABUL EDİLEMEZ dediği başarısızlık
+biçimi: raporun BİR politika iddia ederken altındaki verinin AYNI cümle
+içinde BAŞKA bir politikayı yansıtması.
+
+**Düzeltme — §4.11'inkiyle AYNI biçimde.** Bütün okuma (temel JOIN VE her
+satırın `check_disposal()` çağrıları) artık tek bir açık
+`BEGIN`...`COMMIT` içinde — raporun TAMAMI için TEK bir WAL anlık
+görüntüsü sabitliyor. İki yönde de doğrulandı: ham yapı taşları (temel
+sorgu + per-satır kontrol, doğrudan çağrılarak, sarmalanmadan) yırtık
+satırı yeniden üretiyor; gerçek fonksiyon, AYNI enjekte edilmiş eşzamanlı
+yazma altında, üretmiyor.
+
+**Bugün istismar edilebilir değil, yine de düzeltilmeye değer.**
+`generate_retention_inventory()`'nin henüz bir UI giriş noktası yok —
+`UI/AdminPanel.py` onu yalnızca yorum satırına alınmış bir kullanım
+örneği olarak taşıyor, ve BACKLOG.md'nin PyInstaller maddesi onu zaten
+gerçek, paketlenmiş (`reportlab` bağımlılığı gömülü), test edilmiş,
+yalnızca henüz BAĞLANMAMIŞ bir özellik olarak takip ediyor. Hata koddaki
+GERÇEK bir hataydı, bugün bir düğmenin onu çağırıp çağırmadığından
+BAĞIMSIZ olarak — ve onu şimdi, hata biçimi hâlâ tazeyken ve bir test onu
+sabitleyebilecekken düzeltmek, özellik bir uyum iş akışına bağlandıktan
+SONRA yeniden keşfetmekten ucuz.
+
+**Hata yolu da kontrol edildi.** `create_backup()`'ın yeni transaction'ı
+(§4.11) ve bu ikisi de okumayı `try/.../finally: db.conn.execute
+("COMMIT")` içine alıyor. İkisi için de doğrudan doğrulandı: okumanın
+ortasına (`BEGIN`'den sonra, döngü içinde) yapay bir exception enjekte
+edilip, exception'ın çağırana YANSIDIĞI (finally'nin onu YUTMADIĞI) ve
+hemen ardından `sqlite3.Connection.in_transaction`'ın `False` OLDUĞU
+doğrulandı — transaction asılı kalmıyor. Yarım kalmış bir raporun arkasında
+bırakacağı açık bir transaction yalnızca o raporu etkilemekle kalmaz:
+sonraki bir `PRAGMA wal_checkpoint`'in WAL dosyasını kısaltmasını
+bloklayabilir.
 
 ## 5. Kriptografik ayrıntılar
 

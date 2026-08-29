@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import itertools
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -563,3 +564,156 @@ class TestUctanUca:
         assert db.fetchone(
             "SELECT label FROM files WHERE id = ?", (fid,)
         )["label"] == LABEL_IMHA
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Eşzamanlı yazma altında tutarlılık — 2026-08-29
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `generate_retention_inventory()` tek bir `_BASE_QUERY` JOIN'iyle başlıyor
+# (files + retention_profiles + users + audit_log alt sorgusu), ama HER
+# satır için `_row_status_and_date()` → `check_disposal()` `files`/
+# `retention_profiles`'ı N+1 deseninde AYRICA, YENİDEN okuyor (modülün kendi
+# "Bu N+1 sorgu demektir" notu). İki okuma kümesi AYNI transaction'da
+# olmazsa: rapor üretimi SIRASINDA bir dosyanın saklama profili
+# değiştirilirse, o satırın `profile_name`'i (BAŞ sorgudan, ESKİ) ile
+# `status`/`destruction_date`'i (check_disposal'dan, YENİ) BİRBİRİYLE
+# ÇELİŞEBİLİR — modülün kendi "rapor ile uygulama ayrışamaz" güvencesini
+# KIRAN, kendi içinde tutarsız bir KVKK denetim satırı.
+
+
+class TestEszamanliYazmaAltindaTutarlilik:
+    def _iki_dosya_ve_iki_profil(self, db, tmp_path):
+        """`b_ikinci.pdf` 400 gün önce eklenmiş — `profil_eski` (10 yıl)
+        altında hâlâ AKTİF, ama `profil_yeni` (1 yıl) altında SÜRESİ DOLMUŞ
+        olurdu. İki profil arasında geçiş, `status`'u GÖZLE GÖRÜLÜR biçimde
+        değiştiriyor — torn-read'i saklamayan bir kurulum."""
+        profil_eski = _profile(db, years=10, protected=True, name="ESKI-PROFIL")
+        profil_yeni = _profile(db, years=1, protected=False, name="YENI-PROFIL")
+        fid1, _ = _mk_file(db, tmp_path, filename="a_birinci.pdf")
+        assign_profile(db, fid1, profil_eski)
+        fid2, _ = _mk_file(db, tmp_path, filename="b_ikinci.pdf", added_at=_old_date(400))
+        assign_profile(db, fid2, profil_eski)
+        return fid1, fid2, profil_eski, profil_yeni
+
+    def _ikinci_dosyayi_eszamanli_profil_degistir(self, db_path, fid2, profil_yeni):
+        yazan = sqlite3.connect(str(db_path))
+        try:
+            yazan.execute(
+                "UPDATE files SET retention_profile_id = ? WHERE id = ?",
+                (profil_yeni, fid2),
+            )
+            yazan.commit()
+        finally:
+            yazan.close()
+
+    def test_building_block_is_torn_by_a_concurrent_profile_reassignment(
+        self, db, tmp_path,
+    ):
+        """
+        KALICI regresyon kilidi: temel sorgu + per-satır `check_disposal()`
+        çağrılarını (`generate_retention_inventory()`'nin sarmalayıcısı
+        OLMADAN, düzeltmeden ÖNCEki hâliyle) elle tekrarlamak, bir satırın
+        `profile_name`'i (ESKİ) ile `status`'ünün (YENİ) ÇELİŞTİĞİ bir
+        sonuç üretir.
+        """
+        from CORE.inventory import _BASE_QUERY, _row_status_and_date
+
+        fid1, fid2, profil_eski, profil_yeni = self._iki_dosya_ve_iki_profil(db, tmp_path)
+
+        ham_satirlar = {r["file_id"]: r for r in db.fetchall(_BASE_QUERY)}
+        assert ham_satirlar[fid2]["profile_name"] == "ESKI-PROFIL"
+
+        # "Eşzamanlı" yazma — temel sorgu ZATEN okundu, fid2'nin
+        # check_disposal()'ı HENÜZ çalışmadı.
+        self._ikinci_dosyayi_eszamanli_profil_degistir(db._db_path, fid2, profil_yeni)
+
+        durum, imha_tarihi, _not = _row_status_and_date(db, ham_satirlar[fid2], None)
+
+        # YIRTIK: profile_name hâlâ ESKİ profili gösteriyor (temel sorgudan,
+        # yazmadan ÖNCE), ama status YENİ profile göre hesaplandı (yazmadan
+        # SONRA) — 400 günlük dosya 1 yıllık profilde SÜRESİ DOLMUŞ olur.
+        assert ham_satirlar[fid2]["profile_name"] == "ESKI-PROFIL"
+        assert durum == STATUS_EXPIRED_PENDING, (
+            "beklenen: sarmalanmamış çağrı, profile_name ESKİ'yi gösterirken "
+            f"status'ün YENİ profile göre hesaplanmasına izin verir, bulunan: {durum}"
+        )
+
+    def test_generate_retention_inventory_is_a_single_consistent_snapshot(
+        self, db, tmp_path, monkeypatch,
+    ):
+        """
+        ANA TEST: gerçek `generate_retention_inventory()`, fid2'nin
+        `check_disposal()`'ı ÜZERİNDEYKEN gelen bir eşzamanlı profil
+        değişikliğine rağmen tek bir tutarlı anlık görüntü üretmeli —
+        `profile_name` ve `status` AYNI (yazmadan ÖNCEki) profile göre
+        hesaplanmalı, biri eski biri yeni bir karışım DEĞİL.
+        """
+        fid1, fid2, profil_eski, profil_yeni = self._iki_dosya_ve_iki_profil(db, tmp_path)
+
+        orijinal_fetchone = db.fetchone
+        tetiklendi = {"yazildi": False}
+
+        def _fid2_okunurken_araya_gir(sql, params=()):
+            if (
+                "retention_profile_id FROM files WHERE id" in sql
+                and params == (fid2,)
+                and not tetiklendi["yazildi"]
+            ):
+                tetiklendi["yazildi"] = True
+                self._ikinci_dosyayi_eszamanli_profil_degistir(
+                    db._db_path, fid2, profil_yeni
+                )
+            return orijinal_fetchone(sql, params)
+
+        monkeypatch.setattr(db, "fetchone", _fid2_okunurken_araya_gir)
+
+        rows = generate_retention_inventory(db)
+        assert tetiklendi["yazildi"], "test kurulumu hatalı — araya girme hiç tetiklenmedi"
+
+        satir2 = _by_name(rows)["b_ikinci.pdf"]
+        # Tutarlı = TAMAMEN eski (yazmadan ÖNCEki) hâl: hem profile_name
+        # hem status ESKİ profile (10 yıl, henüz dolmamış → AKTİF) göre.
+        assert satir2.profile_name == "ESKI-PROFIL", (
+            f"profile_name beklenmedik biçimde yeni profili gösteriyor: "
+            f"{satir2.profile_name}"
+        )
+        assert satir2.status == STATUS_ACTIVE, (
+            f"status ESKİ profile göre AKTİF olmalıydı, bulunan: {satir2.status} "
+            "(YIRTIK anlık görüntü — BEGIN...COMMIT sarmalayıcısı çalışmıyor demektir)"
+        )
+
+        satir1 = _by_name(rows)["a_birinci.pdf"]
+        assert satir1.profile_name == "ESKI-PROFIL"
+        assert satir1.status == STATUS_ACTIVE
+
+    def test_transaction_closes_even_if_a_row_check_raises(self, db, tmp_path, monkeypatch):
+        """
+        Hata dayanıklılığı — `CORE/backup.py::create_backup()` için yazılan
+        aynı kontrol burada da geçerli: `_row_status_and_date()`'in
+        `RetentionError` DIŞINDAKİ bir hatayla patlaması, `BEGIN` edilmiş
+        transaction'ı ASILI BIRAKMAMALI. `finally`'deki `COMMIT`'in HER
+        İKİ yolda (hatalı/hatasız) da çalıştığı doğrulanıyor.
+        """
+        fid1, fid2, _eski, _yeni = self._iki_dosya_ve_iki_profil(db, tmp_path)
+
+        orijinal_fetchone = db.fetchone
+
+        def _fid2_okunurken_patla(sql, params=()):
+            if "retention_profile_id FROM files WHERE id" in sql and params == (fid2,):
+                raise RuntimeError("yapay hata — satır kontrolü sırasında")
+            return orijinal_fetchone(sql, params)
+
+        monkeypatch.setattr(db, "fetchone", _fid2_okunurken_patla)
+
+        assert db.conn.in_transaction is False, "test öncesi zaten açık bir transaction var"
+
+        with pytest.raises(RuntimeError, match="yapay hata"):
+            generate_retention_inventory(db)
+
+        assert db.conn.in_transaction is False, (
+            "transaction ASILI/AÇIK kaldı — finally'deki COMMIT çalışmamış "
+            "olabilir, bu sonraki bir checkpoint/WAL kısaltmasını bloklardı"
+        )
+        # Bağlantı hâlâ kullanılabilir olmalı.
+        assert db.fetchone("SELECT COUNT(*) AS n FROM files")["n"] == 2

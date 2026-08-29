@@ -4662,3 +4662,126 @@ Tam test suite: 2758 passed, 4 skipped (bir önceki turdan +3 — bu dosyaya
 eklenen 3 yeni test).
 
 ---
+
+## B-073 — Yırtık-okuma riski kod tabanı genelinde tarandı: KVKK envanter raporunda gerçek bir isabet bulundu ve kapatıldı, hata yolu doğrulandı
+
+**Durum:** Kapalı
+**Öncelik:** Orta (tetikleyici koşul — rapor üretimi sırasında eşzamanlı
+yazma — gerektiriyor; ama tetiklendiğinde kendi içinde ÇELİŞEN, uyum
+kanıtı olarak sunulabilecek bir rapor satırı üretiyor)
+**Bulundu ve kapatıldı:** 2026-08-29 — aynı turda
+
+### İstek
+
+B-072'nin `create_backup()` düzeltmesinin ardından: aynı deseni (birden
+fazla tabloyu ardışık, sarmalanmamış SELECT'lerle okuyan fonksiyonlar)
+kod tabanı genelinde, özellikle export/rapor/CSV/PDF üretimiyle ilgili
+kodda tara; gerçek risk taşıyan her fonksiyona aynı `BEGIN`...`COMMIT`
+düzeltmesini uygula; `create_backup()`'ın hata dayanıklılığını da
+doğrula.
+
+### Tarama sonucu
+
+`CORE/`'daki export/rapor üreticilerinin tümü kontrol edildi:
+
+| Fonksiyon | Çok tablolu mu | Sarmalanmamış mı | Risk |
+|---|---|---|---|
+| `CORE/export.py::aad_map()` | Hayır (tek tablo, `files`) | — | Yok |
+| `CORE/audit_chain.py::verify_audit_chain()` | Evet (`settings`+`audit_log`×2-3) | Evet | Yok — `audit_log` yalnızca-ekleme, ekstra okumalar bilgilendirici sayaçlar, hash-zincir matematiği bunlara bağlı değil |
+| `CORE/inventory.py::generate_retention_inventory()` | Evet (temel JOIN + satır başına 4 ek sorgu) | Evet (düzeltmeden ÖNCE) | **GERÇEK — düzeltildi** |
+| `UI/AuditLogDialog.py::_export_txt()` | Evet ama FARKLI biçimde (Qt tablo önbelleği + taze DB sorgusu) | — | Gerçek ama transaction-sarmalamayla düzeltilemez, ayrı madde (aşağıda) |
+
+### Gerçek isabet — `generate_retention_inventory()`
+
+`CORE/inventory.py`'nin KVKK saklama envanteri: `files` + `retention_
+profiles` + `users` + `audit_log` alt sorgusu üzerinde TEK bir JOIN
+(`_BASE_QUERY`) ile başlıyor, ama HER satır için `_row_status_and_date()`
+→ `check_disposal()` `files`/`retention_profiles`'ı DÖRT KEZ DAHA, ayrı
+ayrı, sarmalanmadan yeniden okuyor (modülün kendi "Bu N+1 sorgu demektir"
+notu). Bu tam olarak B-072'nin backup'ta bulduğu YAPISAL kalıp.
+
+**Neden özellikle ciddi.** Modülün kendi docstring'i: *"Tutarlılık
+güvencesi — rapor ile uygulama ayrışamaz."* Bu güvence MANTIK
+tutarlılığı içindi (rapor, gerçek silmeyi kapı gibi kullanan AYNI
+fonksiyonu çağırıyor) ama ZAMANSAL tutarlılığı KAPSAMIYORDU. Envanter,
+`export_inventory_csv()`/`export_inventory_pdf()` ile bir düzenleyiciye
+uyum KANITI olarak sunulması AÇIKÇA amaçlanan bir rapor.
+
+**Ölçüldü.** Aynı 10 yıllık profildeki iki dosyadan ikincisi, tam
+`check_disposal()`'ı onun `retention_profile_id`'sini okumak ÜZEREYKEN
+ikinci bir bağlantıyla 1 yıllık bir profile yeniden atandı. Sonuç:
+`profile_name` (ilk JOIN'den, ESKİ) `status`'ün (YENİ profile göre
+hesaplanmış) YANINDA — kendi içinde çelişen bir satır. 400 gün önce
+eklenmiş bir dosya: 10 yıllık profilde AKTİF, 1 yıllık profilde SÜRESİ
+DOLMUŞ — iki profil arasındaki fark gözle görülür biçimde farklı bir
+`status` üretiyor, torn-read'i saklamayan bir kurulum.
+
+**Düzeltme.** `generate_retention_inventory()`'de temel JOIN VE per-satır
+`check_disposal()` döngüsünün TAMAMI `db.conn.execute("BEGIN")` ...
+`db.conn.execute("COMMIT")` (try/finally ile) içine alındı — B-072'deki
+AYNI düzeltme. Fonksiyonun docstring'i bu değişikliği ve gerekçesini
+belgeliyor.
+
+**Bugün istismar edilebilir değil.** `generate_retention_inventory()`
+hiçbir UI'dan çağrılmıyor — `UI/AdminPanel.py`'de yalnızca yorum
+satırına alınmış bir kullanım örneği var. Ama `BACKLOG.md`'nin
+PyInstaller maddesi (yukarıda, "Bulgu 2") onu gerçek, paketlenmiş
+(`reportlab` gömülü), test edilmiş bir özellik olarak zaten takip
+ediyor — bağlanmamış olması hatanın gerçekliğini değiştirmiyor, yalnızca
+aciliyetini düşürüyor. Şimdi düzeltmek, özellik bir UI düğmesine
+bağlandıktan SONRA yeniden keşfetmekten ucuz.
+
+### İlişkili ama düzeltilmeyen bulgu — `AuditLogDialog._export_txt()`
+
+Dışa aktarılan satır listesi `self._table`'dan (önceki bir `_load()`
+sorgusundan) geliyor; başlık satırının kayıt sayısı ve zincir durumu ise
+dışa aktarım ANINDA çağrılan TAZE bir `zincir_raporu()`'dan. Diyalog
+açık kaldığı sürece (denetim kaydı sürekli yazıldığından) ikisi
+ayrışabilir. Bu bir transaction sorunu DEĞİL — bayat taraf bir Qt
+widget'ı, ikinci bir DB sorgusu değil — bu yüzden `BEGIN`...`COMMIT`
+düzeltmesi burada UYGULANMADI; farklı bir düzeltme gerektiriyor (dışa
+aktarım anında TEK sorgudan türetme). `txt_basligi()` zaten dışa
+aktarımın imzalı OLMADIĞINI söylüyor, bu da riski sınırlıyor. Takip
+maddesi olarak burada belgelendi, sessizce bırakılmadı.
+
+### Hata dayanıklılığı — `create_backup()` VE `generate_retention_inventory()`
+
+`_dump_tables()`'ın (backup) ve `_row_status_and_date()`'in (envanter)
+KENDİLERİ zaten belirli hataları İÇERİDE yutuyor (`_dump_tables()`
+tablo başına `except Exception`, `_row_status_and_date()` yalnızca
+`RetentionError`) — yani dış `try/finally`'yi GERÇEKTEN sınamak için
+hata, bu iç yakalamaların KAPSAMADIĞI bir noktadan enjekte edildi
+(`_dump_tables`'ın kendisini ya da `db.fetchone`'ı KAPSAMLI olmayan bir
+noktada patlatarak).
+
+Her iki fonksiyon için doğrudan doğrulandı: yapay bir exception `BEGIN`
+edilmiş transaction ORTASINDA fırlatıldı, exception çağırana YANSIDI
+(yutulmadı), VE hemen ardından `sqlite3.Connection.in_transaction`
+`False` bulundu — transaction asılı kalmadı. Bağlantının hâlâ
+kullanılabilir olduğu da (basit bir `SELECT` ile) doğrulandı. Açık kalan
+bir transaction'ın önemi tek bir rapor/yedekle sınırlı değil: sonraki bir
+`PRAGMA wal_checkpoint`'i bloklayabilir.
+
+### Testler
+
+`tests/test_inventory.py`'e yeni sınıf `TestEszamanliYazmaAltindaTutarlilik`,
+3 yeni test: `test_building_block_is_torn_by_a_concurrent_profile_reassignment`
+(kalıcı regresyon kilidi — sarmalanmamış ham çağrı yırtığı üretiyor),
+`test_generate_retention_inventory_is_a_single_consistent_snapshot` (ANA
+TEST — gerçek fonksiyon tutarlı kalıyor), `test_transaction_closes_even_
+if_a_row_check_raises` (hata dayanıklılığı).
+
+`tests/test_backup.py`'a yeni bölüm "8. Hata dayanıklılığı", 2 yeni test:
+`test_create_backup_transaction_closes_even_if_the_dump_raises`,
+`test_create_backup_transaction_closes_normally_when_nothing_raises`
+(karşılaştırma kaydı — `finally` HER İKİ yolda da çalışıyor).
+
+SECURITY.md'ye yeni bölüm **§4.16** (EN+TR) eklendi: tarama sonucu tablo,
+`generate_retention_inventory()` bulgusu ve gerekçesi, `AuditLogDialog`
+bulgusu (düzeltilmedi, takip maddesi), hata-yolu doğrulaması.
+`test_belge_dil_paritesi.py` (27/27) ile doğrulandı.
+
+Tam test suite: 2763 passed, 4 skipped (bir önceki turdan +5 — bu dosyaya
+eklenen 5 yeni test: 3 envanter + 2 backup hata dayanıklılığı).
+
+---

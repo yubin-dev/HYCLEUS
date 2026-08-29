@@ -902,3 +902,63 @@ def test_restored_backup_has_no_orphaned_quarantine_reference(
     )
     assert dosya_idleri == {1, 2, 3}, "yalnızca yazmadan ÖNCEki 3 dosya restore edilmeli"
     assert karantina_dosya_idleri == set(), "quarantine boş kalmalı (yazmadan önce boştu)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 8. Hata dayanıklılığı — transaction, dump SIRASINDA patlarsa da kapanmalı
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `_dump_tables()`'ın KENDİSİ tablo başına bir `try/except Exception` taşıyor
+# (bkz. `CORE/backup.py`) — yani `db.fetchall()`'ın attığı bir hata ZATEN
+# İÇERİDE yutulup boş listeye çevriliyor, `create_backup()`'ın dış
+# `try/finally`'sine hiç ULAŞMIYOR. O yüzden dış sarmalayıcıyı GERÇEKTEN
+# sınamak için hata, `_dump_tables()`'ın try/except'inin KAPSAMADIĞI bir
+# noktadan (fonksiyonun kendisinin ÇAĞRILMASINDAN) enjekte ediliyor.
+
+
+def test_create_backup_transaction_closes_even_if_the_dump_raises(
+    dolu_db, vault, tmp_path, key, monkeypatch,
+) -> None:
+    """
+    Yapay bir exception, `REFERENCE_TABLES` dump'ı (transaction zaten
+    `BEGIN` edilmişken, ikinci `_dump_tables()` çağrısında) sırasında
+    fırlatılıyor. `create_backup()`'ın hatayı YUTMAMASI (çağırana
+    YANSIMASI) VE buna rağmen transaction'ı `finally` ile KAPATMIŞ OLMASI
+    gerekiyor — açık kalan bir transaction sonraki bir checkpoint/WAL
+    kısaltmasını bloklayabilir.
+    """
+    import CORE.backup as backup_modulu
+
+    orijinal_dump_tables = backup_modulu._dump_tables
+
+    def _referans_dump_edilirken_patla(db, tables):
+        if tables == backup_modulu.REFERENCE_TABLES:
+            raise RuntimeError("yapay hata — dump sırasında")
+        return orijinal_dump_tables(db, tables)
+
+    monkeypatch.setattr(backup_modulu, "_dump_tables", _referans_dump_edilirken_patla)
+
+    assert dolu_db.conn.in_transaction is False, "test öncesi zaten açık bir transaction var"
+
+    with pytest.raises(RuntimeError, match="yapay hata"):
+        _yedek(dolu_db, vault, tmp_path, key)
+
+    assert dolu_db.conn.in_transaction is False, (
+        "transaction ASILI/AÇIK kaldı — finally'deki COMMIT çalışmamış "
+        "olabilir, bu sonraki bir checkpoint/WAL kısaltmasını bloklardı"
+    )
+
+    # Bağlantı hâlâ KULLANILABİLİR olmalı — açık kalan bir transaction ya
+    # da bozuk bir bağlantı durumu SONRAKİ sorguları da etkilerdi.
+    assert dolu_db.fetchone("SELECT COUNT(*) AS n FROM files")["n"] == 3
+
+
+def test_create_backup_transaction_closes_normally_when_nothing_raises(
+    dolu_db, vault, tmp_path, key,
+) -> None:
+    """Karşılaştırma kaydı: normal (hatasız) bir yedeklemeden SONRA da
+    transaction açık kalmamalı — yukarıdaki testin yalnızca hata yolunu
+    değil, `finally`'nin HER İKİ yolda da çalıştığını doğrulamak için."""
+    assert dolu_db.conn.in_transaction is False
+    _yedek(dolu_db, vault, tmp_path, key)
+    assert dolu_db.conn.in_transaction is False
