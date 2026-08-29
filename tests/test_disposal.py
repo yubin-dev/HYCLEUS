@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import itertools
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -615,6 +616,83 @@ class TestKarantinaTemizligiKorumasi:
             assert "DELETE FROM files" not in govde, (
                 f"{yol}::{fn} kendi silme SQL'ini yazmış — ikinci uygulama geri gelmiş")
 
+    def test_CORE_UI_DB_genelinde_disposal_queue_atlayan_baska_bir_silme_yolu_yok(self):
+        """
+        Yapısal denetim (2026-08-29) — K0-6'nın rglob + AST deseni, tek bir
+        dosya çiftine değil `CORE/`, `UI/`, `DB/`'nin TAMAMINA uygulanmış.
+
+        `test_iki_akis_ayni_fonksiyonu_cagiriyor` yalnızca İKİ BİLİNEN çağrı
+        yerini (`_purge_expired`, `_purge_expired_file`) kontrol ediyor. Bu
+        test daha geniş bir soruyu yanıtlıyor: kod tabanının BAŞKA HİÇBİR
+        YERİNDE, diskten bir dosya silmeyi (`.unlink(`/`os.remove(`/
+        `os.unlink(`/`shred_file(`) AYNI fonksiyon gövdesinde `DELETE FROM
+        files` ile birleştiren, ama `disposal_queue`'yu (yani `_enqueue()`/
+        `_dequeue()` çağrısını) ATLAYAN bir fonksiyon var mı?
+
+        Bulunamadı — aşağıdaki tarama CORE/disposal.py'deki üç fonksiyon
+        DIŞINDA hiçbir eşleşme döndürmüyor: `purge_file()`,
+        `purge_expired_file()`, `resume_pending_disposals()` (üçü de
+        gövdelerinde `_enqueue(`/`_dequeue(` çağırıyor, yani "korumalı"
+        sayılıyor). F4-1'in toplu "İmhaya at" akışı (`UI/main_window_bulk.py::
+        _on_ctx_bulk_move_to_imha`) yalnızca `move_to_imha()` çağırıyor — o
+        hiç disk silmiyor (yalnızca `label`/`expires_at` günceller), yani bu
+        taramaya hiç girmiyor. AdminPanel'in USB kaydı silme akışı
+        (`CORE/vault_manager.py`) ve `--reset` yeniden-kurulum akışı
+        (`CORE/setup_usb.py::_do_reset`) `.hclv` kasa dosyalarını ve
+        `usb_tokens` satırlarını siliyor — `files` tablosuyla HİÇ ilgisi
+        yok, bu yüzden `"delete from files"` deseni onlarda hiç geçmiyor ve
+        tarama onları da hiç yakalamıyor. `quarantine` tablosu `files(id)`e
+        `ON DELETE CASCADE` ile bağlı (bkz. DB/db_manager.py::_SCHEMA) —
+        SQLite'ın kendisi temizliyor, ayrı bir Python silme yolu yok.
+
+        Bilinen sınır: bu, aynı `test_iki_akis_ayni_fonksiyonu_cagiriyor`
+        gibi METİN/AST düzeyinde bir denetim — iki deseni AYRI iki
+        fonksiyona bölüp (biri unlink çağırır, diğerini çağırır; öteki
+        `DELETE FROM files` yazar) çağrı zincirine yayan bir bypass'ı
+        YAKALAMAZ. Bugünkü kod tabanında böyle bir bölünme yok (yukarıdaki
+        `grep`/AST ile ayrıca doğrulandı); yarın biri böyle yazarsa bu
+        tarama onu göremez — kapsamı budur, iddiası bundan fazlası değil.
+        """
+        import ast
+        from pathlib import Path as _P
+
+        kok = _P(__file__).resolve().parent.parent
+        DOSYA_SILME_KALIPLARI = (".unlink(", "os.remove(", "os.unlink(", "shred_file(")
+
+        ihlaller: list[str] = []
+        taranan_dosya_sayisi = 0
+
+        for taban in ("CORE", "UI", "DB"):
+            for yol in sorted((kok / taban).rglob("*.py")):
+                kaynak = yol.read_text(encoding="utf-8")
+                agac = ast.parse(kaynak)
+                taranan_dosya_sayisi += 1
+                for node in ast.walk(agac):
+                    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    govde = ast.get_source_segment(kaynak, node) or ""
+                    govde_kucuk = govde.lower()
+                    dosya_silme_var = any(k in govde_kucuk for k in DOSYA_SILME_KALIPLARI)
+                    db_silme_var = "delete from files" in govde_kucuk
+                    kuyruga_bagli = "_enqueue(" in govde or "_dequeue(" in govde
+                    if dosya_silme_var and db_silme_var and not kuyruga_bagli:
+                        ihlaller.append(
+                            f"{yol.relative_to(kok)}::{node.name} — disk silme + "
+                            "'DELETE FROM files' birlikte ama disposal_queue'ya "
+                            "(enqueue/dequeue) BAĞLI DEĞİL"
+                        )
+
+        # Taramanın gerçekten çalıştığından emin ol — sessizce boş bir dizin
+        # taranıp "ihlal yok" yanlış güvencesi vermesin.
+        assert taranan_dosya_sayisi > 50, (
+            f"beklenenden az dosya tarandı ({taranan_dosya_sayisi}) — "
+            "CORE/UI/DB yolları bozulmuş olabilir"
+        )
+        assert ihlaller == [], (
+            "disposal_queue'yu atlayan yeni bir çökmeye dayanıksız silme "
+            "yolu bulundu:\n" + "\n".join(ihlaller)
+        )
+
     def test_purge_expired_file_bilinmeyen_dosyada_patlamiyor(self, db):
         """Döngü içinde çağrılıyor; tek bir kayıp satır turu durdurmamalı."""
         assert purge_expired_file(db, 9999, source="test") in (True, False)
@@ -980,3 +1058,155 @@ class TestYarimKalanImhaKurtarmasi:
 
         assert birinci.resumed == 1
         assert ikinci.had_pending is False
+
+    # ────────────────────────────────────────────────────────────────────────
+    # resume_pending_disposals()'IN KENDİSİ ortasında ikinci bir kesinti
+    # (2026-08-29) — kurtarmanın kurtarmaya ihtiyacı olursa ne olur?
+    #
+    # `resume_pending_disposals()` kendi dokümantasyonunda "hangi noktada
+    # kesildiği önemli değil" diyor; bu iddia yalnızca ORİJİNAL purge_file()/
+    # purge_expired_file() çağrısı için değil, RESUME'UN KENDİSİ için de
+    # doğru mu? Üç bekleyen kayıt kurup ikincisinde `KeyboardInterrupt`
+    # fırlatılıyor — bilerek `Exception` değil `BaseException`: resume'un
+    # kendi `except Exception` yakalayıcısı sıradan hataları yutup döngüye
+    # DEVAM EDİYOR (bu bilinçli bir tasarım — bkz. fonksiyon docstring'i),
+    # yani gerçek bir "süreç o an öldü" senaryosunu taklit etmek için
+    # `Exception`'ın YAKALAYAMAYACAĞI bir istisna gerekiyor.
+    # ────────────────────────────────────────────────────────────────────────
+
+    def test_resume_DB_adiminda_kesilirse_ikinci_kayit_fiilen_bitmis_ama_kuyrukta_bekliyor_kalir(
+        self, db, tmp_path, monkeypatch,
+    ):
+        """
+        Kesinti NOKTASI: ikinci kaydın `files` DELETE'i (kendi COMMIT'iyle,
+        bkz. `DB/db_manager.py::execute()`) BAŞARIYLA bittikten hemen sonra,
+        `_dequeue()`'dan HEMEN ÖNCE. Bu, resume'un KENDİ iki adımı arasında
+        (`with db.system_write(): db.execute(DELETE...); _dequeue(...)`)
+        gerçek bir yarık — `db.execute()` her çağrıda ayrı commit ediyor,
+        yani ikisi tek bir atomik birim DEĞİL.
+
+        Beklenen: ikinci kayıt "yarı yolda" DEĞİL, "fiilen bitmiş ama kuyruk
+        hâlâ haberi yok" durumunda — disk VE `files` satırı GERÇEKTEN gitmiş,
+        yalnızca kuyruk satırı (bekliyor gibi görünse de) artık kozmetik.
+        Bir sonraki resume onu yine görecek ve `_dequeue()`'yu (tek başına,
+        idempotent) tamamlayacak.
+        """
+        fid1, hcl1 = _mk_file(db, tmp_path, filename="db_birinci.pdf")
+        fid2, hcl2 = _mk_file(db, tmp_path, filename="db_ikinci.pdf")
+        fid3, hcl3 = _mk_file(db, tmp_path, filename="db_ucuncu.pdf")
+        qid1 = _kuyruga_yaz(db, file_id=fid1, filename="db_birinci.pdf", filepath=str(hcl1))
+        qid2 = _kuyruga_yaz(db, file_id=fid2, filename="db_ikinci.pdf", filepath=str(hcl2))
+        qid3 = _kuyruga_yaz(db, file_id=fid3, filename="db_ucuncu.pdf", filepath=str(hcl3))
+
+        from CORE import disposal as disposal_mod
+        gercek_dequeue = disposal_mod._dequeue
+
+        def olumcul_dequeue(db_arg, queue_id):
+            if queue_id == qid2:
+                raise KeyboardInterrupt(
+                    "simüle edilen çökme — ikinci kaydın dequeue'sundan hemen önce"
+                )
+            return gercek_dequeue(db_arg, queue_id)
+
+        monkeypatch.setattr(disposal_mod, "_dequeue", olumcul_dequeue)
+
+        with pytest.raises(KeyboardInterrupt):
+            resume_pending_disposals(db)
+
+        # --- 3. adım: kesinti anındaki durum ---
+
+        # Birinci: sırası geldiğinde zaten tam tamamlanmıştı.
+        assert not hcl1.exists()
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid1,)) is None
+        assert db.fetchone("SELECT id FROM disposal_queue WHERE id = ?", (qid1,)) is None
+
+        # İkinci: disk VE files satırı GERÇEKTEN gitti — yalnızca dequeue
+        # eksik. "Yarım kalmamış" (dosya kısmen silinmiş gibi bir ara hâl
+        # yok), ama kuyruk hâlâ "bekliyor" diyor.
+        assert not hcl2.exists()
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid2,)) is None
+        assert db.fetchone("SELECT id FROM disposal_queue WHERE id = ?", (qid2,)) is not None
+
+        # Üçüncü: sıra ona hiç gelmedi, tamamen dokunulmamış.
+        assert hcl3.exists()
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid3,)) is not None
+        assert db.fetchone("SELECT id FROM disposal_queue WHERE id = ?", (qid3,)) is not None
+
+        # --- 4. adım: bir sonraki açılış — resume'u TEKRAR çalıştır ---
+        monkeypatch.setattr(disposal_mod, "_dequeue", gercek_dequeue)
+
+        ikinci_calistirma = resume_pending_disposals(db)
+
+        assert not hcl3.exists()
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid3,)) is None
+        assert db.fetchone("SELECT id FROM disposal_queue WHERE id = ?", (qid2,)) is None
+        assert db.fetchone("SELECT id FROM disposal_queue WHERE id = ?", (qid3,)) is None
+        assert _kuyruk_satirlari(db) == []
+        assert ikinci_calistirma.resumed == 2      # ikinci (yalnızca dequeue) + üçüncü
+        assert ikinci_calistirma.failed == 0
+
+        # Birinci kayıt YANLIŞLIKLA tekrar işlenmedi: ikinci çalıştırmada
+        # kuyrukta hiç yoktu, yani ikinci bir "disposal_resumed" audit
+        # kaydı ÜRETİLMEDİ.
+        birinci_icin_kayitlar = db.fetchall(
+            "SELECT id FROM audit_log WHERE action = 'disposal_resumed' AND target_id = ?",
+            (fid1,),
+        )
+        assert len(birinci_icin_kayitlar) == 1  # yalnızca ilk çalıştırmadan
+
+    def test_resume_DISK_adiminda_kesilirse_ikinci_kayit_UCUNCU_ile_AYNI_tamamen_dokunulmamis_kalir(
+        self, db, tmp_path, monkeypatch,
+    ):
+        """
+        Aynı senaryo, bu kez kesinti noktası HERHANGİ bir commit'ten ÖNCE —
+        disk `unlink()`'in kendisi. DB adımı kesintisinden (yukarıdaki test)
+        FARKLI olarak burada "fiilen bitmiş ama kuyrukta bekliyor" gibi bir
+        ara durum YOK: ikinci kayıt üçüncüyle TIPATIP AYNI durumda kalıyor
+        (disk duruyor, `files` satırı duruyor, kuyrukta bekliyor).
+        """
+        fid1, hcl1 = _mk_file(db, tmp_path, filename="disk_birinci.pdf")
+        fid2, hcl2 = _mk_file(db, tmp_path, filename="disk_ikinci.pdf")
+        fid3, hcl3 = _mk_file(db, tmp_path, filename="disk_ucuncu.pdf")
+        qid1 = _kuyruga_yaz(db, file_id=fid1, filename="disk_birinci.pdf", filepath=str(hcl1))
+        qid2 = _kuyruga_yaz(db, file_id=fid2, filename="disk_ikinci.pdf", filepath=str(hcl2))
+        qid3 = _kuyruga_yaz(db, file_id=fid3, filename="disk_ucuncu.pdf", filepath=str(hcl3))
+
+        gercek_unlink = Path.unlink
+
+        def olumcul_unlink(self_path, *a, **k):
+            if self_path == hcl2:
+                raise KeyboardInterrupt(
+                    "simüle edilen çökme — ikinci kaydın unlink'inden hemen önce"
+                )
+            return gercek_unlink(self_path, *a, **k)
+
+        monkeypatch.setattr(Path, "unlink", olumcul_unlink)
+
+        with pytest.raises(KeyboardInterrupt):
+            resume_pending_disposals(db)
+
+        # --- 3. adım ---
+        assert not hcl1.exists()
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid1,)) is None
+        assert db.fetchone("SELECT id FROM disposal_queue WHERE id = ?", (qid1,)) is None
+
+        # İkinci: HİÇBİR şey commit olmadı — üçüncüyle birebir aynı durumda.
+        assert hcl2.exists()
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid2,)) is not None
+        assert db.fetchone("SELECT id FROM disposal_queue WHERE id = ?", (qid2,)) is not None
+
+        assert hcl3.exists()
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid3,)) is not None
+        assert db.fetchone("SELECT id FROM disposal_queue WHERE id = ?", (qid3,)) is not None
+
+        # --- 4. adım ---
+        monkeypatch.setattr(Path, "unlink", gercek_unlink)
+
+        ikinci_calistirma = resume_pending_disposals(db)
+
+        assert not hcl2.exists() and not hcl3.exists()
+        for fid in (fid2, fid3):
+            assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid,)) is None
+        assert _kuyruk_satirlari(db) == []
+        assert ikinci_calistirma.resumed == 2
+        assert ikinci_calistirma.failed == 0

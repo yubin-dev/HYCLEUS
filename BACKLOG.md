@@ -6059,3 +6059,120 @@ yeni test + `test_db_manager_rbac.py`'nin mevcut parametrizasyonuna
 eklenen `disposal_queue` durumu). Ruff/mypy/bandit temiz.
 
 ---
+
+### 2026-08-29 (devam 2) — disposal_queue'yu atlayan İKİNCİ bir yol var mı; resume_pending_disposals()'ın kendisi kesilirse ne olur
+
+Görev: 4 ayrı denetim/test — (1) kod genelinde `files` tablosuyla ilişkili
+başka bir disk+DB silme yolu var mı (yapısal denetim), (2) varsa
+`disposal_queue`'ya bağla, (3) `resume_pending_disposals()` üç kayıt
+işlerken ikincide yapay bir kesintiyle karşılaşırsa ne olur, (4) sonraki
+açılışta kalan kayıtlar doğru tamamlanıyor mu.
+
+**1. madde — yapısal denetim, sonuç: BAŞKA YOL YOK.** `CORE/`, `UI/`,
+`DB/` genelinde `.unlink(`/`os.remove(`/`os.unlink(`/`shred_file(` çağrı
+yerlerinin TAMAMI (`grep -rn` ile) listelendi ve her biri tek tek
+incelendi:
+
+- `CORE/backup.py` (2 yer) — yedek HEDEFİ ve geçici düz-metin dökümü
+  temizliği, `files` tablosuyla ilgisi yok.
+- `CORE/checkout.py`, `CORE/timestamp.py` — geçici kopya/dosya temizliği
+  (SafeZone benzeri), `files` tablosuna hiç dokunmuyor.
+- `CORE/safezone.py`, `CORE/secret_migration.py`, `CORE/secure_erase.py` —
+  düz metin/sır silme, `files` tablosuyla ilgisi yok.
+- `CORE/vault_manager.py`, `CORE/setup_usb.py::_do_reset` — `.hclv` kasa
+  dosyaları + `usb_tokens` satırı siliyor. Görevin özellikle andığı
+  "reprovisioning sırasında eski dosya temizliği" BU — ama `files`
+  tablosuyla HİÇ ilgisi yok (farklı tablo, farklı dosya türü). Kapsam
+  dışı: görev açıkça "`files` tablosuyla ilişkili bağlamda" diyor.
+- F4-1'in toplu "İmhaya at" işlemi
+  (`UI/main_window_bulk.py::_on_ctx_bulk_move_to_imha`) — yalnızca
+  `move_to_imha()` çağırıyor, o da DİSKE HİÇ DOKUNMUYOR (yalnızca
+  `label`/`expires_at` günceller). Bu bir silme yolu bile değil.
+- AdminPanel'in "manuel silme akışı" olarak aranan şey — `AdminPanel.py`
+  yalnızca USB kaydı siliyor (`CORE/vault_manager.py` üzerinden), `files`
+  tablosuna dair bir silme UI'da hiç YOK: `purge_file()` şu anda hiçbir
+  UI çağrı yerinden çağrılmıyor (ayrıca doğrulandı, `grep -rn
+  "purge_file(" UI/` boş döndü) — CORE/disposal.py'nin kendi
+  docstring'inin zaten söylediği gibi, bu ileriye dönük hazır altyapı.
+  Yani "AdminPanel'in manuel silme akışı" diye bir şey bugün YOK.
+- Karantina temizliği zaten önceki turda `purge_expired_file()`'a
+  bağlanmıştı (B-004/B-008), yeni bir şey çıkmadı. `quarantine` tablosu
+  `files(id)`e `ON DELETE CASCADE` ile bağlı
+  (`DB/db_manager.py::_SCHEMA`) — SQLite'ın kendisi temizliyor, ayrı bir
+  Python silme yolu yok.
+
+`DELETE FROM files` metninin kod tabanındaki TEK GEÇTİĞİ üretim dosyası
+`CORE/disposal.py` (`grep -rn "DELETE FROM files" --include=*.py`, test
+dosyaları hariç) — üç yerde, üçü de benim eklediğim fonksiyonlar
+(`purge_file`, `purge_expired_file`, `resume_pending_disposals`).
+
+**Kalıcı test.** "Kontrol ettim, yoktu" değil, kalıcı bir CI kapısı:
+`tests/test_disposal.py::TestKarantinaTemizligiKorumasi::
+test_CORE_UI_DB_genelinde_disposal_queue_atlayan_baska_bir_silme_yolu_yok`
+— K0-6'nın `rglob("*.py")` + AST deseniyle `CORE/`, `UI/`, `DB/`'nin
+TAMAMINI tarıyor, disk-silme çağrısıyla `DELETE FROM files`'ı aynı
+fonksiyon gövdesinde birleştirip `_enqueue(`/`_dequeue(` ÇAĞIRMAYAN her
+fonksiyonu işaretliyor. Bilinen sınır (testin kendi docstring'inde
+yazılı): bu bir METİN/AST denetimi, çağrı grafiği izlemesi değil — iki
+ayrı fonksiyona bölünmüş bir bypass'ı (biri unlink çağırır, ayrı biri
+`DELETE FROM files` yazar) yakalamaz. Mutasyon kanıtı: `CORE/` içine tam
+bu deseni (kuyruğa hiç dokunmadan unlink + DELETE) yapan bir kullan-at
+fonksiyon geçici olarak eklendi — test kırıldı (doğru dosya::fonksiyon
+adıyla), dosya silinip test tekrar yeşile döndü.
+
+**2. madde — N/A.** 1. maddede `purge_file()`/`purge_expired_file()`
+DIŞINDA gerçek bir `files`+disk silme yolu BULUNMADI, yani bağlanacak
+ikinci bir yol yok. Bu maddede yapılan İŞ: hiçbiri — bulunmayan bir şeyi
+"düzeltmek" icat etmek yerine, 1. maddenin sonucu dürüstçe raporlandı.
+
+**3-4. madde — resume_pending_disposals()'IN KENDİSİ ortasında kesinti.**
+Fonksiyonun "hangi adımda kesildiği önemli değil" iddiası daha önce
+yalnızca ORİJİNAL `purge_file()`/`purge_expired_file()` çağrısı için
+kanıtlanmıştı; bu kez kurtarmanın KENDİ tekrar oynatması test edildi. İki
+yeni test, disposal_queue'da 3 bekleyen kayıtla, ikincinin işlenmesini
+`KeyboardInterrupt` ile öldürüyor (bilerek `Exception` DEĞİL — fonksiyonun
+satır-başına `except Exception`'ı BİLİNÇLİ bir tasarım, sıradan bir
+hatanın kalan satırları durdurmasını engelliyor; gerçek bir süreç ölümünü
+taklit etmek onu AŞAN bir istisna gerektiriyor), iki farklı noktada:
+
+- **DB adımında** (`with db.system_write(): db.execute(DELETE...);
+  _dequeue(...)` bloğunun İÇİNDE, `db.execute()`'un kendi commit'inden
+  SONRA ama `_dequeue()`'dan ÖNCE): ikinci kaydın diski VE `files` satırı
+  ZATEN gitmiş — yalnızca kuyruk satırı (artık kozmetik) kalıyor. "Yarım
+  kalmamış" (ara bir silme durumu yok), ama kuyruk dışarıdan "bekliyor"
+  görünüyor.
+- **Disk adımında** (`unlink()`'in kendisinde, HERHANGİ bir commit'ten
+  önce): ikinci kayıt HİÇBİR şey commit olmadan üçüncü kayıtla BİREBİR
+  aynı durumda kalıyor.
+
+İki durumda da: birinci kayıt (sırası kesintiden ÖNCE geldi) TAM
+tamamlanmış, üçüncü kayıt (sırası hiç gelmedi) TAMAMEN dokunulmamış.
+Hemen ardından `resume_pending_disposals()` İKİNCİ KEZ çağrılınca (4.
+madde — bir sonraki açılış): kalan iki kayıt (ikinci + üçüncü) doğru
+tamamlanıyor, birinci kayıt kuyrukta hiç olmadığı için tekrar İŞLENMİYOR
+ve ikinci bir `disposal_resumed` audit kaydı ÜRETİLMİYOR (doğrulandı:
+birinci dosya için audit_log'da tam olarak 1 `disposal_resumed` satırı
+var, ikinci çalıştırmadan sonra da hâlâ 1).
+
+**Mutasyon kanıtları (üçü de geri alındı, `git diff --stat` temiz):**
+
+- Satır-başına yakalayıcı `except Exception` → `except BaseException`
+  genişletildi (simüle çökmeyi yutup döngünün YANLIŞLIKLA üçüncü kayda
+  devam etmesine izin verirdi) — HER İKİ yeni test de **BAŞARISIZ** oldu.
+- `resume_pending_disposals()` içinde `_dequeue()` çağrısı `files`
+  DELETE'inden ÖNCEYE alındı (sıra değiştirildi) — DB-adımı testi
+  **BAŞARISIZ** oldu (ikinci kaydın `files` satırı hâlâ duruyordu).
+
+SECURITY.md §4.21'e (EN+TR) "Follow-up (same day)" paragrafı olarak
+eklendi.
+
+Tam test suite: 2923 passed, 4 skipped (bir önceki turdan +3 — bu üç yeni
+test: yapısal denetim + iki resume-kesinti testi). Ruff/mypy/bandit
+temiz. (Not: ilk tam koşuda `test_belge_dil_paritesi.py` yanlışlıkla
+düştü — arka planda koşan tam suite SECURITY.md'yi tam ben EN/TR
+düzenlemelerini yaparken okumuştu, aynı Tur 6'da tespit edilen dosya-
+düzenleme yarışı; SECURITY.md'ye hiçbir eş zamanlı dokunuş olmadan yapılan
+temiz bir tekrar koşusu 2923 passed/4 skipped verdi, gerçek bir regresyon
+değildi.)
+
+---

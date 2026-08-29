@@ -2270,6 +2270,70 @@ which leaves two files in the two different crash states in the same
 queue and asserts both are cleaned up in one pass, not just the first one
 found.
 
+**Follow-up (same day): is `CORE/disposal.py` really the only door, and
+can the recovery itself be interrupted?** Two separate questions, both
+answered by measurement rather than assumption.
+
+*Structural audit — is there a second deletion path?* Every production
+`.unlink(`/`os.remove(`/`os.unlink(`/`shred_file(` call site in `CORE/`,
+`UI/`, and `DB/` was enumerated and checked for a `DELETE FROM files` in
+the same function body. The candidates the task named by name were all
+ruled out on inspection, not by assumption: F4-1's bulk "move to Imha"
+(`UI/main_window_bulk.py::_on_ctx_bulk_move_to_imha`) only calls
+`move_to_imha()`, which never touches disk (it relabels and sets a TTL,
+nothing else) — it isn't a deletion path at all. The USB-record deletion
+flow (`CORE/vault_manager.py`) and the `--reset` reprovisioning flow
+(`CORE/setup_usb.py::_do_reset`) both delete `.hclv` vault files and
+`usb_tokens` rows — a different table entirely, no `DELETE FROM files`
+anywhere near them. `quarantine` is cleaned up by SQLite's own `ON DELETE
+CASCADE` on `quarantine.file_id REFERENCES files(id)`
+(`DB/db_manager.py::_SCHEMA`), not by any Python deletion code. The result
+was turned into a permanent structural test rather than a one-time
+finding: `tests/test_disposal.py::TestKarantinaTemizligiKorumasi::
+test_CORE_UI_DB_genelinde_disposal_queue_atlayan_baska_bir_silme_yolu_yok`
+walks every function definition under the three directories with `ast`
+and flags any body that combines a disk-deletion call with `DELETE FROM
+files` but does *not* also call `_enqueue(`/`_dequeue(` — the three
+legitimate functions all pass (they call one or both), and a live
+mutation (a throwaway function pasted into `CORE/` doing exactly that
+combination, no queue involved) confirmed the test fails when a bypass is
+actually present, not just when nothing is. The scope is stated in the
+test's own docstring: this is a text/AST check, not a call-graph trace —
+a bypass split across two functions (one unlinks, and separately calls
+something that deletes the row) would not be caught. No such split exists
+today; that limit is disclosed, not hidden. Nothing to route through
+`disposal_queue` followed from this, because nothing else was found.
+
+*Can `resume_pending_disposals()` itself be interrupted mid-recovery?*
+The function's own claim — "it doesn't matter which step it died on" —
+had only been tested for the *original* `purge_file()`/
+`purge_expired_file()` call, never for a crash during recovery's own
+replay. Two tests construct three pending queue rows and kill the second
+one's processing with a `KeyboardInterrupt` (deliberately not an
+`Exception` — the function's per-row `except Exception` is intentional
+design that keeps one row's ordinary failure from blocking the rest, so
+proving a genuine process-level death requires an exception that
+escapes it) at two different points: inside the `with db.system_write():
+db.execute(DELETE...); _dequeue(...)` block (between its own two
+separately-committing statements) and at the disk `unlink()` itself
+(before either statement runs). The two points produce genuinely
+different intermediate states, both consistent with "never partially
+destroyed": interrupted at the DB step, the second file's disk copy and
+`files` row are *already gone* — only the now-cosmetic queue row remains,
+because `db.execute()` commits each call independently
+(`DB/db_manager.py::execute()`); interrupted at the disk step, the second
+file is untouched, identical to the third row that was never reached at
+all. In both cases the first row (processed before the interruption) is
+fully complete and the third (never reached) is fully untouched — and a
+second call to `resume_pending_disposals()` right after finishes both
+remaining rows correctly, without re-emitting a `disposal_resumed` audit
+entry for the already-completed first row. Two more live mutations
+confirmed both tests discriminate: widening the per-row handler from
+`except Exception` to `except BaseException` (which would swallow the
+simulated crash and let the loop wrongly continue to the third row) failed
+both tests, and reordering `_dequeue()` before the `files` DELETE inside
+`resume_pending_disposals()` failed the DB-step test specifically.
+
 ---
 
 ## 5. Cryptographic details
@@ -4865,6 +4929,72 @@ devre dışı bırakmak ikisini kırdı —
 test aynı kuyrukta iki farklı çökme durumundaki iki dosyayı bırakıp
 ikisinin de TEK turda temizlendiğini, yalnızca ilk bulunanın değil,
 doğruluyor.
+
+**Takip (aynı gün): gerçekten TEK kapı `CORE/disposal.py` mi, ve
+kurtarmanın kendisi kesintiye uğrarsa ne olur?** İki ayrı soru, ikisi de
+varsayımla değil ölçümle yanıtlandı.
+
+*Yapısal denetim — ikinci bir silme yolu var mı?* `CORE/`, `UI/`, `DB/`
+genelindeki HER `.unlink(`/`os.remove(`/`os.unlink(`/`shred_file(` çağrı
+yeri listelenip aynı fonksiyon gövdesinde bir `DELETE FROM files` olup
+olmadığı kontrol edildi. Görevin isim isim andığı adaylar VARSAYIMLA
+değil İNCELEMEYLE elendi: F4-1'in toplu "İmhaya at" işlemi
+(`UI/main_window_bulk.py::_on_ctx_bulk_move_to_imha`) yalnızca
+`move_to_imha()` çağırıyor, o da diske hiç dokunmuyor (yalnızca etiket/
+TTL günceller) — bu zaten bir silme yolu değil. USB kaydı silme akışı
+(`CORE/vault_manager.py`) ve `--reset` yeniden-kurulum akışı
+(`CORE/setup_usb.py::_do_reset`) ikisi de `.hclv` kasa dosyalarını ve
+`usb_tokens` satırlarını siliyor — tamamen farklı bir tablo, yakınlarında
+hiçbir `DELETE FROM files` yok. `quarantine` tablosu SQLite'ın kendi `ON
+DELETE CASCADE`'i ile temizleniyor (`quarantine.file_id REFERENCES
+files(id)`, `DB/db_manager.py::_SCHEMA`), herhangi bir Python silme
+koduyla değil. Sonuç tek seferlik bir bulgu olarak değil kalıcı bir
+yapısal test olarak bırakıldı: `tests/test_disposal.py::
+TestKarantinaTemizligiKorumasi::
+test_CORE_UI_DB_genelinde_disposal_queue_atlayan_baska_bir_silme_yolu_yok`
+üç dizin altındaki HER fonksiyon tanımını `ast` ile geziyor ve disk-silme
+çağrısıyla `DELETE FROM files`'ı aynı gövdede birleştirip `_enqueue(`/
+`_dequeue(`'yi ÇAĞIRMAYAN her fonksiyonu işaretliyor — üç meşru fonksiyon
+da geçiyor (ikisini de ya da birini çağırıyorlar), ve canlı bir mutasyon
+(CORE/ içine yapıştırılan, tam bu birleşimi yapan ama kuyruğa hiç
+dokunmayan bir kullan-at fonksiyon) testin gerçek bir bypass VARKEN
+kırıldığını, yalnızca hiçbir şey yokken değil, doğruladı. Kapsam testin
+kendi docstring'inde açıkça yazıyor: bu bir metin/AST kontrolü, çağrı
+grafiği izlemesi değil — iki ayrı fonksiyona bölünmüş bir bypass (biri
+unlink çağırır, ayrı biri satırı siler) yakalanmaz. Bugün böyle bir
+bölünme yok; bu sınır gizlenmiyor, açıkça yazılıyor. Buradan
+`disposal_queue`'ya bağlanacak hiçbir şey çıkmadı, çünkü başka hiçbir şey
+bulunmadı.
+
+*`resume_pending_disposals()`'IN KENDİSİ kurtarma ortasında kesilebilir
+mi?* Fonksiyonun kendi iddiası — "hangi adımda öldüğü önemli değil" —
+yalnızca ORİJİNAL `purge_file()`/`purge_expired_file()` çağrısı için test
+edilmişti, kurtarmanın KENDİ tekrar oynatması sırasındaki bir çökme için
+hiç değil. İki test üç bekleyen kuyruk satırı kurup ikincisinin işlenmesini
+bir `KeyboardInterrupt` ile öldürüyor (bilerek `Exception` değil —
+fonksiyonun satır-başına `except Exception`'ı bilinçli bir tasarım, bir
+satırın sıradan hatasının kalanları durdurmasını engelliyor; gerçek bir
+süreç-seviyesi ölümü kanıtlamak onu AŞAN bir istisna gerektiriyor) İKİ
+farklı noktada: `with db.system_write(): db.execute(DELETE...);
+_dequeue(...)` bloğunun İÇİNDE (kendi iki ayrı-commit'li ifadesi arasında)
+ve disk `unlink()`'in kendisinde (ikisi de çalışmadan ÖNCE). İki nokta
+gerçekten farklı ARA durumlar üretiyor, ikisi de "asla kısmen yok
+edilmedi" ile tutarlı: DB adımında kesilince ikinci dosyanın disk kopyası
+VE `files` satırı ZATEN gitmiş — yalnızca artık kozmetik olan kuyruk
+satırı kalıyor, çünkü `db.execute()` her çağrıyı ayrı ayrı commit ediyor
+(`DB/db_manager.py::execute()`); disk adımında kesilince ikinci dosya HİÇ
+dokunulmamış, sıraya hiç girmemiş üçüncü satırla BİREBİR aynı. İki
+durumda da birinci satır (kesintiden ÖNCE işlenmiş) tam tamamlanmış ve
+üçüncü (sırası hiç gelmemiş) tamamen dokunulmamış — ve hemen ardından
+yapılan ikinci bir `resume_pending_disposals()` çağrısı kalan iki satırı
+doğru tamamlıyor, zaten tamamlanmış birinci satır için İKİNCİ bir
+`disposal_resumed` denetim kaydı ÜRETMEDEN. İki canlı mutasyon daha
+testlerin gerçekten ayırt ettiğini doğruladı: satır-başına yakalayıcıyı
+`except Exception`'dan `except BaseException`'a genişletmek (simüle
+edilen çökmeyi yutup döngünün YANLIŞLIKLA üçüncü satıra devam etmesine
+izin verirdi) ikisini de kırdı, `resume_pending_disposals()` içinde
+`_dequeue()`'yu `files` DELETE'inden ÖNCEYE almak özellikle DB-adımı
+testini kırdı.
 
 ---
 
