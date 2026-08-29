@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -177,6 +178,15 @@ _YAZMA_HEDEFI_DESENI = re.compile(
     r"\s+[\"'`\[]?([A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
+
+
+def _sql_yazma_islemi(sql: str) -> str:
+    """SQL'in yazma fiilini döndürür — `rbac_write_rejected` audit detayı için."""
+    ust = sql.lstrip().upper()
+    for fiil in ("INSERT", "UPDATE", "DELETE", "REPLACE"):
+        if ust.startswith(fiil):
+            return fiil
+    return "?"
 
 
 class DBManager:
@@ -611,11 +621,35 @@ class DBManager:
 
         from CORE.roles import can_write
 
-        if not can_write(self._role):
-            raise YazmaYetkisiYokError(
-                f"Rol {self._role!r} '{tablo}' tablosuna yazamaz "
-                "(Salt Okunur ya da tanınmayan rol)."
-            )
+        if can_write(self._role):
+            return
+
+        # K1-14: reddi de audit zincirine bağla — `weak_hwid_binding_rejected`
+        # (CORE/vault_manager.py) ve `usb_auth_rejected` ile AYNI desen,
+        # "reddet ve neden olduğunu kaydet". Bu, depodaki en kritik red
+        # (salt okunur bir oturumun iş verisi değiştirmeye kalkması) hiçbir
+        # iz bırakmadan sessizce geçmesin diye.
+        #
+        # Rekürsiyon/sonsuz döngü YOK: `self.log()` `CORE.audit_chain.
+        # append_entry()`'ye YÖNLENDİRİYOR ve o `self.execute()`'u hiç
+        # GÖRMÜYOR — doğrudan `self.conn` (ham sqlite3.Connection) üzerinde
+        # yazıyor. Ayrıca `audit_log` zaten `_RBAC_KORUMALI_TABLOLAR`'IN
+        # DIŞINDA. İki AYRI, birbirinden bağımsız garanti — biri
+        # değişse bile diğeri tek başına yeterli.
+        islem = _sql_yazma_islemi(sql)
+        try:
+            kare = sys._getframe(2)  # execute()'u ÇAĞIRANIN çerçevesi
+            baglam = f"{kare.f_globals.get('__name__', '?')}.{kare.f_code.co_name}:{kare.f_lineno}"
+        except ValueError:  # pragma: no cover — yalnızca çerçeve yığını çok sığsa olur
+            baglam = "bilinmiyor"
+        self.log(
+            "rbac_write_rejected",
+            detail=f"role={self._role!r} table={tablo} op={islem} caller={baglam}",
+        )
+        raise YazmaYetkisiYokError(
+            f"Rol {self._role!r} '{tablo}' tablosuna yazamaz "
+            "(Salt Okunur ya da tanınmayan rol)."
+        )
 
     # ------------------------------------------------------------------
     # Yardımcı metotlar

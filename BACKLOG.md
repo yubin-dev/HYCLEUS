@@ -4982,4 +4982,83 @@ kapsam dışı bırakılan Yönetici-vs-Standart ekseni notu.
 Tam test suite: 2785 passed, 4 skipped (bu dosyaya eklenen 16 yeni test
 dahil), `ruff check .` temiz.
 
+### 2026-08-29 (devam) — K1-14: system_write() bypass'ı incelendi (sızıntı yok), ama audit boşluğu bulundu ve kapatıldı
+
+Ayrı bir turda, `system_write()`'ın kendisi CANLI incelendi — düzeltme
+yapılmadan önce yalnızca kanıt toplandı. Üç soru sorgulandı:
+
+1. **Implementasyon:** `system_write()` bir `@contextmanager`,
+   `try`/`finally` ile thread-local bir sayaç (`derinlik`) artırıp
+   azaltıyor. Bayrak `role`'ü geçici olarak "yazabilir" yapmıyor —
+   `can_write()` kontrolüne hiç ULAŞMADAN erken `return` ediyor (önemli
+   ek gözlem: bu erken dönüş tabloya özgü değil, `derinlik > 0`
+   olduğunda o thread'deki HERHANGİ bir tabloya yazı kontrolsüz geçer —
+   bugün pratikte dar çünkü yalnızca iki tek-satırlık `execute()`
+   çağrısını sarmalıyor). Kapsam fonksiyonun tamamı değil, yalnızca
+   `with` bloğu. İç içe çağrı bir boole değil SAYAÇ ile doğru
+   çözülüyor.
+2. **Exception ile yarıda kesme:** Canlı test edildi — `system_write()`
+   içinde yapay bir `RuntimeError` fırlatıldı, `finally` çalıştı, sayaç
+   `0`'a döndü, hemen ardından aynı thread'de yapılan normal bir yazı
+   yine doğru reddedildi. **Sızıntı YOK.**
+3. **Thread yeniden kullanımı:** `ThreadPoolExecutor(max_workers=1)` ile
+   `QThreadPool`'un aynı OS thread'ini ardışık görevler için yeniden
+   kullanması simüle edildi — Görev A `system_write()` ortasında yarıda
+   kesildi, Görev B AYNI OS thread'inde hemen ardından normal bir yazı
+   denedi. **Sızıntı YOK** — Görev B doğru şekilde reddedildi.
+4. **Audit kontrolü:** Reddedilen bir yazının `audit_log`'a düşüp
+   düşmediği kontrol edildi. **Gerçek bir boşluk bulundu**:
+   `_yazma_yetkisini_dogrula()` `raise` etmeden önce hiçbir `db.log(...)`
+   çağırmıyordu — `weak_hwid_binding_rejected`/`usb_auth_rejected`'in
+   izlediği "reddet ve kaydet" deseninin dışında kalıyordu.
+
+**Düzeltme (istek üzerine, aynı turda).** `_yazma_yetkisini_dogrula()`
+artık `raise YazmaYetkisiYokError(...)`'dan HEMEN önce
+`self.log("rbac_write_rejected", detail=...)` çağırıyor. `detail`:
+`role=<rol> table=<tablo> op=<INSERT/UPDATE/DELETE/REPLACE>
+caller=<modül>.<fonksiyon>:<satır>` — çağıran bağlamı `sys._getframe(2)`
+ile `execute()`'u ÇAĞIRAN çerçeveden okunuyor.
+
+**Rekürsiyon riski — kontrol edildi, varsayılmadı.** İki BAĞIMSIZ
+garanti: (1) `self.log()` `CORE.audit_chain.append_entry()`'ye
+yönleniyor, o da `self.conn` (ham `sqlite3.Connection`) üzerinden
+yazıyor — `self.execute()`'u hiç GÖRMÜYOR; (2) `audit_log` zaten
+`_RBAC_KORUMALI_TABLOLAR`'ın dışında. Canlı doğrulandı: reddedilen bir
+yazı tam olarak 1 `audit_log` satırı ekliyor, sonsuz döngü/rekürsif red
+YOK.
+
+**Testler (`tests/test_db_manager_rbac.py`'e 5 yeni test, 21 toplam):**
+
+- `test_reddedilen_yazi_audit_loga_tam_bir_rbac_write_rejected_satiri_dusuyor`
+  — ANA TEST: tam 1 satır ekleniyor, `role`/`table`/`op`/`caller`
+  alanları doğru.
+- `test_reddedilen_yazi_kaydi_yeniden_uretilebilir_tum_gatelenmis_tablolarda`
+  — birden fazla tablo/fiil kombinasyonunda tekrarlanabilirlik.
+- `test_yazma_denemesi_reddedilmeden_once_kayit_dusuyor_yarim_kalmiyor` —
+  reddedilen yazının kendisi kalıcı olmuyor, `detail` satır DEĞERLERİNİ
+  (ör. denenen etiket adı) SIZDIRMIYOR, yalnızca yapısal bilgi taşıyor.
+- `test_system_write_icindeki_mesru_yazi_rbac_write_rejected_uretmiyor` —
+  NEGATİF test: `system_write()` içindeki meşru bir yazı yanlışlıkla
+  "reddedildi" diye loglanmıyor.
+- `test_otomatik_temizleyiciler_calisirken_de_yanlis_red_kaydi_uretmiyor`
+  — aynı negatif kontrolün gerçek üretim koduyla (`purge_expired_file()`)
+  tekrarı.
+
+**Mutasyon kontrastı — `git stash` ile, İKİNCİ kez.** Yalnızca
+`DB/db_manager.py`'deki audit-loglama eklentisi geri alındı (önceki
+turun `git stash` testi zaten TÜM düzeltmeyi kapsıyordu — bu kez amaç
+SPESİFİK olarak yeni loglama davranışını izole etmekti): audit'e özgü
+iki test TEK BAŞINA başarısız oldu (`AssertionError: tam olarak 1 audit
+satırı beklenir, 0 eklendi`), paketin geri kalanı (reddin kendisini
+ölçen testler dahil) geçmeye devam etti — bu, testlerin GERÇEKTEN
+loglama davranışını ölçtüğünü, yalnızca reddi değil, kanıtlıyor. Sonra
+`git stash pop` ile düzeltme geri getirildi.
+
+SECURITY.md §4.17 (EN+TR) güncellendi: bypass incelemesinin sonucu
+(sızıntı yok), audit boşluğunun bulunuşu ve düzeltmesi, testlerin
+mutasyon kontrastı. `test_belge_dil_paritesi.py` (27/27) ile doğrulandı.
+
+Tam test suite: 2790 passed, 4 skipped (bu bölümde eklenen 5 yeni test
+dahil), `ruff check .` temiz.
+
 ---

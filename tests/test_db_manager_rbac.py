@@ -32,6 +32,20 @@ kararı sabitliyor.
 `test_otomatik_temizleyiciler_salt_okunur_oturumda_calismaya_devam_ediyor`
 bunun GERÇEKTEN çalıştığını, salt okunur bir oturum ortasında bile,
 ölçüyor.
+
+Sorgu (2026-08-29, devam) — K1-14: `system_write()` bypass'ının kendisi
+CANLI incelendi (thread-local sayaç, `try/finally`, iç içe çağrı) ve
+sızıntı bulunamadı — ama o incelemede AYRI, gerçek bir boşluk ortaya
+çıktı: reddedilen bir RBAC yazması `weak_hwid_binding_rejected`/
+`usb_auth_rejected` ile AYNI "reddet ve kaydet" desenini izlemiyordu,
+audit_log'a hiçbir iz düşmüyordu. `_yazma_yetkisini_dogrula()` artık
+`raise` etmeden HEMEN önce `rbac_write_rejected` eylemiyle `self.log()`
+çağırıyor — rol, hedef tablo, SQL fiili (INSERT/UPDATE/DELETE/REPLACE) ve
+çağıran bağlamı (`modül.fonksiyon:satır`) `detail`'e yazılıyor.
+Rekürsiyon riski YOK: `self.log()` `CORE.audit_chain.append_entry()`'ye
+yönleniyor ve o `self.conn`'a (ham `sqlite3.Connection`) doğrudan
+yazıyor — `self.execute()`'u hiç GÖRMÜYOR; ayrıca `audit_log` zaten
+`_RBAC_KORUMALI_TABLOLAR`'ın dışında. İki bağımsız garanti.
 """
 from __future__ import annotations
 
@@ -275,3 +289,166 @@ def test_UI_katmaninin_kendisi_boslugu_kanitliyor_TagDialog_rol_kontrolu_yok() -
         "TagDialog.py artık rol kontrolü çağırıyor — bu testin gerekçesi "
         "(DB katmanı SON ÇARE) hâlâ geçerli ama üst yorum güncellenmeli"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. K1-14 — reddedilen yazı audit zincirine düşüyor mu
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_reddedilen_yazi_audit_loga_tam_bir_rbac_write_rejected_satiri_dusuyor(
+    db,
+) -> None:
+    """
+    `weak_hwid_binding_rejected` (CORE/vault_manager.py) ve
+    `usb_auth_rejected` ile AYNI desen: reddet VE neden olduğunu kaydet.
+    Reddedilen bir RBAC yazması artık izsiz geçmiyor — `detail` alanı
+    rolü, hedef tabloyu, SQL fiilini ve çağıran bağlamını taşıyor.
+    """
+    onceki_sayi = db.fetchone("SELECT COUNT(*) AS n FROM audit_log")["n"]
+
+    db.set_active_role(ROL_SALT_OKUNUR)
+    with pytest.raises(YazmaYetkisiYokError):
+        db.execute("INSERT INTO tags (name) VALUES ('reddedilecek-etiket')")
+
+    sonraki_sayi = db.fetchone("SELECT COUNT(*) AS n FROM audit_log")["n"]
+    assert sonraki_sayi == onceki_sayi + 1, (
+        f"tam olarak 1 audit satırı beklenir, {sonraki_sayi - onceki_sayi} "
+        "eklendi"
+    )
+
+    satir = db.fetchone(
+        "SELECT action, detail FROM audit_log ORDER BY id DESC LIMIT 1"
+    )
+    assert satir["action"] == "rbac_write_rejected"
+    detay = satir["detail"]
+    assert f"role={ROL_SALT_OKUNUR!r}" in detay
+    assert "table=tags" in detay
+    assert "op=INSERT" in detay
+    assert "caller=" in detay
+    # Bağlam bu test fonksiyonunun kendisini işaret etmeli — "bilinmiyor"a
+    # düşmemeli, çünkü sys._getframe(2) burada her zaman çözümlenebilir.
+    assert "bilinmiyor" not in detay
+
+
+def test_reddedilen_yazi_kaydi_yeniden_uretilebilir_tum_gatelenmis_tablolarda(
+    db,
+) -> None:
+    """Tek tablo/tek SQL fiili değil — her gate'lenmiş tablo ve fiil için
+    `detail` doğru üretiliyor mu (mutasyon kontrastına karşı ek kanıt)."""
+    db.set_active_role(ROL_SALT_OKUNUR)
+
+    with pytest.raises(YazmaYetkisiYokError):
+        db.execute("UPDATE folders SET name = 'x' WHERE id = 1")
+    satir = db.fetchone(
+        "SELECT detail FROM audit_log WHERE action = 'rbac_write_rejected' "
+        "ORDER BY id DESC LIMIT 1"
+    )
+    assert "table=folders" in satir["detail"]
+    assert "op=UPDATE" in satir["detail"]
+
+    with pytest.raises(YazmaYetkisiYokError):
+        db.execute("DELETE FROM quarantine WHERE id = 1")
+    satir = db.fetchone(
+        "SELECT detail FROM audit_log WHERE action = 'rbac_write_rejected' "
+        "ORDER BY id DESC LIMIT 1"
+    )
+    assert "table=quarantine" in satir["detail"]
+    assert "op=DELETE" in satir["detail"]
+
+
+def test_yazma_denemesi_reddedilmeden_once_kayit_dusuyor_yarim_kalmiyor(
+    db,
+) -> None:
+    """
+    `db.log()` çağrısı `raise`'DEN ÖNCE yapılıyor — böylece kayıt, red
+    işlemin kendisiyle aynı anda düşüyor, sonradan "belki biri loglar"a
+    bırakılmıyor. Reddedilen INSERT'in dosyanın kendisine hiç
+    YAZILMADIĞI da (yalnızca audit_log'a yazıldığı) doğrulanıyor.
+    """
+    db.set_active_role(ROL_SALT_OKUNUR)
+    with pytest.raises(YazmaYetkisiYokError):
+        db.execute("INSERT INTO tags (name) VALUES ('hic-var-olmamali')")
+
+    assert db.fetchone(
+        "SELECT id FROM tags WHERE name = 'hic-var-olmamali'"
+    ) is None, "reddedilen yazı yine de kalıcı olmuş"
+    assert db.fetchone(
+        "SELECT id FROM audit_log WHERE action = 'rbac_write_rejected' "
+        "AND detail LIKE '%hic-var-olmamali%'"
+    ) is None, "detail beklenmedik biçimde satır DEĞERLERİNİ taşıyor"
+    # detail satır değerlerini değil YAPISAL bilgiyi taşımalı (rol/tablo/
+    # fiil/bağlam) — bir SQL parametresi (dosya adı, etiket adı vb.) audit
+    # detayına SIZMAMALI. Yukarıdaki negatif kontrol bunu doğruluyor;
+    # aşağıdaki de kaydın GERÇEKTEN düştüğünü teyit ediyor.
+    assert db.fetchone(
+        "SELECT id FROM audit_log WHERE action = 'rbac_write_rejected'"
+    ) is not None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 8. system_write() İÇİNDEKİ meşru yazı yanlışlıkla "reddedildi" diye
+#    loglanmıyor — negatif test
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_system_write_icindeki_mesru_yazi_rbac_write_rejected_uretmiyor(
+    db,
+) -> None:
+    """
+    `purge_expired_file()`/`sweep_retention_expired()` gibi sistem
+    yazıları `system_write()` bypass'ı sayesinde reddedilMİYOR — ve bu
+    testin asıl konusu: reddedilmedikleri için `rbac_write_rejected`
+    kaydı da ÜRETMEMELİLER. `_yazma_yetkisini_dogrula()`'nın erken
+    `return`'ü (bypass derinliği > 0) `db.log()` çağrısından ÖNCE, yani
+    meşru bir sistem yazısının yanlışlıkla "reddedildi" diye denetim
+    kaydına düşmesi mümkün değil — bu test onu CANLI ölçüyor.
+    """
+    onceki_sayi = db.fetchone("SELECT COUNT(*) AS n FROM audit_log")["n"]
+
+    db.set_active_role(ROL_SALT_OKUNUR)
+    with db.system_write():
+        db.execute("INSERT INTO folders (name) VALUES ('mesru-sistem-klasoru')")
+
+    sonraki_sayi = db.fetchone("SELECT COUNT(*) AS n FROM audit_log")["n"]
+    assert sonraki_sayi == onceki_sayi, (
+        "system_write() içindeki meşru yazı audit_log'a bir satır "
+        "eklemiş — reddedilmemesi gereken bir yazı 'reddedildi' gibi "
+        "kaydedilmiş olabilir"
+    )
+    assert db.fetchone(
+        "SELECT id FROM audit_log WHERE action = 'rbac_write_rejected'"
+    ) is None, (
+        "system_write() bypass'ı altında yanlış bir rbac_write_rejected "
+        "kaydı üretilmiş"
+    )
+    # Ve yazının kendisi GERÇEKTEN geçti — bypass sessizce yazıyı da
+    # engellemiyor, yalnızca kaydı da atlamıyor.
+    assert db.fetchone(
+        "SELECT id FROM folders WHERE name = 'mesru-sistem-klasoru'"
+    ) is not None
+
+
+def test_otomatik_temizleyiciler_calisirken_de_yanlis_red_kaydi_uretmiyor(
+    db,
+) -> None:
+    """Yukarıdakinin gerçek üretim koduyla tekrarı: `purge_expired_file()`
+    salt okunur bir oturum ortasında çalışırken hiçbir
+    `rbac_write_rejected` kaydı BIRAKMAMALI — çalıştığı zaten
+    `test_otomatik_temizleyiciler_salt_okunur_oturumda_calismaya_devam_ediyor`
+    ile doğrulanmıştı; buradaki ek soru audit tarafının TEMİZ kalıp
+    kalmadığı."""
+    from CORE.disposal import purge_expired_file
+
+    cur = db.execute(
+        "INSERT INTO files (filename, filepath, label) "
+        "VALUES ('temiz-red-testi.hcl', '/tmp/temiz-red-testi.hcl', 'Imha')"
+    )
+    file_id = int(cur.lastrowid)
+
+    db.set_active_role(ROL_SALT_OKUNUR)
+    assert purge_expired_file(db, file_id, source="test_scheduler") is True
+
+    assert db.fetchone(
+        "SELECT id FROM audit_log WHERE action = 'rbac_write_rejected'"
+    ) is None

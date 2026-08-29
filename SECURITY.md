@@ -1840,18 +1840,62 @@ singleton, and a shared (non-thread-local) flag would have let one
 thread's bypass leak into another's. Confirmed live: with a read-only
 role active, both functions still complete their write.
 
+**The bypass mechanism itself was then audited, live — no leak found,
+but a separate real gap was.** Three questions about `system_write()`
+were checked directly rather than assumed from reading the code: does
+the thread-local depth counter reset correctly when the `with` block
+exits via an exception rather than normally (`try`/`finally` around
+`yield` — confirmed: the counter returns to `0` even mid-write); does it
+leak across `QThreadPool`'s reuse of the same OS thread for different
+tasks over time (simulated with `ThreadPoolExecutor(max_workers=1)`,
+forcing two submitted jobs onto the identical OS thread — one aborted
+mid-`system_write()` with a synthetic exception, the next running a
+normal, role-checked write right after — confirmed: the second job was
+still correctly rejected, `threading.local()` combined with
+`try`/`finally` held); and does nesting work (a sanity check, not a
+security question — confirmed the depth counter, not a boolean, unwinds
+one level at a time). All three came back clean. What the same
+investigation surfaced instead: a write rejected by
+`_yazma_yetkisini_dogrula()` produced **no audit trail at all** — unlike
+`weak_hwid_binding_rejected` (`CORE/vault_manager.py`) and
+`usb_auth_rejected`, which both log the rejection before raising, the
+RBAC write rejection — arguably the most security-relevant rejection in
+the codebase — passed silently.
+
+**Fixed: the rejection now writes `rbac_write_rejected` to the audit
+chain before raising**, with `role`, the target table, the SQL verb
+(`INSERT`/`UPDATE`/`DELETE`/`REPLACE`), and the caller's module/function/
+line (`sys._getframe(2)`, resolved to the frame that called
+`execute()`) all in `detail`. Recursion was checked, not assumed: `self.
+log()` calls `CORE.audit_chain.append_entry()`, which writes through
+`self.conn` — the raw `sqlite3.Connection` — and never sees
+`self.execute()` at all; `audit_log` is also outside
+`_RBAC_KORUMALI_TABLOLAR` regardless. Two independent guarantees against
+the same failure mode, confirmed live: rejecting a write under a
+read-only role produces exactly one new `audit_log` row, and a
+legitimate write made through `system_write()` — where nothing was ever
+rejected — produces none.
+
 A permanent regression suite (`tests/test_db_manager_rbac.py`) calls
 `DBManager().execute()` and `CORE.folders.create_folder()` directly — no
 UI constructed — with a read-only role set, for every gated table, and
 asserts rejection; asserts the three excluded tables remain writable
 under the same role; asserts the two automatic cleaners still complete
-under a read-only role; and includes a mutation-contrast test that
-disables the check and confirms the same write would have gone through
-without it. Confirmed against the pre-fix code directly: with
-`DB/db_manager.py`, `CORE/disposal.py`, and `UI/main_window.py` stashed
-back to their previous state, the test module fails to *import* —
-`YazmaYetkisiYokError` does not exist yet — the strongest form of "this
-suite cannot pass by accident."
+under a read-only role; asserts a rejected write produces exactly one
+`rbac_write_rejected` row with the expected `role`/`table`/`op`/`caller`
+fields, across several gated tables and SQL verbs; asserts a legitimate
+`system_write()` write produces no such row; and includes a
+mutation-contrast test that disables the check and confirms the same
+write would have gone through without it. Confirmed against the pre-fix
+code directly, twice: with `DB/db_manager.py`, `CORE/disposal.py`, and
+`UI/main_window.py` stashed back to their previous state, the test
+module fails to *import* — `YazmaYetkisiYokError` does not exist yet —
+the strongest form of "this suite cannot pass by accident"; and, later,
+with only the audit-logging addition to `DB/db_manager.py` stashed back
+out, the two audit-specific tests fail on their own (`0` rows added
+instead of `1`) while the rest of the suite still passes, confirming
+they measure the logging behaviour specifically and not just the
+rejection.
 
 **What this does not claim.** `can_write()` does not distinguish
 Yönetici from Standart — a non-admin, non-read-only session bypassing an
@@ -4006,18 +4050,61 @@ ve GUI iş parçacığı AYNI `DBManager` tekil örneğini paylaşıyor; paylaş
 BAŞKASINA sızdırırdı. Canlı doğrulandı: Salt Okunur rol aktifken, her iki
 fonksiyon da yazısını tamamlamaya devam ediyor.
 
+**Bypass mekanizmasının kendisi sonra CANLI incelendi — sızıntı
+bulunamadı, ama AYRI, gerçek bir boşluk bulundu.** `system_write()`
+hakkında üç soru kod okunarak VARSAYILMADI, doğrudan kontrol edildi:
+thread-local derinlik sayacı `with` bloğu normal DEĞİL, bir exception ile
+sona erdiğinde doğru sıfırlanıyor mu (`yield` etrafında `try`/`finally`
+— doğrulandı: sayaç yazı YARIDA KESİLSE bile `0`'a dönüyor); `QThreadPool`'un
+aynı OS thread'ini farklı görevler için zaman içinde yeniden kullanmasına
+sızıyor mu (`ThreadPoolExecutor(max_workers=1)` ile simüle edildi — iki
+gönderilen görev AYNI OS thread'ine zorlandı, biri `system_write()`
+ortasında yapay bir exception'la yarıda kesildi, hemen ardındaki normal,
+rol-kontrollü bir yazı çalıştırıldı — doğrulandı: ikinci görev yine doğru
+şekilde reddedildi, `threading.local()` + `try`/`finally` kombinasyonu
+tuttu); ve iç içe çağrı doğru çalışıyor mu (bir güvenlik sorusu değil,
+sağlık kontrolü — sayacın, bir boole DEĞİL, bir seferde bir seviye
+çözüldüğü doğrulandı). Üçü de temiz çıktı. Aynı inceleme bunun yerine
+ŞUNU ortaya çıkardı: `_yazma_yetkisini_dogrula()`'nın reddettiği bir yazı
+HİÇBİR audit izi bırakmıyordu — `weak_hwid_binding_rejected`
+(`CORE/vault_manager.py`) ve `usb_auth_rejected`'in ikisi de reddetmeden
+ÖNCE kaydediyorken, RBAC yazma reddi — kod tabanındaki en güvenlik-
+ilgili red belki de — sessizce geçiyordu.
+
+**Düzeltildi: red artık `raise`'den ÖNCE denetim zincirine
+`rbac_write_rejected` yazıyor**, `detail`'de `role`, hedef tablo, SQL
+fiili (`INSERT`/`UPDATE`/`DELETE`/`REPLACE`) ve çağıranın modül/fonksiyon/
+satırı (`sys._getframe(2)`, `execute()`'u çağıran çerçeveye çözülüyor)
+ile birlikte. Rekürsiyon VARSAYILMADI, kontrol edildi: `self.log()`
+`CORE.audit_chain.append_entry()`'yi çağırıyor, o da `self.conn` — ham
+`sqlite3.Connection` — üzerinden yazıyor ve `self.execute()`'u hiç
+GÖRMÜYOR; `audit_log` zaten `_RBAC_KORUMALI_TABLOLAR`'ın dışında. Aynı
+başarısızlık moduna karşı İKİ bağımsız garanti, canlı doğrulandı: Salt
+Okunur rolde bir yazıyı reddetmek TAM OLARAK bir yeni `audit_log`
+satırı üretiyor, ve `system_write()` üzerinden yapılan meşru bir yazı —
+hiçbir şey reddedilmediği için — hiç üretmiyor.
+
 Kalıcı bir regresyon paketi (`tests/test_db_manager_rbac.py`)
 `DBManager().execute()`'u ve `CORE.folders.create_folder()`'ı doğrudan
 çağırıyor — hiç UI kurulmadan — Salt Okunur rol ayarlıyken, her
 gate'lenmiş tablo için, ve reddi doğruluyor; üç hariç tutulan tablonun
 aynı rolde yazılabilir KALDIĞINI doğruluyor; iki otomatik temizleyicinin
-salt okunur rolde de tamamlandığını doğruluyor; ve kontrolü devre dışı
-bırakıp AYNI yazının onsuz geçeceğini gösteren bir mutasyon-kontrastı
-testi içeriyor. Düzeltmeden ÖNCEki koda karşı doğrudan doğrulandı:
-`DB/db_manager.py`, `CORE/disposal.py` ve `UI/main_window.py` önceki
-hâllerine `git stash` ile geri alındığında, test modülü İÇE
-AKTARILAMIYOR bile — `YazmaYetkisiYokError` henüz yok — "bu paket
-kazayla geçemez"in en güçlü biçimi.
+salt okunur rolde de tamamlandığını doğruluyor; reddedilen bir yazının,
+birden fazla gate'lenmiş tablo ve SQL fiilinde, tam olarak bir
+`rbac_write_rejected` satırı ürettiğini VE `role`/`table`/`op`/`caller`
+alanlarının beklenen değerleri taşıdığını doğruluyor; meşru bir
+`system_write()` yazısının böyle bir satır ÜRETMEDİĞİNİ doğruluyor; ve
+kontrolü devre dışı bırakıp AYNI yazının onsuz geçeceğini gösteren bir
+mutasyon-kontrastı testi içeriyor. Düzeltmeden ÖNCEki koda karşı
+doğrudan, İKİ KEZ doğrulandı: `DB/db_manager.py`, `CORE/disposal.py` ve
+`UI/main_window.py` önceki hâllerine `git stash` ile geri alındığında,
+test modülü İÇE AKTARILAMIYOR bile — `YazmaYetkisiYokError` henüz yok —
+"bu paket kazayla geçemez"in en güçlü biçimi; ve daha SONRA, yalnızca
+audit-loglama eklentisi `DB/db_manager.py`'den geri alındığında, audit'e
+özgü iki test TEK BAŞINA başarısız oluyor (`1` yerine `0` satır
+eklenmiş) — paketin geri kalanı geçmeye devam ederken — bu da o iki
+testin GERÇEKTEN loglama davranışını ölçtüğünü, yalnızca reddi değil,
+kanıtlıyor.
 
 **Bunun iddia ETMEDİĞİ.** `can_write()` Yönetici'yi Standart'tan
 AYIRMIYOR — yönetici-only bir UI diyaloğunu (ör. henüz UI girişi olmayan
