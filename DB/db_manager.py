@@ -199,6 +199,7 @@ class DBManager:
     _hwid: str | None
     _key: bytes | None
     _role: str | None
+    _sistem_yazma: threading.local
 
     def __new__(cls, db_path: str | Path | None = None) -> DBManager:
         if cls._instance is None:
