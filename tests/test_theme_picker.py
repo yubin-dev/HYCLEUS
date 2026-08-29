@@ -291,3 +291,59 @@ def test_tema_secici_ACILIS_dogru_kwargs_ile_kuruluyor(win, monkeypatch: pytest.
     assert kurulum["dark"] == win._dark
     assert kurulum["T"] == win._T
     assert exec_cagrisi == {"exec": True}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. Küçük pencerede taşma — 11 kart hâlâ erişilebilir mi (scroll ile)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_kucuk_pencerede_TUM_kartlar_scroll_ile_erisilebilir(qapp):
+    """Diyalog kendi asgari boyutuna (`setMinimumSize(560, 420)` —
+    `ThemePickerDialog.__init__`) küçültülünce 11 kart 3 sütun × 4 satır
+    hâlinde bu alana sığmıyor. Otomatik testlerin çoğu bu tür görsel
+    taşmayı yakalamaz (widget'lar `assert kartlar` düzeyinde "var" olur,
+    ekranda gerçekten görünüp görünmediği ayrı bir soru) — burada GERÇEK
+    widget geometrisini (`sizeHint`, `viewport`, scrollbar menzili)
+    ölçüyoruz."""
+    from PySide6.QtWidgets import QScrollArea
+
+    dlg = ThemePickerDialog(
+        None, T=_DARK, theme_key="mavi", dark=True, on_select=lambda k: None,
+    )
+    try:
+        dlg.resize(dlg.minimumSize())
+        dlg.show()
+
+        # 1) Tüm 11 kart, görünür viewport'tan bağımsız, hâlâ ağaçta —
+        #    layout onları GİZLEMİYOR/YOK ETMİYOR, sadece taşırıyor.
+        kartlar = _kartlari_bul(dlg)
+        assert len(kartlar) == 11
+
+        scroll = dlg.findChild(QScrollArea, "tema_secici_scroll")
+        assert scroll is not None
+        icerik = scroll.widget()
+        assert icerik is not None
+
+        # 2) İçerik gerçekten viewport'tan uzun mu — asgari boyutta taşma
+        #    GERÇEKTEN var mı, yoksa 11 kart zaten sığıyor mu. Test bunu
+        #    varsaymıyor, ölçüyor; sığıyorsa aşağıdaki kaydırma iddiaları
+        #    anlamsız kalır ve bu assert onu açıkça bildirir.
+        assert icerik.sizeHint().height() > scroll.viewport().height(), (
+            "içerik viewport'tan uzun değil — bu test asgari boyutta taşma "
+            "olduğunu varsayıyordu; artık sığıyorsa kart sayısı/boyutu "
+            "değişmiş olabilir, test verisini gözden geçir"
+        )
+
+        # 3) Taşma VARSA, dikey kaydırma çubuğunun bunu telafi edecek
+        #    menzili olmalı — yani en alttaki kart bile kaydırılarak
+        #    erişilebilir, sessizce kaybolmuyor.
+        dikey = scroll.verticalScrollBar()
+        assert dikey.maximum() > 0, "içerik taşıyor ama kaydırma çubuğunun menzili yok"
+
+        # 4) Her kart hâlâ makul bir geometriye sahip (0 boyuta
+        #    sıkıştırılıp fiilen görünmez hâle GETİRİLMEMİŞ).
+        for key, kart in kartlar.items():
+            assert kart.width() > 0 and kart.height() > 0, f"{key}: kart geometrisi sıfır"
+    finally:
+        dlg.close()

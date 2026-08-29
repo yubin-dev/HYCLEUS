@@ -5610,4 +5610,45 @@ Tam test suite: 2848 passed, 4 skipped (bir önceki turdan +35 — bu
 dosyaya eklenen 32 yeni test + `test_layering.py`'nin YENİ dosyaları
 otomatik kapsayan parametrizasyonlarından +3).
 
+### 2026-08-29 (devam) — paralel yol / ölü kod / taşma sorgulandı, üçü de kapalı çıktı
+
+Bir önceki turda `_on_theme_menu()`'un gövdesi `QMenu`'den `ThemePickerDialog`'a
+değiştirilmişti ama şu üçü DOĞRULANMAMIŞTI: (a) eski `QMenu` yolu gerçekten
+kod tabanından tamamen mi kalktı yoksa hâlâ çağrılabilir bir yerde mi duruyor,
+(b) `_on_theme_menu()`'ye başka bir giriş noktası (ör. `AdminPanel.py`, bir
+klavye kısayolu) var mı, (c) 11 kartlık grid küçük pencerede taşınca hâlâ
+erişilebilir mi.
+
+**(a) + (b) — tek giriş noktası, ölü kod yok.** `grep -rn "_on_theme_menu"`
+tüm kod tabanında TEK bir çağrı yeri buldu: `UI/main_window_layout.py:204`
+— `self._theme_btn.customContextMenuRequested.connect(lambda _pos:
+self._on_theme_menu())`, yani tema düğmesine SAĞ TIK (tooltip: "Sol tık:
+Gündüz / Gece · Sağ tık: Tema seç"). Sol tık ayrı bir metoda (`_toggle_theme`
+— hızlı gündüz/gece geçişi) bağlı; bu KASITLI ayrı bir özellik, paralel bir
+tema-seçim yolu DEĞİL. `UI/main_window_theme.py`'de `QMenu`/`QAction`
+import'u YOK (bir önceki turda kaldırılmıştı) — dosyadaki tek `QMenu` sözü
+docstring'de geçmiş zamanla ("eskiden... açıyordu"). Kod tabanının geri
+kalanındaki `QMenu` kullanımları (`main_window.py`, `main_window_files.py`,
+`main_window_bulk.py`, `main_window_tree.py`) dosya/ağaç sağ-tık menüleri —
+temayla ilgisiz. `AdminPanel.py`'de tema anahtar kelimesi hiç geçmiyor,
+klavye kısayolu (`QShortcut`) kod tabanında hiç kullanılmıyor. Sonuç: iki
+yol paralel çalışmıyor, dolayısıyla canlı tutarsızlık testine (madde 3'ün
+gerektirdiği) gerek kalmadı — test edilecek ikinci bir yol yok.
+
+**(c) — küçük pencerede taşma GERÇEKTEN var, scroll bunu telafi ediyor.**
+`tests/test_theme_picker.py`'ye yeni bölüm (5): `test_kucuk_pencerede_
+TUM_kartlar_scroll_ile_erisilebilir` — diyaloğu kendi asgari boyutuna
+(`560×420`) küçültüp GERÇEK widget geometrisini ölçüyor: içerik
+`sizeHint()` yüksekliği (429px) viewport yüksekliğinden (285px) fazla
+olduğunu, dikey kaydırma çubuğunun menzilinin sıfırdan büyük (204px)
+olduğunu, 11 kartın hepsinin (görünür viewport'tan bağımsız) ağaçta ve
+sıfır olmayan geometriye sahip olduğunu doğruluyor. Ölçülen sayılar
+gerçek: `_KOLON`'u geçici olarak 3'ten 11'e çıkarıp (tek satır, taşma
+YOK) testi çalıştırdım — `sizeHint 126 > viewport 271` iddiası beklenen
+şekilde **BAŞARISIZ** oldu, yani test gerçekten taşmayı ölçüyor, sabit
+`True` döndürmüyor. `_KOLON` geri alındı, `git diff --stat` temiz döndü.
+
+Tam test suite: 2849 passed, 4 skipped (+1 — bu yeni taşma testi).
+Ruff/mypy/bandit temiz.
+
 ---
