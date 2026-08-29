@@ -4784,4 +4784,60 @@ bulgusu (düzeltilmedi, takip maddesi), hata-yolu doğrulaması.
 Tam test suite: 2763 passed, 4 skipped (bir önceki turdan +5 — bu dosyaya
 eklenen 5 yeni test: 3 envanter + 2 backup hata dayanıklılığı).
 
+### 2026-08-29 (devam) — AuditLogDialog takip maddesi sorgulandı, gerçek çıktı, kapatıldı
+
+Bir sonraki turda yukarıdaki "İlişkili ama düzeltilmeyen bulgu" madde
+sorgulandı — kod okunarak DEĞİL, canlı bir senaryoyla: gerçek bir
+`AuditLogDialog` örneği kuruldu, üç önceki denetim kaydı yüklendi, sonra
+`audit_log`'a DOĞRUDAN (diyaloğu YENİLEMEDEN) dördüncü bir kayıt eklendi
+— çalışan uygulamanın başka bir yerinin, diyalog açıkken arka planda bir
+işlem kaydettiği taklit edildi — ve dışa aktarım tetiklendi.
+
+**Sonuç, ölçüldü:** dönen dosyanın başlığı `Doğrulanan : 5 kayıt` ve
+`Son kayıt : id=5` diyordu (dışa aktarım anında TAZE çalışan
+`zincir_raporu()`'dan), hemen ardından yalnızca 4 satırlık bir tablo ve
+`Bu dışa aktarımdaki kayıt sayısı: 4` yazan bir altyazı geliyordu (BAYAT
+`self._table`'dan) — beşinci kayıt listeden TAMAMEN eksikti. Tutarsızlık
+gerçekti, teorik değil.
+
+**Düzeltme.** `UI/AuditLogDialog.py::_export_txt()`'e, dosya yolu
+seçildikten hemen sonra bir `self._load()` çağrısı eklendi. Böylece satır
+listesi VE başlığı üreten `zincir_raporu()` çağrısı ARKA ARKAYA, aralarına
+hiçbir kullanıcı kodu (diyaloğun açık kalması, dosya seçici penceresinin
+beklenmesi) girmeden çalışıyor — iki ayrı kaynağı senkron TUTMAYA
+çalışmak yerine ikisini TEK bir andan üretmek. Aynı canlı senaryo
+düzeltmeyle tekrar çalıştırıldı: başlık ve altyazı ikisi de `5` okudu,
+beşinci satır ("arka_planda_olusan_islem") listede göründü, ekrandaki
+tablo da (yan etki olarak, bilerek kabul edildi) yenilendi.
+
+**Testler (3 yeni, `tests/test_audit_log_dialog_export.py` — yeni
+dosya):**
+
+- `test_export_dosyasi_arkaplanda_eklenen_kaydi_HEM_baslikta_HEM_
+  satirlarda_gosterir` — ANA TEST: başlıktaki "Doğrulanan" sayısı,
+  altyazıdaki kayıt sayısı ve fiilen listelenen satır sayısı ÜÇÜNÜN de
+  gerçek DB durumuyla eşleştiğini doğruluyor. Düzeltmeden ÖNCEki kod
+  üzerinde ÇALIŞTIRILDI (`git stash` ile geçici olarak geri alınıp):
+  test tam olarak `{'dogrulanan': 5, 'altyazi': 4}` ile BAŞARISIZ oldu —
+  elle yapılan canlı tekrarla TAM eşleşen bir sonuç — düzeltme geri
+  konunca yeşile döndü.
+- `test_export_tabloyu_da_yeniliyor` — yan etkiyi (ekran tablosunun da
+  güncellenmesi) doğruluyor.
+- `test_export_iptal_edilirse_tablo_yenilenmiyor` — kullanıcı dosya
+  seçimini iptal ederse `_load()`'ın HİÇ çağrılmadığını doğruluyor
+  (sessiz bir yan etki olmamalı).
+
+Testler, bu depoda `UI/*.py` için daha önce kurulmuş Qt test desenini
+(`os.environ["QT_QPA_PLATFORM"]="offscreen"`, module-scope `qapp`
+fixture'ı, `QFileDialog`/`QMessageBox` monkeypatch'i — bkz.
+`tests/test_backup_verify_ui.py`) izliyor.
+
+SECURITY.md §4.16 (EN+TR) güncellendi: `AuditLogDialog` maddesi
+"düzeltilmedi, takip maddesi" yerine canlı doğrulanmış bulgu +
+düzeltme + test anlatımıyla değiştirildi. `test_belge_dil_paritesi.py`
+(27/27) ile doğrulandı.
+
+Tam test suite: 2768 passed, 4 skipped (bu dosyaya eklenen 3 yeni test
+dahil).
+
 ---

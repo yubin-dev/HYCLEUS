@@ -320,6 +320,24 @@ class AuditLogDialog(QDialog):
         if not path:
             return
 
+        # 2026-08-29: dışa aktarılan satırlar ve başlıktaki zincir/kayıt
+        # özeti AYNI ana ait olmak ZORUNDA. Eskiden satırlar `self._table`
+        # dolduğu ANDAKİ (diyalog açılışından ya da son "Filtrele"den kalma,
+        # BAYAT olabilecek) hâlinden geliyordu, başlıktaki "Doğrulanan: N
+        # kayıt"/"Son kayıt"/"Son hash" ise aşağıdaki `zincir_raporu()`
+        # çağrısıyla dışa aktarım ANINDA TAZE üretiliyordu — canlı bir
+        # senaryoyla ÖLÇÜLDÜ: diyalog açıkken arkada yeni bir denetim kaydı
+        # oluşunca başlık "Doğrulanan: 5 kayıt" derken alttaki liste 4
+        # satırda kalıyor, altyazı da "4 kayıt" yazıyordu — kendi içinde
+        # ÇELİŞEN, uyum kanıtı olarak sunulabilecek bir dosya (BACKLOG
+        # B-073 takip maddesi). Düzeltme iki kaynağı SENKRONİZE TUTMAYA
+        # çalışmak değil: dışa aktarımdan HEMEN önce tabloyu YENİDEN
+        # yüklüyoruz, böylece alttaki satırlar ve aşağıdaki `zincir_raporu()`
+        # çağrısı ARKA ARKAYA, aralarına kullanıcı kodu (ör. bir
+        # `processEvents()` beklemesi) GİRMEDEN üretiliyor — dosyanın
+        # içeriği tanım gereği tek bir ana ait oluyor.
+        self._load()
+
         col_w = [22, 32, 16, 20]
         header_parts = ["Zaman", "İşlem", "Kullanıcı", "HWID"]
         sep = "-" * (sum(col_w) + len(col_w) * 2 + 1)

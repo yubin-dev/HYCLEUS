@@ -1664,19 +1664,8 @@ transaction:
 - `CORE/inventory.py`'s `generate_retention_inventory()` — **a real hit,
   fixed.** See below.
 - `UI/AuditLogDialog.py`'s `_export_txt()` — a related but *differently
-  shaped* problem, not fixed here: the exported row list comes from
-  `self._table`, populated by an earlier `_load()` query, while the header
-  line's record count and chain state come from a **fresh**
-  `zincir_raporu()` call made at export time. If the audit log grows
-  between opening the dialog and clicking "Dışa Aktar" — a realistic gap,
-  since audit logging runs continuously — the header can describe a later
-  moment than the rows below it. This is not a transaction problem (the
-  stale side is a Qt widget, not a second query) and needs a different
-  fix — re-deriving the export from one query at export time, not two data
-  sources from two moments. `txt_basligi()` already states plainly that
-  the export is not signed, which caps how much weight the mismatch can
-  carry, but it is a real gap and is tracked (BACKLOG B-072, follow-up
-  item) rather than silently left for later.
+  shaped* problem, **confirmed live and fixed in a follow-up (BACKLOG
+  B-073)**. See below, after the inventory finding.
 
 **The real hit: `generate_retention_inventory()`.** This function
 generates HYCLEUS's KVKK (Turkish data-protection law) retention
@@ -1722,6 +1711,43 @@ tested, just-not-wired feature. The bug was real in the code regardless of
 whether a button calls it today, and fixing it now — while the failure
 mode is fresh and a test can pin it — is cheaper than rediscovering it
 after the feature is wired into a compliance workflow.
+
+**The related finding: `AuditLogDialog._export_txt()`, confirmed and
+fixed.** The exported row list came from `self._table`, populated by
+whatever `_load()` call last ran (dialog open, or the last "Filtrele"/
+"Sıfırla" click); the header's record count and chain state came from a
+**fresh** `zincir_raporu()` call made at export time. Reproduced live,
+end to end, before touching any code: open the dialog (three prior audit
+rows load), append a fourth row directly to `audit_log` — simulating any
+other part of the running app logging an action while the dialog sits
+open, without the dialog refreshing — then trigger the export. The file
+came back with `Doğrulanan : 5 kayıt` and `Son kayıt : id=5` in the
+header, immediately followed by a 4-row table and a footer reading
+`Bu dışa aktarımdaki kayıt sayısı: 4` — an export whose own header and
+footer disagree about how many records it covers, with the fifth record
+entirely absent from the list a reader would count. This was not a
+transaction problem (the stale side is a Qt widget, not a second SQL
+query) and the fix is the shape the report-consistency principle actually
+calls for here: not synchronizing two data sources, but producing them
+back to back from one. `_export_txt()` now calls `self._load()`
+immediately before building the export, so the row list and the
+`zincir_raporu()` call that builds the header run one after the other
+with no user code — no dialog staying open, no waiting on the file picker
+— in between. Re-running the exact reproduction above with the fix in
+place: header and footer both read `5`, and the fifth row appears in the
+list. A permanent regression test
+(`tests/test_audit_log_dialog_export.py`) reproduces the same background
+write against a real `AuditLogDialog` instance and asserts the header
+count, the footer count, and the actual number of listed rows all agree
+with the live database — confirmed to fail against the pre-fix code
+(`{'dogrulanan': 5, 'altyazi': 4}`, matching the manual reproduction
+exactly) before the fix and pass after. `txt_basligi()` already states
+plainly that the export is not signed, which limits how much weight a
+mismatch like this could have carried — but it was a real, reproducible
+gap in a file whose whole purpose (per its own B-006 comment) is to carry
+the audit trail's chain state off the machine, and F2-2/K4-20's planned
+signed-report flow will build on this same export path, so it needed
+closing now rather than being inherited.
 
 **Error path checked too.** `create_backup()`'s new transaction (§4.11)
 and this one both wrap the read in `try/…/finally: db.conn.execute
@@ -3692,20 +3718,8 @@ sonuç temiz görünebilir mi?
 - `CORE/inventory.py`'nin `generate_retention_inventory()`'si — **gerçek
   bir isabet, düzeltildi.** Aşağıda.
 - `UI/AuditLogDialog.py`'nin `_export_txt()`'i — ilişkili ama FARKLI
-  BİÇİMLİ bir sorun, burada düzeltilmedi: dışa aktarılan satır listesi
-  `self._table`'dan geliyor (daha önceki bir `_load()` sorgusuyla
-  dolduruldu), başlık satırının kayıt sayısı ve zincir durumuysa dışa
-  aktarım ANINDA yapılan TAZE bir `zincir_raporu()` çağrısından geliyor.
-  Diyalog açıldıktan sonra "Dışa Aktar"a tıklanana kadar denetim günlüğü
-  büyürse — gerçekçi bir aralık, çünkü denetim kaydı sürekli çalışıyor —
-  başlık, altındaki satırlardan DAHA SONRAKİ bir anı anlatabilir. Bu bir
-  transaction sorunu değil (bayat taraf bir Qt widget'ı, ikinci bir sorgu
-  değil) ve farklı bir düzeltme gerektiriyor — iki farklı andan gelen iki
-  veri kaynağı yerine, dışa aktarım anında TEK bir sorgudan türetmek.
-  `txt_basligi()` zaten dışa aktarımın imzalı OLMADIĞINI açıkça
-  söylüyor, bu da uyuşmazlığın taşıyabileceği ağırlığı sınırlıyor, ama
-  gerçek bir boşluk ve sessizce sonraya bırakılmak yerine takip ediliyor
-  (BACKLOG B-072, takip maddesi).
+  BİÇİMLİ bir sorun, **canlı doğrulandı ve bir takip turunda düzeltildi
+  (BACKLOG B-073)**. Aşağıda, envanter bulgusundan sonra.
 
 **Gerçek isabet: `generate_retention_inventory()`.** Bu fonksiyon
 HYCLEUS'un KVKK saklama envanterini üretiyor — bir denetçiye ya da
@@ -3753,6 +3767,44 @@ GERÇEK bir hataydı, bugün bir düğmenin onu çağırıp çağırmadığında
 BAĞIMSIZ olarak — ve onu şimdi, hata biçimi hâlâ tazeyken ve bir test onu
 sabitleyebilecekken düzeltmek, özellik bir uyum iş akışına bağlandıktan
 SONRA yeniden keşfetmekten ucuz.
+
+**İlişkili bulgu: `AuditLogDialog._export_txt()`, doğrulandı ve
+düzeltildi.** Dışa aktarılan satır listesi `self._table`'dan geliyordu
+(diyalog açılışından ya da son "Filtrele"/"Sıfırla"dan kalma, hangisi son
+çalıştıysa ondan); başlık satırının kayıt sayısı ve zincir durumuysa dışa
+aktarım ANINDA yapılan TAZE bir `zincir_raporu()` çağrısından geliyordu.
+Koda dokunmadan ÖNCE, uçtan uca canlı olarak yeniden üretildi: diyaloğu
+aç (üç önceki denetim satırı yükleniyor), `audit_log`'a DOĞRUDAN dördüncü
+bir satır ekle — çalışan uygulamanın başka bir yerinin, diyalog açıkken
+ve YENİLENMEDEN, bir işlem kaydettiğini taklit ediyor — sonra dışa
+aktarımı tetikle. Dönen dosyanın başlığı `Doğrulanan : 5 kayıt` ve
+`Son kayıt : id=5` diyordu, hemen ardından 4 satırlık bir tablo ve
+`Bu dışa aktarımdaki kayıt sayısı: 4` yazan bir altyazı geliyordu —
+kendi başlığı ile altyazısı kaç kaydı kapsadığı konusunda ÇELİŞEN, bir
+okuyucunun sayacağı listede beşinci kaydın TAMAMEN yok olduğu bir dışa
+aktarım. Bu bir transaction sorunu değildi (bayat taraf bir Qt widget'ı,
+ikinci bir SQL sorgusu değil) ve düzeltme, rapor-tutarlılığı ilkesinin
+burada GERÇEKTEN istediği biçimde: iki veri kaynağını senkronize etmek
+değil, ikisini ARKA ARKAYA, TEK bir kaynaktan üretmek. `_export_txt()`
+artık dışa aktarımı kurmadan HEMEN önce `self._load()`'ı çağırıyor,
+böylece satır listesi ile başlığı üreten `zincir_raporu()` çağrısı
+aralarına hiçbir kullanıcı kodu (diyaloğun açık kalması, dosya seçici
+beklemesi) GİRMEDEN art arda çalışıyor. Yukarıdaki aynı canlı senaryo
+düzeltmeyle tekrarlandığında: başlık ve altyazı ikisi de `5` okuyor, ve
+beşinci satır listede görünüyor. Kalıcı bir regresyon testi
+(`tests/test_audit_log_dialog_export.py`) aynı arka plan yazmasını gerçek
+bir `AuditLogDialog` örneğine karşı tekrarlıyor ve başlıktaki sayının,
+altyazıdaki sayının ve fiilen listelenen satır sayısının ÜÇÜNÜN de canlı
+veritabanıyla eşleştiğini doğruluyor — düzeltmeden ÖNCEki kodda başarısız
+olduğu (`{'dogrulanan': 5, 'altyazi': 4}`, elle yapılan tekrarla TAM
+eşleşiyor) ve düzeltmeden SONRA geçtiği doğrulandı. `txt_basligi()` zaten
+dışa aktarımın imzalı OLMADIĞINI açıkça söylüyor, bu da böyle bir
+uyuşmazlığın taşıyabileceği ağırlığı sınırlıyor — ama bu, kendi B-006
+notuna göre bütün amacı denetim izinin zincir durumunu makine dışına
+taşımak olan bir dosyada gerçek, yeniden üretilebilir bir boşluktu, ve
+F2-2/K4-20'nin planladığı imzalı rapor akışı TAM OLARAK bu dışa aktarım
+yolunun üzerine inşa edilecek — o yüzden miras alınmak yerine şimdi
+kapatılması gerekiyordu.
 
 **Hata yolu da kontrol edildi.** `create_backup()`'ın yeni transaction'ı
 (§4.11) ve bu ikisi de okumayı `try/.../finally: db.conn.execute
