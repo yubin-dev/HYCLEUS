@@ -664,6 +664,7 @@ def test_menude_madde_var_ve_akisi_tetikliyor(
                 "accent_tint": "#eff6ff", "tint_text": "#111827",
             }
             self._btn_view = QPushButton(self)
+            self._role = "Yönetici"  # _on_hamburger_menu artık role bakıyor (2026-08-29)
             self.cagrildi = 0
 
         def _on_verify_backup(self) -> None:
@@ -708,6 +709,7 @@ def test_GERI_YUKLEME_menude_YOK(qapp, monkeypatch: pytest.MonkeyPatch) -> None:
                 "accent_tint": "#eff6ff", "tint_text": "#111827",
             }
             self._btn_view = QPushButton(self)
+            self._role = "Yönetici"  # _on_hamburger_menu artık role bakıyor (2026-08-29)
 
     _Sahne3()._on_hamburger_menu()
     assert not [m for m in gorulen if "Geri Yükle" in m or "Geri yükle" in m]

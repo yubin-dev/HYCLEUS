@@ -478,6 +478,100 @@ def test_yonetici_OLMAYAN_ENGELLENIYOR(kullanici_penceresi) -> None:
     assert win._page_title.text() != SAYFA_ADI
 
 
+def test_yonetici_OLMAYAN_DOGRUDAN_cagrida_da_REDDEDILIYOR_ve_UYARI_gosterilir(
+    kullanici_penceresi, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    K1-14 deseni — UI'ı (menü, tıklama) hiç kurmadan, fonksiyonu
+    DOĞRUDAN çağırarak kapının kendisini sınıyor. Bu paketin diğer
+    testleri "sayfa açılmadı"nı ölçüyor; bu test AYRICA kullanıcının
+    GERÇEKTEN bir ret mesajı gördüğünü ölçüyor — `_on_open_audit_log()`
+    sessizce hiçbir şey yapmadan dönseydi bir önceki test yine geçerdi
+    ama kullanıcı neden hiçbir şey olmadığını hiç anlamazdı.
+    """
+    win = kullanici_penceresi
+    uyarilar: list[tuple] = []
+    monkeypatch.setattr(
+        QMessageBox, "warning",
+        staticmethod(lambda *a, **kw: uyarilar.append(a) or 0),
+    )
+
+    win._on_open_audit_log()
+
+    assert win._govde_yigini.currentWidget() is not win._audit_log_view
+    assert len(uyarilar) == 1, "ret sessiz geçti — kullanıcıya hiçbir şey gösterilmedi"
+    assert "Erişim Reddedildi" in uyarilar[0]
+
+
+# ── Hamburger menüsü — görünürlük UX için, fonksiyon-içi kontrol savunma için ──
+#
+# Alt sınıflama deseni `tests/test_backup_verify_ui.py`'den BİREBİR
+# alındı (`test_timestamp_ui.py:549`'daki uyarı: `QMenu.exec`'i doğrudan
+# monkeypatch'lemek DEĞİL, alt sınıflamak — gerçek `QAction`/`QMenu`
+# davranışı böyle korunuyor).
+
+
+def _hamburger_eylemlerini_yakala(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """`_on_hamburger_menu()`'yu gerçek `QMenu.exec()` bloklamadan çalıştırıp
+    her eylemin (metin, görünür, etkin) durumunu döndürür."""
+    from PySide6.QtWidgets import QMenu
+
+    yakalanan: list[dict] = []
+
+    class _GercekSahteMenu(QMenu):
+        def exec(self, *a, **kw):
+            yakalanan.extend(
+                {"metin": e.text(), "gorunur": e.isVisible(), "etkin": e.isEnabled()}
+                for e in self.actions() if not e.isSeparator()
+            )
+            return None
+
+    import UI.main_window as mw
+
+    monkeypatch.setattr(mw, "QMenu", _GercekSahteMenu)
+    return yakalanan
+
+
+def _eylem_durumu(yakalanan: list[dict], metin_parcasi: str) -> dict:
+    (eslesen,) = [e for e in yakalanan if metin_parcasi in e["metin"]]
+    return eslesen
+
+
+def test_hamburger_menusunde_YONETICI_OLMAYANA_denetim_ve_usb_gizli(
+    kullanici_penceresi, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Görevin 2. maddesi: hamburger menüsündeki "Denetim Günlüğü" ve "USB
+    Yönetimi" öğeleri, kenar çubuğundaki eşdeğerleriyle (`_apply_role_
+    restrictions()`) TUTARLI olacak şekilde admin olmayan role gizli/
+    devre dışı olmalı. "Destek" ise KASITLI olarak açık kalmalı —
+    `ContactDialog` hiçbir rol kısıtlaması taşımıyor.
+    """
+    yakalanan = _hamburger_eylemlerini_yakala(monkeypatch)
+    kullanici_penceresi._on_hamburger_menu()
+
+    denetim = _eylem_durumu(yakalanan, "Denetim Günlüğü")
+    usb = _eylem_durumu(yakalanan, "USB Yönetimi")
+    destek = _eylem_durumu(yakalanan, "Destek")
+
+    assert denetim["gorunur"] is False and denetim["etkin"] is False
+    assert usb["gorunur"] is False and usb["etkin"] is False
+    assert destek["gorunur"] is True and destek["etkin"] is True
+
+
+def test_hamburger_menusunde_YONETICIYE_denetim_ve_usb_gorunur(
+    yonetici_penceresi, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    yakalanan = _hamburger_eylemlerini_yakala(monkeypatch)
+    yonetici_penceresi._on_hamburger_menu()
+
+    denetim = _eylem_durumu(yakalanan, "Denetim Günlüğü")
+    usb = _eylem_durumu(yakalanan, "USB Yönetimi")
+
+    assert denetim["gorunur"] is True and denetim["etkin"] is True
+    assert usb["gorunur"] is True and usb["etkin"] is True
+
+
 def test_sayfa_gecince_YENILENIYOR(yonetici_penceresi, db) -> None:
     win = yonetici_penceresi
     win._on_open_audit_log()  # ilk gerçek yük — sayfa lazy (bkz. __init__)

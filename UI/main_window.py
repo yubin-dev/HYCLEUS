@@ -414,7 +414,28 @@ class HycleusWindow(
         ).exec()
 
     def _on_hamburger_menu(self) -> None:
+        """
+        2026-08-29: `act_audit`/`act_usb` artık role göre gizleniyor/
+        devre dışı bırakılıyor.
+
+        Öncesinde ikisi de HERKESE görünürdü — kenar çubuğundaki eşdeğer
+        düğmeler (`_audit_log_btn`/`_admin_panel_btn`) `_apply_role_
+        restrictions()`'ta admin olmayan roller için zaten gizleniyordu,
+        ama bu ikinci giriş noktası aynı kararı UYGULAMIYORDU. Admin
+        olmayan bir kullanıcı için tek görünen sonuç, tıklayınca çıkan
+        "Erişim Reddedildi" uyarısıydı — fonksiyon-içi kontrol (`_on_open_
+        audit_log`/`_on_open_admin_panel`) doğruydu ama görünürlük onunla
+        TUTARSIZDI.
+
+        İkisi BİRLİKTE duruyor, biri diğerinin yerine geçmiyor: görünürlük
+        kontrolü kullanıcı deneyimi için (reddedilen bir tıklama yerine
+        seçenek hiç görünmesin), fonksiyon-içi kontrol gerçek savunma için
+        (bu menü tamamen atlanıp metot doğrudan çağrılsa bile kapı
+        kapalı kalır — bkz. `tests/test_audit_log_view.py::
+        test_yonetici_OLMAYAN_ENGELLENIYOR`, K1-14'ün aynı ilkesi).
+        """
         T = self._T
+        is_admin = is_admin_role(self._role)
         menu = QMenu(self)
         menu.setStyleSheet(
             f"QMenu {{ background:{T['topbar']}; color:{T['text']};"
@@ -424,7 +445,11 @@ class HycleusWindow(
             f"QMenu::separator {{ height:1px; background:{T['border']}; margin:4px 10px; }}"
         )
         act_audit   = menu.addAction("📋  Denetim Günlüğü")
+        act_audit.setVisible(is_admin)
+        act_audit.setEnabled(is_admin)
         act_usb     = menu.addAction("🔌  USB Yönetimi")
+        act_usb.setVisible(is_admin)
+        act_usb.setEnabled(is_admin)
         act_support = menu.addAction("💬  Destek")
         # Rehberin İKİNCİ erişim yolu. Etiket ve hedef CORE/rehber.py'den
         # geliyor — burada elle yazılsaydı rehber taşındığında menü

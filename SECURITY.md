@@ -2157,6 +2157,50 @@ both entry points regardless of which one is called.
 constructs a real `HycleusWindow` with a non-admin role and asserts the
 page never becomes current.
 
+**Follow-up (same day): the menu itself still offered the option it then
+refused.** The function-level gate closes the real hole, but a follow-up
+check asked the narrower UX question directly: does the hamburger menu
+*item* hide for a non-admin role, the way the sidebar button next to it
+already does — and does `_on_open_admin_panel()`'s own menu item
+("🔌 USB Yönetimi") actually follow that pattern already, the way the
+comment above implied? Reading `_on_hamburger_menu()` in full answered
+both at once: **neither item was gated.** `act_audit` and `act_usb` were
+both added unconditionally, with no `.setVisible()`/`.setEnabled()` call
+tied to role anywhere in that method — the "same pattern as
+`_on_open_admin_panel()`" the previous entry described was only ever true
+of the *function-level* check; at the menu level, USB Yönetimi had
+carried the identical gap all along, undiscovered until this method was
+read end to end for this specific question. No comment or BACKLOG entry
+anywhere claims this was deliberate, and a non-admin role clicking either
+item got nothing but a rejection dialog — worse UX than the option simply
+not being there, and the kind of "offer then refuse" surface that trains
+users to click through warnings. Both items now check
+`is_admin_role(self._role)` and call `.setVisible()`/`.setEnabled()` on
+the resulting `QAction`, matching the sidebar's existing
+`_apply_role_restrictions()` convention exactly; "💬 Destek" was left
+unconditional on purpose — `ContactDialog` carries no role restriction of
+its own, so hiding it would be a new, invented restriction rather than a
+consistency fix. This is additive, not a replacement: the function-level
+check stays exactly as it was, so a direct call — bypassing the menu
+entirely — is still rejected regardless of what the menu shows, the same
+layered-defense shape §4.17's K1-14 finding established for
+`DB/db_manager.py::system_write()` (a UI/menu-level control for the
+common path, an independent check underneath that does not trust it).
+Verified two ways: `tests/test_audit_log_view.py::
+test_yonetici_OLMAYAN_DOGRUDAN_cagrida_da_REDDEDILIYOR_ve_UYARI_gosterilir`
+calls `_on_open_audit_log()` directly — no menu, no click — with a
+non-admin role and asserts both that the page never opens *and* that the
+user actually sees a rejection dialog (a K1-14-style direct call, so a
+silent no-op could not pass by accident); `tests/test_audit_log_view.py::
+test_hamburger_menusunde_YONETICI_OLMAYANA_denetim_ve_usb_gizli` builds
+the real menu (via the same `QMenu` subclass-and-record technique
+`tests/test_backup_verify_ui.py` already used, not a direct
+`QMenu.exec` monkeypatch — `tests/test_timestamp_ui.py`'s documented
+reason) for a non-admin role and asserts both items are invisible and
+disabled, while "Destek" stays visible; a paired admin-role test and two
+live mutations (one reverting each new gate) confirmed both tests fail
+when the fix is absent, not just when the DB or window state is wrong.
+
 ---
 
 ## 5. Cryptographic details
@@ -4637,6 +4681,51 @@ yani hangi giriş noktasından çağrılırsa çağrılsın kapı kapanıyor.
 `tests/test_audit_log_view.py::test_yonetici_OLMAYAN_ENGELLENIYOR` gerçek
 bir `HycleusWindow`'u admin olmayan bir rolle kurup sayfanın asla aktif
 hâle gelmediğini doğruluyor.
+
+**Takip (aynı gün): menünün kendisi hâlâ sonra reddedeceği seçeneği
+sunuyordu.** Fonksiyon-içi kapı gerçek deliği kapatıyor, ama bir takip
+kontrolü daha dar bir UX sorusunu doğrudan sordu: hamburger menüsündeki
+öğe, hemen yanındaki kenar çubuğu düğmesinin ZATEN yaptığı gibi admin
+olmayan role gizleniyor mu — ve `_on_open_admin_panel()`'in kendi menü
+öğesi ("🔌 USB Yönetimi") yukarıdaki yorumun ima ettiği gibi bu deseni
+GERÇEKTEN takip ediyor mu? `_on_hamburger_menu()`'yu baştan sona okumak
+ikisini de tek seferde yanıtladı: **hiçbiri kapılı DEĞİLDİ.** `act_audit`
+ve `act_usb` ikisi de koşulsuz ekleniyordu, o metodun hiçbir yerinde role
+bağlı bir `.setVisible()`/`.setEnabled()` çağrısı yoktu — bir önceki
+maddenin tarif ettiği "`_on_open_admin_panel()` ile aynı desen" yalnızca
+FONKSİYON-İÇİ kontrol için doğruydu; menü seviyesinde USB Yönetimi de
+BAŞTAN BERİ aynı boşluğu taşıyordu, tam bu soru için metod baştan sona
+okununcaya kadar fark edilmeden. Hiçbir yorum ya da BACKLOG maddesi bunun
+bilinçli olduğunu iddia etmiyor, ve admin olmayan bir rol her iki öğeye
+tıkladığında karşısına yalnızca bir ret kutusu çıkıyordu — seçeneğin hiç
+orada olmamasından daha kötü bir kullanıcı deneyimi, kullanıcıyı uyarıları
+tıklayıp geçmeye alıştıran türden bir yüzey. İki öğe de artık
+`is_admin_role(self._role)`'u kontrol edip sonucu `QAction`'ın
+`.setVisible()`/`.setEnabled()`'ına yazıyor, kenar çubuğunun zaten
+kullandığı `_apply_role_restrictions()` deseniyle BİREBİR aynı; "💬
+Destek" bilerek koşulsuz bırakıldı — `ContactDialog` kendi hiçbir rol
+kısıtlaması taşımıyor, onu gizlemek bir tutarlılık düzeltmesi değil, YENİ
+bir kısıtlama İCAT ETMEK olurdu. Bu EKLEME, YERİNE GEÇME değil:
+fonksiyon-içi kontrol AYNEN duruyor, yani menüyü tamamen atlayan doğrudan
+bir çağrı hâlâ reddediliyor, menü ne gösterirse göstersin — §4.17'nin
+K1-14 bulgusunun `DB/db_manager.py::system_write()` için kurduğu AYNI
+katmanlı-savunma şekli (yaygın yol için bir UI/menu-level kontrol, altında ona
+GÜVENMEYEN bağımsız bir kontrol). İki yoldan doğrulandı:
+`tests/test_audit_log_view.py::test_yonetici_OLMAYAN_DOGRUDAN_cagrida_da_
+REDDEDILIYOR_ve_UYARI_gosterilir` `_on_open_audit_log()`'u DOĞRUDAN
+çağırıyor — menü yok, tıklama yok — admin olmayan bir rolle, ve HEM
+sayfanın hiç açılmadığını HEM kullanıcının GERÇEKTEN bir ret kutusu
+gördüğünü doğruluyor (K1-14 tarzı doğrudan çağrı, yani sessiz bir no-op
+kazayla geçemez); `tests/test_audit_log_view.py::
+test_hamburger_menusunde_YONETICI_OLMAYANA_denetim_ve_usb_gizli` gerçek
+menüyü (`tests/test_backup_verify_ui.py`'nin zaten kullandığı AYNI
+`QMenu` alt-sınıflama-ve-kaydetme tekniğiyle — doğrudan bir `QMenu.exec`
+monkeypatch'i DEĞİL, `tests/test_timestamp_ui.py`'nin belgelenmiş
+gerekçesiyle) admin olmayan bir role kurup iki öğenin de görünmez VE
+devre dışı olduğunu, "Destek"in görünür kaldığını doğruluyor; eşleştirilmiş
+bir admin-rolü testi ve iki canlı mutasyon (her yeni kapıyı ayrı ayrı geri
+alarak) düzeltme yokken iki testin de GERÇEKTEN kırıldığını doğruladı,
+yalnızca DB ya da pencere durumu bozulduğunda değil.
 
 ## 5. Kriptografik ayrıntılar
 

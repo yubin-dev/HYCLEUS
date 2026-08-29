@@ -5904,4 +5904,77 @@ Tam test suite: 2910 passed, 4 skipped (bir önceki turdan +51 — bu iki
 yeni dosyaya eklenen testler + `test_layering.py`'nin otomatik
 kapsamasından gelen ek parametrizasyonlar). Ruff/mypy/bandit temiz.
 
+### 2026-08-29 (devam) — hamburger menüsü de kapılı olmalıydı: USB Yönetimi'nde de AYNI boşluk vardı
+
+Görev: `_on_open_audit_log()`'un rol kontrolünü K1-14 desenindeki gibi
+(fonksiyonu UI'ı atlayıp doğrudan çağırarak) kanıtla; hamburger
+menüsündeki "Denetim Günlüğü" öğesinin görünürlük durumunu netleştir,
+`_on_open_admin_panel()`'in menü öğesiyle GERÇEKTEN aynı deseni takip
+edip etmediğini doğrula, gerekirse düzelt.
+
+**1. madde — fonksiyon-içi kontrol zaten test edilmişti, güçlendirildi.**
+`tests/test_audit_log_view.py::test_yonetici_OLMAYAN_ENGELLENIYOR`
+(önceki turdan) zaten `_on_open_audit_log()`'u gerçek bir `HycleusWindow`
+üzerinde DOĞRUDAN çağırıyordu (K1-14'ün "UI'ı atla, fonksiyonu çağır"
+deseni). Eklenen: `test_yonetici_OLMAYAN_DOGRUDAN_cagrida_da_
+REDDEDILIYOR_ve_UYARI_gosterilir` — sayfanın açılmadığını değil, AYRICA
+kullanıcının GERÇEKTEN bir "Erişim Reddedildi" kutusu gördüğünü de
+doğruluyor (sessiz bir no-op'un bir önceki testi yanıltıcı biçimde
+geçirebileceği ihtimaline karşı).
+
+**2. madde — "aynı desen" varsayımı YANLIŞ çıktı: ikisi de kapısızdı.**
+`_on_hamburger_menu()` baştan sona okundu: `act_audit` VE `act_usb`
+ikisi de koşulsuz `menu.addAction(...)` ile ekleniyordu, hiçbir role
+bağlı `.setVisible()`/`.setEnabled()` çağrısı YOKTU. Yani görevin
+varsaydığı "admin_panel'in menü öğesi zaten gizleniyor, audit log'u ona
+uydur" öncülü hatalıydı — `_on_open_admin_panel()`'in kendi menü öğesi
+de kenar çubuğundaki eşdeğerinden (`_admin_panel_btn`, `_apply_role_
+restrictions()`'ta zaten gizli) FARKLI davranıyordu. Hiçbir yorum ya da
+BACKLOG maddesi bunu bilinçli bir tercih olarak işaretlemiyor — gözden
+kaçmış bir nokta olarak değerlendirildi.
+
+**3. madde — karar: ikisini de kapat, fonksiyon-içi kontrolü KALDIRMA.**
+`act_audit` ve `act_usb` artık `is_admin_role(self._role)`'a göre
+`.setVisible()`/`.setEnabled()` alıyor — kenar çubuğunun `_apply_role_
+restrictions()` deseniyle BİREBİR aynı. "💬 Destek" bilerek DOKUNULMADI:
+`ContactDialog`'un hiçbir rol kısıtlaması yok, onu gizlemek tutarlılık
+değil YENİ bir kısıtlama olurdu. Fonksiyon-içi kontrol (`is_admin_role`
+kontrolü) AYNEN duruyor — ikisi birlikte: görünürlük UX için (reddedilen
+bir tıklama yerine seçenek hiç görünmesin), fonksiyon-içi kontrol gerçek
+savunma için (menü tamamen atlanıp metot doğrudan çağrılsa bile kapı
+kapalı kalır) — K1-14'ün `system_write()` için kurduğu AYNI katmanlı-
+savunma şekli (SECURITY.md §4.17).
+
+**4. madde — test.** `test_hamburger_menusunde_YONETICI_OLMAYANA_denetim_
+ve_usb_gizli` gerçek menüyü kuruyor (`tests/test_backup_verify_ui.py`'nin
+zaten kullandığı `QMenu` alt-sınıflama-ve-kaydetme deseniyle — doğrudan
+`QMenu.exec` monkeypatch'i DEĞİL, `tests/test_timestamp_ui.py:549`'un
+belgelenmiş gerekçesiyle) ve admin olmayan role hem "Denetim Günlüğü" hem
+"USB Yönetimi"nin görünmez VE devre dışı, "Destek"in görünür kaldığını
+doğruluyor; eşleştirilmiş bir admin-rolü testi de var.
+
+**Yan etki — mevcut testler güncellendi.** `_on_hamburger_menu()` artık
+`self._role`'e bakıyor; `tests/test_backup_verify_ui.py`'nin bu metodu
+çıplak bir sahne nesnesiyle (`_Sahne2`/`_Sahne3`, `HycleusWindow._on_
+hamburger_menu`'yu ödünç alan) çağıran iki testi `_role` özniteliği
+olmadan `AttributeError` ile patlıyordu — ikisine de `self._role =
+"Yönetici"` eklendi.
+
+**Mutasyon kanıtları:**
+
+- `_on_open_audit_log()`'daki `is_admin_role` kontrolü geçici olarak
+  `if False and ...` ile devre dışı bırakıldı — 2 test **BAŞARISIZ**
+  oldu (sayfa açıldı, uyarı hiç gösterilmedi).
+- `act_audit`/`act_usb`'nin `.setVisible()`/`.setEnabled()` satırları
+  geçici olarak kaldırıldı — admin-olmayan-role testi **BAŞARISIZ** oldu
+  (öğeler yine görünür/etkin çıktı).
+
+İkisi de geri alındı, `git diff --stat` temiz döndü, tüm paket tekrar
+yeşile döndü.
+
+SECURITY.md §4.20'ye (EN+TR) bu bulgu ve düzeltme belgelendi.
+
+Tam test suite: 2913 passed, 4 skipped (bir önceki turdan +3 — bu iki
+yeni test). Ruff/mypy/bandit temiz.
+
 ---
