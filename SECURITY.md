@@ -1759,6 +1759,111 @@ the transaction does not hang open. An open transaction left behind by a
 half-finished report would matter beyond that one report: it can block a
 later `PRAGMA wal_checkpoint` from truncating the WAL file.
 
+### 4.17 RBAC was enforced only in the UI — the DB layer trusted every caller
+
+> **Attacker models:** M2 · M3
+
+Confirmed live before writing any code. `CORE/roles.py::can_write()` is
+the codebase's single decision point for "can this role write" — but the
+only callers were four `UI/main_window*.py` files, deciding which
+buttons to hide, whether drag-and-drop is accepted, or which tab is
+visible. `DB/db_manager.py::execute()` had no concept of a caller's role
+at all; it ran whatever SQL it was given. A direct call —
+`DBManager().execute("INSERT INTO folders …")` issued from a script, a
+dialog that forgot the check, or a `CORE` function reached by a path
+other than the gated button — went through unconditionally, Salt Okunur
+(read-only) role or not.
+
+That gap was not hypothetical inside this codebase: `UI/TagDialog.py`
+turned out to have zero calls to `is_readonly_role`/`can_write` anywhere
+in it — it relies entirely on the "+ Yeni Etiket" button that opens it
+being hidden for a read-only role. Reached any other way (a future
+context-menu addition, a bug), tag creation and deletion would go
+straight through. Confirmed with a script calling `DBManager().execute()`
+directly — no UI involved, no dialog constructed: with a Salt Okunur role
+active, `INSERT INTO files`, `INSERT INTO folders`, `INSERT INTO tags`,
+`INSERT INTO file_tags`, `INSERT INTO quarantine`, and
+`INSERT INTO retention_profiles` all went through untouched.
+
+**Fix: `DBManager.execute()` is the enforcement point, not a
+per-call-site convention.** `UI/main_window.py::_apply_role_restrictions()`
+— the one place the codebase already funnels every role change through
+(initial login via `main.py`, USB reauth, `reload_app_mode()`) — now
+also calls `DBManager().set_active_role(role)`. `execute()` parses the
+target table out of the SQL it is given and, for a defined set of
+business-data tables, refuses any write a `can_write(role)` check would
+refuse, raising `YazmaYetkisiYokError`. This runs regardless of which
+`CORE` function, which UI dialog, or which absence of a dialog issued the
+call — the same check whether the write came from a hidden button, a
+bug, or a script that skipped the UI on purpose.
+
+**Deliberately out of scope, and why — measured, not assumed.** Three
+tables that go through the same `execute()` are *not* gated:
+
+- `users` — `CORE/session_user.py::sync_session_user()` writes here on
+  every login and every USB reauth, before a role is even fully "in
+  session" (and, on reauth, potentially still carrying the *previous*
+  session's role). Gating this table would have meant a read-only user
+  could not log in.
+- `login_attempts` — `CORE/rate_limit.py`'s failed-attempt bookkeeping
+  has to work regardless of role, including mid-session during a failed
+  reauth.
+- `settings` — a mixed table. `imha_ttl_hours`/`idle_lock_minutes`/
+  `app_mode` are admin-only in the UI already (a separate
+  `is_admin_role` gate, not `can_write`), but
+  `CORE/backup_reminder.py::ertele()`/`yedek_alindi()` write here from
+  the "Yedek Al…" menu action, which — confirmed by reading
+  `UI/main_window.py`'s view menu — carries no `can_write` check at all
+  today and is reachable by every role. Gating the whole table would
+  have broken backups for read-only users; gating it by key was judged
+  out of scope for this pass and left as a BACKLOG follow-up rather than
+  silently narrowed.
+
+**Two automatic cleaners needed an explicit bypass, not a role check.**
+`CORE/disposal.py::purge_expired_file()` and `sweep_retention_expired()`
+both write to `files` — a gated table — but neither runs "as" the
+logged-in user. Both are, by their own docstrings, the single entry
+point for automatic cleaners that act "without asking anyone" once a
+countdown expires or a retention period lapses. Both have two callers:
+`CORE/scheduler.py`'s APScheduler background thread, and — for the
+countdown case — a `QTimer` tick on the main thread while a user is
+looking at the Disposal Room, so a thread-identity check could not
+distinguish either from an interactive write. Confirmed the highest-value
+alternative — "skip the check off the main thread" — would not have
+worked at all: `UI/main_window_table.py`'s `_FileRunnable`, the code path
+that actually adds a file, runs on a `QThreadPool` worker thread, not the
+main thread. Both functions now wrap their `db.execute()` call in
+`DBManager.system_write()`, a thread-local bypass — thread-local
+specifically because the background scheduler thread, the `QThreadPool`
+file-add workers, and the GUI thread all share the same `DBManager`
+singleton, and a shared (non-thread-local) flag would have let one
+thread's bypass leak into another's. Confirmed live: with a read-only
+role active, both functions still complete their write.
+
+A permanent regression suite (`tests/test_db_manager_rbac.py`) calls
+`DBManager().execute()` and `CORE.folders.create_folder()` directly — no
+UI constructed — with a read-only role set, for every gated table, and
+asserts rejection; asserts the three excluded tables remain writable
+under the same role; asserts the two automatic cleaners still complete
+under a read-only role; and includes a mutation-contrast test that
+disables the check and confirms the same write would have gone through
+without it. Confirmed against the pre-fix code directly: with
+`DB/db_manager.py`, `CORE/disposal.py`, and `UI/main_window.py` stashed
+back to their previous state, the test module fails to *import* —
+`YazmaYetkisiYokError` does not exist yet — the strongest form of "this
+suite cannot pass by accident."
+
+**What this does not claim.** `can_write()` does not distinguish
+Yönetici from Standart — a non-admin, non-read-only session bypassing an
+admin-only UI dialog (retention-profile management, which has no UI
+entry point yet, for instance) would not be caught by this check; only a
+read-only one would. That is a different, narrower axis (`is_admin_role`,
+not `can_write`) and a distinct problem from the one this fix closes;
+`CORE/session_user.py::oturum_yetkisi_gecerli_mi()`'s own docstring
+already flags a related boundary in the same spot (the DB schema's
+`role` column cannot represent Standart vs. Salt Okunur at all). Noted,
+not fixed here.
+
 ---
 
 ## 5. Cryptographic details
@@ -3816,6 +3921,114 @@ doğrulandı — transaction asılı kalmıyor. Yarım kalmış bir raporun arka
 bırakacağı açık bir transaction yalnızca o raporu etkilemekle kalmaz:
 sonraki bir `PRAGMA wal_checkpoint`'in WAL dosyasını kısaltmasını
 bloklayabilir.
+
+### 4.17 RBAC yalnızca UI'da uygulanıyordu — DB katmanı her çağırana güveniyordu
+
+> **Saldırgan modelleri:** M2 · M3
+
+Hiçbir kod yazılmadan önce CANLI doğrulandı. `CORE/roles.py::can_write()`
+kod tabanının "bu rol yazabilir mi" sorusuna tek karar noktası — ama tek
+çağıranları dört `UI/main_window*.py` dosyasıydı: hangi düğmenin
+gizleneceğine, sürükle-bırakın kabul edilip edilmeyeceğine, hangi
+sekmenin görüneceğine onlar karar veriyordu. `DB/db_manager.py::execute()`
+çağıranın rolünden TAMAMEN habersizdi; kendisine verilen SQL'i sorgusuz
+sualsiz çalıştırıyordu. Bir script'ten çağrılan doğrudan bir
+`DBManager().execute("INSERT INTO folders …")`, kontrolü unutmuş bir
+diyalog, ya da gizli düğme dışındaki bir yoldan ulaşılan bir `CORE`
+fonksiyonu — hepsi kayıtsız şartsız geçiyordu, Salt Okunur rolde olsun ya
+da olmasın.
+
+Bu boşluk bu kod tabanında teorik değildi: `UI/TagDialog.py`'nin içinde
+hiçbir yerde `is_readonly_role`/`can_write` çağrısı OLMADIĞI ortaya çıktı
+— tamamen kendisini açan "+ Yeni Etiket" düğmesinin salt okunur rolde
+gizlenmesine güveniyor. Başka bir yoldan ulaşılsa (ileride eklenecek bir
+sağ tık menüsü, bir hata), etiket oluşturma ve silme dosdoğru geçerdi.
+Doğrudan `DBManager().execute()` çağıran bir script ile doğrulandı — hiç
+UI yok, hiç diyalog kurulmadı: Salt Okunur rol aktifken `INSERT INTO
+files`, `INSERT INTO folders`, `INSERT INTO tags`, `INSERT INTO
+file_tags`, `INSERT INTO quarantine` ve `INSERT INTO retention_profiles`
+hepsi dokunulmadan geçti.
+
+**Düzeltme: `DBManager.execute()` uygulama noktası, çağrı-yeri-başına bir
+kural DEĞİL.** `UI/main_window.py::_apply_role_restrictions()` — kod
+tabanının rol her değiştiğinde zaten tek yerden geçirdiği nokta (girişte
+`main.py` üzerinden, USB reauth'ta, `reload_app_mode()`'da) — artık
+`DBManager().set_active_role(role)`'ü de çağırıyor. `execute()` kendisine
+verilen SQL'in hedef tablosunu ayrıştırıyor ve tanımlı bir iş verisi
+tablosu kümesi için, `can_write(role)` kontrolünün reddedeceği her yazıyı
+reddedip `YazmaYetkisiYokError` fırlatıyor. Bu, çağrının hangi `CORE`
+fonksiyonundan, hangi UI diyaloğundan, ya da diyalog YOKLUĞUNDAN geldiğine
+bakmaksızın çalışıyor — yazı gizli bir düğmeden, bir hatadan ya da UI'ı
+bilerek atlayan bir script'ten gelsin, aynı kontrol.
+
+**Bilerek kapsam dışı bırakılanlar, ve nedeni — ÖLÇÜLDÜ, varsayılmadı.**
+Aynı `execute()`'tan geçen üç tablo GATE'LENMEDİ:
+
+- `users` — `CORE/session_user.py::sync_session_user()` her girişte ve
+  her USB reauth'ta buraya yazıyor, rol henüz TAM olarak "oturuma
+  bağlanmadan" önce (ve reauth'ta, hâlâ ÖNCEKİ oturumun rolünü
+  taşıyor olabilirken). Bu tabloyu kısıtlamak, salt okunur bir
+  kullanıcının GİRİŞ BİLE YAPAMAMASI anlamına gelirdi.
+- `login_attempts` — `CORE/rate_limit.py`'nin başarısız deneme defteri
+  rolden bağımsız çalışmalı, başarısız bir reauth sırasında oturum
+  ORTASINDA da dahil.
+- `settings` — karışık bir tablo. `imha_ttl_hours`/`idle_lock_minutes`/
+  `app_mode` UI'da zaten yalnızca yönetici yazabiliyor (`can_write`
+  DEĞİL, ayrı bir `is_admin_role` kapısı), ama
+  `CORE/backup_reminder.py::ertele()`/`yedek_alindi()` buraya "Yedek
+  Al…" menü eyleminden yazıyor — `UI/main_window.py`'nin Görünüm
+  menüsü okunarak doğrulandı: bugün HİÇBİR `can_write` kontrolü
+  taşımıyor ve her rol tarafından erişilebilir. Tüm tabloyu kısıtlamak
+  salt okunur kullanıcılar için yedeklemeyi kırardı; anahtar bazında
+  kısıtlamak bu turun kapsamı dışı sayıldı ve sessizce daraltılmak
+  yerine BACKLOG'a takip maddesi olarak bırakıldı.
+
+**İki otomatik temizleyici rol kontrolü değil, açık bir bypass
+gerektirdi.** `CORE/disposal.py::purge_expired_file()` ve
+`sweep_retention_expired()` ikisi de `files`'a — gate'lenmiş bir tabloya
+— yazıyor, ama ikisi de giriş yapmış kullanıcı "ADINA" çalışmıyor. İkisi
+de, kendi docstring'lerine göre, bir sayaç sıfıra inince ya da bir
+saklama süresi dolunca "kimseye sormadan" davranan otomatik
+temizleyicilerin tek giriş noktası. İkisinin de iki çağıranı var:
+`CORE/scheduler.py`'nin APScheduler arka plan iş parçacığı, ve — sayaç
+durumunda — kullanıcı İmha Odası'na bakarken ana iş parçacığında çalışan
+bir `QTimer` tik'i — yani bir iş parçacığı kimliği kontrolü ikisini de
+etkileşimli bir yazıdan AYIRAMAZDI. En yüksek değerli alternatifin —
+"ana iş parçacığı DIŞINDAYSA kontrolü atla" — hiç işe yaramayacağı
+doğrulandı: dosya EKLEMEYİ fiilen yapan kod yolu,
+`UI/main_window_table.py`'nin `_FileRunnable`'ı, ana iş parçacığında
+DEĞİL, bir `QThreadPool` işçi iş parçacığında çalışıyor. Her iki
+fonksiyon da artık `db.execute()` çağrısını `DBManager.system_write()`
+içine alıyor — THREAD-LOCAL bir bypass, ÖZELLİKLE thread-local çünkü
+arka plan zamanlayıcı iş parçacığı, `QThreadPool` dosya-ekleme işçileri
+ve GUI iş parçacığı AYNI `DBManager` tekil örneğini paylaşıyor; paylaşılan
+(thread-local OLMAYAN) bir bayrak bir iş parçacığının bypass'ını
+BAŞKASINA sızdırırdı. Canlı doğrulandı: Salt Okunur rol aktifken, her iki
+fonksiyon da yazısını tamamlamaya devam ediyor.
+
+Kalıcı bir regresyon paketi (`tests/test_db_manager_rbac.py`)
+`DBManager().execute()`'u ve `CORE.folders.create_folder()`'ı doğrudan
+çağırıyor — hiç UI kurulmadan — Salt Okunur rol ayarlıyken, her
+gate'lenmiş tablo için, ve reddi doğruluyor; üç hariç tutulan tablonun
+aynı rolde yazılabilir KALDIĞINI doğruluyor; iki otomatik temizleyicinin
+salt okunur rolde de tamamlandığını doğruluyor; ve kontrolü devre dışı
+bırakıp AYNI yazının onsuz geçeceğini gösteren bir mutasyon-kontrastı
+testi içeriyor. Düzeltmeden ÖNCEki koda karşı doğrudan doğrulandı:
+`DB/db_manager.py`, `CORE/disposal.py` ve `UI/main_window.py` önceki
+hâllerine `git stash` ile geri alındığında, test modülü İÇE
+AKTARILAMIYOR bile — `YazmaYetkisiYokError` henüz yok — "bu paket
+kazayla geçemez"in en güçlü biçimi.
+
+**Bunun iddia ETMEDİĞİ.** `can_write()` Yönetici'yi Standart'tan
+AYIRMIYOR — yönetici-only bir UI diyaloğunu (ör. henüz UI girişi olmayan
+saklama profili yönetimi) atlayan yönetici-olmayan ama salt-okunur-da-
+olmayan bir oturum bu kontrol tarafından YAKALANMAZ, yalnızca salt okunur
+bir oturum yakalanır. Bu farklı, daha dar bir eksen (`can_write` değil,
+`is_admin_role`) ve bu düzeltmenin kapattığı sorundan AYRI bir problem;
+`CORE/session_user.py::oturum_yetkisi_gecerli_mi()`'nin kendi docstring'i
+zaten aynı noktada ilişkili bir sınırı işaretliyor (DB şemasının `role`
+sütunu Standart ile Salt Okunur'u hiç AYIRT EDEMİYOR). Not düşüldü,
+burada düzeltilmedi.
 
 ## 5. Kriptografik ayrıntılar
 

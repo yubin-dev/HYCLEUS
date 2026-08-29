@@ -222,6 +222,14 @@ class HycleusWindow(
         is_admin  = is_admin_role(self._role)
         can_write = rol_yazabilir(self._role)
 
+        # DB katmanına da bildir (B-0xx): düğmeleri gizlemek yalnızca bu
+        # düğmeleri kullanan yolu kapatır — CLI, doğrudan bir CORE
+        # çağrısı ya da unutulmuş bir UI kontrolü (ör. TagDialog hiç
+        # is_readonly_role'a bakmıyor) hâlâ geçebilirdi. DBManager.execute()
+        # artık aynı kararı SON ÇARE olarak tekrar veriyor (bkz.
+        # DB/db_manager.py::_yazma_yetkisini_dogrula).
+        DBManager().set_active_role(self._role)
+
         # ── Yönetici bölümü: sadece Yönetici görür ───────────────────────
         for _w in (self._admin_sep, self._admin_label, self._blacklist_btn,
                    self._audit_log_btn, self._admin_panel_btn, self._support_btn):

@@ -6,9 +6,12 @@ sqlcipher3 geçişi: connect() içindeki iki satırı değiştir (yoruma bakın)
 """
 from __future__ import annotations
 
+import re
 import sqlite3
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from CORE.paths import data_dir as _data_dir
 _DEFAULT_DB_PATH = _data_dir() / "hycleus.db"
@@ -105,6 +108,77 @@ class HWIDMissingError(RuntimeError):
     """USB HWID sağlanmadan veritabanı açılmaya çalışıldığında fırlar."""
 
 
+class YazmaYetkisiYokError(PermissionError):
+    """
+    Salt Okunur (veya bilinmeyen) rollü bir oturum iş verisi yazmaya
+    kalktığında fırlar.
+
+    Neden burada, UI'da değil
+    --------------------------
+    RBAC (CORE/roles.py, can_write) eskiden YALNIZCA UI'da uygulanıyordu:
+    düğmeleri gizlemek/pasifleştirmek (`UI/main_window*.py::
+    _apply_role_restrictions`). Bu, düğmeyi hiç görmeyen bir kullanıcıyı
+    durdurur ama düğmeyi ATLAYAN hiçbir yolu durdurmaz — CLI, doğrudan bir
+    CORE fonksiyon çağrısı, ya da unutulmuş bir kontrol (`UI/TagDialog.py`
+    bugün TAM OLARAK bu — `is_readonly_role`'a hiç bakmıyor, yalnızca
+    kendini açan düğmenin gizlenmesine güveniyor).
+
+    Bu istisna DBManager.execute()'un kendisinden fırlıyor — yani "her
+    yazma fonksiyonu rolü kontrol etmeli" isteği tek bir choke point'te
+    karşılanıyor, her CORE/UI çağrı yerine ayrı ayrı dağıtılmıyor.
+    """
+
+
+#: RBAC'ın DB katmanında zorlandığı tablolar — iş verisi. `UI/main_window*.py`
+#: bugün bu YÜZEYLERİ zaten düğme gizleyerek kısıtlıyor (dosya ekle/sil,
+#: klasör oluştur/sil, etiket oluştur/sil, karantina). Bu küme onların DB
+#: karşılığı; ikinci bir liste İCAT EDİLMEDİ.
+#:
+#: BİLEREK DIŞARIDA BIRAKILANLAR — hepsi ölçülüp doğrulandı:
+#:   users            — oturum defteri (CORE/session_user.py::
+#:                       sync_session_user); giriş/reauth HER rolde
+#:                       çalışmalı, aksi hâlde salt okunur bir kullanıcı
+#:                       giriş bile yapamaz.
+#:   login_attempts   — hız sınırlama (CORE/rate_limit.py); başarısız PIN
+#:                       denemesi rol BELLİ OLMADAN önce de, mevcut oturum
+#:                       reddedilirken de çalışmalı.
+#:   settings         — karışık bir tablo: `imha_ttl_hours`/`idle_lock_minutes`
+#:                       /`app_mode` yalnızca AdminPanel'den (is_admin_role
+#:                       ile AYRI bir kapı) yazılıyor, ama
+#:                       `CORE/backup_reminder.py::ertele()`/`yedek_alindi()`
+#:                       ROLDEN BAĞIMSIZ her kullanıcının tetikleyebileceği
+#:                       "Yedek Al…" menüsünden çalışıyor (ÖLÇÜLDÜ:
+#:                       UI/main_window.py Görünüm menüsü can_write
+#:                       KONTROLÜ YOK). Anahtar bazlı ayrım bu turun
+#:                       kapsamı dışında — BACKLOG'a not düşüldü.
+#:   audit_log        — zaten DBManager.execute()'u hiç kullanmıyor
+#:                       (CORE.audit_chain.append_entry ham conn'a yazıyor);
+#:                       zaten bu kontrolün DIŞINDA, ayrıca hariç tutmaya
+#:                       gerek yok.
+#:   usb_tokens       — kayıt/kurtarma akışının parçası, rol henüz
+#:                       oturumla ilişkilenmemişken de yazılabilmeli.
+#:
+#: Yönetici-vs-Standart ayrımı (ör. yalnızca yöneticinin retention_profiles
+#: şablonu değiştirebilmesi) bu kümenin kapsamı DIŞINDA: `can_write()` o
+#: ikisini AYIRMIYOR (ikisi de yazabilir), yalnızca Salt Okunur'u dışlıyor.
+#: Bu, CORE/session_user.py::oturum_yetkisi_gecerli_mi()'nin kendi
+#: docstring'inde işaretlediği türden bilinen bir sınır — bu düzeltmenin
+#: kapsamı değil.
+_RBAC_KORUMALI_TABLOLAR: frozenset[str] = frozenset({
+    "files", "folders", "tags", "file_tags", "quarantine",
+    "retention_profiles",
+})
+
+#: `execute()`'a gelen SQL'in hedef tablosunu çıkarır. Bu depoda `execute()`
+#: yalnızca uygulama SQL'i için kullanılıyor (şema/migration ham `conn`
+#: üzerinden gidiyor — bkz. _apply_schema), yani biçim sabit ve öngörülebilir.
+_YAZMA_HEDEFI_DESENI = re.compile(
+    r"^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)"
+    r"\s+[\"'`\[]?([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
+
+
 class DBManager:
     """Uygulama genelinde tek örnek (singleton) veritabanı yöneticisi."""
 
@@ -114,6 +188,7 @@ class DBManager:
     _conn: sqlite3.Connection | None
     _hwid: str | None
     _key: bytes | None
+    _role: str | None
 
     def __new__(cls, db_path: str | Path | None = None) -> DBManager:
         if cls._instance is None:
@@ -122,6 +197,21 @@ class DBManager:
             obj._conn = None
             obj._hwid = None
             obj._key = None
+            # Etkileşimli oturumun rolü — `set_active_role()` ile ayarlanır
+            # (bkz. UI/main_window.py::_apply_role_restrictions). None =
+            # henüz bir oturum bağlanmadı (açılış, göç, testler, arka plan
+            # sistem kodu) — bu durumda YAZMA KISITLANMAZ, eski davranış
+            # korunur. Rol yalnızca AÇIKÇA ayarlandıktan sonra kısıtlama
+            # başlar.
+            obj._role = None
+            # Sistem yazılarının (ör. otomatik saklama/karantina süpürmesi
+            # — CORE/disposal.py) rol denetimini atlaması için iş
+            # parçacığı-yerel sayaç. Thread-local OLMASI ZORUNLU:
+            # APScheduler arka plan iş parçacığı ve QThreadPool dosya
+            # işçileri AYNI DBManager tekil örneğini paylaşıyor; paylaşılan
+            # (thread-local OLMAYAN) bir sayaç bir iş parçacığının
+            # bypass'ını başka birine SIZDIRIRDI.
+            obj._sistem_yazma = threading.local()
             cls._instance = obj
         return cls._instance
 
@@ -180,6 +270,7 @@ class DBManager:
             self._conn = None
             self._hwid = None
             self._key = None
+            self._role = None
             DBManager._instance = None
 
     def open(
@@ -460,10 +551,78 @@ class DBManager:
         return self._conn
 
     # ------------------------------------------------------------------
+    # RBAC — yazma yetkisi (B-0xx: "salt okunur UI'ı atlarsa" bulgusu)
+    # ------------------------------------------------------------------
+
+    def set_active_role(self, role: str | None) -> None:
+        """
+        Etkileşimli oturumun arayüz rolünü ayarlar.
+
+        `UI/main_window.py::_apply_role_restrictions()` bunu çağırıyor —
+        girişte, reauth'ta ve `reload_app_mode()`'da; yani rol ne zaman
+        BİLİNİR/DEĞİŞİRSE tek yerden. İkinci bir "rolü DB'ye bildir" yolu
+        İCAT EDİLMEDİ.
+
+        `None` verilirse kısıtlama TAMAMEN kalkar (bkz. `_role` alanının
+        `__new__`'deki gerekçesi) — testler ve açılış/göç kodu bu
+        varsayılanla çalışmaya devam eder.
+        """
+        self._role = role
+
+    @contextmanager
+    def system_write(self) -> Iterator[None]:
+        """
+        Bu blok içindeki yazılar için rol denetimini ASKIYA ALIR.
+
+        YALNIZCA gerçekten "kimseye sormadan" çalışması gereken, önceden
+        onaylanmış sistem işlemleri için: `CORE/disposal.py::
+        purge_expired_file()` (süresi dolmuş sayaç — hem arka plan
+        zamanlayıcısından hem de İmha Odası'nı izleyen kullanıcının UI
+        zamanlayıcısından tetiklenir) ve `sweep_retention_expired()`
+        (saklama süresi süpürmesi). İkisi de "otomatik temizleyicilerin
+        TEK giriş noktası" — bkz. o modülün docstring'i: "otomatik bir
+        sayacın soracağı kimse yok; doğru davranış sormak değil, ATLAMAK."
+
+        Rol yerine THREAD-LOCAL bir sayaç kullanılıyor (ambient `_role`
+        DEĞİL): APScheduler'ın arka plan iş parçacığı ve QThreadPool dosya
+        işçileri aynı tekil DBManager'ı paylaşıyor, yani paylaşılan bir
+        bayrak bir iş parçacığının bypass'ını DİĞERİNE sızdırırdı —
+        özellikle `_FileRunnable.run()` (dosya EKLEME, QThreadPool
+        işçisinde) tam olarak korunması GEREKEN yazının kendisi.
+        """
+        yerel = self._sistem_yazma
+        yerel.derinlik = getattr(yerel, "derinlik", 0) + 1
+        try:
+            yield
+        finally:
+            yerel.derinlik -= 1
+
+    def _yazma_yetkisini_dogrula(self, sql: str) -> None:
+        if self._role is None:
+            return
+        if getattr(self._sistem_yazma, "derinlik", 0) > 0:
+            return
+        eslesme = _YAZMA_HEDEFI_DESENI.match(sql)
+        if eslesme is None:
+            return
+        tablo = eslesme.group(1).lower()
+        if tablo not in _RBAC_KORUMALI_TABLOLAR:
+            return
+
+        from CORE.roles import can_write
+
+        if not can_write(self._role):
+            raise YazmaYetkisiYokError(
+                f"Rol {self._role!r} '{tablo}' tablosuna yazamaz "
+                "(Salt Okunur ya da tanınmayan rol)."
+            )
+
+    # ------------------------------------------------------------------
     # Yardımcı metotlar
     # ------------------------------------------------------------------
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
+        self._yazma_yetkisini_dogrula(sql)
         cur = self.conn.execute(sql, params)
         self.conn.commit()
         return cur

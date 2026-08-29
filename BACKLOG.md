@@ -4841,3 +4841,145 @@ Tam test suite: 2768 passed, 4 skipped (bu dosyaya eklenen 3 yeni test
 dahil).
 
 ---
+
+## B-074 — RBAC yalnızca UI'da uygulanıyordu: db_manager.py yazma fonksiyonları hiçbir rol kontrolü yapmıyordu, düzeltildi
+
+**Durum:** Kapalı
+**Öncelik:** Yüksek (listenin en önemli maddesi olarak talep edildi — DB
+katmanı, UI'ı atlayan hiçbir yoldan geçilemeyen SON çare)
+**Bulundu ve kapatıldı:** 2026-08-29 — aynı turda
+
+### İstek
+
+RBAC kontrolünün yalnızca UI seviyesinde (buton gizleme) değil,
+`db_manager.py` seviyesinde de uygulandığından emin ol. Salt-okunur rollü
+bir kullanıcının yazma girişimi, UI'ı atlayan hiçbir yoldan (CLI,
+doğrudan fonksiyon çağrısı, olası bir bug) geçmemeli —
+`db_manager.py`'deki her yazma fonksiyonu, çağıran kullanıcının rolünü
+kontrol etmeli ve yetkisizse reddetmeli. Test: UI'ı tamamen atlayıp
+doğrudan `db_manager` fonksiyonlarını salt-okunur bir kullanıcı
+context'iyle çağır, reddedildiğini doğrula.
+
+### Sorgu — gerçekliği ölçmek
+
+`CORE/roles.py::can_write()` kod tabanının rol karşılaştırmasına tek
+karar noktası (B-028/B-030), ama çağıranları taranınca hepsinin
+`UI/main_window*.py` içinde olduğu görüldü — düğme gizleme/pasifleştirme,
+sürükle-bırak kabulü, sekme görünürlüğü. `DB/db_manager.py::execute()`
+çağıranın rolünden HİÇ haberdar değildi; kendisine verilen SQL'i
+sorgusuz sualsiz çalıştırıyordu.
+
+Boşluğun teorik olmadığı bu kod tabanında somut olarak kanıtlandı:
+`UI/TagDialog.py` taranınca içinde `is_readonly_role`/`can_write`'a
+HİÇBİR çağrı olmadığı görüldü (`tests/test_db_manager_rbac.py::
+test_UI_katmaninin_kendisi_boslugu_kanitliyor_TagDialog_rol_kontrolu_yok`
+bunu AST taramasıyla sabitliyor) — yalnızca kendisini açan "+ Yeni
+Etiket" düğmesinin salt okunur rolde gizlenmesine güveniyor.
+
+Canlı bir script ile doğrulandı — hiç UI kurulmadan, doğrudan
+`DBManager().execute()`: Salt Okunur rol aktifken `INSERT INTO files`,
+`INSERT INTO folders`, `INSERT INTO tags` üçü de dokunulmadan geçti.
+
+### Tasarım kararı — neden ambient rol + tablo bazlı gate
+
+`DBManager` zaten bir tekil örnek (singleton) ve `_hwid`/`_key` gibi
+bağlantı-ömürlü durumu üzerinde tutuyor; aynı desen `_role` için de
+uygulandı. Ama iki gerçek karşı-örnek bu tasarımı BASİT bir "her
+non-SELECT'i rolle kontrol et" kuralından uzaklaştırdı:
+
+1. **Aynı tabloya hem kullanıcı hem sistem yazıyor.**
+   `CORE/disposal.py::purge_expired_file()` (süresi dolmuş sayaç) ve
+   `sweep_retention_expired()` (saklama süpürmesi) `files`'a yazıyor —
+   ama giriş yapmış kullanıcı ADINA değil, "kimseye sormadan" davranan
+   otomatik temizleyiciler olarak (kendi docstring'leri). İkisinin de
+   çağıranlarından biri `CORE/scheduler.py`'nin APScheduler arka plan
+   iş parçacığı; bir "ana iş parçacığı DEĞİLSE atla" kısayolu
+   denenebilirdi ama `UI/main_window_table.py::_FileRunnable` — dosya
+   EKLEMEYİ fiilen yapan, korunması GEREKEN yazının ta kendisi — bir
+   `QThreadPool` işçi iş parçacığında çalışıyor; yani "ana iş parçacığı
+   değil" kuralı tam olarak korunması gereken yazıyı da muaf tutardı.
+   Çözüm: iş parçacığı kimliğine değil, AÇIK bir işaretlemeye dayanan
+   `DBManager.system_write()` — thread-local bir sayaç (paylaşılan
+   olsaydı bir iş parçacığının bypass'ı diğerine sızardı).
+2. **Bazı tablolar rolden bağımsız yazılabilir olmak ZORUNDA.** `users`
+   (`CORE/session_user.py::sync_session_user()` — giriş VE reauth'ta,
+   rol henüz oturuma tam bağlanmadan önce, reauth'ta ise hâlâ ÖNCEKİ
+   oturumun rolünü taşıyorken), `login_attempts`
+   (`CORE/rate_limit.py` — hız sınırlama her rolde çalışmalı) ve
+   `settings` (karışık: `imha_ttl_hours` gibi anahtarlar zaten
+   `is_admin_role` ile ayrı korunuyor, ama
+   `CORE/backup_reminder.py::ertele()` "Yedek Al…" menüsünden HER rol
+   tarafından tetiklenebiliyor — `UI/main_window.py`'nin Görünüm menüsü
+   okunarak doğrulandı, orada `can_write` kontrolü YOK). Bu üçü
+   `_RBAC_KORUMALI_TABLOLAR` kümesinin DIŞINDA bırakıldı — boşluk değil,
+   ölçülüp belgelenen bir sınır.
+
+Gate'lenen küme: `files`, `folders`, `tags`, `file_tags`, `quarantine`,
+`retention_profiles` — UI'ın bugün zaten düğme gizleyerek kısıtladığı
+YÜZEYLERİN DB karşılığı.
+
+### Düzeltme
+
+`DB/db_manager.py`:
+
+- `DBManager.set_active_role(role)` — etkileşimli oturumun rolünü
+  tekil örnek üzerinde saklıyor (`None` varsayılan = kısıtlama YOK —
+  açılış, göç, testler etkilenmiyor).
+- `DBManager.system_write()` — thread-local bypass context manager
+  (yalnızca yukarıdaki 2 otomatik temizleyici kullanıyor).
+- `execute()` artık her çağrıda `_yazma_yetkisini_dogrula(sql)`
+  çağırıyor: SQL'in hedef tablosunu regex ile ayrıştırıp
+  (`_YAZMA_HEDEFI_DESENI`), tablo korunanlar kümesindeyse
+  `can_write(self._role)`'u kontrol ediyor, değilse yeni
+  `YazmaYetkisiYokError` (PermissionError alt sınıfı) fırlatıyor.
+
+`UI/main_window.py::_apply_role_restrictions()` — kod tabanının rol her
+değiştiğinde (girişte, reauth'ta, `reload_app_mode()`'da) zaten tek
+yerden geçirdiği fonksiyon — artık `DBManager().set_active_role(role)`'ü
+de çağırıyor. İkinci bir "rolü DB'ye bildir" yolu İCAT EDİLMEDİ.
+
+`CORE/disposal.py::purge_expired_file()` / `sweep_retention_expired()`
+— `db.execute()` çağrıları `with db.system_write():` içine alındı.
+
+### Testler
+
+`tests/test_db_manager_rbac.py` (yeni dosya, 16 test):
+
+- 6 gate'lenmiş tablonun (`files`, `folders`, `tags`, `file_tags`,
+  `quarantine`, `retention_profiles`) HER biri için: Salt Okunur rolde
+  ham `db.execute()` reddediliyor mu (parametrize).
+- Standart/Yönetici rollerinde aynı yazılar geçiyor mu (mutasyon
+  kontrastı — kısıtlama role özgü, tabloya değil).
+- Rol hiç ayarlanmamışsa (`None`) kısıtlama yok mu.
+- Bilinmeyen rol de reddediliyor mu.
+- SELECT sorguları rolden bağımsız her zaman çalışıyor mu.
+- `CORE.folders.create_folder()` — GERÇEK bir üretim fonksiyonu, ham SQL
+  değil — engelleniyor mu (yalnızca regex'in yakaladığı izlenimini
+  gidermek için).
+- `users`/`login_attempts`/`settings` Salt Okunur rolde de YAZILABİLİYOR
+  mu (bilinçli sınırın kanıtı).
+- `purge_expired_file()`/`sweep_retention_expired()` Salt Okunur bir
+  oturum ORTASINDA da tamamlanıyor mu (`system_write()`'ın gerçekten
+  çalıştığının kanıtı).
+- Mutasyon kontrastı: `_yazma_yetkisini_dogrula()` monkeypatch'le devre
+  dışı bırakılırsa aynı yazı GERÇEKTEN geçiyor mu.
+- AST taraması: `UI/TagDialog.py`'de hâlâ rol kontrolü YOK mu (bu
+  düzeltmenin gerekçesinin hâlâ geçerli olduğunun kanıtı).
+
+**Doğrulama — `git stash` ile.** `DB/db_manager.py`, `CORE/disposal.py`
+ve `UI/main_window.py` düzeltmeden ÖNCEki hâllerine geçici olarak geri
+alındı; test modülü çalışmadı bile — `YazmaYetkisiYokError` import
+edilemedi (`ImportError`). Bu, "bu paket kazayla geçemez"in mümkün olan
+EN GÜÇLÜ biçimi: bir assertion başarısızlığı değil, modülün hiç
+toplanamaması. Sonra `git stash pop` ile düzeltme geri getirildi.
+
+SECURITY.md'ye yeni bölüm **§4.17** (EN+TR) eklendi: bulgu, tasarım
+kararının gerekçesi (hangi tablolar neden dışarıda bırakıldı, iki
+otomatik temizleyicinin neden thread-local bypass gerektirdiği),
+kapsam dışı bırakılan Yönetici-vs-Standart ekseni notu.
+`test_belge_dil_paritesi.py` (27/27) ile doğrulandı.
+
+Tam test suite: 2785 passed, 4 skipped (bu dosyaya eklenen 16 yeni test
+dahil), `ruff check .` temiz.
+
+---
