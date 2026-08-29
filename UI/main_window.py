@@ -44,6 +44,7 @@ from CORE.rehber import MENU_ETIKETI as _REHBER_ETIKETI
 from CORE.rehber import erisim_yolu as _rehber_erisim_yolu
 from CORE.tpm_sealing import durum as tpm_durum
 from CORE.usb_manager import get_usb_hwid
+from UI.AuditLogView import SAYFA_ADI as _AUDIT_SAYFA_ADI
 from UI.GuvenlikView import (
     GUVENLIK_SALT_OKUNURA_ACIK,
     SAYFA_ADI as _GUVENLIK_SAYFA_ADI,
@@ -63,7 +64,6 @@ from UI.main_window_table import TableMixin, _ProcessSignals
 from UI.main_window_theme import ThemeMixin
 from UI.main_window_tree import TreeMixin
 from UI.AdminPanel import AdminPanel
-from UI.AuditLogDialog import AuditLogDialog
 
 
 
@@ -345,7 +345,33 @@ class HycleusWindow(
             QMessageBox.critical(self, "Hata", str(exc))
 
     def _on_open_audit_log(self) -> None:
-        AuditLogDialog(self, T=self._T).exec()
+        """
+        Denetim Günlüğü sayfasına geçer — eskiden (`UI/AuditLogDialog.py`,
+        kaldırıldı) modal bir `.exec()` idi, `UI/GuvenlikView.py` ile AYNI
+        `_govde_yigini` (`QStackedWidget`) deseniyle tam sayfaya taşındı.
+
+        Rol kapısı BURADA YENİ EKLENDİ. Öncesinde YALNIZCA kenar çubuğu
+        düğmesi (`_audit_log_btn`) admin'e göre gizleniyordu
+        (`_apply_role_restrictions`); hamburger menüsündeki "📋 Denetim
+        Günlüğü" (`_on_hamburger_menu`) rol kontrolü YAPMADAN aynı metodu
+        çağırıyordu — yani salt okunur/standart bir rol o ikinci yoldan
+        denetim kaydını görebiliyordu. Modal bir diyalog için düşük
+        önemdeydi; tam sayfaya (kalıcı, kenar çubuğuyla eşdeğer bir görünüm)
+        taşırken aynı boşluğu miras almamak için `_on_open_admin_panel()`
+        ile AYNI kapı deseni eklendi.
+        """
+        if not is_admin_role(self._role):
+            QMessageBox.warning(self, "Erişim Reddedildi", "Bu alana erişim yetkiniz yok.")
+            return
+        if self._active_btn is not None:
+            self._active_btn.setStyleSheet(self._nav_btn_style(active=False))
+            self._active_btn = None
+        self._guvenlik_btn.setStyleSheet(self._nav_btn_style(active=False))
+        self._audit_log_btn.setStyleSheet(self._nav_btn_style(active=True))
+        self._govde_yigini.setCurrentWidget(self._audit_log_view)
+        self._action_bar.setVisible(False)
+        self._page_title.setText(_AUDIT_SAYFA_ADI)
+        self._audit_log_view.yenile()
 
     def _on_open_admin_panel(self) -> None:
         if not is_admin_role(self._role):
@@ -461,6 +487,7 @@ class HycleusWindow(
             self._active_btn.setStyleSheet(self._nav_btn_style(active=False))
             self._active_btn = None
         self._guvenlik_btn.setStyleSheet(self._nav_btn_style(active=True))
+        self._audit_log_btn.setStyleSheet(self._nav_btn_style(active=False))
         self._govde_yigini.setCurrentWidget(self._guvenlik_view)
         self._action_bar.setVisible(False)
         self._page_title.setText(_GUVENLIK_SAYFA_ADI)
@@ -472,8 +499,10 @@ class HycleusWindow(
             self._active_tag_btn = None
         self._current_tag_id = None
 
-        # Güvenlik sayfasından dönüş — yığın ve eylem barı geri alınıyor.
+        # Güvenlik/Denetim Günlüğü sayfasından dönüş — yığın ve eylem barı
+        # geri alınıyor.
         self._guvenlik_btn.setStyleSheet(self._nav_btn_style(active=False))
+        self._audit_log_btn.setStyleSheet(self._nav_btn_style(active=False))
         self._govde_yigini.setCurrentIndex(0)
         self._action_bar.setVisible(True)
 

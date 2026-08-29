@@ -377,7 +377,7 @@ HYCLEUS/
 │   ├── TagDialog.py            # Tag assignment (single + bulk mode)
 │   ├── ProfileDialog.py        # Profile + PIN change
 │   ├── ContactDialog.py        # Support / contact dialog
-│   ├── AuditLogDialog.py       # Audit log viewer + TXT export
+│   ├── AuditLogView.py         # Audit log — full page (was a modal), tabs, HALKA link-status column, TXT export
 │   ├── TimestampDialog.py      # Timestamp verification result (report dialog)
 │   ├── BackupVerifyDialog.py   # Backup verification result (report dialog)
 │   ├── RecoveryShareDialog.py  # One-time recovery-share display — QR + base32
@@ -789,7 +789,7 @@ HYCLEUS/
 │   ├── TagDialog.py            # Etiket atama (tekli + toplu mod)
 │   ├── ProfileDialog.py        # Profil + PIN değiştirme
 │   ├── ContactDialog.py        # Destek / iletişim diyaloğu
-│   ├── AuditLogDialog.py       # Denetim günlüğü görüntüleyici + TXT dışa aktarım
+│   ├── AuditLogView.py         # Denetim günlüğü — tam sayfa (eskiden modal), sekmeler, HALKA sütunu, TXT dışa aktarım
 │   ├── TimestampDialog.py      # Zaman damgası doğrulama sonucu (rapor diyaloğu)
 │   ├── BackupVerifyDialog.py   # Yedek doğrulama sonucu (rapor diyaloğu)
 │   ├── RecoveryShareDialog.py  # Bir kereye mahsus kurtarma parçası gösterimi — QR + base32

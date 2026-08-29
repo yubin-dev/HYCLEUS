@@ -450,6 +450,56 @@ class ChainVerification:
         return "\n".join(satirlar)
 
 
+#: `link_status()` / `link_statuses()` dönüş değerleri — HALKA sütunu (UI).
+LINK_INTACT = "intact"
+LINK_BROKEN = "broken"
+LINK_OUT_OF_SCOPE = "out_of_scope"
+
+
+def link_status(verification: ChainVerification, entry_id: int) -> str:
+    """
+    Tek bir denetim kaydının HALKA durumu — `LINK_INTACT` | `LINK_BROKEN`
+    | `LINK_OUT_OF_SCOPE`.
+
+    YENİ bir hash hesaplaması YAPMIYOR. `verify_audit_chain()` zincirdeki
+    HER kaydı zaten bir kez hesaplayıp karşılaştırıyor ve yalnızca
+    BAŞARISIZ olanları `breaks`'e yazıyor (bkz. o fonksiyonun docstring'i
+    — "hangi kayıttan itibaren" sorusuna kaydettiği yanıt). Burada
+    yapılan tek şey o SONUCUN tek bir satır için OKUNMASI:
+
+      · `entry_id`, zincir başlamadan ÖNCEki bir kayıtsa (`start_id`'den
+        küçük) ya da zincir hiç başlamadıysa → kapsam dışı. "Doğrulandı
+        ve sağlam" ile "hiç doğrulanmadı" FARKLI iddialar; ikisini de
+        "sağlam" göstermek yanlış güven verirdi (bkz.
+        `CORE/hwid_probe.py::compare()`'in aynı "bilinmiyor" ayrımı).
+      · `entry_id`, "modified" ya da "unhashed" türünde bir `ChainBreak`'in
+        `entry_id`'siyse → kırık.
+      · İkisi de değilse → sağlam — çünkü `verify_audit_chain()` o kaydı
+        zaten kontrol ETTİ (checked'e sayıldı) ve bir sorun bulmadı.
+
+    Not: bir "gap" kırılması (silinmiş ara kayıt) doğrudan hiçbir
+    GÖRÜNÜR satırın `entry_id`'sine denk gelmez — silinen id zaten
+    tabloda yok. Ama pratik sonucu yine bu fonksiyonla görünür: gap'ten
+    SONRAKİ ilk mevcut kayıt, `_previous_hash` zincirlemesi bozulduğu
+    için neredeyse her zaman KENDİ `modified` kırılmasını üretir (bkz.
+    `verify_audit_chain()`'in döngüsü — gap tespitinden sonra işleme
+    AYNI satırla devam ediyor). Yani gap'in etkisi burada ayrıca
+    kodlanmadan, doğal sonucu üzerinden zaten yakalanıyor.
+    """
+    start = verification.start_id
+    if start is None or entry_id < start:
+        return LINK_OUT_OF_SCOPE
+    for brk in verification.breaks:
+        if brk.entry_id == entry_id and brk.kind in ("modified", "unhashed"):
+            return LINK_BROKEN
+    return LINK_INTACT
+
+
+def link_statuses(verification: ChainVerification, entry_ids: Sequence[int]) -> dict[int, str]:
+    """`link_status()`'u birden çok kayıt için tek geçişte uygular (UI tablosu)."""
+    return {entry_id: link_status(verification, entry_id) for entry_id in entry_ids}
+
+
 def _format_missing(missing: list[int]) -> str:
     if len(missing) <= 10:
         return ", ".join(str(m) for m in missing)

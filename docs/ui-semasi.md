@@ -58,8 +58,9 @@ HycleusWindow (QMainWindow)                        UI/main_window.py
 │  ├─ "Tümünü Tara" → _on_scan_all                    main_window.py
 │  ├─ "Yeni Etiket" → _on_new_tag (QInputDialog)      main_window_tree.py
 │  └─ "☰" hamburger menü → _on_hamburger_menu         main_window.py
-│      ├─ 📋 Denetim Günlüğü → AuditLogDialog          UI/AuditLogDialog.py
-│      │   (filtre: tarih aralığı + işlem türü, "TXT Dışa Aktar")
+│      ├─ 📋 Denetim Günlüğü → _on_open_audit_log       main_window.py
+│      │   → AuditLogView (içerik alanının 3. sayfası)  UI/AuditLogView.py
+│      │   (2026-08-29: modal'dan tam sayfaya taşındı — bkz. aşağıda)
 │      ├─ 🔌 USB Yönetimi → AdminPanel [yalnızca admin]  UI/AdminPanel.py
 │      ├─ 💬 Destek → ContactDialog                    UI/ContactDialog.py
 │      ├─ 📘 Kullanım Rehberi → _on_open_rehber
@@ -107,11 +108,12 @@ HycleusWindow (QMainWindow)                        UI/main_window.py
 │  │
 │  └─ "YÖNETİCİ" bölümü — yalnızca admin rolüne görünür/etkin
 │      ├─ 🚫 "Kara Listeye Al" → _on_blacklist_usb (QInputDialog + confirm)  main_window.py
-│      ├─ 📋 "Denetim Günlüğü" → AuditLogDialog        [2. giriş noktası — 1.'i hamburger menüsü]
+│      ├─ 📋 "Denetim Günlüğü" → _on_open_audit_log    [2. giriş noktası — 1.'i hamburger menüsü;
+│      │      rol kapısı metodun İÇİNDE — hangi girişten çağrılırsa çağrılsın işler]
 │      ├─ 🔌 "USB Yönetimi" → AdminPanel               [2. giriş noktası — 1.'i hamburger menüsü]
 │      └─ 💬 "Destek" → ContactDialog                  [2. giriş noktası — 1.'i profil/hamburger]
 │
-└─ İÇERİK ALANI (QStackedWidget, 2 sayfa)              main_window_layout.py::_make_govde_yigini
+└─ İÇERİK ALANI (QStackedWidget, 3 sayfa)              main_window_layout.py::_make_govde_yigini
    │
    ├─ Sayfa 0 — Dosya görünümü
    │  ├─ Arama çubuğu → _search_files                   main_window.py
@@ -139,7 +141,28 @@ HycleusWindow (QMainWindow)                        UI/main_window.py
    │  │
    │  └─ Sürükle-bırak alanı (drop_hint) → _handle_dropped_file/_folder
    │
-   └─ Sayfa 1 — Güvenlik (GuvenlikView — yukarıda tam ayrıntı var)
+   ├─ Sayfa 1 — Güvenlik (GuvenlikView — yukarıda tam ayrıntı var)
+   │
+   └─ Sayfa 2 — Denetim Günlüğü (AuditLogView)           UI/AuditLogView.py
+      │  2026-08-29: `UI/AuditLogDialog.py` (modal) buraya taşındı —
+      │  GuvenlikView ile AYNI desen (QStackedWidget sayfası, kendi
+      │  setStyleSheet()'ini çağırmıyor, main_window_theme.py'den cascade).
+      │
+      ├─ Sekmeler (QTabBar) — Tümü / Dosya / Kimlik / Yönetim / Uyarı
+      │   aynı tabloyu action adına göre süzüyor (UI/AuditLogView.py::_kategori)
+      │
+      ├─ Filtre çubuğu — Başlangıç/Bitiş tarihi, İşlem (açılır kutu),
+      │   "Filtrele" / "Sıfırla"
+      │
+      ├─ Tablo — Zaman / İşlem / Kullanıcı / HWID / HALKA
+      │   HALKA: her kaydın KENDİ zincir bağının durumu — Sağlam / Kopuk /
+      │   Kapsam Dışı. `CORE/audit_chain.py::link_statuses()`'a dayanıyor,
+      │   YENİ bir hash hesaplaması yapmıyor (`verify_audit_chain()`'in
+      │   sonucunu satır bazında okuyor).
+      │
+      └─ "TXT Dışa Aktar" — CORE/audit_report.py::txt_basligi()/zincir_raporu()
+          [aynı gövdenin 2. giriş noktası — 1.'i "Denetim Zincirini Doğrula",
+           Güvenlik sekmesinde]
 ```
 
 ### Kilit örtüsü (ayrı pencere değil, aynı pencerenin üstüne bindirilen katman)
@@ -242,6 +265,6 @@ menüden erişilebilir olsa da uygulaması tek yerde durur.
 | Damga doğrulama | Dosya sağ tık menüsü | Güvenlik sekmesi | `main_window_files.py::_on_ctx_verify_timestamp` |
 | Yedek doğrulama | Hamburger menüsü | Güvenlik sekmesi | `main_window_open.py::BackupMixin._on_verify_backup` |
 | Zincir doğrulama | AdminPanel | Güvenlik sekmesi | `UI/security_actions.py::zinciri_dogrula` |
-| Denetim Günlüğü | Hamburger menüsü | Sidebar → Yönetici | aynı `AuditLogDialog` |
+| Denetim Günlüğü | Hamburger menüsü | Sidebar → Yönetici | aynı `_on_open_audit_log` → `AuditLogView` |
 | USB Yönetimi | Hamburger menüsü | Sidebar → Yönetici | aynı `AdminPanel` |
 | Destek | Hamburger menüsü | Sidebar → Yönetici / Profil | aynı `ContactDialog` |

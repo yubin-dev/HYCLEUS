@@ -22,6 +22,9 @@ from CORE.audit_chain import (
     FIELD_ORDER,
     GENESIS_ACTION,
     GENESIS_HASH,
+    LINK_BROKEN,
+    LINK_INTACT,
+    LINK_OUT_OF_SCOPE,
     SERIALIZATION_VERSION,
     ChainVerification,
     anchor_path,
@@ -30,6 +33,8 @@ from CORE.audit_chain import (
     chain_start_id,
     compute_entry_hash,
     ensure_chain_started,
+    link_status,
+    link_statuses,
     maybe_write_daily_anchor,
     read_anchors,
     verify_against_anchor,
@@ -845,3 +850,121 @@ def test_verification_result_is_falsy_when_broken(db):
     assert isinstance(sonuc, ChainVerification)
     assert not sonuc
     assert "KIRIK" in sonuc.summary()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 9. link_status / link_statuses — HALKA sütunu (UI/AuditLogView.py)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Bu bölüm YENİ bir hash hesaplaması SINAMIYOR — `link_status()` hiçbiri
+# hesaplamıyor, yalnızca `verify_audit_chain()`'in ZATEN ürettiği
+# `ChainVerification`'ı satır bazında okuyor. Sınanan şey bu OKUMANIN
+# doğruluğu: yukarıdaki bölümlerin tamamının kanıtladığı zincir davranışı
+# (modified kırılmadan SONRAKİ kayıtların etkilenmemesi, gap'in bir
+# SONRAKİ kaydın modified'ına dönüşmesi) burada satır-durumuna doğru
+# yansıyor mu.
+
+
+def test_saglam_zincirde_TUM_kayitlar_intact(db):
+    ids = _log_many(db, 5)
+    sonuc = verify_audit_chain(db.conn)
+    durumlar = link_statuses(sonuc, ids)
+    assert set(durumlar.values()) == {LINK_INTACT}
+
+
+def test_degistirilen_kayit_BROKEN_ondan_SONRAKILER_INTACT(db):
+    """
+    `test_modifying_a_record_does_not_cascade_to_later_records`'ın satır
+    durumuna yansıması: yalnızca değiştirilen kayıt kırık, ne öncekiler
+    ne SONRAKİLER — zincir kırılmadan sonra saklanan hash'ten devam
+    ediyor (bkz. `verify_audit_chain()` docstring'i).
+    """
+    ids = _log_many(db, 8)
+    kurban = ids[3]
+    db.conn.execute("UPDATE audit_log SET detail = 'degisti' WHERE id = ?", (kurban,))
+    db.conn.commit()
+
+    sonuc = verify_audit_chain(db.conn)
+    durumlar = link_statuses(sonuc, ids)
+
+    assert durumlar[kurban] == LINK_BROKEN
+    for entry_id in ids:
+        if entry_id != kurban:
+            assert durumlar[entry_id] == LINK_INTACT, (
+                f"id={entry_id} kırık gösterildi ama kendi hash'i doğru"
+            )
+
+
+def test_gap_SONRAKI_kayit_BROKEN_gosteriliyor(db):
+    """`test_deleted_middle_record_is_caught_as_gap_and_break`'in HALKA
+    karşılığı: silinen kaydın kendisi görünür bile değil, ama boşluktan
+    sonraki ilk kayıt kırık işaretlenmeli."""
+    ids = _log_many(db, 8)
+    silinen = ids[4]
+    sonraki = ids[5]
+    db.conn.execute("DELETE FROM audit_log WHERE id = ?", (silinen,))
+    db.conn.commit()
+
+    sonuc = verify_audit_chain(db.conn)
+    kalanlar = [i for i in ids if i != silinen]
+    durumlar = link_statuses(sonuc, kalanlar)
+
+    assert durumlar[sonraki] == LINK_BROKEN
+    assert durumlar[ids[3]] == LINK_INTACT, "boşluktan ÖNCEki kayıt etkilenmemeli"
+
+
+def test_zincir_baslangicindan_ONCEKI_kayitlar_OUT_OF_SCOPE(legacy_db):
+    """Zincir başlamadan önce yazılmış (göç öncesi) kayıtlar ne sağlam ne
+    kırık — hiç DOĞRULANMADI. `LINK_INTACT` demek yanlış güven verirdi."""
+    eski_id = legacy_db.fetchone("SELECT MIN(id) AS id FROM audit_log")["id"]
+    start = ensure_chain_started(legacy_db.conn)
+    assert eski_id < start, "test verisi zincir öncesi bir kayıt varsaymıyor"
+
+    sonuc = verify_audit_chain(legacy_db.conn)
+    assert link_status(sonuc, eski_id) == LINK_OUT_OF_SCOPE
+
+
+def test_zincir_HIC_baslamamissa_HER_SEY_OUT_OF_SCOPE(db):
+    """`start_id is None` (no_chain) durumunda tek bilinen şey "hiç
+    doğrulanmadı" — kırık DEĞİL, kapsam dışı."""
+    ids = _log_many(db, 3)
+    # audit_log_start_id ayarını ve genesis kaydını KALDIR — zincir hiç
+    # başlamamış gibi davran.
+    db.conn.execute("DELETE FROM settings WHERE key = ?", (CHAIN_START_SETTING,))
+    db.conn.execute("DELETE FROM audit_log WHERE action = ?", (GENESIS_ACTION,))
+    db.conn.commit()
+
+    sonuc = verify_audit_chain(db.conn)
+    assert sonuc.start_id is None
+    for entry_id in ids:
+        assert link_status(sonuc, entry_id) == LINK_OUT_OF_SCOPE
+
+
+def test_link_statuses_bos_id_listesiyle_bos_donuyor(db):
+    sonuc = verify_audit_chain(db.conn)
+    assert link_statuses(sonuc, []) == {}
+
+
+def test_link_status_YENI_hash_hesaplamiyor_SADECE_breaks_i_okuyor(db, monkeypatch):
+    """
+    Yapısal kanıt: `link_status()` `compute_entry_hash()`'i HİÇ
+    çağırmamalı — kendi hash'ini üretmiyor, `verify_audit_chain()`'in
+    zaten ürettiği sonucu okuyor. Çağırsaydı iki ayrı yerde aynı mantığın
+    tekrarlanması (ve zamanla ayrışması) riski doğardı.
+    """
+    import CORE.audit_chain as modul
+
+    cagrildi = False
+    gercek = modul.compute_entry_hash
+
+    def _casus(*a, **k):
+        nonlocal cagrildi
+        cagrildi = True
+        return gercek(*a, **k)
+
+    ids = _log_many(db, 4)
+    sonuc = verify_audit_chain(db.conn)  # hash hesaplaması BURADA biter
+
+    monkeypatch.setattr(modul, "compute_entry_hash", _casus)
+    link_statuses(sonuc, ids)
+    assert not cagrildi, "link_statuses() kendi hash hesaplamasını yapıyor"

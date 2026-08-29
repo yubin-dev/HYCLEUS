@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
 
 
 
+from UI.AuditLogView import SAYFA_ADI as _AUDIT_SAYFA_ADI
 from UI.GuvenlikView import SAYFA_ADI as _GUVENLIK_SAYFA_ADI
 from UI.main_window_palette import (
     _SIDEBAR_NAV,
@@ -378,7 +379,7 @@ class LayoutMixin:
         self._blacklist_btn.clicked.connect(self._on_blacklist_usb)
         lay.addWidget(self._blacklist_btn)
 
-        self._audit_log_btn = QPushButton("  📋  Denetim Günlüğü")
+        self._audit_log_btn = QPushButton(f"  📋  {_AUDIT_SAYFA_ADI}")
         self._audit_log_btn.setObjectName("admin_btn")
         self._audit_log_btn.setFixedHeight(40)
         self._audit_log_btn.setCursor(Qt.PointingHandCursor)
@@ -414,19 +415,26 @@ class LayoutMixin:
 
     def _make_govde_yigini(self) -> QWidget:
         """
-        İçerik alanı artık İKİ SAYFALI: dosya görünümü + Güvenlik.
+        İçerik alanı artık ÜÇ SAYFALI: dosya görünümü + Güvenlik + Denetim
+        Günlüğü.
 
         `QStackedWidget` seçildi, ikinci bir pencere değil: tablo, arama
-        çubuğu ve seçim durumu YERİNDE kalıyor. Güvenlik sayfasından dosya
-        görünümüne dönen kullanıcı, bıraktığı yeri buluyor — ayrı bir
-        pencere olsaydı ya durum kopyalanır ya kaybolurdu.
+        çubuğu ve seçim durumu YERİNDE kalıyor. Güvenlik ya da Denetim
+        Günlüğü'nden dosya görünümüne dönen kullanıcı, bıraktığı yeri
+        buluyor — ayrı bir pencere olsaydı ya durum kopyalanır ya
+        kaybolurdu. Denetim Günlüğü ESKİDEN (`UI/AuditLogDialog.py`,
+        kaldırıldı) modal bir `QDialog`'du — aynı gerekçeyle buraya
+        taşındı.
         """
+        from UI.AuditLogView import AuditLogView
         from UI.GuvenlikView import GuvenlikView
 
         self._govde_yigini = QStackedWidget()
         self._govde_yigini.addWidget(self._make_content())      # 0 — dosyalar
         self._guvenlik_view = GuvenlikView(self)
         self._govde_yigini.addWidget(self._guvenlik_view)       # 1 — güvenlik
+        self._audit_log_view = AuditLogView(self)
+        self._govde_yigini.addWidget(self._audit_log_view)      # 2 — denetim günlüğü
         return self._govde_yigini
 
     def _make_content(self) -> QWidget:

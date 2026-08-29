@@ -269,24 +269,48 @@ def test_txt_disa_aktarimi_zincir_basligini_kullaniyor():
     kaldı: fonksiyonun İÇİNDEKİ `from CORE.audit_report import ...` satırı
     adı taşımaya devam ediyordu. Aynı yanlış pozitif sınıfı bu turda
     üçüncü kez çıktı (B-011 docstring'i, B-004 docstring'i, burada import).
+
+    2026-08-29: `UI/AuditLogDialog.py` (modal) `UI/AuditLogView.py` (tam
+    sayfa) oldu ve `zincir_raporu()` çağrısı `_export_txt()`'in İÇİNDEN
+    `_load()`'a taşındı — `_export_txt()` artık `self._load()`'u çağırıp
+    onun az önce hesapladığı `self._son_rapor`'u KULLANIYOR, ikinci bir
+    `zincir_raporu()` çağrısı YAPMIYOR (B-073'ün "iki kaynak aynı ana ait
+    olmalı" dersinin daha sıkı hâli — tek hesaplama, iki kullanım). Bu
+    yüzden denetim iki ADIMA ayrıldı: `_export_txt()` gerçekten `_load()`'u
+    çağırıyor mu, `_load()` gerçekten `zincir_raporu()`'yu çağırıyor mu.
     """
     import ast
     from pathlib import Path as _P
 
     src = (
-        _P(__file__).resolve().parent.parent / "UI" / "AuditLogDialog.py"
+        _P(__file__).resolve().parent.parent / "UI" / "AuditLogView.py"
     ).read_text(encoding="utf-8")
-    hedef = next(
-        n for n in ast.walk(ast.parse(src))
+    agac = ast.parse(src)
+
+    def _cagrilar(fn: ast.FunctionDef) -> set[str]:
+        return {
+            (d.func.attr if isinstance(d.func, ast.Attribute) else
+             d.func.id if isinstance(d.func, ast.Name) else "")
+            for d in ast.walk(fn) if isinstance(d, ast.Call)
+        }
+
+    export_fn = next(
+        n for n in ast.walk(agac)
         if isinstance(n, ast.FunctionDef) and n.name == "_export_txt"
     )
-    cagrilar = {
-        d.func.id
-        for d in ast.walk(hedef)
-        if isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
-    }
-    assert "txt_basligi" in cagrilar, "dışa aktarım zincir başlığını ÇAĞIRMIYOR"
-    assert "zincir_raporu" in cagrilar, "dışa aktarım zinciri doğrulamıyor"
+    load_fn = next(
+        n for n in ast.walk(agac)
+        if isinstance(n, ast.FunctionDef) and n.name == "_load"
+    )
+
+    export_cagrilari = _cagrilar(export_fn)
+    assert "txt_basligi" in export_cagrilari, "dışa aktarım zincir başlığını ÇAĞIRMIYOR"
+    assert "_load" in export_cagrilari, (
+        "dışa aktarım tabloyu/zinciri TAZELEMİYOR — B-073'ün bayat veri riski geri geldi"
+    )
+    assert "zincir_raporu" in _cagrilar(load_fn), (
+        "_load() zinciri doğrulamıyor — HALKA sütunu ve TXT başlığı artık bu sonuca dayanıyor"
+    )
 
 
 def test_kullanici_bilgisi_yan_etki_uretmiyor(db):

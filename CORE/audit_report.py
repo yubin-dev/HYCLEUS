@@ -51,8 +51,9 @@ from CORE.audit_chain import (
     verify_audit_chain,
 )
 
-#: TXT başlığındaki ayraç genişliği — `AuditLogDialog` sütun genişlikleriyle
-#: aynı toplamı veriyor.
+#: TXT başlığındaki ayraç genişliği — `UI/AuditLogView.py` (eskiden
+#: `AuditLogDialog`, tam sayfaya taşındı) sütun genişlikleriyle aynı
+#: toplamı hedefliyor.
 _AYRAC = "-" * 95
 
 

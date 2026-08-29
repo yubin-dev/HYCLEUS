@@ -571,14 +571,19 @@ def test_sayfa_adi_tek_kaynaktan() -> None:
     assert SAYFA_ADI == "Güvenlik"
 
 
-def test_yigin_iki_sayfali() -> None:
+def test_yigin_UC_sayfali() -> None:
     """
     `QStackedWidget` — ayrı pencere DEĞİL. Tablo ve arama durumu yerinde
     kalıyor; ayrı pencere olsaydı durum ya kopyalanır ya kaybolurdu.
+
+    2026-08-29: üçüncü sayfa (`UI/AuditLogView.py`, eskiden
+    `AuditLogDialog` — modal'dan tam sayfaya taşındı) eklendi; bu test
+    ikiden üçe güncellendi (bkz. `tests/test_audit_log_view.py` için
+    AuditLogView'a ÖZGÜ testler).
     """
     layout = _kaynak("UI/main_window_layout.py")
     cagrilar = _cagri_adlari(layout, "_make_govde_yigini")
-    assert {"QStackedWidget", "GuvenlikView"} <= cagrilar
+    assert {"QStackedWidget", "GuvenlikView", "AuditLogView"} <= cagrilar
 
     # Sayfaların GERÇEKTEN eklendiği ölçülüyor. Mutasyonla görüldü:
     # `GuvenlikView` kurulup yığına EKLENMEZSE yukarıdaki çağrı denetimi
@@ -593,8 +598,8 @@ def test_yigin_iki_sayfali() -> None:
         and isinstance(d.func.value, ast.Attribute)
         and d.func.value.attr == "_govde_yigini"
     ]
-    assert len(eklemeler) == 2, (
-        f"yığına {len(eklemeler)} sayfa ekleniyor, 2 bekleniyordu"
+    assert len(eklemeler) == 3, (
+        f"yığına {len(eklemeler)} sayfa ekleniyor, 3 bekleniyordu"
     )
 
 

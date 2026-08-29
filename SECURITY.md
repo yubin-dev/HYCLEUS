@@ -2071,6 +2071,94 @@ runnable comparison tool for the day physical multi-OS access exists.
 
 ---
 
+### 4.20 Audit log moved from a modal to a full page, and a per-row chain-integrity column (a role gate gap found and closed along the way)
+
+> **Attacker models:** none for the page move or the HALKA column
+> themselves — this is an observability improvement, surfacing a result
+> `verify_audit_chain()` already computed, not a new security boundary.
+> One incidental finding below *is* an access-control gap.
+
+**What moved.** `UI/AuditLogDialog.py` (a modal `QDialog`) is gone;
+`UI/AuditLogView.py` is a full page in `_govde_yigini`
+(`QStackedWidget`), the same pattern §4.17/§4.18's neighbor,
+`UI/GuvenlikView.py`, already established: state (filters, selected tab)
+persists across navigation instead of being thrown away on close, and the
+page cascades its styling from `main_window_theme.py::_apply_theme()`
+rather than owning a private stylesheet. Five tabs (Tümü/Dosya/Kimlik/
+Yönetim/Uyarı) filter the same table by action category — implemented
+with a bare `QTabBar` (not `QTabWidget`) precisely so five near-identical
+tables didn't have to be built and kept in sync; `UI/AdminPanel.py`'s
+`QTabWidget` is the right tool for its own case (genuinely different
+content per tab) and the wrong one here.
+
+**The new HALKA column: decided against a second hash walk.** The task
+was explicit about the question to answer first: does this depend on
+`verify_audit_chain()`'s existing row-level output, or does it need new
+computation? It depends. `CORE/audit_chain.py::verify_audit_chain()`
+already hashes every chained row once and records only the failures in
+`ChainVerification.breaks`; a second, independent hash walk in the UI
+layer to answer "is *this* row's own link intact" would have been the
+sixth instance of this repo's most repeated defect — two implementations
+of one fact, silently drifting apart (B-003/B-004/B-007/B-008/B-010/
+B-011). Instead, `link_status()`/`link_statuses()` were added to
+`CORE/audit_chain.py` as a pure *reading* of the existing result: a row
+is out-of-scope if its id precedes `start_id` (or the chain never
+started — "never verified" is a different claim from "verified and
+intact," the same distinction `CORE/hwid_probe.py::compare()`'s "unknown"
+result already draws for a different reason), broken if it's the
+`entry_id` of a `modified`/`unhashed` break, intact otherwise. No new
+`compute_entry_hash()` call anywhere in the new code — checked directly:
+`tests/test_audit_chain.py::test_link_status_YENI_hash_hesaplamiyor_
+SADECE_breaks_i_okuyor` spies on `compute_entry_hash` and asserts it is
+never invoked by `link_statuses()`. `AuditLogView._load()` calls
+`CORE.audit_report.zincir_raporu()` once per refresh and feeds the same
+`ChainVerification` to both the HALKA column and the TXT export header —
+one verification, two consumers, continuing (and tightening) the fix
+§B-073 already made for the export path alone: `_export_txt()` no longer
+calls `zincir_raporu()` a second time itself, it reuses `self._son_rapor`
+from the `_load()` it triggers immediately before exporting, removing
+even the small window for the two numbers to disagree that remained
+before.
+
+**Verified adversarially, the way the task asked.** A record was
+tampered with directly via `UPDATE audit_log SET detail = … WHERE id = ?`
+— bypassing `append_entry()`, i.e. exactly what an attacker with disk
+write access would do — and two independent readings were compared:
+the HALKA cell the user would actually see, and a direct call to
+`verify_audit_chain()` on the same connection.
+`tests/test_audit_log_view.py::test_BILEREK_kirilmis_halka_KOPUK_
+gosterilir_ve_verify_ile_TUTARLI` asserts they agree — the tampered
+row's `entry_id` is both `verify_audit_chain()`'s `first_broken_id` and
+the id whose HALKA cell reads "Kopuk" — and that neighboring, untouched
+rows stay "Sağlam" (no false positives). A second, live mutation
+(temporarily inverting the intact/broken text mapping) confirmed the
+test actually fails when the column is wrong, not just when data is
+missing: `tests/test_audit_chain.py`'s own mutation on `link_status()`
+itself (hardcoding it to always return "intact") was caught the same
+way, by five tests, at the `CORE` layer where the read actually happens.
+
+**The incidental finding: a role-gate gap in the entry point being
+moved.** `_on_open_audit_log()` had no admin check of its own — reachability
+depended entirely on the sidebar button being hidden
+(`_apply_role_restrictions`) for non-admin roles. The hamburger menu's
+"📋 Denetim Günlüğü" item (`_on_hamburger_menu`) called the exact same
+method with no role check anywhere in that path, meaning a non-admin
+role could already reach the audit log through the second entry point
+before this turn — a real, if narrow, gap that predates this change
+(low severity: the audit log is a read surface, not a write one, and the
+gap required knowing to open the hamburger menu rather than being
+visibly offered). Migrating this method to something that stays mounted
+as a persistent page — rather than a modal instantiated fresh each
+`.exec()` — was reason enough not to carry that gap forward silently:
+`_on_open_audit_log()` now checks `is_admin_role(self._role)` itself,
+the same pattern `_on_open_admin_panel()` already uses, so it closes for
+both entry points regardless of which one is called.
+`tests/test_audit_log_view.py::test_yonetici_OLMAYAN_ENGELLENIYOR`
+constructs a real `HycleusWindow` with a non-admin role and asserts the
+page never becomes current.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -4462,6 +4550,93 @@ aygıtlar asıl kalan boşluk — ve bu bugünden önce de doğruydu). Bu madde
 yeni bir BACKLOG kalemi eklemiyor — mevcut olanın hâlâ doğru kapsamda
 olduğunu yeniden doğruluyor ve fiziksel çoklu-OS erişimi olduğu gün için
 çalıştırılabilir bir karşılaştırma aracı veriyor.
+
+### 4.20 Denetim günlüğü modal'dan tam sayfaya taşındı; satır bazlı zincir bütünlüğü sütunu (yol boyunca bulunup kapatılan bir rol kapısı boşluğu)
+
+> **Saldırgan modelleri:** ne sayfa taşınması ne HALKA sütunu için yok —
+> bu bir gözlenebilirlik iyileştirmesi, `verify_audit_chain()`'in zaten
+> hesapladığı bir sonucu görünür kılıyor, yeni bir güvenlik sınırı değil.
+> Aşağıdaki tesadüfi bulgulardan biri GERÇEKTEN bir erişim kontrolü
+> boşluğu.
+
+**Ne taşındı.** `UI/AuditLogDialog.py` (modal bir `QDialog`) kalktı;
+`UI/AuditLogView.py` `_govde_yigini`'nde (`QStackedWidget`) tam bir sayfa
+— §4.17/§4.18'in komşusu `UI/GuvenlikView.py`'nin zaten kurduğu AYNI
+desen: durum (filtreler, seçili sekme) gezinme boyunca KORUNUYOR,
+kapatıldığında atılmıyor, sayfa kendi özel stil sayfasını taşımak yerine
+`main_window_theme.py::_apply_theme()`'den cascade ediyor. Beş sekme
+(Tümü/Dosya/Kimlik/Yönetim/Uyarı) aynı tabloyu action kategorisine göre
+süzüyor — `QTabWidget` DEĞİL çıplak bir `QTabBar` ile: tam olarak beş
+neredeyse özdeş tablo kurup senkron tutmamak için. `UI/AdminPanel.py`'nin
+`QTabWidget`'ı kendi durumunda (sekme başına GERÇEKTEN farklı içerik)
+doğru araç; burada yanlış olurdu.
+
+**Yeni HALKA sütunu: ikinci bir hash yürüyüşüne KARŞI karar verildi.**
+Görev, önce yanıtlanacak soruyu açıkça soruyordu: bu,
+`verify_audit_chain()`'in mevcut satır bazlı çıktısına mı dayanacak,
+yoksa yeni bir hesaplama mı gerekecek? Dayanıyor. `CORE/audit_chain.py::
+verify_audit_chain()` zaten zincirli her satırı bir kez hash'liyor ve
+yalnızca başarısızlıkları `ChainVerification.breaks`'e yazıyor; UI
+katmanında "bu satırın KENDİ bağı sağlam mı" sorusuna yanıt vermek için
+ikinci, bağımsız bir hash yürüyüşü, bu deponun en çok tekrarlanan
+kusurunun altıncı örneği olurdu — bir olgunun iki uygulaması, sessizce
+birbirinden sapan (B-003/B-004/B-007/B-008/B-010/B-011). Bunun yerine
+`CORE/audit_chain.py`'ye `link_status()`/`link_statuses()` eklendi —
+mevcut sonucun saf bir OKUNMASI: bir satır `start_id`'den önceyse (ya da
+zincir hiç başlamadıysa — "hiç doğrulanmadı" ile "doğrulandı ve sağlam"
+FARKLI iddialar, `CORE/hwid_probe.py::compare()`'in farklı bir gerekçeyle
+zaten çizdiği "bilinmiyor" ayrımının aynısı) kapsam dışı; `modified`/
+`unhashed` türünde bir kırılmanın `entry_id`'siyse kırık; aksi hâlde
+sağlam. Yeni kodda hiçbir yerde YENİ bir `compute_entry_hash()` çağrısı
+yok — doğrudan denetlendi: `tests/test_audit_chain.py::
+test_link_status_YENI_hash_hesaplamiyor_SADECE_breaks_i_okuyor`
+`compute_entry_hash`'e casus yerleştirip `link_statuses()`'un onu HİÇ
+çağırmadığını doğruluyor. `AuditLogView._load()` her yenilemede `CORE.
+audit_report.zincir_raporu()`'yu BİR KEZ çağırıp aynı `ChainVerification`'ı
+hem HALKA sütununa hem TXT dışa aktarım başlığına besliyor — tek
+doğrulama, iki tüketici; B-073'ün yalnızca dışa aktarım yolu için yaptığı
+düzeltmeyi sürdürüyor (ve sıkılaştırıyor): `_export_txt()` artık
+`zincir_raporu()`'yu KENDİSİ ikinci kez çağırmıyor, dışa aktarımdan hemen
+önce tetiklediği `_load()`'un ürettiği `self._son_rapor`'u yeniden
+kullanıyor — daha önce kalan küçük "iki sayı anlaşmazlığı" penceresi bile
+kapandı.
+
+**Görevin istediği gibi çekişmeli doğrulandı.** Bir kayıt doğrudan
+`UPDATE audit_log SET detail = … WHERE id = ?` ile bozuldu —
+`append_entry()`'i atlayarak, yani diske yazma erişimi olan bir
+saldırganın yapacağının aynısı — ve iki BAĞIMSIZ okuma karşılaştırıldı:
+kullanıcının GERÇEKTEN göreceği HALKA hücresi ve aynı bağlantıda
+doğrudan `verify_audit_chain()` çağrısı.
+`tests/test_audit_log_view.py::test_BILEREK_kirilmis_halka_KOPUK_
+gosterilir_ve_verify_ile_TUTARLI` ikisinin ANLAŞTIĞINI doğruluyor —
+bozulan satırın `entry_id`'si hem `verify_audit_chain()`'in
+`first_broken_id`'i hem HALKA hücresinde "Kopuk" yazan id — ve komşu,
+dokunulmamış satırların "Sağlam" kaldığını (yanlış pozitif yok). İkinci,
+canlı bir mutasyon (sağlam/kırık metin eşlemesini geçici olarak ters
+çevirerek) sütun yanlış olduğunda testin GERÇEKTEN kırıldığını doğruladı,
+yalnızca veri eksikken değil: `tests/test_audit_chain.py`'nin kendi
+mutasyonu (`link_status()`'u her zaman "sağlam" dönecek şekilde
+sabitleyerek) okumanın GERÇEKTEN yapıldığı `CORE` katmanında beş test
+tarafından aynı şekilde yakalandı.
+
+**Tesadüfi bulgu: taşınan giriş noktasında bir rol-kapısı boşluğu.**
+`_on_open_audit_log()`'un kendi admin kontrolü YOKTU — erişilebilirlik
+tamamen kenar çubuğu düğmesinin admin olmayan roller için
+gizlenmesine (`_apply_role_restrictions`) dayanıyordu. Hamburger
+menüsündeki "📋 Denetim Günlüğü" (`_on_hamburger_menu`) AYNI metodu o
+yolda HİÇBİR rol kontrolü olmadan çağırıyordu — yani admin olmayan bir
+rol bu turdan ÖNCE de ikinci giriş noktasından denetim günlüğüne
+ulaşabiliyordu; gerçek ama dar bir boşluk (düşük önem: denetim günlüğü
+bir OKUMA yüzeyi, yazma değil, ve boşluk görünür sunulan bir yol değil,
+hamburger menüsünü açmayı bilmeyi gerektiriyordu). Bu metodu — her
+`.exec()`'te yeniden kurulan bir modal yerine — KALICI monte edilmiş bir
+sayfaya taşımak, bu boşluğu sessizce taşımamak için yeterli gerekçeydi:
+`_on_open_audit_log()` artık `is_admin_role(self._role)`'u KENDİSİ
+kontrol ediyor, `_on_open_admin_panel()`'in zaten kullandığı aynı desen —
+yani hangi giriş noktasından çağrılırsa çağrılsın kapı kapanıyor.
+`tests/test_audit_log_view.py::test_yonetici_OLMAYAN_ENGELLENIYOR` gerçek
+bir `HycleusWindow`'u admin olmayan bir rolle kurup sayfanın asla aktif
+hâle gelmediğini doğruluyor.
 
 ## 5. Kriptografik ayrıntılar
 

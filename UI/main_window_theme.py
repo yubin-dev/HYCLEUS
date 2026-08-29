@@ -104,6 +104,12 @@ class ThemeMixin:
         # `_apply_theme()`'in kaskadı ona ulaşmıyor, elle tazelenmesi gerekiyor.
         if getattr(self, "_slide_over", None) is not None:
             self._slide_over.stil_uygula(self._T)
+        # Denetim Günlüğü sayfası HALKA/Uyarı sütunlarını `self._T`'den
+        # QColor ile elle boyuyor (QSS cascade'i yakalayamaz — bkz.
+        # `UI/AuditLogView.py::_insert_row`); satırlar zaten kurulduysa
+        # yeniden yüklenip yeni tema renkleriyle tekrar boyanmalı.
+        if getattr(self, "_audit_log_view", None) is not None:
+            self._audit_log_view._load()
         if self._current_tag_id is not None:
             self._load_tag_files(self._current_tag_id)
         else:
@@ -431,6 +437,79 @@ class ThemeMixin:
                 font-size: 12px;
             }}
             QWidget#guvenlik_view QPushButton:hover {{ background: {T['row_hover']}; }}
+
+            /* Denetim Günlüğü sayfası (UI/AuditLogView.py) — Güvenlik
+               sekmesiyle AYNI desen: kendi setStyleSheet()'ini çağırmıyor,
+               tablo/başlık QTableWidget/QHeaderView kuralları YUKARIDAN
+               (bu QSS'in üst kısmı) zaten cascade ediyor. Burada yalnızca
+               bu sayfaya özgü olan: sekme şeridi, filtre alanları. */
+            QWidget#audit_view {{ background: {T['bg']}; }}
+            QWidget#audit_view QLabel {{ color: {T['text']}; }}
+            QLabel#audit_baslik {{ font-size: 15px; font-weight: bold; }}
+            QLabel#audit_aciklama {{ color: {T['subtext']}; font-size: 12px; }}
+            QLabel#audit_sayac {{ color: {T['subtext']}; font-size: 11px; }}
+            QTabBar#audit_sekmeler::tab {{
+                background: {T['hover']};
+                color: {T['subtext']};
+                padding: 6px 18px;
+                margin-right: 4px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                font-size: 12px;
+            }}
+            QTabBar#audit_sekmeler::tab:selected {{
+                background: {T['accent_tint']};
+                color: {T['accent']};
+                font-weight: 600;
+            }}
+            QTabBar#audit_sekmeler::tab:hover {{ background: {T['row_hover']}; }}
+            QWidget#audit_view QComboBox {{
+                background: {T['search_bg']};
+                color: {T['text']};
+                border: 1px solid {T['border']};
+                border-radius: 4px;
+                padding: 4px 8px;
+                min-width: 150px;
+                font-size: 12px;
+            }}
+            QWidget#audit_view QComboBox QAbstractItemView {{
+                background: {T['search_bg']};
+                color: {T['text']};
+                selection-background-color: {T['row_hover']};
+                border: 1px solid {T['border']};
+            }}
+            QWidget#audit_view QComboBox::drop-down {{ border: none; width: 20px; }}
+            QWidget#audit_view QDateEdit {{
+                background: {T['search_bg']};
+                color: {T['text']};
+                border: 1px solid {T['border']};
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 12px;
+            }}
+            QWidget#audit_view QDateEdit::drop-down {{ border: none; width: 20px; }}
+            QWidget#audit_view QCalendarWidget {{ background: {T['search_bg']}; color: {T['text']}; }}
+            QPushButton#audit_btn_filtrele, QPushButton#audit_btn_sifirla {{
+                color: {T['text']};
+                background: {T['hover']};
+                border: none;
+                border-radius: 6px;
+                padding: 5px 14px;
+                font-size: 12px;
+            }}
+            QPushButton#audit_btn_filtrele:hover, QPushButton#audit_btn_sifirla:hover {{
+                background: {T['row_hover']};
+            }}
+            QPushButton#audit_btn_disa_aktar {{
+                color: {T['on_accent']};
+                background: {T['accent']};
+                border: none;
+                border-radius: 6px;
+                padding: 5px 14px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton#audit_btn_disa_aktar:hover {{ background: {T['accent_hover']}; }}
         """
 
         self.centralWidget().setStyleSheet(qss)

@@ -5774,3 +5774,134 @@ test + `test_layering.py`'nin YENİ dosyaları otomatik kapsayan
 parametrizasyonlarından +2). Ruff/mypy/bandit temiz.
 
 ---
+
+## B-079 — Denetim Günlüğü modal'dan tam sayfaya taşındı; satır bazlı HALKA (zincir bütünlüğü) sütunu eklendi
+
+**Durum:** Kapalı
+**Öncelik:** —
+**Bulundu ve kapatıldı:** 2026-08-29 — aynı turda
+
+### Görev
+
+İki parça: (1) Denetim Günlüğü'nü modal pencereden (`UI/AuditLogDialog.py`)
+tam sayfa görünüme taşı, mockup'taki Tümü/Dosya/Kimlik/Yönetim/Uyarı
+sekmeleriyle; (2) her satırın zincir bütünlüğü durumunu (sağlam/kopuk)
+gösteren yeni bir HALKA sütunu ekle — önce `verify_audit_chain()`'in
+mevcut satır bazlı çıktısına mı dayanacağına yoksa yeni bir hesaplama mı
+gerektireceğine KARAR VER.
+
+### 1. madde — `UI/AuditLogDialog.py` → `UI/AuditLogView.py`
+
+`UI/GuvenlikView.py`'nin (§4.17/§4.18'in komşusu) AYNI deseni:
+`_govde_yigini` (`QStackedWidget`) içinde 3. sayfa, durum (filtreler,
+seçili sekme) gezinme boyunca korunuyor, sayfa kendi `setStyleSheet()`'ini
+çağırmıyor — stil `UI/main_window_theme.py::_apply_theme()`'in merkezi
+QSS'inden `#audit_view` nesne adıyla cascade ediyor. Beş sekme çıplak bir
+`QTabBar` ile (`QTabWidget` DEĞİL — beşi de AYNI tabloyu filtreliyor,
+beş kopya tablo kurmak gereksiz olurdu; `AdminPanel.py`'nin `QTabWidget`'ı
+kendi durumunda — sekme başına GERÇEKTEN farklı içerik — doğru araç).
+
+Kategori süzgeci (`_kategori()`) kod tabanındaki TÜM `.log(...)` çağrıları
+taranarak çıkarılan action envanterine dayanıyor; bilinmeyen bir action
+YANLIŞ kategoriye düşmüyor, yalnızca Tümü'nde görünüyor. Kendi `EYLEM_*`
+sabiti olan action'lar (hclx/pin_rotation/tpm_sealing/trusted_roots/
+secret_store/audit_chain) LİTERAL yazılmadı, İTHAL EDİLDİ —
+`tests/test_hclx.py::test_denetim_eylemleri_yalnizca_hclx_modulunden`'in
+tam olarak bunu aradığı ilk çalıştırmada ortaya çıktı (aynı dizeyi ikinci
+bir dosyada literal yazmak o modülün "tek yazan/tanımlayan ben"
+garantisini sessizce ikinci bir kopyaya açıyor), düzeltildi.
+
+Sayfa **lazy** — `__init__`'te DB'ye dokunmuyor (`HycleusWindow.
+__init__`'te GuvenlikView ile aynı yerde kuruluyor; her açılışta,
+sayfa hiç ziyaret edilmese bile tüm zinciri yürütmek gereksiz bir
+başlangıç maliyeti olurdu). İlk gerçek yük `yenile()` ile geliyor —
+`main_window.py::_on_open_audit_log()` sayfaya HER dönüşte çağırıyor.
+
+**Tesadüfi bulgu — rol kapısı boşluğu.** `_on_open_audit_log()`'un kendi
+admin kontrolü YOKTU; erişilebilirlik yalnızca kenar çubuğu düğmesinin
+gizlenmesine dayanıyordu. Hamburger menüsü (`_on_hamburger_menu`) AYNI
+metodu rol kontrolü olmadan çağırıyordu — admin olmayan bir rol bu
+turdan ÖNCE de ikinci yoldan denetim günlüğüne ulaşabiliyordu. Modal bir
+diyalog için düşük önemdeydi; KALICI bir sayfaya taşırken aynı boşluğu
+miras almamak için `_on_open_admin_panel()` ile AYNI kapı deseni eklendi
+(ayrıntı ve gerekçe: SECURITY.md §4.20).
+
+### 2. madde — HALKA sütunu
+
+**Karar: `verify_audit_chain()`'e DAYANIYOR, yeni hesaplama YOK.**
+`CORE/audit_chain.py::verify_audit_chain()` zaten zincirli her satırı bir
+kez hash'liyor ve yalnızca başarısızlıkları `ChainVerification.breaks`'e
+yazıyor. İkinci bir hash yürüyüşü, bu deponun en çok tekrarlanan
+kusurunun (B-003/B-004/B-007/B-008/B-010/B-011) altıncı örneği olurdu.
+Bunun yerine `CORE/audit_chain.py`'ye `link_status()`/`link_statuses()`
+eklendi — mevcut sonucun saf bir OKUNMASI: satır `start_id`'den önceyse
+(ya da zincir hiç başlamadıysa) **Kapsam Dışı**; `modified`/`unhashed`
+kırılmasının `entry_id`'siyse **Kopuk**; aksi hâlde **Sağlam**. "Hiç
+doğrulanmadı" ile "doğrulandı ve sağlam" ayrımı bilinçli — ikisini de
+"sağlam" göstermek yanlış güven verirdi (aynı gerekçe `CORE/hwid_probe.py::
+compare()`'in "bilinmiyor" sonucunda da var, B-016 turu).
+
+`AuditLogView._load()` `zincir_raporu()`'yu HER yenilemede BİR KEZ
+çağırıp aynı sonucu hem HALKA sütununa hem TXT dışa aktarım başlığına
+besliyor — B-073'ün dışa aktarım için yaptığı düzeltmeyi sürdürüyor ve
+sıkılaştırıyor: `_export_txt()` artık `zincir_raporu()`'yu kendisi ikinci
+kez çağırmıyor, `_load()`'un ürettiği `self._son_rapor`'u yeniden
+kullanıyor.
+
+### Test
+
+`tests/test_audit_chain.py`'ye 9 yeni test (§9: `link_status`/
+`link_statuses`) — sağlam zincirde tüm satırların intact olduğu,
+değiştirilen bir kaydın YALNIZCA kendisinin broken, öncekiler VE
+sonrakiler intact kaldığı (kırılmadan sonra zincir saklanan hash'ten
+devam ediyor), gap'ten sonraki ilk kaydın broken göründüğü, zincir
+başlangıcından önceki kayıtların out_of_scope olduğu, zincir hiç
+başlamamışsa her şeyin out_of_scope olduğu — ve yapısal bir kanıt:
+`link_status()`'un `compute_entry_hash()`'i HİÇ çağırmadığı (casus ile
+doğrulandı).
+
+`tests/test_audit_log_view.py` (yeni dosya, 35 test): kategori/sekme
+süzgeci (saf fonksiyonlar), sayfa yapısı (5 sütun, 5 sekme, lazy kurulum),
+sekme filtresi (gerçek tablo), **HALKA sütunu — görevin ana kanıtı**
+(bilerek kırılmış bir kayıt `UPDATE` ile üretilip HALKA hücresinin
+"Kopuk" gösterdiği VE bu sonucun doğrudan `verify_audit_chain()`
+çağrısıyla TUTARLI olduğu — bozulan kaydın `entry_id`'si hem
+`first_broken_id` hem "Kopuk" hücresinin id'si; komşu kayıtlar hâlâ
+"Sağlam"), dışa aktarım tutarlılığı (B-073 devamı, eski
+`tests/test_audit_log_dialog_export.py`'den taşındı), kablolama (sayfa
+geçişi, rol kapısı, tek-kaynak sayfa adı).
+
+**Mutasyon kanıtları:**
+
+- `CORE/audit_chain.py::link_status()` geçici olarak her zaman `LINK_
+  INTACT` dönecek şekilde bozuldu — `tests/test_audit_chain.py`'den 2
+  test **BAŞARISIZ** oldu (değiştirilen kayıt, gap sonrası kayıt).
+- `UI/AuditLogView.py::_HALKA_METNI`'nin Sağlam/Kopuk metinleri geçici
+  olarak TERS ÇEVRİLDİ — `tests/test_audit_log_view.py`'den 3 test
+  **BAŞARISIZ** oldu (saf birim, uçtan uca kırılma testi, dışa aktarım).
+- `UI/main_window_layout.py::_make_govde_yigini()`'ye eklenen 3. sayfa
+  için `tests/test_guvenlik_view.py::test_yigin_UC_sayfali` güncellendi
+  (2→3 sayfa) ve mutasyonla (sayfa eklenmeden nesne kurulursa) doğrulandı
+  — GuvenlikView turundan miras kalan aynı denetim deseni.
+
+İkisi de/hepsi geri alındı, `git diff --stat` temiz döndü.
+
+### Yan bulgu — `test_hclx.py` regresyonu (bulundu ve düzeltildi bu turda)
+
+İlk yazılışta `_KATEGORI_KIMLIK`/`_KATEGORI_YONETIM` frozenset'lerine
+`"hclx_created"`/`"hclx_opened"`/`"hclx_rejected"`/`"tsa_root_added"`/…
+LİTERAL yazılmıştı. Tam suite çalıştırılınca `tests/test_hclx.py::
+test_denetim_eylemleri_yalnizca_hclx_modulunden` bunu yakaladı (CORE/
+hclx.py DIŞINDA bu literal'lerin geçmesini yasaklıyor — ikinci bir yerin
+`hclx_opened` YAZABİLMESİ, doğrulama yapmadan düşen bir denetim kaydı
+riski). Düzeltme: `CORE.hclx`/`CORE.pin_rotation`/`CORE.tpm_sealing`/
+`CORE.trusted_roots`/`CORE.secret_store`/`CORE.audit_chain`'in kendi
+`EYLEM_*`/`GENESIS_ACTION` sabitleri İTHAL EDİLDİ, literal string'ler
+kaldırıldı — okuma amaçlı bir kullanım olsa bile (yazma değil), aynı
+dizeyi ikinci kez elle yazmak yanlış pratikti.
+
+Tam test suite: 2910 passed, 4 skipped (bir önceki turdan +51 — bu iki
+yeni dosyaya eklenen testler + `test_layering.py`'nin otomatik
+kapsamasından gelen ek parametrizasyonlar). Ruff/mypy/bandit temiz.
+
+---
