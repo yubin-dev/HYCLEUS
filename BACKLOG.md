@@ -1821,6 +1821,43 @@ ile kayda geçiyor.
 Bu yol DEV_MODE ve eski kurulumlara özgü; dağıtılan yapıda
 (`sys.frozen`) kasa zorunlu.
 
+### 2026-08-29 — yeniden doğrulandı, ikinci bir uygulama YAZILMADI
+
+Görev metni ("`PinRotationDialog`'u ekle/etkinleştir") akışın hâlâ eksik
+olduğunu varsayıyordu. `git log -- UI/PinRotationDialog.py CORE/pin_
+rotation.py tests/test_pin_rotation*.py` incelendi: akış `a94d1f1`
+("B-003 kapandı") ile 2026-08-21'de TAMAMLANMIŞ ve `origin/main`'e
+işlenmiş (`git merge-base --is-ancestor a94d1f1 origin/main`) durumda —
+`login_dialog.py::_on_login()` zaten kısa PIN'i tespit edip
+`_zorunlu_pin_yenileme()` üzerinden `PinRotationDialog`'u açıyor,
+`tests/test_pin_rotation.py` + `tests/test_pin_rotation_ui.py` (47 test)
+tam olarak istenen senaryoyu (kısa PIN'le giriş → diyalog tetiklenir →
+yenilenmeden `accept()` hiç çağrılmaz) zaten kapsıyor. Bu turda yeni bir
+uygulama YAZILMADI — B-003/B-004/B-007/B-008/B-010/B-011'in beş kez
+tekrarladığı "ikinci bir kopya" kusurunun altıncısını üretmemek için.
+
+Bunun yerine `_on_login()`'deki gerçek kapı satırı (`if not self.
+_zorunlu_pin_yenileme(pin): return`) bugünün tarihiyle YENİDEN mutasyon
+kanıtıyla doğrulandı: satır geçici olarak `if False and ...` ile devre
+dışı bırakıldı — `tests/test_pin_rotation_ui.py`'den 5 test **BAŞARISIZ**
+oldu (`test_kisa_PINLI_kullanici_YONLENDIRILIYOR`,
+`test_yenileme_yapilmazsa_GIRIS_ENGELLENIYOR`,
+`test_yenileme_yapilirsa_giris_SURUYOR`,
+`test_yenileme_sonrasi_oturum_anahtari_GECERLI`,
+`test_engellenen_giriste_denetim_kaydi_var`) — yani kapı bugün de
+gerçekten çalışıyor, eski bir test kaydının güncelliğini yitirmiş olma
+ihtimali ELENDİ. Satır geri alındı, `git diff --stat` temiz döndü, 47/47
+tekrar yeşile döndü.
+
+`LOGIN_MIN_LEN` köprüsü (**B-040**, açık) hâlâ kasıtlı duruyor: B-003
+2026-08-21'de kapandı, bugün 2026-08-29 — B-040'ın önerdiği 90 günlük
+gözlem penceresinin sekizinci günündeyiz, kaldırma kriterinin ("kim
+akıştan sonra hiç giriş yapmadı" sorgusu boş dönüyor mu) çok erisinde.
+Bu turda B-040'a dokunulmadı.
+
+Tam test suite: 2859 passed, 4 skipped (değişiklik yok — bu tur yalnızca
+doğrulama, kod eklemedi). Ruff/mypy/bandit temiz.
+
 ---
 
 ## B-040 — `LOGIN_MIN_LEN` köprüsü: kaldırma kriteri ve geçiş süresi
