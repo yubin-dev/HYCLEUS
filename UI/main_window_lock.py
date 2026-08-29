@@ -363,9 +363,13 @@ class LockMixin:
         return super().eventFilter(obj, event)
 
     def _on_overlay_clicked(self) -> None:
-        """Örtüye tıklandı — hareketsizlik kilidi varsa PIN sor."""
-        if "idle" in self._lock_reasons and not self._authenticating:
+        """Örtüye tıklandı — hareketsizlik ya da manuel kilit varsa PIN sor."""
+        if self._authenticating:
+            return
+        if "idle" in self._lock_reasons:
             self._unlock_idle()
+        elif "manual" in self._lock_reasons:
+            self._unlock_manual()
 
     def _tick_idle(self) -> None:
         """
@@ -435,6 +439,44 @@ class LockMixin:
         DBManager().log("idle_unlock_success", detail=f"hwid={self._hwid}")
         self._idle.rearm()
         self._unlock("idle")
+
+    # ── Manuel kilit ("Oturumu Kapat") ──────────────────────────────────────
+    #
+    # `UI/ProfileView.py`'nin "Cihazlar ve oturum" bölümündeki "Oturumu
+    # Kapat" düğmesinin çağırdığı giriş noktası. `_unlock_idle()`'ı
+    # ÇOĞALTMIYOR (kopyalamıyor) — `_unlock_manual()` AYNI PIN doğrulama
+    # deseni ama AYRI denetim eylemleriyle (bkz. `_LOCK_MESSAGES`'ın
+    # "manual" girdisindeki gerekçe).
+
+    def _on_manual_logout(self) -> None:
+        """`ProfileView._on_logout()`'un onay diyaloğundan SONRA çağırdığı
+        tek giriş noktası — onay BURADA değil, çağıranda (UI eylem
+        yerinde onay almak, AdminPanel'in kendi eylemleriyle AYNI desen)."""
+        DBManager().log("session_logged_out", detail=f"hwid={self._hwid}")
+        self._lock("manual")
+
+    def _unlock_manual(self) -> None:
+        """Manuel kilidi PIN doğrulamasıyla açar — `_unlock_idle()` ile
+        AYNI desen, bkz. o metodun docstring'i ve `_LOCK_MESSAGES["manual"]`
+        girdisinin gerekçesi."""
+        pin, ok = QInputDialog.getText(
+            self, "Oturum Kapatıldı",
+            "Devam etmek için vault PIN'inizi girin:",
+            QLineEdit.Password,
+        )
+        if not ok or not pin.strip():
+            return
+        try:
+            read_vault_role(self._hwid, pin.strip())
+        except Exception as exc:
+            QMessageBox.warning(self, "PIN Hatalı", str(exc))
+            DBManager().log(
+                "manual_unlock_failed", detail=f"hwid={self._hwid} reason={exc}"
+            )
+            return
+        DBManager().log("manual_unlock_success", detail=f"hwid={self._hwid}")
+        self._idle.rearm()
+        self._unlock("manual")
 
     def _refresh_usb_badge(self) -> None:
         hwid = get_usb_hwid()

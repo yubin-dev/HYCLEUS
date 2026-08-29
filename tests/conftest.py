@@ -243,6 +243,7 @@ class SahteUSB:
         "UI.main_window_lock",
         "UI.main_window_table",
         "UI.AdminPanel",
+        "UI.ProfileView",
         "UI.RegisterDialog",
         "UI.login_dialog",
         "CORE.recover_vault",

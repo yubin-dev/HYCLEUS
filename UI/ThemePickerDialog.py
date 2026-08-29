@@ -9,8 +9,10 @@ kartında, kendi GERÇEK renk paletiyle canlı önizleniyor.
 Token kaynağı — yeni renk İCAT EDİLMEDİ
 -----------------------------------------
 Diyaloğun KENDİ çerçevesi (başlık, arka plan, kart kenarlığı, "Seçili"
-etiketi) çağıranın GÜNCEL `self._T`'siyle boyanıyor — tıpkı `ProfileDialog`/
-`RecoveryShareDialog` gibi diğer ikincil diyaloglar gibi. Ama her kartın
+etiketi) çağıranın GÜNCEL `self._T`'siyle boyanıyor — tıpkı `AdminPanel`/
+`RecoveryShareDialog` gibi diğer ikincil diyaloglar gibi (Profil artık bir
+diyalog değil, tam sayfa — bkz. `UI/ProfileView.py`, merkezi QSS'ten
+cascade ediyor, B-055'in DİĞER deseni). Ama her kartın
 İÇİNDEKİ önizleme şeridi o kartın TEMSİL ETTİĞİ preset'in KENDİ
 token'larından geliyor (`UI/main_window_theme.py::_THEMES[key]["dark"/
 "light"]`, kaynağı `UI/main_window_palette.py`) — başka bir deyişle her
@@ -47,7 +49,7 @@ _ONIZLEME_RENK_ANAHTARLARI = ("accent", "green", "yellow", "red")
 
 def _stil(T: dict[str, str]) -> str:
     """Diyaloğun KENDİ çerçevesi — çağıranın aktif tema token'larından
-    (B-055'in aynı deseni: bkz. `ProfileDialog.py::_stil`)."""
+    (B-055'in aynı deseni: bkz. `UI/AdminPanel.py::_stil`)."""
     return f"""
 QDialog {{ background: {T['bg']}; color: {T['text']}; }}
 QLabel#tema_secici_baslik {{

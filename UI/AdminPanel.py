@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 
 _log = logging.getLogger("hycleus.admin_panel")
@@ -33,6 +32,7 @@ from CORE.app_mode import BIREYSEL, KURUMSAL, get_app_mode, set_app_mode
 from CORE.roles import is_admin_role
 from CORE.session_user import oturum_yetkisi_gecerli_mi
 from CORE.usb_manager import get_usb_hwid
+from CORE.usb_tokens import token_kayitlarini_getir
 from CORE.idle_lock import (
     DEFAULT_IDLE_MINUTES,
     IDLE_DISABLED,
@@ -451,85 +451,49 @@ class AdminPanel(QDialog):
     def _load(self) -> None:
         self._table.setRowCount(0)
         try:
-            rows = DBManager().fetchall(
-                """
-                SELECT
-                    u.hwid,
-                    u.token_id,
-                    u.blacklisted,
-                    u.created_at,
-                    (SELECT a.detail FROM audit_log a
-                     WHERE a.action IN ('usb_setup_complete', 'usb_role_changed')
-                       AND a.detail LIKE 'hwid=' || u.hwid || '%'
-                     ORDER BY a.timestamp DESC LIMIT 1)  AS role_detail,
-                    (SELECT a.timestamp FROM audit_log a
-                     WHERE a.action = 'usb_auth_success'
-                       AND a.detail LIKE 'hwid=' || u.hwid || '%'
-                     ORDER BY a.timestamp DESC LIMIT 1)  AS last_login
-                FROM usb_tokens u
-                ORDER BY u.created_at DESC
-                """
-            )
+            # Sorgu `CORE/usb_tokens.py`'de — Profil sayfasının "Cihazlar ve
+            # oturum" bölümüyle PAYLAŞILAN tek kaynak, bkz. o modülün
+            # docstring'i.
+            kayitlar = token_kayitlarini_getir(DBManager())
         except Exception as exc:
             QMessageBox.warning(self, "Veritabanı Hatası", str(exc))
             return
 
-        for row in rows:
-            hwid       = row["hwid"]
-            blacklisted = bool(row["blacklisted"])
-            role       = self._parse_field(row["role_detail"] or "", "role")
-            last_login = self._fmt_ts(row["last_login"] or "")
-            token_id   = row["token_id"] or ""
-
+        for kayit in kayitlar:
             r = self._table.rowCount()
             self._table.insertRow(r)
 
             # Col 0 — HWID (full stored in UserRole)
             hwid_item = QTableWidgetItem(
-                hwid[:24] + "…" if len(hwid) > 24 else hwid
+                kayit.hwid[:24] + "…" if len(kayit.hwid) > 24 else kayit.hwid
             )
-            hwid_item.setData(_ROLE_HWID, hwid)
-            hwid_item.setData(_ROLE_BLACKLISTED, blacklisted)
-            if hwid == self._current_hwid:
+            hwid_item.setData(_ROLE_HWID, kayit.hwid)
+            hwid_item.setData(_ROLE_BLACKLISTED, kayit.blacklisted)
+            if kayit.hwid == self._current_hwid:
                 hwid_item.setForeground(QColor(self._T["accent"]))
             self._table.setItem(r, 0, hwid_item)
 
             # Col 1 — Token ID (short)
+            token_id = kayit.token_id
             self._table.setItem(
                 r, 1,
                 QTableWidgetItem(token_id[:12] + "…" if len(token_id) > 12 else token_id or "—"),
             )
 
             # Col 2 — Rol
-            self._table.setItem(r, 2, QTableWidgetItem(role or "—"))
+            self._table.setItem(r, 2, QTableWidgetItem(kayit.role or "—"))
 
             # Col 3 — Son Giriş
-            self._table.setItem(r, 3, QTableWidgetItem(last_login))
+            self._table.setItem(r, 3, QTableWidgetItem(self._fmt_ts(kayit.last_login)))
 
             # Col 4 — Durum
-            status_item = QTableWidgetItem("Kara Liste" if blacklisted else "Aktif")
+            status_item = QTableWidgetItem("Kara Liste" if kayit.blacklisted else "Aktif")
             status_item.setForeground(
-                QColor(self._T["red"] if blacklisted else self._T["green"])
+                QColor(self._T["red"] if kayit.blacklisted else self._T["green"])
             )
             self._table.setItem(r, 4, status_item)
 
         self._on_selection_changed()
-
-    @staticmethod
-    def _parse_field(detail: str, key: str) -> str:
-        """key=value çiftini parse eder; değer boşluk içerebilir.
-
-        "hwid=X role=Salt Okunur old_role=Y" formatında çalışır:
-        sonraki 'kelime=' kalıbı ya da satır sonu değerin bitişini belirler.
-        """
-        prefix = f"{key}="
-        start = detail.find(prefix)
-        if start == -1:
-            return ""
-        val_start = start + len(prefix)
-        m = re.search(r"\s+\w+=", detail[val_start:])
-        end = val_start + m.start() if m else len(detail)
-        return detail[val_start:end].strip()
 
     @staticmethod
     def _fmt_ts(ts: str) -> str:

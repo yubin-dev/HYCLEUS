@@ -580,10 +580,15 @@ def test_yigin_UC_sayfali() -> None:
     `AuditLogDialog` — modal'dan tam sayfaya taşındı) eklendi; bu test
     ikiden üçe güncellendi (bkz. `tests/test_audit_log_view.py` için
     AuditLogView'a ÖZGÜ testler).
+
+    2026-08-30: dördüncü sayfa (`UI/ProfileView.py`, eskiden
+    `ProfileDialog` — modal'dan tam sayfaya taşındı) eklendi; üçten
+    dörde güncellendi (bkz. `tests/test_profile_view.py` için
+    ProfileView'a ÖZGÜ testler).
     """
     layout = _kaynak("UI/main_window_layout.py")
     cagrilar = _cagri_adlari(layout, "_make_govde_yigini")
-    assert {"QStackedWidget", "GuvenlikView", "AuditLogView"} <= cagrilar
+    assert {"QStackedWidget", "GuvenlikView", "AuditLogView", "ProfileView"} <= cagrilar
 
     # Sayfaların GERÇEKTEN eklendiği ölçülüyor. Mutasyonla görüldü:
     # `GuvenlikView` kurulup yığına EKLENMEZSE yukarıdaki çağrı denetimi
@@ -598,8 +603,8 @@ def test_yigin_UC_sayfali() -> None:
         and isinstance(d.func.value, ast.Attribute)
         and d.func.value.attr == "_govde_yigini"
     ]
-    assert len(eklemeler) == 3, (
-        f"yığına {len(eklemeler)} sayfa ekleniyor, 3 bekleniyordu"
+    assert len(eklemeler) == 4, (
+        f"yığına {len(eklemeler)} sayfa ekleniyor, 4 bekleniyordu"
     )
 
 

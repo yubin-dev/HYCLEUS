@@ -25,7 +25,7 @@ sorulamıyor.
 
 Neden AYRI bir modül, diyaloğun içinde değil
 ---------------------------------------------
-`UI/ProfileDialog.py` PIN değiştirmeyi ZATEN uyguluyor: doğrula →
+`UI/ProfileView.py` PIN değiştirmeyi ZATEN uyguluyor: doğrula →
 `change_vault_pin()` → `last_pin_changed` güncelle → denetim kaydı.
 Zorunlu akış için ikinci bir kopya yazmak, bu deponun beş kez ürettiği
 kusurun altıncısı olurdu (B-004/B-008, B-007, B-010, B-011, pay
@@ -59,7 +59,7 @@ _log = logging.getLogger("hycleus.pin_rotation")
 
 #: Zorunlu yenileme denetim kaydı — B-003 akışı.
 EYLEM_ZORUNLU = "pin_rotation_forced"
-#: Kullanıcının kendi isteğiyle yaptığı değişiklik (ProfileDialog).
+#: Kullanıcının kendi isteğiyle yaptığı değişiklik (ProfileView).
 EYLEM_ISTEGE_BAGLI = "pin_changed"
 
 

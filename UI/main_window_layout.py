@@ -415,8 +415,8 @@ class LayoutMixin:
 
     def _make_govde_yigini(self) -> QWidget:
         """
-        İçerik alanı artık ÜÇ SAYFALI: dosya görünümü + Güvenlik + Denetim
-        Günlüğü.
+        İçerik alanı artık DÖRT SAYFALI: dosya görünümü + Güvenlik + Denetim
+        Günlüğü + Profil.
 
         `QStackedWidget` seçildi, ikinci bir pencere değil: tablo, arama
         çubuğu ve seçim durumu YERİNDE kalıyor. Güvenlik ya da Denetim
@@ -424,10 +424,12 @@ class LayoutMixin:
         buluyor — ayrı bir pencere olsaydı ya durum kopyalanır ya
         kaybolurdu. Denetim Günlüğü ESKİDEN (`UI/AuditLogDialog.py`,
         kaldırıldı) modal bir `QDialog`'du — aynı gerekçeyle buraya
-        taşındı.
+        taşındı. Profil de AYNI gerekçeyle: eskiden (`UI/ProfileDialog.py`,
+        kaldırıldı) modal bir `QDialog`'du, artık `UI/ProfileView.py`.
         """
         from UI.AuditLogView import AuditLogView
         from UI.GuvenlikView import GuvenlikView
+        from UI.ProfileView import ProfileView
 
         self._govde_yigini = QStackedWidget()
         self._govde_yigini.addWidget(self._make_content())      # 0 — dosyalar
@@ -435,6 +437,8 @@ class LayoutMixin:
         self._govde_yigini.addWidget(self._guvenlik_view)       # 1 — güvenlik
         self._audit_log_view = AuditLogView(self)
         self._govde_yigini.addWidget(self._audit_log_view)      # 2 — denetim günlüğü
+        self._profil_view = ProfileView(self)
+        self._govde_yigini.addWidget(self._profil_view)         # 3 — profil
         return self._govde_yigini
 
     def _make_content(self) -> QWidget:

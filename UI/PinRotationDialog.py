@@ -6,7 +6,7 @@ bırakılmıştı. Bu diyalog, kısa PIN'le giriş yapan kullanıcıyı ana penc
 açılmadan önce durduruyor.
 
 Karar mantığı burada YOK: doğrulama, kasa yeniden şifreleme, kayıt ve
-denetim `CORE/pin_rotation.py`'de ve `UI/ProfileDialog.py` ile PAYLAŞILIYOR.
+denetim `CORE/pin_rotation.py`'de ve `UI/ProfileView.py` ile PAYLAŞILIYOR.
 Burada olan yalnızca yerleşim ve "kapatılamaz" davranışı.
 
 

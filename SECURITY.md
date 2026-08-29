@@ -2584,6 +2584,51 @@ discriminating, then reverted and confirmed green again.
 
 ---
 
+### 4.23 The Profile page shows one device, not a device list — a schema constraint, not a UI gap
+
+> **Attacker models:** none — this section documents a design constraint
+> discovered while building the Profile page's "Devices and sessions"
+> section, not a vulnerability.
+
+**The mockup implied a multi-device list; the schema forbids one.**
+`UI/ProfileView.py`'s "Devices and sessions" section was built against a
+mockup showing a list of registered USB devices per account. Before
+writing it, the actual data model was checked rather than assumed:
+`users.hwid` carries a partial `UNIQUE` index
+(`DB/migrations.py::_m23_users_hwid_unique`, B-060) — a HYCLEUS account
+can be bound to at most one HWID, full stop. This is not an oversight;
+B-060 closed a real gap where the same physical USB token could
+authenticate as more than one account, letting one identity impersonate
+another's authority. Undoing that constraint to support a device list
+would reopen exactly the hole B-060 closed.
+
+**Decision, made explicit rather than silently reinterpreted.** The
+question was put back to the user rather than guessed at, and the answer
+was: build the section against today's real 1-account-1-device model (it
+renders a single row — the account's own token, whether it's the one
+currently inserted, its registration date, and its blacklist status — via
+`CORE/usb_tokens.py::token_kayitlarini_getir()`, the exact same query
+`UI/AdminPanel.py`'s fleet-wide USB Management tab uses, narrowed with a
+`hwid=` filter so the two views can never diverge) rather than building a
+multi-row UI the schema can't actually populate, and rather than silently
+loosening B-060 to make the mockup literally true. A real multi-device
+model, if ever wanted, is a separate, deliberate architectural decision —
+tracked as its own backlog item (`BACKLOG.md` B-082), not something to
+slip in as a side effect of a UI migration.
+
+**Verified against the fleet-wide view, not just unit-tested in
+isolation.** `tests/test_profile_view.py` constructs both `AdminPanel`
+and `ProfileView` against the same seeded `usb_tokens` row and asserts
+their rendered cells agree, then adds a second, unrelated token for a
+different account and asserts the `hwid=` filter actually excludes it
+(without that second row, a broken filter and a working one would return
+identically-shaped results by coincidence — the test would pass either
+way). Mutation-proved: disabling the filter in
+`token_kayitlarini_getir()` immediately broke the row-count assertion
+(2 rows shown instead of 1); reverted and confirmed green again.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -5506,6 +5551,52 @@ Mutasyonla kanıtlandı: `run_tool()`'daki iki çağrı geçici olarak
 yorum satırına alındı — entegrasyon testi ANINDA kırıldı (2 yerine 0 çağrı
 kaydedildi) — gerçekten ayırt ettiği doğrulandı, sonra geri alınıp yeşile
 döndüğü teyit edildi.
+
+---
+
+### 4.23 Profil sayfası tek bir cihaz gösteriyor, cihaz listesi değil — bir şema kısıtlaması, bir UI eksikliği değil
+
+> **Saldırgan modelleri:** yok — bu bölüm Profil sayfasının "Cihazlar ve
+> oturum" bölümü inşa edilirken bulunan bir tasarım kısıtlamasını
+> belgeliyor, bir zafiyeti değil.
+
+**Mockup çoklu cihaz listesi ima ediyordu; şema buna izin vermiyor.**
+`UI/ProfileView.py`'nin "Cihazlar ve oturum" bölümü, hesap başına kayıtlı
+USB cihazlarının bir listesini gösteren bir mockup'a karşı inşa edildi.
+Yazmadan ÖNCE gerçek veri modeli varsayılmadı, İNCELENDİ: `users.hwid`
+kısmi bir `UNIQUE` indeks taşıyor (`DB/migrations.py::
+_m23_users_hwid_unique`, B-060) — bir HYCLEUS hesabı en fazla BİR HWID'e
+bağlanabilir, nokta. Bu bir gözden kaçırma değil; B-060 aynı fiziksel USB
+token'ının birden fazla hesap olarak kimlik doğrulayabildiği, bir kimliğin
+diğerinin yetkisini gasp edebildiği gerçek bir açığı kapattı. O
+kısıtlamayı bir cihaz listesi desteklemek için geri almak, B-060'ın
+kapattığı deliği TAM OLARAK yeniden açmak anlamına gelirdi.
+
+**Sessizce yeniden yorumlanmadı, açık bir karara bağlandı.** Soru
+tahmin edilmek yerine kullanıcıya geri soruldu ve cevap şu oldu:
+bölüm bugünün gerçek 1-hesap-1-cihaz modeline karşı inşa edilsin (tek bir
+satır gösteriyor — hesabın kendi token'ı, şu an takılı olan cihaz olup
+olmadığı, kayıt tarihi, kara liste durumu — `CORE/usb_tokens.py::
+token_kayitlarini_getir()` ile, `UI/AdminPanel.py`'nin filo-geneli USB
+Yönetimi sekmesinin kullandığı TAM OLARAK AYNI sorgu, yalnızca `hwid=`
+filtresiyle daraltılmış, böylece iki görünüm ASLA ayrışamaz) — şemanın
+gerçekte dolduramayacağı çok satırlı bir UI inşa etmek yerine, ve
+mockup'ı gerçek kılmak için B-060'ı sessizce gevşetmek yerine. Gerçek bir
+çoklu cihaz modeli, gerçekten isteniyorsa, ayrı ve bilinçli bir mimari
+karardır — kendi backlog maddesi olarak izleniyor (`BACKLOG.md` B-082),
+bir UI taşımasının yan etkisi olarak sızdırılmadı.
+
+**Filo-geneli görünüme karşı doğrulandı, yalnızca izole birim test
+edilmedi.** `tests/test_profile_view.py` hem `AdminPanel`'i hem
+`ProfileView`'ı AYNI tohumlanmış `usb_tokens` satırına karşı kurup
+gösterdikleri hücrelerin uyuştuğunu doğruluyor, sonra FARKLI bir hesap
+için ikinci, ilgisiz bir token ekleyip `hwid=` filtresinin onu GERÇEKTEN
+dışarıda bıraktığını doğruluyor (o ikinci satır olmadan, bozuk bir filtre
+ile çalışan bir filtre TESADÜFEN aynı şekilli sonucu döndürürdü — test
+her iki durumda da geçerdi). Mutasyonla kanıtlandı:
+`token_kayitlarini_getir()`'deki filtre devre dışı bırakılınca satır
+sayısı denetimi ANINDA kırıldı (1 yerine 2 satır gösterildi); geri
+alınıp tekrar yeşile döndüğü teyit edildi.
 
 ---
 

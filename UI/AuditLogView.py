@@ -126,6 +126,7 @@ _KATEGORI_KIMLIK = frozenset({
     "weak_hwid_binding_rejected", "weak_hwid_uuid_assigned",
     "idle_lock_triggered", "idle_lock_disabled",
     "idle_unlock_success", "idle_unlock_failed",
+    "session_logged_out", "manual_unlock_success", "manual_unlock_failed",
     "session_revoked", "session_user_linked", "session_user_provisioned",
     EYLEM_ZORUNLU, EYLEM_ISTEGE_BAGLI,
     _HCLX_URETILDI, _HCLX_ACILDI, _HCLX_REDDEDILDI,

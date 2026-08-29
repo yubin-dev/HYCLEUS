@@ -262,7 +262,7 @@ def _cagiranlar(ad: str, kok: Path) -> list[str]:
 
 def test_change_vault_pin_UI_katmanindan_dogrudan_cagrilmiyor() -> None:
     """
-    `UI/ProfileDialog.py` PIN değiştirmeyi zaten uyguluyordu; zorunlu akış
+    `UI/ProfileView.py` PIN değiştirmeyi zaten uyguluyordu; zorunlu akış
     için ikinci bir kopya yazmak bu deponun beş kez ürettiği kusurun
     altıncısı olurdu (B-004/B-008, B-007, B-010, B-011, pay ayrıştırıcı).
 
@@ -280,11 +280,11 @@ def test_denetim_gercekten_cagri_buluyor() -> None:
     """
     Boş liste dönen bir tarayıcı yukarıdaki testi kendiliğinden
     geçirirdi. `rotate_pin` en az iki yerden çağrılıyor olmalı: zorunlu
-    akış ve ProfileDialog.
+    akış ve ProfileView.
     """
     cagiranlar = _cagiranlar("rotate_pin", KOK / "UI")
     assert "PinRotationDialog.py" in cagiranlar
-    assert "ProfileDialog.py" in cagiranlar
+    assert "ProfileView.py" in cagiranlar
 
 
 def test_rotate_pin_change_vault_pin_i_GERCEKTEN_cagiriyor() -> None:

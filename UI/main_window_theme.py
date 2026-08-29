@@ -510,6 +510,96 @@ class ThemeMixin:
                 font-weight: 600;
             }}
             QPushButton#audit_btn_disa_aktar:hover {{ background: {T['accent_hover']}; }}
+
+            /* Profil sayfası (UI/ProfileView.py) — Güvenlik/Denetim
+               Günlüğü sayfalarıyla AYNI desen: kendi setStyleSheet()'ini
+               çağırmıyor, tablo/başlık kuralları YUKARIDAN zaten cascade
+               ediyor. Burada yalnızca bu sayfaya özgü olan: başlık
+               şeridi, sekme çubuğu, bilgi satırları. */
+            QFrame#profil_header {{ background: {T['accent']}; border-radius: 0; }}
+            QLabel#avatar_lbl {{
+                background: {T['accent_hover']};
+                color: {T['on_accent']};
+                font-size: 24px;
+                font-weight: 700;
+                border-radius: 28px;
+                min-width: 56px; max-width: 56px;
+                min-height: 56px; max-height: 56px;
+            }}
+            QLabel#user_name {{
+                color: {T['on_accent']};
+                font-size: 16px;
+                font-weight: 700;
+                background: transparent;
+            }}
+            QLabel#user_role {{
+                color: {T['tint_text']};
+                font-size: 12px;
+                background: transparent;
+            }}
+            QFrame#profil_tab_bar {{
+                background: {T['topbar']};
+                border-bottom: 1px solid {T['border']};
+            }}
+            QFrame#profil_tab_bar QPushButton[tab_on="true"] {{
+                background: transparent;
+                color: {T['accent']};
+                border: none;
+                border-bottom: 2px solid {T['accent']};
+                border-radius: 0;
+                font-size: 13px;
+                font-weight: 600;
+                padding: 10px 20px;
+            }}
+            QFrame#profil_tab_bar QPushButton[tab_on="false"] {{
+                background: transparent;
+                color: {T['subtext']};
+                border: none;
+                border-bottom: 2px solid transparent;
+                border-radius: 0;
+                font-size: 13px;
+                padding: 10px 20px;
+            }}
+            QFrame#profil_tab_bar QPushButton[tab_on="false"]:hover {{ color: {T['text']}; }}
+            QWidget#profil_page {{ background: {T['bg']}; }}
+            QWidget#profil_page QLabel {{ color: {T['text']}; }}
+            QLabel#section_lbl {{
+                color: {T['subtext']};
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 1px;
+                background: transparent;
+            }}
+            QLabel#profil_ipucu {{ color: {T['subtext']}; font-size: 12px; background: transparent; }}
+            QLabel#field_key {{
+                color: {T['subtext']};
+                font-size: 12px;
+                background: transparent;
+                min-width: 120px;
+            }}
+            QLabel#field_val {{
+                color: {T['text']};
+                font-size: 13px;
+                font-weight: 500;
+                background: transparent;
+            }}
+            QLabel#warn_lbl {{
+                color: {T['yellow']};
+                font-size: 12px;
+                background: {T['search_bg']};
+                border-radius: 6px;
+                padding: 6px 10px;
+            }}
+            QFrame#profil_sep {{ background: {T['border']}; max-height: 1px; border: none; }}
+            QWidget#profil_page QLineEdit {{
+                background: {T['search_bg']};
+                color: {T['text']};
+                border: 1px solid {T['border']};
+                border-radius: 8px;
+                padding: 8px 12px;
+                font-size: 13px;
+            }}
+            QWidget#profil_page QLineEdit:focus {{ border-color: {T['accent']}; }}
         """
 
         self.centralWidget().setStyleSheet(qss)

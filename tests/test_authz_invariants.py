@@ -773,7 +773,7 @@ def test_b065_profil_ve_avatar_iki_farkli_kullanicida_gercek_db_adini_gosteriyor
 
         import UI.main_window as mw
         from UI.main_window import HycleusWindow
-        from UI.ProfileDialog import ProfileDialog
+        from UI.ProfileView import ProfileView
     except ImportError as exc:  # pragma: no cover — ortama bağlı
         pytest.skip(f"Qt katmanı bu ortamda yüklenemedi ({exc})")
     try:
@@ -800,15 +800,12 @@ def test_b065_profil_ve_avatar_iki_farkli_kullanicida_gercek_db_adini_gosteriyor
                 f"{window._avatar.text()!r} gösteriyor"
             )
 
-            profil = ProfileDialog(
-                hwid=window._hwid, username=window._username,
-                role=window._role, user_id=window._user_id,
-            )
+            profil = ProfileView(window)
             try:
                 ad_etiketi = profil.findChild(QLabel, "user_name")
                 avatar_etiketi = profil.findChild(QLabel, "avatar_lbl")
                 assert ad_etiketi.text() == ad, (
-                    f"B-065 REGRESYONU: Profil ekranı '{ad}' yerine "
+                    f"B-065 REGRESYONU: Profil sayfası '{ad}' yerine "
                     f"{ad_etiketi.text()!r} gösteriyor"
                 )
                 assert avatar_etiketi.text() == ad[0].upper()

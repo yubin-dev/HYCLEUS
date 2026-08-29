@@ -87,10 +87,10 @@ def test_contact_dialog_TEK_SAYFALI_role_parametresi_almiyor():
 
 
 def test_cagiran_dosyalar_role_GECMIYOR():
-    """main_window.py ve ProfileDialog.py `ContactDialog(self)`'i eskisi
+    """main_window.py ve ProfileView.py `ContactDialog(self)`'i eskisi
     gibi çağırıyor — B-062 turunda geçici olarak eklenen `role=` argümanı
     özellik tamamen kaldırıldığı için geri alındı."""
-    for goreli in ("UI/main_window.py", "UI/ProfileDialog.py"):
+    for goreli in ("UI/main_window.py", "UI/ProfileView.py"):
         kaynak = (KOK / goreli).read_text(encoding="utf-8")
         assert "ContactDialog(self, role=" not in kaynak, (
             f"{goreli}: hâlâ ContactDialog'a role geçiyor"

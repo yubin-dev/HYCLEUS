@@ -6407,3 +6407,148 @@ Tam test suite: 2945 passed, 4 skipped (bir önceki turdan +4 — bir yeni
 test dosyası, `tests/test_scan_timeout_dacl.py`). Ruff/mypy/bandit temiz.
 
 ---
+
+## B-082 — Çok-cihazlı hesap modeli: mockup çoklu USB listesi istiyor, şema (B-060) izin vermiyor
+
+**Durum:** Açık — bilinçli olarak ertelendi
+**Öncelik:** Düşük (talep edilmiş bir özellik değil, bir mockup uyuşmazlığı)
+
+Görev: Profil dialogunu tam sayfaya taşı, "Cihazlar ve oturum" bölümü
+ekle (kayıtlı USB token'ların LİSTESİ + hangisinin şu an takılı olduğu +
+"Oturumu kapat"). Test senaryosu olarak "birden fazla kayıtlı cihazı olan
+bir hesap" istendi.
+
+**Bulgu.** `users.hwid` kısmi UNIQUE indeksli
+(`DB/migrations.py::_m23_users_hwid_unique`, B-060): bir hesap en fazla
+BİR HWID'e bağlanabiliyor. "Birden fazla kayıtlı cihaz" senaryosu bugünkü
+şemada HİÇ VAR OLAMIYOR — bu bir UI eksikliği değil, B-060'ın kimlik
+doğrulama modelinin (aksi hâlde aynı fiziksel USB token'ı paylaşan iki
+hesap birbirinin yetkisini gasp edebilirdi) doğal ve KASITLI sonucu.
+
+**Karar (kullanıcıya soruldu, tahmin edilmedi).** "Cihazlar ve oturum"
+bölümü bugünkü GERÇEK modele göre inşa edildi: hesabın kendi TEK HWID'i
+— token ID, kayıt tarihi, kara liste durumu, "şu an takılı" (canlı
+`get_usb_hwid()` karşılaştırması). Veri kaynağı `UI/AdminPanel.py`'nin
+USB Yönetim Paneli'yle AYNI fonksiyon (`CORE/usb_tokens.py::
+token_kayitlarini_getir()`, `hwid=` filtresiyle daraltılmış) — iki
+görünüm arasında ayrı SQL yazılıp veri tutarsızlığı riski açılmadı.
+Şemayı GEVŞETİP çoklu cihaza izin vermek bu turda YAPILMADI: B-060'ın
+kapattığı gaspı yeniden açar, kimlik doğrulama modelini değiştiren ayrı
+ve bilinçli bir karar gerektirir.
+
+**Gelecekte gerçekten çok-cihazlı bir model isteniyorsa gerekenler**
+(bu turda değerlendirilmedi, yalnızca kapsamın büyüklüğünü göstermek
+için not düşülüyor):
+
+- `users.hwid` yerine ayrı bir `user_devices` tablosu (`user_id`,
+  `hwid`, `share_2`, `token_id`, ekleme tarihi) — `users` artık tek bir
+  HWID'e sabitlenmiyor.
+- Her cihazın KENDİ Shamir payı: bugün `share_2` tek bir vault dosyasına
+  bağlı; birden fazla cihaz aynı hesaba giriş yapabilecekse ya paylaşılan
+  bir kasa ya da cihaz başına ayrı kasa + aynı role senkronize edilmiş
+  bir mekanizma gerekir.
+- `_reject_if_weak_binding`/kara liste/rol değişimi gibi HWID-özel
+  akışların hepsinin "birden fazla geçerli HWID" varsayımına göre
+  yeniden gözden geçirilmesi.
+- Bir cihazın kara listeye alınmasının DİĞER cihazları etkileyip
+  etkilemeyeceği kararı (hesap seviyesinde mi, cihaz seviyesinde mi).
+
+SECURITY.md §4.23'e (EN+TR) belgelendi. `tests/test_profile_view.py`
+bugünkü tek-cihaz modelini doğruluyor; bu madde açıldığında o testlerin
+`AdminPanel`/`ProfileView` tutarlılık iddiası YENİDEN gözden geçirilmeli
+(birden fazla satır artık MEŞRU olur).
+
+---
+
+## B-083 — Profil dialogu tam sayfaya taşındı: "Cihazlar ve oturum" ve "Kendi işlemlerim" bölümleri eklendi
+
+Görev: Profil dialogunu modal'dan tam sayfaya taşı, mockup'taki "Cihazlar
+ve oturum" bölümünü ekle (kayıtlı USB token'ların listesi + hangisinin şu
+an takılı olduğu + "Oturumu kapat"). Bu verinin USB Yönetim Paneli'ndeki
+token tablosuyla aynı kaynaktan mı geleceğini önce incele. "Kendi
+işlemlerim" bölümünü ekle (kullanıcının kendi son denetim kayıtları).
+
+**Modal → tam sayfa.** `UI/ProfileDialog.py` (kaldırıldı) → `UI/
+ProfileView.py` — `UI/AuditLogView.py`/`UI/GuvenlikView.py` ile AYNI
+`_govde_yigini` (`QStackedWidget`) deseni: kenar çubuğu düğmesi yok
+(mevcut tetikleyici korundu — üst bardaki avatar tıklaması), sayfa
+dördüncü giriş olarak eklendi. `main_window.py::_on_open_profile()`
+`AuditLogView`'inkiyle aynı geçiş mantığını kullanıyor
+(`setCurrentWidget` + `_page_title` + `.yenile()`).
+
+**Veri kaynağı incelendi ÖNCE, düzeltme yazılmadan.** `UI/AdminPanel.py`
+`_load()`'un SQL'i doğrudan gövdede embed ediyordu. Bu SQL `CORE/
+usb_tokens.py::token_kayitlarini_getir()`'e taşındı (opsiyonel `hwid=`
+filtresiyle); `AdminPanel` KENDİSİ de bu fonksiyonu çağıracak şekilde
+refactor edildi — "aynı veriyi iki yerde farklı biçimde tutma" riski
+İKİ AYRI SORGU yazmak yerine TEK fonksiyonla kapatıldı.
+
+**Çoklu cihaz sorusu kullanıcıya soruldu, tahmin edilmedi.** `users.hwid`
+kısmi UNIQUE (B-060) — bir hesap en fazla bir HWID'e bağlanabiliyor,
+"birden fazla kayıtlı cihaz" senaryosu bugünkü şemada yok. Karar: bölüm
+GERÇEK 1-hesap-1-cihaz modeline göre inşa edildi (tek satır — token ID,
+kayıt tarihi, kara liste durumu, canlı "şu an takılı" göstergesi),
+şemayı gevşetmek yerine. Ayrıntı: BACKLOG B-082, SECURITY.md §4.23.
+
+**"Oturumu Kapat" gerçek kilit mekanizmasını kullanıyor, ikinci bir
+uygulama YAZILMADI.** Yeni bir kilit nedeni ("manual") `LockMixin`'in
+(`UI/main_window_lock.py`) mevcut `_lock()`/`_unlock()`/`_lock_reasons`
+kümesine eklendi — `_unlock_idle()`'ın AYNI PIN-doğrulama deseni,
+AYRI denetim eylemleriyle (`session_logged_out`, `manual_unlock_success/
+failed` — "hareketsizlikten kilitlendi" ile "kullanıcı kendi isteğiyle
+kilitledi" aynı sinyale düşerse denetim kaydı yanlış sebep gösterir).
+KRİTİK doğrulama: `_poll_usb`'nin varsayılan `_unlock()` çağrısı yalnızca
+"usb" nedenini kaldırıyor, "manual" bundan ETKİLENMİYOR — aksi hâlde
+kullanıcının kendi USB'si takılı kaldığı için "Oturumu Kapat" tıklaması
+gözle görülmeden bir anlığına kilitleyip hemen kendiliğinden açardı.
+Bu, ayrı bir testle ZORLANARAK doğrulandı (`_poll_usb()` manuel kilitten
+HEMEN sonra çağrıldı).
+
+**"Kendi işlemlerim" — `AuditLogView`'in KOPYASI değil, küçük bir alt
+kümesi.** `audit_log` tablosunun `user_id` ile daraltılmış son 20 kaydı;
+HALKA zincir sütunu, filtreler, TXT dışa aktarım YOK — amaç "tüm günlüğü
+yönet" değil "son işlemlerime hızlı bakış." Tam günlük gerekiyorsa
+kullanıcı (yetkisi varsa) Denetim Günlüğü sayfasına gidebilir.
+
+**Test — `tests/test_profile_view.py` (yeni, 6 test).** (1) Cihaz
+satırının `AdminPanel`'in aynı HWID için gösterdiğiyle tutarlı olduğu —
+İKİNCİ, ilgisiz bir token eklenerek `hwid=` filtresinin gerçekten
+çalıştığı kanıtlandı (tek token varken filtreli/filtresiz sorgu HER ZAMAN
+aynı sonucu verirdi, test tesadüfen geçerdi). (2) Kara liste durumunun
+iki görünümde tutarlı olduğu. (3) "Şu an takılı"nın canlı `get_usb_hwid()`
+karşılaştırmasına göre değiştiği (USB çekilince "Hayır"a döndüğü).
+(4) "Kendi işlemlerim"in BAŞKA bir kullanıcının kaydını sızdırmadığı.
+(5) "Oturumu Kapat"ın kilitlediği ve aynı USB takılıyken `_poll_usb`
+tarafından kendi kendine açılmadığı. (6) Doğru PIN'le açıldığı.
+
+**Mutasyon kanıtları (üçü de geri alındı, `git diff --stat` temiz):**
+
+- `token_kayitlarini_getir()`'in `hwid=` filtresi devre dışı bırakıldı —
+  satır sayısı denetimi **BAŞARISIZ** oldu (1 yerine 2 satır).
+- `_load_islemlerim()`'in `WHERE user_id = ?` koşulu kaldırıldı —
+  sızıntı denetimi **BAŞARISIZ** oldu (başka kullanıcının kaydı sızdı).
+- `_poll_usb()`'a "manual"ı da temizleyen bir regresyon eklendi —
+  kalıcılık denetimi **BAŞARISIZ** oldu (kilit yanlışlıkla açıldı).
+
+**Ayrıca düzeltildi (yol boyunca bulundu):** `tests/conftest.py::
+SahteUSB._HEDEF_MODULLERI`'ne `UI.ProfileView` eklendi — eklenmeseydi
+`sahte_usb` fixture'ı kullanan testler ProfileView'ın `get_usb_hwid()`'ini
+yamalamadan GERÇEK donanımı görmeye devam ederdi (yorumun kendi uyarısı).
+`main.py::_SELFTEST_MODULLERI`'ne yeni `CORE.usb_tokens` modülü eklendi
+(paketleme öz-testi kapsıyor).
+
+`UI/ProfileDialog.py`'ye çapraz referans veren dosyalar güncellendi:
+`tests/test_pin_rotation.py`, `tests/test_contact_dialog.py`,
+`tests/test_authz_invariants.py` (B-065 testi artık `ProfileView`
+kullanıyor), `CORE/pin_rotation.py`, `UI/PinRotationDialog.py`,
+`UI/ThemePickerDialog.py` (şimdiki-zaman anlatımlı yorumlar). Geçmiş
+zaman anlatımlı tarihsel referanslar (`tests/test_login_dialog_kurtarma_
+ekrani_yok.py`, `tests/test_ui_yasakli_iddia_terimleri.py`) BİLEREK
+değiştirilmedi — o zamanki gerçek durumu doğru anlatmaya devam ediyorlar.
+
+SECURITY.md §4.23'e (EN+TR) belgelendi.
+
+Tam test suite: 2955 passed, 4 skipped (bir önceki turdan +10 — bir yeni
+test dosyası, `tests/test_profile_view.py`). Ruff/mypy/bandit temiz.
+
+---

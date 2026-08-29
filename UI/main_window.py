@@ -49,6 +49,7 @@ from UI.GuvenlikView import (
     GUVENLIK_SALT_OKUNURA_ACIK,
     SAYFA_ADI as _GUVENLIK_SAYFA_ADI,
 )
+from UI.ProfileView import SAYFA_ADI as _PROFIL_SAYFA_ADI
 from CORE.version import surum_etiketi
 from CORE.vault_manager import (
     blacklist_usb,
@@ -404,15 +405,24 @@ class HycleusWindow(
                 f"{hedef}")
 
     def _on_open_profile(self) -> None:
-        from UI.ProfileDialog import ProfileDialog
-        ProfileDialog(
-            hwid=self._hwid,
-            username=self._username,
-            role=self._role,
-            user_id=self._user_id,
-            parent=self,
-            T=self._T,
-        ).exec()
+        """
+        Profil sayfasına geçer — eskiden (`UI/ProfileDialog.py`, kaldırıldı)
+        modal bir `.exec()` idi, `UI/AuditLogView.py`/`UI/GuvenlikView.py`
+        ile AYNI `_govde_yigini` (`QStackedWidget`) deseniyle tam sayfaya
+        taşındı.
+
+        Rol kapısı YOK — Güvenlik/Denetim Günlüğü'nün aksine bu sayfa
+        HERKESE açık (kendi profilin, kendi cihazın, kendi işlemlerin).
+        """
+        if self._active_btn is not None:
+            self._active_btn.setStyleSheet(self._nav_btn_style(active=False))
+            self._active_btn = None
+        self._guvenlik_btn.setStyleSheet(self._nav_btn_style(active=False))
+        self._audit_log_btn.setStyleSheet(self._nav_btn_style(active=False))
+        self._govde_yigini.setCurrentWidget(self._profil_view)
+        self._action_bar.setVisible(False)
+        self._page_title.setText(_PROFIL_SAYFA_ADI)
+        self._profil_view.yenile()
 
     def _on_hamburger_menu(self) -> None:
         """
@@ -583,13 +593,24 @@ class HycleusWindow(
         self._populate_table(rows)
 
 
-    # ── Kilit — iki tetikleyici, tek örtü ─────────────────────────────────────
+    # ── Kilit — üç tetikleyici, tek örtü ──────────────────────────────────────
     #
     # Kilit NEDENLERİ bir küme olarak tutuluyor. Tek bir _locked bayrağı
     # yeterli değildi: hareketsizlik kilidi devredeyken USB de çekilse ve
     # sonra USB geri takılsa, _poll_usb'nin çağırdığı _unlock() hareketsizlik
     # kilidini de kaldırırdı — yani ekrandan uzaktaki kullanıcının oturumu
     # USB'yi takan kişiye açılırdı. Küme boşalmadan örtü kalkmıyor.
+    #
+    # "manual" — Profil sayfasındaki "Oturumu Kapat" (bkz. UI/ProfileView.py::
+    # _on_logout, UI/main_window_lock.py::_on_manual_logout/_unlock_manual).
+    # "idle" İLE AYNI mekanizma (PIN'le açılır, _poll_usb'nin varsayılan
+    # _unlock() çağrısı — yalnızca "usb" nedenini kaldırır — BUNU
+    # ETKİLEMEZ, kullanıcının kendi USB'si takılı kalsa bile kilit kendi
+    # kendine AÇILMAZ) ama AYRI bir neden: "hareketsizlikten kilitlendi"
+    # ile "kullanıcı kendi isteğiyle kilitledi" aynı denetim sinyaline
+    # düşerse kayıt yanlış sebep gösterir (bu oturumun defalarca uyguladığı
+    # "verdict-distinctness" ilkesi — ör. CORE/scanner_backends.py::
+    # timeout_result()'ın mock_result()'tan ayrılması).
 
     _LOCK_MESSAGES = {
         "usb": (
@@ -597,6 +618,7 @@ class HycleusWindow(
             "Oturuma devam etmek için USB'yi yeniden takın — algılanınca otomatik devam eder",
         ),
         "idle": ("Oturum Kilitlendi", "Hareketsizlik nedeniyle — devam etmek için PIN girin"),
+        "manual": ("Oturum Kapatıldı", "Devam etmek için vault PIN'inizi girin"),
         # Alt metin _poll_usb tarafından _revoked_reason'a yazılıp burada
         # üzerine geçiliyor (bkz. LockMixin._lock) — bu yalnızca yedek.
         # PIN girerek açılamaz: yetki DB'de gerçekten iptal edilmiş,
