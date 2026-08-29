@@ -2497,6 +2497,91 @@ outright rather than requiring an assertion to catch a stray call) and a
 new test directly asserts the arguments passed to `Popen` are not
 `subprocess.PIPE`.
 
+**Second follow-up (same day): temp-file safety audit — three areas clean,
+one real gap found and closed.** Moving `run_tool()`'s stdout/stderr off a
+pipe and onto real temp files (above) raised four new questions of its
+own: is the temp filename predictable, can concurrent scans collide on a
+name, can the stale-file sweep race itself, and who can read the file. All
+four were investigated with evidence, not assumption, before any fix was
+written.
+
+1. *Creation API — no risk.* `tempfile.mkstemp()` (`CORE/scanner_backends.py`,
+   the two calls right before the file is opened) opens with `O_CREAT |
+   O_EXCL` — on Windows this maps to `CreateFile(..., CREATE_NEW, ...)`,
+   which atomically fails if anything (file, directory, reparse point)
+   already exists at that path, and the name itself is 8 random characters
+   from a `random.Random()` instance seeded once per process from
+   `os.urandom`. A local process pre-planting a file or symlink at a
+   guessed name cannot get `run_tool()` to open it: creation fails outright
+   and `mkstemp()` retries with a new random name.
+
+2. *Concurrency — no risk, measured.* 20 real `run_tool()` calls run in
+   parallel on an actual `QThreadPool` (`maxThreadCount=20`), with
+   `tempfile.mkstemp()` wrapped (observation only, no source change) to
+   record every filename produced: 40 filenames (20 calls × stdout+stderr),
+   **40 unique, zero collisions** — the direct empirical consequence of
+   `O_EXCL`'s atomicity in (1).
+
+3. *Sweep race — no risk, forced and measured.* `_eski_gecici_dosyalari_
+   temizle()`'s `unlink()` was already inside `except OSError: pass`
+   (`FileNotFoundError` is an `OSError` subclass), so a second thread
+   losing the race to delete an already-gone file should already be
+   silently absorbed. Forced it rather than trusting the reasoning: backdated
+   a real file's mtime past the one-hour threshold with `os.utime()`, then
+   had **12 threads call the real, unmodified sweep function simultaneously**
+   via a `threading.Barrier` (all 12 hit the code at the same instant).
+   Result: zero exceptions escaped, the file was removed exactly once.
+
+4. *File permissions — real gap, found and closed.* `os.open(...,
+   mode=0o600)` doesn't translate into a real ACL on Windows (CPython's
+   own documented behavior: on Windows the mode argument can only affect
+   the read-only DOS attribute). The file the current code created
+   inherited whatever ACL its parent `%TEMP%` directory carried, verified
+   by creating a real file and reading its ACL: alongside the current user,
+   `SYSTEM`, and `Administrators`, a group (`CodexSandboxUsers` in the
+   measured environment) and an unresolved SID also held `Modify` rights —
+   demonstrating concretely that "only the running user can read this"
+   was an environment assumption, not something the code guaranteed. On a
+   shared or terminal-server-style host, or wherever `%TEMP%`'s ACL has
+   been widened by policy, another local account could read scan output —
+   file paths, the ClamAV signature name, verdict text.
+
+**Fixed: an explicit, non-inherited DACL, not trust in `%TEMP%`'s.**
+`_gecici_dosyayi_kullaniciya_kisitla()` runs immediately after each temp
+file is created (both stdout and stderr) and, on Windows, replaces its DACL
+with exactly two entries — the current process token's user SID and
+`SYSTEM` — via `win32security.SetFileSecurity(...,
+DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, ...)`.
+`PROTECTED_DACL_SECURITY_INFORMATION` is what actually cuts inheritance;
+without it Windows would silently merge the new ACEs back in with the
+parent's. Verified directly against a real file with the same measurement
+method as the audit: `win32security.GetFileSecurity()` afterward reports
+exactly `{current user, SYSTEM}` — confirmed independently with `icacls`
+too, and the previously-present group/unresolved-SID entries are gone. A
+small, disclosed residual window remains: the file exists for a few
+microseconds between `mkstemp()`'s creation and this call, still carrying
+the wider inherited ACL — closing that fully would mean hand-rolling
+`mkstemp()`'s own atomic unique-name loop against `CreateFile` with a
+security descriptor supplied at creation time, out of scope for this
+change. `pywin32` is not a new dependency — `requirements.txt` already
+requires it transitively via `wmi` on Windows, and `CORE/secret_store.py`
+and `CORE/hwid_probe.py` already do the same lazy, platform-gated
+`import win32...` pattern used here. Best-effort like the rest of this
+module's cleanup logic: if `SetFileSecurity` fails for any reason, a
+warning is logged and the scan proceeds with the file's original
+(pre-this-change) inherited ACL — not a regression, the prior behavior.
+
+**Verified two ways.** `tests/test_scan_timeout_dacl.py`: a unit test
+creates a real file, restricts it, and asserts the real queried DACL is
+exactly `{current user, SYSTEM}`; an integration test spies on
+`_gecici_dosyayi_kullaniciya_kisitla` and confirms `run_tool()` actually
+calls it for both temp files (the unit test alone can't catch the call
+being dropped from `run_tool()`, since it invokes the helper directly); a
+third confirms a `SetFileSecurity` failure doesn't break the scan.
+Mutation-proved: commenting out the two calls in `run_tool()` failed the
+integration test immediately (0 calls recorded instead of 2) — confirmed
+discriminating, then reverted and confirmed green again.
+
 ---
 
 ## 5. Cryptographic details
@@ -5330,6 +5415,97 @@ güncellendi (sahte `Popen`'ın artık bir `communicate()` metodu bile yok —
 çağrılırsa bir doğrulamanın onu yakalamasını beklemeden doğrudan
 `AttributeError` fırlatıyor) ve `Popen`'a geçilen argümanların
 `subprocess.PIPE` OLMADIĞINI doğrudan denetleyen yeni bir test eklendi.
+
+**İkinci takip (aynı gün): geçici dosya güvenliği denetimi — üç alan
+temiz, biri gerçek boşluk çıktı ve kapatıldı.** `run_tool()`'un stdout/
+stderr'ini pipe'tan gerçek geçici dosyalara taşımak (yukarıda) kendi
+başına dört yeni soru doğurdu: geçici dosya adı tahmin edilebilir mi,
+eşzamanlı taramalar bir adda çakışabilir mi, eski-dosya süpürmesi kendi
+içinde yarışabilir mi, dosyayı kim okuyabilir. Dördü de bir düzeltme
+yazılmadan ÖNCE, varsayımla değil kanıtla incelendi.
+
+1. *Oluşturma API'si — risk yok.* `tempfile.mkstemp()`
+   (`CORE/scanner_backends.py`, dosya açılmadan hemen önceki iki çağrı)
+   `O_CREAT | O_EXCL` ile açıyor — Windows'ta bu `CreateFile(...,
+   CREATE_NEW, ...)`'e karşılık geliyor, hedefte HERHANGİ bir şey (dosya,
+   dizin, reparse point) zaten varsa atomik olarak başarısız oluyor, adın
+   kendisi de işlem başına bir kez `os.urandom`'dan tohumlanan bir
+   `random.Random()`'dan çekilen 8 rastgele karakter. Yerel bir sürecin
+   tahmin edilen bir adda önceden dosya/symlink hazırlaması `run_tool()`'u
+   onu açmaya ZORLAYAMIYOR: oluşturma doğrudan başarısız oluyor,
+   `mkstemp()` yeni bir rastgele adla tekrar deniyor.
+
+2. *Eşzamanlılık — risk yok, ölçüldü.* Gerçek bir `QThreadPool`
+   (`maxThreadCount=20`) üzerinde 20 gerçek `run_tool()` çağrısı paralel
+   çalıştırıldı, `tempfile.mkstemp()` (yalnızca gözlem için, kaynak
+   değiştirilmeden) sarmalanıp üretilen her ad kaydedildi: 40 ad (20
+   çağrı × stdout+stderr), **40'ı da benzersiz, sıfır çakışma** — (1)'deki
+   `O_EXCL` atomikliğinin doğrudan ampirik sonucu.
+
+3. *Süpürme yarış durumu — risk yok, zorlanıp ölçüldü.* `_eski_gecici_
+   dosyalari_temizle()`'nin `unlink()`'i zaten `except OSError: pass`
+   içindeydi (`FileNotFoundError` bir `OSError` alt sınıfı), yani ikinci
+   bir thread'in zaten silinmiş bir dosyayı silme yarışını kaybetmesi
+   halihazırda sessizce yutulmalıydı. Varsayıma güvenmek yerine
+   zorlandı: gerçek bir dosyanın mtime'ı `os.utime()` ile 1 saatlik
+   eşiğin ötesine geri tarihlendi, sonra **12 thread `threading.Barrier`
+   ile GERÇEK, değiştirilmemiş süpürme fonksiyonunu TAM AYNI ANDA**
+   çağırdı (12'si de kodu aynı anda vurdu). Sonuç: sıfır exception
+   dışarı sızdı, dosya tam olarak bir kez silindi.
+
+4. *Dosya izinleri — gerçek boşluk, bulundu ve kapatıldı.* `os.open(...,
+   mode=0o600)` Windows'ta gerçek bir ACL'e ÇEVRİLMİYOR (CPython'un kendi
+   belgelediği davranış: Windows'ta mode argümanı yalnızca salt-okunur DOS
+   bayrağını etkileyebilir). O ana kadarki kodun oluşturduğu dosya, ebeveyn
+   `%TEMP%` dizininin ACL'ini olduğu gibi devralıyordu — gerçek bir dosya
+   oluşturup ACL'i okuyarak doğrulandı: mevcut kullanıcı, `SYSTEM` ve
+   `Administrators`'ın yanında bir grup (ölçülen ortamda
+   `CodexSandboxUsers`) ve çözülmemiş bir SID de `Modify` hakkına sahipti
+   — "yalnızca çalıştıran kullanıcı okuyabilir" varsayımının kod
+   tarafından GARANTİ EDİLMEDİĞİNİ, bir ortam varsayımı olduğunu somut
+   olarak gösterdi. Paylaşımlı ya da terminal-server tarzı bir makinede,
+   ya da `%TEMP%`'in ACL'i politika ile genişletilmiş herhangi bir yerde,
+   başka bir yerel hesap tarama çıktısını — dosya yolu, ClamAV imza adı,
+   verdict metni — okuyabilirdi.
+
+**Düzeltildi: açık, kalıtımsız bir DACL — `%TEMP%`'inkine GÜVENMİYOR.**
+`_gecici_dosyayi_kullaniciya_kisitla()` her geçici dosya oluşturulduktan
+(hem stdout hem stderr) hemen sonra çalışıyor ve Windows'ta DACL'i tam
+olarak iki girişle değiştiriyor — mevcut süreç token'ının kullanıcı SID'i
+ve `SYSTEM` — `win32security.SetFileSecurity(...,
+DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, ...)`
+ile. Kalıtımı GERÇEKTEN kesen `PROTECTED_DACL_SECURITY_INFORMATION` —
+onsuz Windows yeni ACE'leri ebeveynin ACE'leriyle sessizce birleştirirdi.
+Denetimle AYNI ölçüm yöntemiyle gerçek bir dosya üzerinde doğrulandı:
+`win32security.GetFileSecurity()` sonrasında tam olarak `{mevcut kullanıcı,
+SYSTEM}` bildiriyor — `icacls` ile de bağımsız olarak teyit edildi, ve
+önceden mevcut grup/çözülmemiş-SID girişleri artık YOK. Küçük, saklanmayan
+bir kalan pencere var: dosya `mkstemp()`'in oluşturmasıyla bu çağrı
+arasında birkaç mikrosaniye boyunca hâlâ geniş kalıtılan ACL'i taşıyor —
+bunu tamamen kapatmak `mkstemp()`'in kendi atomik benzersiz-ad döngüsünü
+`CreateFile`'a oluşturma anında verilen bir güvenlik tanımlayıcısıyla elle
+yeniden yazmak anlamına gelirdi, bu değişikliğin kapsamı dışında. `pywin32`
+yeni bir bağımlılık değil — `requirements.txt` Windows'ta `wmi` üzerinden
+onu zaten dolaylı olarak zorunlu kılıyor, ve `CORE/secret_store.py` ile
+`CORE/hwid_probe.py` burada kullanılan AYNI tembel, platforma-kapılı
+`import win32...` desenini zaten kullanıyor. Bu modülün geri kalan
+temizlik mantığı gibi BEST EFFORT: `SetFileSecurity` herhangi bir nedenle
+başarısız olursa bir uyarı loglanır ve tarama dosyanın ORİJİNAL (bu
+değişiklikten ÖNCEKİ) kalıtılan ACL'iyle devam eder — bir gerileme değil,
+önceki davranışın aynısı.
+
+**İki yolla doğrulandı.** `tests/test_scan_timeout_dacl.py`: bir birim
+testi gerçek bir dosya oluşturup kısıtlıyor ve gerçek sorgulanan DACL'in
+tam olarak `{mevcut kullanıcı, SYSTEM}` olduğunu doğruluyor; bir
+entegrasyon testi `_gecici_dosyayi_kullaniciya_kisitla`'yı gözetleyip
+`run_tool()`'un onu her iki geçici dosya için de GERÇEKTEN çağırdığını
+kanıtlıyor (birim testi TEK BAŞINA, yardımcı fonksiyonu doğrudan çağırdığı
+için, çağrının `run_tool()`'dan düşmesini yakalayamaz); üçüncüsü bir
+`SetFileSecurity` başarısızlığının taramayı bozmadığını doğruluyor.
+Mutasyonla kanıtlandı: `run_tool()`'daki iki çağrı geçici olarak
+yorum satırına alındı — entegrasyon testi ANINDA kırıldı (2 yerine 0 çağrı
+kaydedildi) — gerçekten ayırt ettiği doğrulandı, sonra geri alınıp yeşile
+döndüğü teyit edildi.
 
 ---
 

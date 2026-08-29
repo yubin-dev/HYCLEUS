@@ -188,6 +188,78 @@ def _eski_gecici_dosyalari_temizle() -> None:
         pass
 
 
+def _gecici_dosyayi_kullaniciya_kisitla(yol: str) -> None:
+    """`run_tool()`'un oluşturduğu geçici stdout/stderr dosyasının DACL'ini
+    YALNIZCA çalışan sürecin sahibi + SYSTEM'e daraltır — `%TEMP%`'in
+    devrettiği kalıtımlı ACL'e GÜVENMEZ.
+
+    Ölçülen gerekçe (bkz. SECURITY.md §4.22): `tempfile.mkstemp()`'in
+    ürettiği dosya ebeveyn `%TEMP%` dizininin ACL'ini OLDUĞU GİBİ devralır.
+    Bu depoda ölçüldüğünde bu ACL yalnızca çalıştıran kullanıcıyla SINIRLI
+    DEĞİLDİ — bir grup (`CodexSandboxUsers`) ve çözülmemiş bir SID de
+    `Modify` hakkına sahipti. `os.open(..., mode=0o600)`'daki `mode`
+    Windows'ta gerçek bir ACL'e ÇEVRİLMİYOR (CPython'un kendi belgelediği
+    davranış — yalnızca salt-okunur DOS bayrağını etkileyebilir). Yani
+    "yalnızca bu kullanıcı okuyabilir" varsayımı kodun kendisinde değil,
+    ortamın `%TEMP%` yapılandırmasında duruyordu — paylaşımlı/terminal-
+    server bir ortamda ya da GPO ile genişletilmiş bir ACL'de başka bir
+    yerel hesap tarama çıktısını (dosya yolu, ClamAV imza adı, verdict)
+    okuyabilirdi.
+
+    `PROTECTED_DACL_SECURITY_INFORMATION` KALITIMI KESER — yeni DACL
+    yalnızca burada açıkça eklenen iki girişi taşır, ebeveyn dizinden
+    hiçbir ACE miras alınmaz.
+
+    Kalan, bilinçli olarak KABUL EDİLEN pencere: dosya `tempfile.mkstemp()`
+    ile ÖNCE oluşturulup SONRA bu fonksiyonla kısıtlanıyor — ikisi arasında
+    (mikrosaniyeler mertebesinde) dosya hâlâ ebeveynin geniş ACL'ini taşır.
+    Sıfır pencereli bir çözüm dosyayı doğrudan kısıtlı bir
+    `SECURITY_ATTRIBUTES` ile `CreateFile`'a açmayı gerektirirdi —
+    `tempfile.mkstemp()`'in kendi atomik benzersiz-ad üretimini (bkz.
+    SECURITY.md §4.22, madde 1) elle yeniden yazmak anlamına gelirdi. Bu
+    değişikliğin kapsamı "oluştur, hemen ardından kısıtla" — pencere
+    sıfıra inmiyor ama saniyenin çok küçük bir kesrine iniyor, ÖNCEKİ
+    davranıştan (dosyanın YAŞAM SÜRESİ BOYUNCA geniş ACL taşıması) büyük
+    bir iyileşme.
+
+    Windows dışında NO-OP: Linux/macOS'ta `os.open`'ın kendi `mode`
+    parametresi zaten gerçek POSIX izinlerine çevriliyor, ek bir adım
+    gerekmiyor. Başarısız olursa (pywin32 yok, izin sorunu, ...) taramayı
+    DÜŞÜRMEZ — yalnızca uyarı loglar; dosya `%TEMP%`'in devrettiği (bu
+    değişiklikten ÖNCEKİ) ACL'iyle kalır, bu bir GERİLEME değil, eski
+    davranışın aynısıdır.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ntsecuritycon as con
+        import win32api
+        import win32con
+        import win32security
+
+        token = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(), win32con.TOKEN_QUERY
+        )
+        kullanici_sid, _ = win32security.GetTokenInformation(token, win32security.TokenUser)
+        system_sid = win32security.CreateWellKnownSid(win32security.WinLocalSystemSid)
+
+        dacl = win32security.ACL()
+        dacl.AddAccessAllowedAce(win32security.ACL_REVISION, con.FILE_ALL_ACCESS, kullanici_sid)
+        dacl.AddAccessAllowedAce(win32security.ACL_REVISION, con.FILE_ALL_ACCESS, system_sid)
+
+        sd = win32security.SECURITY_DESCRIPTOR()
+        sd.SetSecurityDescriptorDacl(1, dacl, 0)
+
+        win32security.SetFileSecurity(
+            yol,
+            win32security.DACL_SECURITY_INFORMATION
+            | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+            sd,
+        )
+    except Exception as exc:  # noqa: BLE001 — sertleştirme adımı taramayı düşürmemeli
+        _log.warning("gecici_dosya_dacl_kisitlanamadi  yol=%s  hata=%s", yol, exc)
+
+
 def run_tool(argv: list[str], timeout: int = SCAN_TIMEOUT) -> subprocess.CompletedProcess[str]:
     """Tarayıcıyı çalıştırır — worker havuzunu KESİN bir tavanla korur.
 
@@ -268,10 +340,23 @@ def run_tool(argv: list[str], timeout: int = SCAN_TIMEOUT) -> subprocess.Complet
     dosyası, HYCLEUS'un kendi sürecinde canlı bir thread ya da tanıtıcı
     DEĞİL. `_eski_gecici_dosyalari_temizle()` bir SONRAKİ `run_tool()`
     çağrısında bu kalıntıları süpürür.
+
+    DOSYA İZİNLERİ — `%TEMP%`'in ACL'ine GÜVENİLMİYOR
+    -----------------------------------------------------------------------
+    Bu geçici dosyalar tarama çıktısı taşıyor: dosya yolu, ClamAV'da imza
+    adı, verdict metni — potansiyel olarak hassas. `tempfile.mkstemp()`'in
+    ürettiği dosya varsayılan olarak ebeveyn `%TEMP%` dizininin ACL'ini
+    OLDUĞU GİBİ devralır; bu ölçüldüğünde (bkz. SECURITY.md §4.22)
+    yalnızca çalıştıran kullanıcıyla sınırlı DEĞİLDİ. `_gecici_dosyayi_
+    kullaniciya_kisitla()` her iki dosya için de oluşturulduktan hemen
+    sonra çağrılıp DACL'i yalnızca mevcut kullanıcı + SYSTEM'e daraltıyor,
+    kalıtımı kesiyor — ayrıntı ve ölçüm o fonksiyonun docstring'inde.
     """
     _eski_gecici_dosyalari_temizle()
     out_fd, out_yolu = tempfile.mkstemp(prefix=f"{_GECICI_ONEK}out_")
     err_fd, err_yolu = tempfile.mkstemp(prefix=f"{_GECICI_ONEK}err_")
+    _gecici_dosyayi_kullaniciya_kisitla(out_yolu)
+    _gecici_dosyayi_kullaniciya_kisitla(err_yolu)
     try:
         with open(out_fd, "wb") as out_f, open(err_fd, "wb") as err_f:
             proc = subprocess.Popen(argv, stdout=out_f, stderr=err_f)

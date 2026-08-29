@@ -6352,4 +6352,58 @@ okumuştu, bu turda ÜÇÜNCÜ kez karşılaşılan aynı dosya-düzenleme yarı
 SECURITY.md'ye hiçbir eş zamanlı dokunuş olmadan yapılan temiz bir tekrar
 koşusu 2941 passed/4 skipped verdi, gerçek bir regresyon değildi.)
 
+**İkinci takip (aynı gün): geçici dosya güvenliği dört başlıkta
+denetlendi — üçü temiz, dördü (izinler) bulunup düzeltildi.** Önce YALNIZCA
+denetim istendi ("henüz düzeltme yapma, yalnızca kanıt topla") — dört madde
+ayrı ayrı ölçüldü, sonra bulguya göre düzeltme kararı ayrı bir mesajda
+verildi.
+
+*1. Oluşturma API'si — risk yok.* `tempfile.mkstemp()` `O_CREAT|O_EXCL`
+(Windows'ta `CREATE_NEW`) kullanıyor — tahmin edilebilir PID/sayaç/zaman
+damgası ADI YOK, rastgele 8 karakter + atomik "zaten varsa başarısız ol"
+garantisi. Önceden dosya/symlink hazırlama saldırısı bu API'de çalışmıyor.
+
+*2. Eşzamanlılık — risk yok, ölçüldü.* Gerçek `QThreadPool`'da
+(maxThreadCount=20) 20 paralel `run_tool()` çağrısı, üretilen 40 dosya
+adının (20×stdout+stderr) TAMAMI benzersiz, sıfır çakışma.
+
+*3. Süpürme yarış durumu — risk yok, zorlanıp ölçüldü.* `_eski_gecici_
+dosyalari_temizle()`'nin `unlink()`'i zaten `except OSError: pass`
+içindeydi. 12 thread `threading.Barrier` ile aynı eski dosyayı GERÇEKTEN
+aynı anda silmeye zorlandı — sıfır sızan exception, dosya bir kez silindi.
+
+*4. Dosya izinleri — GERÇEK boşluk, düzeltildi.* `os.open(mode=0o600)`
+Windows'ta gerçek bir ACL'e çevrilmiyor (CPython'un belgelediği davranış).
+Ölçülen gerçek dosya, ebeveyn `%TEMP%`'in ACL'ini olduğu gibi devralıyordu
+— yalnızca çalıştıran kullanıcıyla sınırlı DEĞİLDİ (bir grup ve çözülmemiş
+bir SID de `Modify` hakkına sahipti). Düzeltme: `_gecici_dosyayi_
+kullaniciya_kisitla()`, her iki geçici dosya için de oluşturulduktan hemen
+sonra çağrılıyor, Windows'ta DACL'i `win32security.SetFileSecurity(...,
+DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, ...)`
+ile tam olarak {mevcut kullanıcı, SYSTEM}'e daraltıyor — kalıtım kesiliyor.
+Gerçek bir dosya üzerinde doğrulandı: `GetFileSecurity()` sonrası tam
+olarak beklenen iki SID, `icacls` ile bağımsız teyit edildi, önceki
+grup/SID girişleri artık yok. `pywin32` yeni bağımlılık değil
+(`requirements.txt`: `wmi` → `pywin32`, Windows'ta zaten zorunlu);
+`CORE/secret_store.py`/`CORE/hwid_probe.py`'nin aynı tembel `import
+win32...` deseni kullanıldı. Başarısız olursa (best effort) taramayı
+düşürmüyor, yalnızca uyarı logluyor — dosya eski (bu değişiklikten önceki)
+ACL'iyle kalıyor.
+
+*Test — `tests/test_scan_timeout_dacl.py` (yeni).* Birim testi: gerçek
+dosya oluşturup kısıtlayıp gerçek DACL'i sorguluyor, tam olarak {kullanıcı,
+SYSTEM} bekliyor. Entegrasyon testi: `run_tool()`'un kısıtlama fonksiyonunu
+HER İKİ dosya için de GERÇEKTEN çağırdığını (spy ile) doğruluyor — birim
+testi bunu tek başına yakalayamaz. Üçüncü test: `SetFileSecurity`
+patlarsa tarama akışının bozulmadığını doğruluyor. Mutasyon kanıtı:
+`run_tool()`'daki iki kısıtlama çağrısı geçici olarak yorum satırına
+alındı — entegrasyon testi ANINDA **BAŞARISIZ** oldu (0 çağrı, 2
+bekleniyordu), sonra geri alındı, `git diff --stat` temiz, tekrar
+**BAŞARILI**.
+
+SECURITY.md §4.22'ye (EN+TR) "İkinci takip" bölümü olarak eklendi.
+
+Tam test suite: 2945 passed, 4 skipped (bir önceki turdan +4 — bir yeni
+test dosyası, `tests/test_scan_timeout_dacl.py`). Ruff/mypy/bandit temiz.
+
 ---
