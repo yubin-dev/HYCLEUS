@@ -27,3 +27,10 @@ bandit[toml]>=1.9
 #
 # Saf Python, kendi bağımlılığı yok, ~30 KB.
 defusedxml>=0.7.1
+
+# tests/test_scanner_backends.py'nin işletim sistemi tanıtıcı/thread sızıntısı
+# regresyon testi için (B-081 devamı — bkz. SECURITY.md §4.22).
+# `psutil.Process().num_handles()` yalnızca Windows'ta var; test bu yüzden
+# `sys.platform != "win32"` ise atlanıyor, ama paket iki tarafta da kurulu
+# olmalı ki Linux CI ayağında import hatasıyla TÜM dosya çökmesin.
+psutil>=7.0

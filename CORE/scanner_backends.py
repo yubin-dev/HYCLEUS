@@ -37,6 +37,8 @@ import logging
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +59,18 @@ SCAN_TIMEOUT = 120
 #: `run_tool()`'un zaman aşımından SONRA süreci `kill()` edip son çıkış
 #: durumunu beklerken tanıdığı tavan — bkz. `run_tool()` docstring'i.
 KILL_GRACE = 5
+
+#: `run_tool()`'un stdout/stderr'i yönlendirdiği geçici dosyaların ön eki —
+#: hem oluşturulurken hem de `_eski_gecici_dosyalari_temizle()`'nin süpürme
+#: taramasında eşleştirmek için kullanılıyor.
+_GECICI_ONEK = "hycleus_scan_"
+
+#: Bir torun sürecin dosyayı hâlâ açık tuttuğu için silinemeyen geçici
+#: dosyaların, "artık güvenle silinebilir" sayıldığı yaş tavanı. `SCAN_TIMEOUT
+#: + KILL_GRACE` (en çok ~125 sn) süren HERHANGİ bir gerçek taramadan çok daha
+#: büyük tutuldu — bu yüzden süpürme, hâlâ devam eden başka bir taramanın
+#: dosyasına ASLA dokunmaz.
+_ESKI_GECICI_ESIK_SN = 3600
 
 #: ClamAV araçları, TERCİH SIRASIYLA. `clamdscan` çalışan bir daemon'a
 #: konuşur (imza veritabanı zaten yüklü, tarama milisaniyeler); `clamscan`
@@ -149,6 +163,31 @@ def sha256_of(path: Path) -> str:
 
 # ── Alt süreç dikişi ──────────────────────────────────────────────────────────
 
+def _eski_gecici_dosyalari_temizle() -> None:
+    """`run_tool()`'un geçmişte silemediği geçici stdout/stderr dosyalarını
+    süpürür — bkz. `run_tool()` docstring'inin "kalıntı" bölümü.
+
+    Bir torun süreç dosyayı hâlâ açık tuttuğu için `run_tool()`'un kendi
+    `unlink()` denemesi başarısız olabilir (Windows açık bir dosyayı
+    silmeye izin vermez). Bu fonksiyon her `run_tool()` çağrısının başında
+    çalışır ve `_ESKI_GECICI_ESIK_SN`'den daha eski kalıntıları temizlemeyi
+    dener — torun süreç sonunda kendi kapanınca (ya da makine yeniden
+    başlayınca) dosya artık serbest kalmış olur ve bir SONRAKİ tarama onu
+    süpürür. Başarısız olursa (dosya hâlâ açık, yetki sorunu, ...) SESSİZCE
+    geçilir: bu en iyi çaba temizliği, hiçbir taramayı düşürmemeli.
+    """
+    try:
+        simdi = time.time()
+        for yol in Path(tempfile.gettempdir()).glob(f"{_GECICI_ONEK}*"):
+            try:
+                if simdi - yol.stat().st_mtime > _ESKI_GECICI_ESIK_SN:
+                    yol.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def run_tool(argv: list[str], timeout: int = SCAN_TIMEOUT) -> subprocess.CompletedProcess[str]:
     """Tarayıcıyı çalıştırır — worker havuzunu KESİN bir tavanla korur.
 
@@ -168,38 +207,99 @@ def run_tool(argv: list[str], timeout: int = SCAN_TIMEOUT) -> subprocess.Complet
     alt/yardımcı süreç doğurup stdout/stderr pipe tanıtıcısını ona
     devredebilir — `kill()` yalnızca MpCmdRun.exe'nin kendisini öldürür,
     torun süreç pipe'ı elinde tutmaya devam eder, pipe hiç kapanmaz ve o
-    ikinci `communicate()` SONSUZA KADAR bekler. Sonuç: `timeout=120`
-    parametresi VARDI ama küçük/orta dosyalarda işe yarayıp büyük arşivlerde
-    worker thread'ini (dolayısıyla `QThreadPool`'daki bir işçi yuvasını)
-    kilitli bırakabiliyordu — CI'nin "sessiz bir bekleme, açık bir
-    başarısızlıktan her zaman kötüdür" dersinin aynısı, bu kez bir GitHub
-    Actions işi değil bir Qt worker thread'i için.
+    ikinci `communicate()` SONSUZA KADAR bekler.
 
-    Çözüm: `Popen` ile elle kurulum, zaman aşımında `kill()` sonrası ikinci
-    bir `communicate()` YOK — yalnızca sürecin kendi çıkış durumunu kısa,
-    sabit bir tavanla (`KILL_GRACE`) bekliyoruz. `wait()` pipe'ların
-    kapanmasına değil sürecin kendi sonlanmasına bakıyor, bu yüzden pipe'ı
-    açık tutan bir torun süreç onu ETKİLEMİYOR — `kill()` MpCmdRun.exe'yi
-    öldürdüğü anda `wait()` hemen dönüyor. Çıktı okunmuyor (zaten zaman
-    aşımı sonucu için gerekmiyor), ama işçi thread'i GARANTİLİ olarak
-    `timeout + KILL_GRACE` saniye içinde serbest kalıyor.
+    BULUNDU (bu turda) — `kill()`+sınırlı `wait()` de TEK BAŞINA yetmiyor
+    -----------------------------------------------------------------------
+    Önceki düzeltme `Popen` ile elle kurulum yapıp ikinci `communicate()`'i
+    sınırlı bir `wait(KILL_GRACE)` ile değiştirmişti — bu, worker'ı
+    `timeout + KILL_GRACE` içinde serbest BIRAKIYORDU, ama `stdout=PIPE,
+    stderr=PIPE` KALMIŞTI. CPython'un pipe okuyucusu arka planda AYRI
+    thread'lerle çalışıyor (`Popen._readerthread`, `fh.read()` EOF'a kadar
+    bloklanır) ve CPython'un KENDİ KAYNAK KODU, zaman aşımında bu thread'leri
+    ve pipe uçlarını BİLEREK KAPATMIYOR — yorumu birebir: "If we time out,
+    the threads remain reading and the fds left open in case the user calls
+    communicate again." Torun süreç pipe'ın yazma ucunu elinde tutmaya devam
+    ettiği sürece bu okuyucu thread'ler EOF'u hiç görmez ve SONSUZA KADAR
+    bloklu kalır — `kill()` yalnızca MpCmdRun.exe'yi öldürür, okuyucu
+    thread'i ya da onun tuttuğu pipe tanıtıcısını ETKİLEMEZ.
+
+    Ölçüldü: gerçek bir torun-süreç-pipe'ı-elinde-tutuyor senaryosu 30 kez art
+    arda tetiklendiğinde, çağıran sürecin Windows tanıtıcı sayısı +153,
+    thread sayısı +60 arttı — ikisi de tekrar sayısıyla BİREBİR ORANTILI
+    (~5 tanıtıcı + 2 thread / zaman aşımı), yani kalıcı ve sınırsız bir sızıntı
+    (bkz. SECURITY.md §4.22 ve testler).
+
+    DENENDİ AMA REDDEDİLDİ — `kill()`+`wait()` sonrasına `proc.stdout.close()`
+    -----------------------------------------------------------------------
+    Görünüşte doğru düzeltme: `kill()`+`wait()`'ten SONRA `proc.stdout` ve
+    `proc.stderr`'i elle kapatmak (ya da eşdeğer olarak tüm `Popen`
+    kullanımını `with subprocess.Popen(...) as proc:` bloğuna almak —
+    `Popen.__exit__` TAM OLARAK aynı `self.stdout.close()` çağrılarını
+    yapıyor). AYNI torun-süreç senaryosuyla İKİSİ DE ÖLÇÜLDÜ: ikisi de
+    ÇAĞIRAN THREAD'İ SONSUZA KADAR KİLİTLİYOR. Windows'ta bir pipe okuma
+    ucunu, o TAM handle'da bloklu bir `ReadFile` başka bir thread'de sürerken
+    kapatmak okuyucuyu SERBEST BIRAKMIYOR — kapatan thread'i de aynı çağrının
+    içinde dondurup değişmez şekilde beklemeye zorluyor. Bu, orijinal
+    kusurdan DAHA KÖTÜ olurdu: sızan bir arka plan daemon thread'i yerine,
+    `QThreadPool` WORKER'IN KENDİSİ senkron olarak sonsuza dek donardı —
+    tam da bir önceki turun düzelttiği "worker havuzu kilitleniyor"
+    sorununun KENDİSİ, bu kez HER ZAMAN KESİN olarak (torun süreç varsa).
+
+    ÇÖZÜM — pipe'ı hiç kullanma
+    -----------------------------------------------------------------------
+    CPython yalnızca `stdout=PIPE`/`stderr=PIPE` verildiğinde okuyucu
+    thread'leri başlatıyor. Gerçek dosyalara yönlendirilirse (`stdout=<açık
+    dosya>`) hiç pipe yok, hiç okuyucu thread yok, bloklanabilecek bir
+    `fh.read()` çağrısı hiç yok — torun süreç ne yaparsa yapsın, çağıran
+    süreçte SIZDIRILACAK ya da KİLİTLENECEK bir şey KALMIYOR. `wait()`
+    zaten pipe'ların kapanmasına değil sürecin kendi sonlanmasına bakıyor,
+    bu yüzden `kill()` MpCmdRun.exe'yi öldürdüğü anda hemen dönüyor —
+    işçi thread'i GARANTİLİ olarak `timeout + KILL_GRACE` saniye içinde
+    serbest kalıyor, çıktı ise (yalnızca başarı yolunda) dosyadan okunuyor.
+
+    Aynı 30 tekrarlık ölçüm bu düzeltmeyle: tanıtıcı +2 (TOPLAM, tekrar
+    sayısıyla ORANTILI DEĞİL — tek seferlik bir maliyet), thread +0,
+    kilitlenme YOK.
+
+    Kalan, bilinçli olarak KABUL EDİLEN artık: torun süreç dosyayı hâlâ
+    açık tutuyorsa `unlink()` başarısız olabilir (Windows açık dosyayı
+    silmeye izin vermez) — bu artık yalnızca DİSKTE kalan küçük bir metin
+    dosyası, HYCLEUS'un kendi sürecinde canlı bir thread ya da tanıtıcı
+    DEĞİL. `_eski_gecici_dosyalari_temizle()` bir SONRAKİ `run_tool()`
+    çağrısında bu kalıntıları süpürür.
     """
-    proc = subprocess.Popen(
-        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace",
-    )
+    _eski_gecici_dosyalari_temizle()
+    out_fd, out_yolu = tempfile.mkstemp(prefix=f"{_GECICI_ONEK}out_")
+    err_fd, err_yolu = tempfile.mkstemp(prefix=f"{_GECICI_ONEK}err_")
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=KILL_GRACE)
-        except subprocess.TimeoutExpired:
-            # KILL_GRACE içinde bile dönmedi — yine de burada beklemeyi
-            # bırakıyoruz; worker'ı kilitli tutmaktansa bir zombi/artakalan
-            # süreç bırakmak tercih edilen taraf (bkz. docstring).
-            pass
-        raise
+        with open(out_fd, "wb") as out_f, open(err_fd, "wb") as err_f:
+            proc = subprocess.Popen(argv, stdout=out_f, stderr=err_f)
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=KILL_GRACE)
+                except subprocess.TimeoutExpired:
+                    # KILL_GRACE içinde bile dönmedi — yine de burada
+                    # beklemeyi bırakıyoruz; worker'ı kilitli tutmaktansa
+                    # bir zombi/artakalan süreç bırakmak tercih edilen
+                    # taraf (bkz. docstring).
+                    pass
+                raise
+
+        ham_stdout = Path(out_yolu).read_bytes()
+        ham_stderr = Path(err_yolu).read_bytes()
+    finally:
+        for yol in (out_yolu, err_yolu):
+            try:
+                Path(yol).unlink()
+            except OSError:
+                pass  # torun süreç hâlâ açık tutuyor olabilir — bkz. docstring
+
+    stdout = ham_stdout.decode("utf-8", errors="replace").replace("\r\n", "\n")
+    stderr = ham_stderr.decode("utf-8", errors="replace").replace("\r\n", "\n")
     return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 

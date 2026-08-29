@@ -6270,4 +6270,86 @@ aynı dosya-düzenleme yarışı; SECURITY.md'ye hiçbir eş zamanlı dokunuş
 olmadan yapılan temiz bir tekrar koşusu 2938 passed/4 skipped verdi,
 gerçek bir regresyon değildi.)
 
+**Takip (aynı gün): `kill()`+`wait()` düzeltmesi işçiyi zamanında serbest
+bırakıyordu ama ARKASINDA bir sızıntı bırakıyordu — bulundu, ölçüldü,
+düzeltildi.** Görev: run_tool()'un zaman aşımı dalındaki pipe/handle
+sızıntısını incele, kanıtla, gerekirse düzelt; sızıntı varsa 50-100 tekrarla
+Windows tanıtıcı/thread sayısını ölç, kalıcı bir regresyon testi ekle.
+
+*Kod incelemesi.* `run_tool()` hâlâ `stdout=subprocess.PIPE,
+stderr=subprocess.PIPE` kullanıyordu. CPython'un Windows dalında pipe'lar
+arka plan thread'leriyle okunuyor (`Popen._readerthread`, `fh.read()`'de
+EOF'a kadar bloklu) ve CPython'un KENDİ kaynak kodu (`Lib/subprocess.py`,
+Python 3.14.4) zaman aşımında bunları KAPATMADIĞINI açıkça yazıyor —
+yorumu birebir doğrulandı: "If we time out, the threads remain reading and
+the fds left open in case the user calls communicate again." Ne
+`Popen.communicate()` ne `run_tool()`'un kendi `kill()`+`wait()`'i bu
+thread'lere ya da tuttukları pipe tanıtıcılarına DOKUNMUYORDU.
+
+*Ölçüm — art arda 30 zaman aşımı, gerçek bir torun süreçle.*
+Sahte/mock bir `Popen` bunu ÖLÇEMEZ (sızıntı yalnızca öldürülenin
+KENDİSİ değil bir TORUNU pipe'ı tutarsa oluşuyor — `kill()` torunlara
+dokunmuyor). Gerçek yeniden üretim: `cmd /c "ping -n 9999 127.0.0.1"` —
+`run_tool()`'un öldürdüğü `cmd.exe` doğrudan çocuk, `ping.exe` onun
+stdout/stderr'ini miras alıp `kill()`'den sağ çıkan yetim torun (tam
+MpCmdRun.exe'nin bir yardımcı süreçle yapacağı şey). `psutil.
+Process().num_handles()` / `threading.active_count()` ile ölçüldü: 30
+tekrar → **+153 tanıtıcı, +60 thread — ikisi de tekrar sayısıyla BİREBİR
+ORANTILI** (~5 tanıtıcı + 2 thread/zaman aşımı), zamanla geri düşmüyor.
+Kalıcı, sınırsız, gerçek bir sızıntı — varsayım değil.
+
+*Denendi ve REDDEDİLDİ — `kill()`+`wait()` sonrasına `proc.stdout.close()`.*
+Görevin önerdiği iki seçenekten biri (elle `close()`, ya da eşdeğer olarak
+`with subprocess.Popen(...) as proc:` — `Popen.__exit__` TAM AYNI
+`.close()` çağrılarını yapıyor) İKİSİ DE aynı yeniden üretimle ölçüldü.
+**İkisi de çağıran thread'i SONSUZA KADAR kilitledi** — `stdout closed`
+satırı bir 15 saniyelik zaman aşımında bile hiç basılmadı. Windows'ta bir
+pipe okuma ucunu, o TAM handle'da başka bir thread'de bloklu bir
+`ReadFile` sürerken kapatmak okuyucuyu serbest bırakmıyor, kapatanı da
+donduruyor. Bu, orijinal kusurdan DAHA KÖTÜ olurdu: sızan bir arka plan
+thread'i yerine `QThreadPool` WORKER'IN KENDİSİ senkron olarak
+donardı — bu B-081'in düzelttiği worker-havuzu kilitlenmesinin
+KENDİSİ, artık olası değil KESİN.
+
+*Gerçek düzeltme — pipe'ı hiç kullanma.* CPython yalnızca
+`stdout=PIPE`/`stderr=PIPE` verildiğinde okuyucu thread başlatıyor.
+`run_tool()` artık çocuğun çıktısını `tempfile.mkstemp()` ile açılan
+gerçek geçici dosyalara yönlendiriyor; başarıda dosyalar geri okunuyor,
+zaman aşımında hiç okunmuyor. Pipe yok → okuyucu thread yok → bloklanacak
+`fh.read()` yok. Aynı 30 tekrarlık ölçüm düzeltmeyle: **+2 tanıtıcı TOPLAM
+(tek seferlik, tekrar başına DEĞİL), +0 thread, kilitlenme YOK.**
+
+*Kabul edilen, gizlenmeyen artık.* Torun süreç temizlik anında dosyayı
+hâlâ açık tutuyorsa `unlink()` başarısız olabilir — doğrulandı, 60 geçici
+dosyanın (30×stdout+stderr) HEPSİ sızıntı ölçümünden sonra diskte kaldı.
+Artık yalnızca disk kalıntısı (canlı thread/tanıtıcı DEĞİL). Mitigasyon:
+her `run_tool()` çağrısı `_eski_gecici_dosyalari_temizle()` ile 1 saatten
+eski kendi kalıntılarını süpürüyor — `SCAN_TIMEOUT+KILL_GRACE`'in (~125s)
+çok üstünde, devam eden bir taramaya asla dokunmuyor.
+
+*Test — `tests/test_scan_timeout_handle_leak.py` (yeni, kalıcı).* Aynı
+torun-pipe-tutuyor senaryosunu 60 kez tetikleyip (istenen 50-100 aralığı,
+CI süresi için alt uca yakın) tanıtıcı/thread büyümesinin SABİT kaldığını
+doğruluyor. Mutasyon kanıtı: `run_tool()`'a `stdout=PIPE`+`communicate()`
+deseni geri kondu — test ANINDA **BAŞARISIZ** oldu (60 tekrarda 302
+tanıtıcı, `302 < 120` yanlış), sonra geri alındı, `git diff --stat` temiz,
+tekrar **BAŞARILI**. `tests/test_scanner_backends.py`'deki `_SahteSurec`
+`communicate()`'i tamamen KALDIRILDI (artık çağrılırsa `AttributeError`
+ile kendiliğinden patlıyor) ve `Popen`'a geçilen `stdout`/`stderr`'in
+`subprocess.PIPE` OLMADIĞINI doğrudan denetleyen yeni bir test eklendi.
+
+`psutil>=7.0` `requirements-dev.txt`'e eklendi (yalnızca bu testin
+Windows tanıtıcı ölçümü için; Linux'ta test `sys.platform != "win32"`
+ile atlanıyor).
+
+SECURITY.md §4.22'nin sonuna (EN+TR) "Takip" bölümü olarak belgelendi.
+
+Tam test suite: 2941 passed, 4 skipped (bir önceki turdan +3 — bir yeni
+test dosyası). Ruff/mypy/bandit temiz. (Not: bir ara koşuda
+`test_belge_dil_paritesi.py`'nin iki testi yanlışlıkla düştü — arka planda
+koşan tam suite SECURITY.md'yi ben hâlâ TR "Takip" bölümünü eklerken
+okumuştu, bu turda ÜÇÜNCÜ kez karşılaşılan aynı dosya-düzenleme yarışı;
+SECURITY.md'ye hiçbir eş zamanlı dokunuş olmadan yapılan temiz bir tekrar
+koşusu 2941 passed/4 skipped verdi, gerçek bir regresyon değildi.)
+
 ---

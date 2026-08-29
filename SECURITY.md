@@ -2421,6 +2421,82 @@ just the `scan_file()` step (matching what `_FileRunnable.run()` itself
 calls) so it no longer depends on the unrelated race. Noted in `BACKLOG.md`
 for a future turn.
 
+**Follow-up (2026-08-30): the `kill()`+`wait()` fix above still leaked —
+proved, then fixed, at the OS-handle layer.** The fix above closed the
+*worker* on time but never checked whether it left anything behind. It did:
+`stdout=PIPE`/`stderr=PIPE` was still in place, and CPython's own pipe
+reader runs on a background thread (`Popen._readerthread`) that blocks in
+`fh.read()` until EOF. CPython's source is explicit that on timeout it
+**does not** close those threads or handles — the comment reads "the
+threads remain reading and the fds left open in case the user calls
+communicate again." If a grandchild inherits the write end of the pipe (the
+exact `MpCmdRun.exe`-spawns-a-helper case this section already describes)
+that read never reaches EOF, and the reader thread — and the handle it
+holds — never terminates.
+
+**Measured, not assumed.** A reproduction using `cmd /c "ping -n 9999
+127.0.0.1"` as the timed-out process (`cmd.exe` is the direct child
+`run_tool()` manages and kills; `ping.exe` is a grandchild that inherits
+`cmd.exe`'s stdout/stderr and survives the kill, orphaned, still holding the
+pipe open — structurally identical to a helper process MpCmdRun.exe might
+spawn) drove 30 back-to-back timeouts through the pre-follow-up `run_tool()`
+and measured the calling process with `psutil.Process().num_handles()` /
+`threading.active_count()`: **+153 handles, +60 threads — both growing in
+exact lockstep with the iteration count** (~5 handles + 2 threads per
+timeout), not settling back down given idle time afterward. A genuine,
+unbounded, permanent leak, not a transient delay.
+
+**The "obvious" fix was tried and it's worse than the bug.** The natural
+next step — close `proc.stdout`/`proc.stderr` explicitly right after
+`kill()`+`wait()` (or equivalently, drive the whole thing through
+`with subprocess.Popen(...) as proc:`, since `Popen.__exit__` makes exactly
+those same `.close()` calls) — was implemented and measured against the
+same reproduction. **Both deadlock the calling thread.** On Windows,
+closing a pipe handle while another thread has a pending blocking
+`ReadFile()` on that same handle does not release the reader; it blocks the
+closer too, synchronously, forever. Had this shipped, a `QThreadPool`
+worker would freeze *deterministically* on every large-archive-with-helper
+scan — the exact worker-pool lock this whole section exists to prevent,
+now guaranteed instead of merely possible.
+
+**The actual fix: stop using a pipe.** CPython only spawns a reader thread
+when `stdout=PIPE`/`stderr=PIPE`. `run_tool()` now redirects the child's
+stdout/stderr to real temporary files instead (`tempfile.mkstemp()`); on
+success the files are read back and decoded, on timeout they're simply not
+read (unneeded either way). With no pipe, there is no reader thread and no
+`fh.read()` call that can ever block — a grandchild holding the file handle
+open has nothing left in HYCLEUS's own process to leak or deadlock. The
+same 30-iteration reproduction against the fixed `run_tool()`: **+2 handles
+total (a one-time cost, not per-iteration), +0 threads, no deadlock.**
+
+**One residual, disclosed rather than hidden.** If a grandchild is still
+holding the temp file open at cleanup time, `os.unlink()` fails (Windows
+won't delete an open file) and the file is left on disk — confirmed: all 60
+temp files (30 iterations × stdout+stderr) remained after the leak
+reproduction. This is now pure disk residue — no live thread, no live
+handle in HYCLEUS's own process — rather than a resource leak. Mitigated,
+not left to accumulate forever: every `run_tool()` call opens with a
+best-effort sweep (`_eski_gecici_dosyalari_temizle()`) that removes any of
+HYCLEUS's own stale temp files older than one hour — far beyond
+`SCAN_TIMEOUT + KILL_GRACE` (~125s), so it can never touch a file from a
+scan still genuinely in flight.
+
+**Verified with a permanent regression test at the OS-resource layer.**
+`tests/test_scan_timeout_handle_leak.py` reproduces the grandchild-holds-
+the-pipe scenario for real (60 iterations, within the requested 50-100
+range, chosen for CI runtime) and asserts handle/thread growth stays flat
+rather than proportional to iteration count. Mutation-proved: reintroducing
+the `stdout=PIPE`/`communicate()` pattern into `run_tool()` and re-running
+this test failed it immediately (302 handles for 60 iterations, `302 <
+120` assertion false) — confirmed genuinely discriminating, then reverted
+and confirmed green again. `tests/test_scanner_backends.py`'s existing
+`run_tool()` unit tests were updated for the new `Popen(stdout=<file>,
+stderr=<file>)` + `wait()` shape (the fake `Popen` no longer has a
+`communicate()` method at all — calling it now raises `AttributeError`
+outright rather than requiring an assertion to catch a stray call) and a
+new test directly asserts the arguments passed to `Popen` are not
+`subprocess.PIPE`.
+
 ---
 
 ## 5. Cryptographic details
@@ -5174,6 +5250,86 @@ bu yüzden burada kapsam dışı bırakıldı ve DÜZELTİLMEDİ; test yalnızca
 `scan_file()` adımını (`_FileRunnable.run()`'ın kendisinin çağırdığı aynı
 adım) yalıtacak biçimde yeniden yazıldı, böylece ilgisiz yarış durumuna
 artık bağımlı değil. Gelecek bir tur için `BACKLOG.md`'ye not düşüldü.
+
+**Takip (2026-08-30): yukarıdaki `kill()`+`wait()` düzeltmesi HÂLÂ
+sızdırıyordu — işletim sistemi tanıtıcısı katmanında kanıtlandı, sonra
+düzeltildi.** Yukarıdaki düzeltme worker'ı zamanında serbest bırakıyordu
+ama ARKASINDA bir şey kalıp kalmadığını hiç kontrol etmemişti. Kalıyordu:
+`stdout=PIPE`/`stderr=PIPE` hâlâ yerindeydi ve CPython'un kendi pipe
+okuyucusu, EOF'a kadar `fh.read()`'de bloklanan arka plan bir thread'de
+çalışıyor (`Popen._readerthread`). CPython'un kendi kaynak kodu, zaman
+aşımında bu thread'leri ya da tanıtıcıları KAPATMADIĞINI açıkça yazıyor —
+yorum birebir: "the threads remain reading and the fds left open in case
+the user calls communicate again." Bir torun süreç pipe'ın yazma ucunu
+miras alırsa (bu bölümün zaten anlattığı, MpCmdRun.exe'nin bir yardımcı
+süreç doğurduğu TAM O durum), o okuma asla EOF'a ulaşmıyor ve okuyucu
+thread — ve tuttuğu tanıtıcı — asla sonlanmıyor.
+
+**Varsayılmadı, ÖLÇÜLDÜ.** Zaman aşımına uğrayan süreç olarak `cmd /c
+"ping -n 9999 127.0.0.1"` kullanan bir yeniden üretim (`cmd.exe`
+`run_tool()`'un doğrudan yönettiği ve öldürdüğü çocuk; `ping.exe`
+`cmd.exe`'nin stdout/stderr'ini miras alan ve `kill()`'den sağ çıkıp
+yetim kalan, pipe'ı elinde tutmaya devam eden bir torun — MpCmdRun.exe'nin
+doğurabileceği bir yardımcı süreçle YAPISAL OLARAK aynı) takip-öncesi
+`run_tool()` üzerinden art arda 30 zaman aşımı tetikledi ve çağıran süreci
+`psutil.Process().num_handles()` / `threading.active_count()` ile ölçtü:
+**+153 tanıtıcı, +60 thread — ikisi de tekrar sayısıyla BİREBİR ORANTILI**
+(zaman aşımı başına ~5 tanıtıcı + 2 thread), sonrasında beklemeyle de
+geri düşmüyor. Geçici bir gecikme değil, gerçek, sınırsız, kalıcı bir
+sızıntı.
+
+**"Bariz" düzeltme denendi ve bulgudan DAHA KÖTÜ çıktı.** Doğal bir sonraki
+adım — `kill()`+`wait()`'ten HEMEN SONRA `proc.stdout`/`proc.stderr`'i elle
+kapatmak (ya da eşdeğer olarak her şeyi `with subprocess.Popen(...) as
+proc:` bloğundan geçirmek, çünkü `Popen.__exit__` TAM OLARAK aynı
+`.close()` çağrılarını yapıyor) — uygulandı ve AYNI yeniden üretimle
+ölçüldü. **İkisi de ÇAĞIRAN THREAD'İ KİLİTLİYOR.** Windows'ta, başka bir
+thread'in AYNI handle'da bloklu bir `ReadFile()`'ı sürerken bir pipe
+handle'ını kapatmak okuyucuyu serbest BIRAKMIYOR; kapatanı da eşzamanlı
+olarak, sonsuza kadar dondurup bekletiyor. Bu gönderilseydi, bir
+`QThreadPool` worker'ı büyük-arşiv-ile-yardımcı-süreçli HER taramada
+KESİN OLARAK donardı — bu bölümün varlık sebebi olan worker-havuzu
+kilitlenmesinin TAM KENDİSİ, artık yalnızca olası değil GARANTİLİ.
+
+**Gerçek düzeltme: pipe'ı hiç kullanma.** CPython yalnızca
+`stdout=PIPE`/`stderr=PIPE` verildiğinde bir okuyucu thread başlatıyor.
+`run_tool()` artık çocuğun stdout/stderr'ini gerçek geçici dosyalara
+yönlendiriyor (`tempfile.mkstemp()`); başarıda dosyalar geri okunup
+çözümleniyor, zaman aşımında hiç okunmuyor (zaten gerekmiyor). Pipe
+olmadan ne okuyucu thread var ne de bloklanabilecek bir `fh.read()` çağrısı
+— dosya tanıtıcısını elinde tutan bir torun süreç, HYCLEUS'un kendi
+sürecinde sızdırılacak ya da kilitlenecek hiçbir şey BIRAKMIYOR. Aynı
+30-tekrarlık yeniden üretim düzeltilmiş `run_tool()`'a karşı: **toplam +2
+tanıtıcı (tekrar başına DEĞİL, tek seferlik bir maliyet), +0 thread,
+kilitlenme YOK.**
+
+**Saklanmayan, açıkça yazılan bir artık.** Bir torun süreç temizlik anında
+dosyayı hâlâ açık tutuyorsa `os.unlink()` başarısız olur (Windows açık bir
+dosyayı silmeye izin vermez) ve dosya diskte kalır — doğrulandı: sızıntı
+yeniden üretiminden sonra 60 geçici dosyanın (30 tekrar × stdout+stderr)
+HEPSİ kaldı. Bu artık salt disk kalıntısı — HYCLEUS'un kendi sürecinde
+canlı bir thread ya da tanıtıcı DEĞİL — bir kaynak sızıntısı değil.
+Sonsuza kadar birikmeye bırakılmadı: her `run_tool()` çağrısı, HYCLEUS'un
+kendi bir saatten eski kalıntı geçici dosyalarını süpüren en-iyi-çaba bir
+taramayla açılıyor (`_eski_gecici_dosyalari_temizle()`) — `SCAN_TIMEOUT +
+KILL_GRACE`'in (~125 sn) çok ötesinde bir eşik, bu yüzden hâlâ gerçekten
+devam eden bir taramanın dosyasına asla dokunmuyor.
+
+**İşletim sistemi kaynağı katmanında kalıcı bir regresyon testiyle
+doğrulandı.** `tests/test_scan_timeout_handle_leak.py` torun-sürecin-
+pipe'ı-tuttuğu senaryoyu gerçekten yeniden üretiyor (istenen 50-100
+aralığında, CI süresi için 60 tekrar seçildi) ve tanıtıcı/thread
+büyümesinin tekrar sayısıyla ORANTILI değil SABİT kaldığını doğruluyor.
+Mutasyonla kanıtlandı: `run_tool()`'a `stdout=PIPE`/`communicate()`
+desenini geri koyup bu testi yeniden çalıştırmak testi ANINDA kırdı (60
+tekrarda 302 tanıtıcı, `302 < 120` doğrulaması yanlış) — gerçekten ayırt
+ettiği doğrulandı, sonra geri alınıp yeşile döndüğü teyit edildi.
+`tests/test_scanner_backends.py`'nin mevcut `run_tool()` birim testleri
+yeni `Popen(stdout=<dosya>, stderr=<dosya>)` + `wait()` biçimine göre
+güncellendi (sahte `Popen`'ın artık bir `communicate()` metodu bile yok —
+çağrılırsa bir doğrulamanın onu yakalamasını beklemeden doğrudan
+`AttributeError` fırlatıyor) ve `Popen`'a geçilen argümanların
+`subprocess.PIPE` OLMADIĞINI doğrudan denetleyen yeni bir test eklendi.
 
 ---
 

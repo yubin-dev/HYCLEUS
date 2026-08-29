@@ -224,38 +224,34 @@ def test_ikinci_arac_yoksa_dusus_denenmiyor(kosu):
 # ── run_tool() — worker havuzunu kilitleyen büyük-arşiv zaman aşımı ────────────
 #
 # Bu bölüm `sahte çalıştırıcı`yı (`kosu`) DEĞİL, `run_tool()`'un kendisini
-# test ediyor — çünkü boşluk `run_tool()`'un İÇİNDEYDİ (`subprocess.run(...,
-# timeout=...)`'ın Windows dalındaki sınırsız ikinci `communicate()`'i),
-# yukarıdaki `kosu` fixture'ı ise `run_tool`'u TAMAMEN ikame ettiği için o
-# boşluğu hiç görmüyordu.
+# test ediyor — çünkü boşluk `run_tool()`'un İÇİNDEYDİ (önce
+# `subprocess.run(..., timeout=...)`'ın Windows dalındaki sınırsız ikinci
+# `communicate()`'i, sonra da — bu turda bulunan — `stdout=PIPE`'ın kendi
+# arka plan okuyucu thread'lerinin torun süreç pipe'ı açık tutarsa asla
+# kapanmaması), yukarıdaki `kosu` fixture'ı ise `run_tool`'u TAMAMEN ikame
+# ettiği için bu boşlukların hiçbirini hiç görmüyordu.
 
 
 class _SahteSurec:
-    """`subprocess.Popen`'ın yerine geçer; `kill`/`wait`/`communicate` çağrılarını sayar."""
+    """`subprocess.Popen`'ın yerine geçer; `kill`/`wait` çağrılarını sayar.
+
+    `communicate()` YOK — `run_tool()` artık `wait()` kullanıyor (pipe değil
+    gerçek dosyalara yazdırıyor, bkz. `run_tool()` docstring'i). Sahte
+    tarafta bir `communicate` metodu bırakmak, onun hiç çağrılmadığını
+    kanıtlamaz; olmaması, çağrılırsa `AttributeError` ile KENDİLİĞİNDEN
+    patlamasını sağlar.
+    """
 
     def __init__(self) -> None:
         self.returncode: int | None = None
         self.kill_called = False
-        self.communicate_calls: list[float | None] = []
         self.wait_calls: list[float | None] = []
-
-    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
-        self.communicate_calls.append(timeout)
-        if len(self.communicate_calls) == 1:
-            raise subprocess.TimeoutExpired(cmd="sahte-arac", timeout=timeout)
-        # Buraya gelinmesi eski, tehlikeli deseni gösterir: `run_tool()`
-        # `kill()`'den SONRA communicate()'i İKİNCİ KEZ çağırmamalı — bkz.
-        # `run_tool()` docstring'i (CPython'un Windows'taki sınırsız ikinci
-        # communicate()'i, torun süreç pipe'ı açık tutarsa sonsuza kadar
-        # bekler).
-        raise AssertionError(
-            "communicate() İKİNCİ KEZ çağrıldı — sınırsız-ikinci-"
-            "communicate() deseni geri gelmiş, worker havuzu yine "
-            "kilitlenebilir"
-        )
 
     def wait(self, timeout: float | None = None) -> int:
         self.wait_calls.append(timeout)
+        if len(self.wait_calls) == 1:
+            raise subprocess.TimeoutExpired(cmd="sahte-arac", timeout=timeout)
+        # İkinci çağrı — `kill()`'den SONRAKİ, `KILL_GRACE` tavanlı bekleme.
         self.returncode = -9
         return self.returncode
 
@@ -265,10 +261,11 @@ class _SahteSurec:
 
 def test_run_tool_zaman_asiminda_IKINCI_bir_communicate_YAPMIYOR(monkeypatch):
     """
-    Kök nedenin testi. `kill()`'den sonra ikinci bir `communicate()`
-    YERİNE, sınırlı (`KILL_GRACE`) bir `wait()` çağrılmalı — `wait()`
-    pipe'ların kapanmasına değil sürecin kendi sonlanmasına baktığı için
-    torun bir süreç pipe'ı elinde tutsa bile burada TAKILMAZ.
+    Kök nedenin testi. `kill()`'den sonra `communicate()` HİÇ ÇAĞRILMAMALI
+    (o metot artık `_SahteSurec`'te bile yok) — yalnızca sınırlı
+    (`KILL_GRACE`) bir İKİNCİ `wait()` çağrılmalı. `wait()` pipe'ların
+    kapanmasına değil sürecin kendi sonlanmasına baktığı için torun bir
+    süreç pipe'ı elinde tutsa bile burada TAKILMAZ.
     """
     sahte = _SahteSurec()
     monkeypatch.setattr(sb.subprocess, "Popen", lambda *a, **k: sahte)
@@ -277,8 +274,36 @@ def test_run_tool_zaman_asiminda_IKINCI_bir_communicate_YAPMIYOR(monkeypatch):
         sb.run_tool(["sahte-arac"], timeout=1)
 
     assert sahte.kill_called is True
-    assert sahte.communicate_calls == [1]           # yalnızca BİR kez, timeout'lu
-    assert sahte.wait_calls == [sb.KILL_GRACE]       # ikinci communicate() DEĞİL, sınırlı wait()
+    assert sahte.wait_calls == [1, sb.KILL_GRACE]    # önce timeout'lu, sonra KILL_GRACE tavanlı
+
+
+def test_run_tool_stdout_stderr_icin_PIPE_KULLANMIYOR(monkeypatch):
+    """
+    Bu turun asıl bulgusu: `stdout=PIPE`/`stderr=PIPE` kalsaydı, CPython'un
+    arka plan okuyucu thread'leri torun süreç pipe'ı açık tutarsa SONSUZA
+    KADAR bloklu kalır (ölçüldü — bkz. `run_tool()` docstring'i: 30 tekrar
+    → +153 tanıtıcı, +60 thread). Çözüm pipe'ı hiç kullanmamak: gerçek
+    dosyalara yönlendirmek. Bu test `Popen`'a geçilen `stdout`/`stderr`
+    değerlerinin `subprocess.PIPE` OLMADIĞINI doğrudan denetliyor.
+    """
+    yakalanan: dict[str, object] = {}
+
+    def sahte_popen(*args, **kwargs):
+        yakalanan["stdout"] = kwargs.get("stdout")
+        yakalanan["stderr"] = kwargs.get("stderr")
+        return _SahteSurec()
+
+    monkeypatch.setattr(sb.subprocess, "Popen", sahte_popen)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        sb.run_tool(["sahte-arac"], timeout=1)
+
+    assert yakalanan["stdout"] is not subprocess.PIPE
+    assert yakalanan["stderr"] is not subprocess.PIPE
+    # Gerçek, yazılabilir dosya nesneleri olmalı — `Popen`'ın Windows'ta
+    # torun sürece devredebileceği bir OS tanıtıcısı taşımaları gerekiyor.
+    assert hasattr(yakalanan["stdout"], "fileno")
+    assert hasattr(yakalanan["stderr"], "fileno")
 
 
 def test_run_tool_gercek_alt_surecte_zaman_asimi_tavanli_donuyor():
