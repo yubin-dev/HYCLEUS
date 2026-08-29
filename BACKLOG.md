@@ -5652,3 +5652,58 @@ Tam test suite: 2849 passed, 4 skipped (+1 — bu yeni taşma testi).
 Ruff/mypy/bandit temiz.
 
 ---
+
+## B-078 — Etiket Ata modalına satır başına görünürlük rozeti eklendi ("Herkes" / "Yalnızca Yönetici")
+
+**Durum:** Kapalı
+**Öncelik:** —
+**Bulundu ve kapatıldı:** 2026-08-29 — aynı turda
+
+### Görev
+
+`UI/TagDialog.py`'deki mevcut "🔒 Mahrem (gizli)" checkbox mantığına
+dokunmadan, mockup'taki gibi her etiket satırına görünürlük durumunu
+gösteren bir rozet eklemek — sadece görsel gösterge, yetki mantığı
+DEĞİŞMEDİ.
+
+### Değişiklik
+
+`UI/TagDialog.py`'ye yeni bir modül fonksiyonu: `_gorunurluk_rozeti(is_private,
+T) -> QLabel` — gizli etiketler için "Yalnızca Yönetici" (kırmızı: `T['red']`/
+`T['red_tint']`), normal etiketler için "Herkes" (yeşil: `T['green']`/
+`T['green_tint']`) metinli, pilli-stil bir `QLabel`. Renk kaynağı `self._T` —
+`main_window_theme.py::_apply_theme`'in `_role_badge` rozetiyle AYNI desen
+(rounded pill, `T` token'larından `bg`/`fg`); yeni bir hex değeri hiçbir
+yerde elle yazılmadı (B-055 kuralı). `_load_tags()`'teki satır kurulum
+döngüsüne (`row_h.addWidget(...)`) tek satır eklendi — satırın kendisini
+gizli/görünür yapan filtre (`if tag["is_private"] and not self._is_admin:
+continue`) HİÇ değişmedi, rozet sadece o filtrenin ZATEN ürettiği satırlara
+ekleniyor.
+
+### Test
+
+`tests/test_tag_dialog_gorunurluk_rozeti.py` (yeni dosya, 8 test):
+
+1. **Saf birim** — `_gorunurluk_rozeti(True, ...)` "Yalnızca Yönetici" mi
+   döndürüyor, `_gorunurluk_rozeti(False, ...)` "Herkes" mi; ikisinin
+   stylesheet'i FARKLI mı; renk kaynağının gerçekten `T['red']`/
+   `T['red_tint']`/`T['green']`/`T['green_tint']` olduğu (hardcode hex
+   değil).
+2. **Uçtan uca** — gerçek `TagDialog` üzerinde: gizli bir etiket
+   "Yalnızca Yönetici" rozetiyle görünüyor mu, normal bir etiket "Herkes"
+   rozetiyle görünüyor mu; karışık bir listede (biri gizli, biri normal)
+   iki satırın rozeti KARIŞMADAN doğru eşleşiyor mu (indeks kaymasına
+   karşı kanıt); normal (Yönetici olmayan) bir rol için gizli etiketin
+   satırı — dolayısıyla rozeti — HİÇ görünmüyor mu (mevcut yetki
+   mantığının bu turda BOZULMADIĞININ kanıtı).
+
+**Mutasyon kanıtı:** `_gorunurluk_rozeti`'nin gizli dalı geçici olarak da
+"Herkes" metnini döndürecek şekilde bozuldu — 3 test **BAŞARISIZ** oldu
+(saf birim testi, uçtan uca gizli-etiket testi, karışık-liste testi).
+Geri alındı, `git diff --stat` temiz döndü, tüm paket tekrar yeşile döndü.
+
+Tam test suite: 2859 passed, 4 skipped (+10 — bu yeni dosyaya eklenen 8
+test + `test_layering.py`'nin YENİ dosyaları otomatik kapsayan
+parametrizasyonlarından +2). Ruff/mypy/bandit temiz.
+
+---

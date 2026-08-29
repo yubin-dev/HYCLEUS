@@ -90,6 +90,28 @@ def _sep() -> QFrame:
     return f
 
 
+def _gorunurluk_rozeti(is_private: bool, T: dict[str, str]) -> QLabel:
+    """Etiket satırı için görünürlük rozeti — yalnızca GÖSTERGE, mevcut
+    yetki mantığına (satır 287'deki `is_private and not self._is_admin`
+    filtresi) dokunmuyor. Renk kaynağı `self._T` — yeni renk İCAT
+    EDİLMEDİ (B-055 deseni)."""
+    if is_private:
+        rozet = QLabel("Yalnızca Yönetici")
+        bg, fg = T["red_tint"], T["red"]
+    else:
+        rozet = QLabel("Herkes")
+        bg, fg = T["green_tint"], T["green"]
+    rozet.setObjectName("etiket_gorunurluk_rozeti")
+    rozet.setProperty("mahrem", is_private)
+    rozet.setStyleSheet(
+        f"QLabel#etiket_gorunurluk_rozeti {{"
+        f" background: {bg}; color: {fg};"
+        f" border-radius: 8px; font-size: 10px; font-weight: 600;"
+        f" padding: 2px 8px; }}"
+    )
+    return rozet
+
+
 class TagDialog(QDialog):
     """Dosyaya etiket atama diyaloğu."""
 
@@ -306,6 +328,7 @@ class TagDialog(QDialog):
             row_h.addWidget(dot)
             row_h.addWidget(cb)
             row_h.addStretch()
+            row_h.addWidget(_gorunurluk_rozeti(bool(tag["is_private"]), self._T))
 
             self._checkboxes.append((cb, tag["id"]))
             self._list_layout.addWidget(row_w)
