@@ -3975,6 +3975,96 @@ Tam test suite: 2808 passed, 4 skipped (bir önceki turdan +5 — 2 yapısal
 test + 1 davranışsal test + `test_layering.py`'nin YENİ dosyayı otomatik
 kapsayan parametrizasyonlarından +2).
 
+### 2026-08-29 (devam) — kapsam DÜZELTİLDİ: login_dialog.py'ye özel değil, UI/'nin tamamı (K0-6'nın aynı dersi)
+
+Bir sonraki turda yukarıdaki yapısal korumanın (bölüm 3) TAM OLARAK
+neyi taradığı sorgulandı — sonuç, tam da B-056/K0-6'nın öğrettiği sınıf
+sorunun tekrarıydı: `test_login_dialog_KAYNAGINDA_kurtarma_giris_
+terimi_YOK` yalnızca `UI/login_dialog.py`'yi TEK dosya olarak
+tarıyordu, glob/rglob YOKTU. Korunması gereken şey "login ekranına
+üçüncü bir sayfa eklenmesin" değil, "kurtarma-yeniden-inşa yeteneği
+`_require_hwid()` kapısı olmadan `UI/`'nin HİÇBİR yerinden
+tetiklenmesin" — biri bu ekranı `UI/RecoveryEntryDialog.py` gibi başka
+bir dosyaya yazıp `main_window.py`'den bir menü öğesiyle ya da
+`AdminPanel.py`'den ayrı bir düğmeyle bağlasa, ne yapısal tarama ne de
+`LoginDialog._stack`'in sayfa-sayısı kilidi bunu görürdü.
+
+**Düzeltme — K0-6'nın `rglob("*.py")` desenine geçildi, TÜM `UI/`
+ağacı.** `tests/test_kurtarma_usb_kapisi.py`'nin 3. bölümü yeniden
+yazıldı: `_ui_dosyalari()` artık `UI/`'nin tamamını (`__pycache__`
+hariç, alt dizinler dahil) tarıyor.
+
+**Ölçülen gerçek yanlış-pozitif riski — eski terim listesi çok
+genişti.** İlk yazımdaki liste (`decode_share`, `recover_master_key`,
+`export_recovery_share`, `share_3`, `RecoveryShareDialog`, "Kurtarma
+parça...") `UI/`'nin TAMAMINA karşı çalıştırıldığında `UI/AdminPanel.py`'nin
+MEŞRU dışa-aktarım ekranında (SEKİZ isabet: `export_recovery_share`
+ithali/çağrısı, `RecoveryShareDialog` ithali/çağrısı, yerel değişken
+`share_3`, "Kurtarma Parçasını Göster…" düğmesi, "Kurtarma Parçası"
+diyalog başlıkları) ve `UI/RecoveryShareDialog.py`'nin kendi sınıf
+adında/başlığında PATLADI — ölçüldü, gerçek bir false-positive, K0-6'nın
+"çevrimdışı doğrular" ile yaşadığı sorunun aynı sınıfı. Ayrım netleştirildi:
+tehlikeli olan payı DIŞARI vermek (`export_recovery_share`/`build_export`/
+`RecoveryShareDialog` — `AdminPanel.py`'de zaten var, PIN'le korunan,
+test edilmiş MEŞRU bir akış) değil, payı İÇERİ alıp master_key'i YENİDEN
+KURMAK. Yasaklı liste bu yüzden İKİ ayrı, dar taramaya bölündü:
+
+1. **Çağrı/ithal taraması** (`ast.Call`/`ast.Import`/`ast.ImportFrom`,
+   YALNIZCA fonksiyon/ithal HEDEFLERİ): `recover_master_key`,
+   `decode_share` — `UI/`'de bugün hiçbir meşru kullanımları yok.
+   `share_3` BİLEREK bu listede DEĞİL: yalnızca bir DEĞİŞKEN adı,
+   Python bir değişkenin adına önem vermez — tehlikeli olan hangi
+   FONKSİYONUN çağrıldığı, değerin hangi isimle tutulduğu değil;
+   `AdminPanel.py`'nin meşru kodu da bu adı kullanıyor.
+2. **Metin taraması** (`ast.Constant`, K0-6'nın yöntemi — yorumlar hiç
+   AST'ye girmediği için otomatik dışarıda): yalnızca mockup'ın "gir/
+   giriş" fiilini TAŞIYAN spesifik biçimler ("Kurtarma parçasıyla",
+   "Kurtarma ile Gir" ve büyük/küçük harf varyantları) — yalın "Kurtarma
+   parça(sı/sını)" KÖKÜ BİLEREK YOK, tam da `AdminPanel.py`'nin meşru
+   metniyle çakışan kısım.
+
+**Gerçek kanıt — enjeksiyon, login_dialog.py DIŞINDA bir dosyada.**
+Görevin istediği kanıt için `UI/ProfileDialog.py`'ye (giriş akışıyla
+hiçbir ilgisi olmayan, kurtarma kodu barındırmayan temiz bir dosya)
+geçici olarak eklendi:
+
+- `from CORE.vault_manager import recover_master_key` — çağrı/ithal
+  taraması **YAKALADI**: `UI/ProfileDialog.py:20 — recover_master_key`.
+- `_MUTASYON_KANITI_B069 = "Kurtarma parçasıyla gir"` (modül docstring'i
+  altına) — metin taraması **YAKALADI**:
+  `UI/ProfileDialog.py:2 — 'Kurtarma parçasıyla'`.
+
+İkisi de ayrı ayrı geri alındı, `git diff --stat UI/ProfileDialog.py`
+boş döndü, tüm paket tekrar yeşile döndü. Bu tek kanıt aynı zamanda
+davranışsal testin (`test_login_dialog_kurtarma_ekrani_yok.py`) neden
+TEK BAŞINA yeterli olmadığının da kanıtı: `ProfileDialog.py`'ye eklenen
+bu import `LoginDialog._stack`'e hiç dokunmaz, o test onu HİÇ görmezdi
+— yalnızca genişletilmiş yapısal tarama görüyor. Davranışsal test
+KALDIRILMADI (login akışına özgü, ucuz, ikinci bir savunma katmanı
+olarak duruyor), ama artık BİRİNCİL koruma genişletilmiş yapısal tarama;
+davranışsal test dosyasının kendi docstring'i bunu netleştirecek şekilde
+güncellendi.
+
+**Testler — `test_kurtarma_usb_kapisi.py`'nin 3. bölümü 2 testten 7'ye
+çıktı (dosyanın toplamı 12):** eski `test_login_dialog_KAYNAGINDA_
+kurtarma_giris_terimi_YOK` ve `test_tarayici_enjekte_edilen_kurtarma_
+terimini_YAKALIYOR`, yerlerini `test_UI_agacinda_kurtarma_yeniden_insa_
+cagrisi_YOK` (asıl çağrı/ithal taraması) ve `test_UI_agacinda_kurtarma_
+giris_metni_YOK`'a (asıl metin taraması) bıraktı; ayrıca YENİ:
+`test_ui_dizini_taranacak_dosya_iceriyor` (B-024 dersi — denetim boş
+kümeyi denetlemiyor mu), `test_mevcut_UI_dosyalarindaki_mesru_
+kullanimlar_YANLIS_POZITIF_URETMIYOR` (`AdminPanel.py`/
+`RecoveryShareDialog.py`'nin gerçek içeriği hiçbir taramada
+YAKALANMIYOR — yukarıdaki false-positive'in artık kapatıldığının kalıcı
+kanıtı), iki enjeksiyon testi (çağrı + metin, `tmp_path` ile), ve
+`test_tarayici_ALT_DIZINDEKI_dosyayi_da_yakaliyor` (K0-6'nın aynı
+`rglob` regresyon kanıtı).
+
+SECURITY.md §4.4 (EN+TR) bu kapsam düzeltmesini yansıtacak şekilde
+güncellendi; `test_belge_dil_paritesi.py` (27/27) ile doğrulandı.
+
+Tam test suite: 2813 passed, 4 skipped (bir önceki turdan +5).
+
 ---
 
 ## B-070 — Windows Credential Manager, üzerine yazılan eski kaydı silmiyordu — bulundu ve aynı turda kapatıldı

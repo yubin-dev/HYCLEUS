@@ -574,6 +574,26 @@ already has the code-execution capability this document's M2/M3 models
 assume, which is exactly the class §4.5 says application-level controls
 never reach. Full analysis and line references: **B-069**.
 
+**The design mockup's "enter with a recovery share" login screen was
+deliberately never built, and a permanent test now guards the whole
+`UI/` tree against it, not just the login screen.** Building it would
+hand every ordinary user the USB-less, PIN-less path described above.
+The test (`tests/test_kurtarma_usb_kapisi.py`) walks every `.py` file
+under `UI/` (subdirectories included) for two things: an actual call to
+or import of `recover_master_key`/`decode_share` — the two functions
+that *reconstruct* a key from a share — and a UI label carrying the
+mockup's "enter with the share" wording. It deliberately does **not**
+ban `export_recovery_share`, `RecoveryShareDialog`, or a variable named
+`share_3`: those are the legitimate *export* path already in
+`AdminPanel.py` (PIN-gated, tested, display-only), and a first version
+of this scan that included them broke on that real, correct code —
+handing someone a share is not the risk; letting a share back in to
+rebuild the key outside `_require_hwid()`'s gate is. Proven directly: a
+`recover_master_key` import was planted in `UI/ProfileDialog.py` (a file
+with nothing to do with recovery) and the scan caught it before the
+change was reverted — confirming the check is not tied to the login
+screen specifically, only to `UI/` as a whole.
+
 The recovery share is **derivable, not random**: it is `f(3)` of the same
 polynomial, so anyone holding the other two shares can reproduce it at any
 time. Re-exporting does not rotate it. Rotating it means re-splitting, which
@@ -2873,6 +2893,26 @@ modellerinin zaten varsaydığı kod-çalıştırma yeteneğine sahip bir
 saldırgana karşı hiçbir şey katmıyor, ki bu tam olarak §4.5'in
 "uygulama seviyesi kontroller asla ulaşmaz" dediği sınıf. Tam analiz ve
 satır referansları: **B-069**.
+
+**Tasarım mockup'ının "kurtarma parçasıyla gir" giriş ekranı kasıtlı
+olarak hiç eklenmedi, ve kalıcı bir test artık bunu yalnızca giriş
+ekranında değil, `UI/` ağacının TAMAMINDA koruyor.** Bu ekranı inşa
+etmek yukarıda anlatılan USB'siz, PIN'siz yolu HER sıradan kullanıcıya
+açardı. Test (`tests/test_kurtarma_usb_kapisi.py`) `UI/` altındaki HER
+`.py` dosyasını (alt dizinler dahil) iki şey için tarıyor: bir payı
+ALIP master_key'i YENİDEN KURAN iki fonksiyona (`recover_master_key`/
+`decode_share`) gerçek bir çağrı/ithal, ve mockup'ın "payla gir" ifadesini
+taşıyan bir arayüz etiketi. Bilerek `export_recovery_share`,
+`RecoveryShareDialog` ya da `share_3` adlı bir değişkeni YASAKLAMIYOR:
+bunlar `AdminPanel.py`'de zaten var olan meşru DIŞA AKTARIM yolu
+(PIN'le korunan, test edilmiş, yalnızca gösteren) — ve bu taramanın ilk
+sürümü onları da yasaklayınca tam da bu gerçek, doğru koda çarpıp
+patladı. Bir payı ELDEN VERMEK risk değil; payı GERİ ALIP kapıyı
+(`_require_hwid()`) atlayarak anahtarı yeniden kurmak risk. Doğrudan
+kanıtlandı: kurtarmayla hiçbir ilgisi olmayan `UI/ProfileDialog.py`'ye
+geçici bir `recover_master_key` ithali eklendi ve tarama, değişiklik
+geri alınmadan önce bunu yakaladı — kontrolün yalnızca giriş ekranına
+değil, `UI/`'nin bütününe bağlı olduğunun kanıtı.
 
 Kurtarma parçası **rastgele değil, türetilebilirdir**: aynı polinomun
 `f(3)`'ü olduğu için diğer iki paya sahip olan onu her an yeniden

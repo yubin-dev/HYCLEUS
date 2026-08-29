@@ -1,9 +1,30 @@
 """
 B-069 (nihai, 2026-08-29) — mockup'ın "Kurtarma parçasıyla gir" ekranı
-GERÇEK `LoginDialog`'a hiç eklenmemiş: DAVRANIŞSAL kanıt.
+GERÇEK `LoginDialog`'a hiç eklenmemiş: DAVRANIŞSAL kanıt, İKİNCİL koruma.
 
-Bu dosyanın YAPISAL ikizi (kaynak taraması) `tests/test_kurtarma_usb_
-kapisi.py`'nin 3. bölümünde — kasıtlı olarak AYRI dosyada, çünkü o dosya
+2026-08-29 (devam) — kapsam netleştirildi
+-------------------------------------------
+Bu dosyanın testi TEK BAŞINA yeterli bir koruma DEĞİL: yalnızca
+`LoginDialog._stack`'in sayfa sayısını kilitliyor, yani yalnızca giriş
+akışının KENDİSİNE eklenecek bir sayfayı yakalar. Kurtarma yeteneğini
+`UI/RecoveryEntryDialog.py` gibi AYRI bir dosyaya yazıp `main_window.py`'de
+bir menü öğesiyle ya da `AdminPanel.py`'de bir düğmeyle bağlayan bir
+değişiklik bu testin GÖRÜŞ ALANI DIŞINDA kalır — `_stack` hiç
+büyümeden.
+
+ASIL/BİRİNCİL koruma artık `tests/test_kurtarma_usb_kapisi.py`'nin 3.
+bölümü: `UI/` ağacının TAMAMINI (alt dizinler dahil, `rglob`) tarayıp
+`recover_master_key`/`decode_share`'in GERÇEK çağrı/ithal hedeflerini
+arıyor — dosyaya-özgü DEĞİL, wiring'e (menü/düğme/doğrudan çağrı)
+BAKMAKSIZIN. Bu, gerçekten kanıtlandı: `UI/ProfileDialog.py`'ye (giriş
+akışıyla hiçbir ilgisi olmayan bir dosya) geçici bir `recover_master_key`
+ithali eklenip o tarama çalıştırıldı — YAKALADI (`UI/ProfileDialog.py:20`).
+
+Bu dosyanın testi KALDIRILMADI — login akışına özgü, ucuz, ikinci bir
+savunma katmanı olarak duruyor (B-024'ün "birden fazla bağımsız kontrol"
+dersiyle tutarlı), ama artık TEK koruma OLDUĞU varsayılmamalı.
+
+Bu dosya AYRICA kasıtlı olarak AYRI: `tests/test_kurtarma_usb_kapisi.py`
 modül seviyesinde Qt/UI ithal ETMİYOR ve bu depoda `tests/test_
 layering.py` her test modülünün ya Qt/UI'dan TAMAMEN bağımsız kalmasını
 ya da modül seviyesindeki ithalini `try/except ImportError: pytest.skip(
@@ -12,7 +33,7 @@ korumasız bir modül-seviyesi Qt ithali, Qt kurulu olmayan bir ortamda
 (çıplak bir Linux runner'ı) TÜM test paketini toplama hatasıyla durdurur.
 Bu dosya o korumayı diğer yedi UI test dosyasıyla AYNI desenle uyguluyor.
 
-Karar ve tam gerekçe: `BACKLOG.md` **B-069** ("nihai" bölümü).
+Karar ve tam gerekçe: `BACKLOG.md` **B-069** ("nihai" ve "devam" bölümleri).
 """
 from __future__ import annotations
 
