@@ -2282,6 +2282,25 @@ an exception itself), and the real CORE/DB tree — which contains a real
 f-string-based raise message in `CORE/tpm_sealing.py` — still produces
 zero violations.
 
+**2026-08-29 (confirmed, no code change) — the codebase is clean; a
+non-code design mockup is not.** Re-ran the scan as a checkup, not a
+fix: `tests/test_ui_yasakli_iddia_terimleri.py` — 27/27 passing, zero
+banned claims anywhere in `UI/`, `CORE/`, or `DB/`. Separately, the
+design mockup artifact that originated this whole leak (see **B-071**
+in `BACKLOG.md`, "Incident history" above) was re-read and still
+contains "HYCLEUS v2.5 · AIR-GAPPED", a standalone "● ÇEVRİMDIŞI"
+badge, and a general "tamamen çevrimdışı" ("fully offline") claim —
+the same three claims this section exists to keep out of the app. That
+artifact is not source code the scan covers, and it was **not edited**:
+it is a ~660 KB single-line minified bundle (double-escaped HTML inside
+a JS template string inside a JSON wrapper), not an editable HTML
+source, and there is no way to render and visually verify a patch to it
+from here (an unverifiable change is worse than no change). It is recorded here
+instead as a stale reference: that mockup predates, and has no
+bearing on, what `UI/login_dialog.py` actually does today. The scan
+above is the authority on the running application; the mockup is design
+history, not a spec.
+
 ---
 ---
 
@@ -4564,3 +4583,25 @@ değişkene atanmış bir f-string yakalanıyor, interpolasyon parçasının
 hiçbir zaman taramaya girmediği (ve kendisinin bir hataya yol açmadığı)
 kanıtlanıyor, ve gerçek CORE/DB ağacı — `CORE/tpm_sealing.py`'de GERÇEK
 bir f-string tabanlı raise mesajı içeriyor — hâlâ sıfır ihlal üretiyor.
+
+**2026-08-29 (teyit edildi, kod değişikliği YOK) — kod tabanı temiz;
+kod-dışı bir tasarım mockup'ı DEĞİL.** Tarama bir düzeltme değil, bir
+kontrol turu olarak yeniden çalıştırıldı:
+`tests/test_ui_yasakli_iddia_terimleri.py` — 27/27 geçti, `UI/`, `CORE/`
+ya da `DB/`'nin hiçbirinde yasaklı bir iddia yok. Ayrı bir bulgu olarak,
+bu bölümün kaynağı olan tasarım mockup'ı (bkz. `BACKLOG.md`'de
+**B-071**, yukarıdaki "Bu kontrol ... doğdu" paragrafı) yeniden okundu
+ve hâlâ "HYCLEUS v2.5 · AIR-GAPPED" metnini, bağımsız bir
+"● ÇEVRİMDIŞI" rozetini VE genel bir "tamamen çevrimdışı" iddiasını
+taşıdığı görüldü — bu bölümün uygulamadan uzak tutmaya çalıştığı aynı
+üç iddia. O artifact bu taramanın kapsadığı kaynak kod DEĞİL ve
+DÜZENLENMEDİ: ~660 KB'lık, tek satırlık, minified bir bundle (bir JSON
+sarmalayıcı içinde bir JS template string'i içinde çift-kaçışlı HTML) —
+düzenlenebilir bir HTML kaynağı değil, ve buradan render edip görsel
+olarak DOĞRULAMANIN bir yolu yok — bu taramanın kendi testlerine
+uyguladığı AYNI ilke (doğrulanamayan bir değişiklik, değişiklik
+yapmamaktan daha kötüdür). Bunun yerine burada ESKİ bir referans olarak
+kaydedildi: o mockup, `UI/login_dialog.py`'nin bugün gerçekte ne
+yaptığından ÖNCE gelir ve onunla bir ilgisi yoktur. Yukarıdaki tarama,
+çalışan uygulama üzerinde otorite; mockup bir tasarım geçmişidir, bir
+şartname değil.

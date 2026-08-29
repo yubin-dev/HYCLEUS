@@ -4550,6 +4550,53 @@ güncellendi (hem f-string desteği hem `+`-birleştirmesinin bilinen sınırı)
 Tam test suite: 2755 passed, 4 skipped (bir önceki turdan +5 — bu dosyaya
 eklenen 5 yeni test).
 
+### 2026-08-29 (devam 5 — K0-6 teyidi: kod tabanı temiz, ama mockup artifact'ı HÂLÂ eski rozeti taşıyor)
+
+Bir sonraki turda (K0-6 listesindeki temizlik/teyit maddesi), yukarıdaki
+taramanın bugün hâlâ doğru sonuç verdiği yeniden koşuldu — kod
+değişmedi, yalnızca teyit: `pytest tests/test_ui_yasakli_iddia_
+terimleri.py -q` → **27/27 geçti**, `UI/`+`CORE/`+`DB/` genelinde
+`AIR-GAPPED`/`ZERO-TRUST`/bağlam-dışı `ÇEVRİMDIŞI` iddiası **YOK**.
+`login_dialog.py` dahil hiçbir gerçek kod dosyasında bu rozetler kalmadı.
+
+**Ayrı bulgu — mockup artifact'ı kaynağı hâlâ eski.** Bu B-071'in
+kaynağı olan tasarım mockup'ı (bkz. üstteki "Olay geçmişi" — Claude
+Design/Artifact platformunda yayınlı "UI Mockup Tasarımı Projesi",
+`https://claude.ai/code/artifact/f348a8a1-4ab9-4dfc-bb71-795f61ce09af`)
+okunup terim taraması yapıldı: **hâlâ** "HYCLEUS v2.5 · AIR-GAPPED"
+metnini VE bağımsız bir "● ÇEVRİMDIŞI" durum rozetini VE genel bir
+"tamamen çevrimdışı" mimari iddiasını (RFC 3161 "çevrimdışı doğrulanır"
+bigramının İZİN VERİLEN kullanımından AYRI, bağımsız bir cümle olarak)
+taşıyor — üçü de kod tabanından SİLİNEN, aynı üç iddia.
+
+**Kaynak orada güncellenmedi — kasıtlı, gerekçeli karar.** Artifact,
+`<script type="__bundler/template">` içinde çift-kaçışlı (JSON içinde
+JS-string içinde HTML), ~660 KB'lık TEK satırlık minified bir bundle
+olarak saklanıyor — okunabilir/elle düzenlenebilir bir HTML kaynağı
+DEĞİL. Bayt düzeyinde bir `\"`/`\\n` kaçış dizisini yanlış kurgulamak
+bundle'ı sessizce bozabilirdi VE bu ortamda sonucu görsel olarak
+render edip DOĞRULAMANIN bir yolu yok (B-024'ün "denetimin kendisi
+çalışıyor mu" dersiyle aynı sınıf risk: doğrulanamayan bir değişiklik
+yapmaktansa yapmamak tercih edildi). Görevin izin verdiği ikinci
+seçenek uygulandı:
+
+**ESKİ-REFERANS NOTU:** Bu mockup artifact'ı 2026-08-26 tema/restyle
+turlarının GİRDİSİYDİ, o turlardan sonra GERÇEK karşılığı YOK —
+"HYCLEUS v2.5 · AIR-GAPPED" metni, "● ÇEVRİMDIŞI" rozeti ve "tamamen
+çevrimdışı" iddiası kasıtlı olarak koda taşınmadı (1. madde) ya da
+taşınıp sonra B-071'in asıl düzeltmesiyle kaldırıldı (2. madde). Bu
+artifact'a bakan biri bu üç öğeyi güncel bir özellik/durum sanmamalı;
+tek otorite `SECURITY.md` + gerçek koddur (`UI/login_dialog.py`,
+`tests/test_ui_yasakli_iddia_terimleri.py`).
+
+Test eklenmedi — bu bir kod değişikliği değil, mockup harici bir
+tasarım varlığı üzerine düşülen bir doküman notu; `tests/test_ui_
+yasakli_iddia_terimleri.py`'nin 27 testi zaten kod tabanının temiz
+kaldığını sürekli doğruluyor.
+
+Tam test suite: değişmedi (2801 passed, 4 skipped — bu turda kod/test
+dosyası değişmedi, yalnızca bu doküman notu eklendi).
+
 ---
 
 ## B-072 — Önerilen WAL checkpoint hiçbir şey düzeltmiyordu; gerçek boşluk `_dump_tables()`'ın tablolar-arası tutarlılığıydı, bulundu ve kapatıldı
