@@ -1908,6 +1908,86 @@ already flags a related boundary in the same spot (the DB schema's
 `role` column cannot represent Standart vs. Salt Okunur at all). Noted,
 not fixed here.
 
+### 4.18 The lock screen stopped checkout, but not a bulk download already in flight
+
+> **Attacker models:** M2 · M3
+
+§4.10 states that locking closes every open checkout, "on purpose: a
+lock screen that leaves plaintext on disk would guard the front door and
+leave a window open." That claim is true for checkout — `_lock()`
+synchronously calls `_close_all_checkouts()` before showing the overlay.
+It was not true for the other place this codebase writes plaintext to a
+location the user picked: bulk download.
+
+**Measured, not assumed.** `_lock()` never touches `QThreadPool`, any
+worker thread, or any `should_continue`/stop-event mechanism — it is UI
+state only (overlay, blur, `centralWidget().setEnabled(False)`) plus the
+checkout close. Single-file downloads and checkout opens are synchronous
+main-thread calls with no `QApplication.processEvents()` in the middle,
+so — confirmed by reading, not assumed — the Qt event loop cannot
+interleave with them at all; `_poll_usb()`'s timer literally has no
+chance to run until the call returns, by which point the file is already
+fully written or not written at all. Bulk download is different:
+`UI/main_window_bulk.py`'s progress callback calls
+`QApplication.processEvents()` once per file so the progress dialog
+stays responsive over a long batch, and that is a real re-entry point —
+if a USB pull happened to land inside one of those calls, `_poll_usb()`
+could run, show the lock overlay, and the export loop — which never
+checked lock state, only the progress dialog's Cancel button — would
+keep decrypting and writing the remaining files to disk, screen locked
+or not.
+
+Reproduced live before writing any fix: eight files queued for bulk
+download, a `should_continue`/`on_progress` pair standing in for the
+real UI wiring, with the callback itself flipping a `locked` flag while
+processing file index 3 (`_poll_usb`'s effect, without needing real USB
+hardware). Against the pre-fix code, file index 3 was written anyway —
+`saved=4`, one file past the lock point.
+
+**Fixed: `should_continue` is checked a second time, right after the
+progress callback returns, immediately before the next file is
+decrypted** (`CORE/export.py::export_to_directory()`) — the loop already
+checked it once before calling `on_progress`, but that check happens
+*before* the only point where re-entry is possible, so it cannot see a
+lock that occurs during that call. The second check closes exactly that
+window, and only runs when `on_progress` was actually given (so a caller
+with no progress callback — no re-entry possible — sees the exact same
+call count as before; a dedicated test pins this). Between the two
+checks, and during `decrypt_file()`/`write_bytes()` themselves, the
+event loop never spins, so a file is always either fully written or
+never started — never partially. `UI/main_window_bulk.py`'s
+`should_continue` lambda now reads `self._locked` in addition to the
+Cancel button, which is the one-line change that actually connects the
+CORE-level fix to the real lock signal; a dedicated UI-level test drives
+the production `_on_ctx_bulk_download()` handler end to end (real
+`HycleusWindow`, real encryption, TOTP-gated) and flips `self._locked`
+from inside `QProgressDialog.setValue()` — the exact call the real
+progress callback makes — confirming the wiring, not just the
+underlying mechanism.
+
+**Zeroize, honestly scoped.** `decrypt_file()` gained an opt-in
+`zeroizable=True` mode: instead of returning `bytes(buf)` — an immutable
+copy nothing can ever erase, per the limit already documented in §3 —
+it hands back the very `bytearray` the decryption wrote into, letting
+the caller call the (now public) `zero_bytearray()` on it once the
+plaintext has served its purpose. Two internal guarantees, checked live
+rather than assumed: on any exception path the buffer is still zeroed in
+`decrypt_file()`'s own `finally` (only the success-with-`zeroizable=True`
+path skips that, since the returned value *is* that same buffer, and
+`finally` runs before the caller receives it — zeroing there would hand
+back an already-blank buffer, confirmed live and then guarded against);
+and a spy on `zero_bytearray()` confirms it is called exactly once per
+file, with the plaintext that file actually contained, immediately after
+`write_bytes()`. Existing callers are unaffected — the default is
+unchanged, and every other call site (`CORE/checkout.py`,
+`CORE/backup.py`, `CORE/hclx.py`, `UI/main_window_files.py`) still gets
+plain `bytes`; only `export_to_directory()` — the path this finding is
+about — was switched to the new mode. `export_to_zip()` was left on the old
+(`bytes`) path deliberately: it has no `on_progress`/`processEvents()`
+call anywhere in its loop, so it is not reentrant and was not part of
+the measured gap; converting it is a separate, lower-value change noted
+in BACKLOG rather than folded in here.
+
 ---
 
 ## 5. Cryptographic details
@@ -4116,6 +4196,90 @@ bir oturum yakalanır. Bu farklı, daha dar bir eksen (`can_write` değil,
 zaten aynı noktada ilişkili bir sınırı işaretliyor (DB şemasının `role`
 sütunu Standart ile Salt Okunur'u hiç AYIRT EDEMİYOR). Not düşüldü,
 burada düzeltilmedi.
+
+### 4.18 Kilit ekranı checkout'u durduruyordu, ama devam eden bir toplu indirmeyi değil
+
+> **Saldırgan modelleri:** M2 · M3
+
+§4.10 kilitlenmenin her açık checkout'u kapattığını söylüyor, "bilerek:
+diskte düz metin bırakan bir kilit ekranı ön kapıyı korur, bir pencereyi
+açık bırakırdı." Bu iddia checkout için doğru — `_lock()` overlay'i
+göstermeden ÖNCE senkron olarak `_close_all_checkouts()` çağırıyor. Bu
+kod tabanının düz metni kullanıcının seçtiği bir konuma yazdığı DİĞER
+yer — toplu indirme — için doğru DEĞİLDİ.
+
+**Ölçüldü, varsayılmadı.** `_lock()` hiçbir zaman `QThreadPool`'a,
+herhangi bir işçi iş parçacığına ya da herhangi bir `should_continue`/
+durdurma-olayı mekanizmasına dokunmuyor — yalnızca UI durumu (overlay,
+bulanıklaştırma, `centralWidget().setEnabled(False)`) artı checkout
+kapatma. Tekli dosya indirmeleri ve checkout açmaları, arasında
+`QApplication.processEvents()` OLMAYAN senkron ana iş parçacığı
+çağrıları — bu yüzden (varsayılmadı, okunarak doğrulandı) Qt olay
+döngüsü bunlarla ASLA iç içe geçemiyor; `_poll_usb()`'un zamanlayıcısının
+çalışma fırsatı çağrı dönene kadar hiç olmuyor, o noktada dosya zaten
+ya tamamen yazılmış ya da hiç yazılmamış oluyor. Toplu indirme farklı:
+`UI/main_window_bulk.py`'nin ilerleme geri çağrımı, ilerleme penceresinin
+uzun bir turda tepkisiz kalmaması için dosya başına bir kez
+`QApplication.processEvents()` çağırıyor, ve bu GERÇEK bir yeniden giriş
+noktası — USB tam o çağrılardan birinin İÇİNDE çekilseydi, `_poll_usb()`
+çalışabilir, kilit overlay'ini gösterebilirdi, ve yalnızca ilerleme
+penceresinin İptal düğmesini dinleyip kilit durumunu HİÇ kontrol
+etmeyen dışa aktarma döngüsü, ekran kilitli olsun ya da olmasın, kalan
+dosyaları çözüp diske yazmaya devam ederdi.
+
+Hiçbir düzeltme yazılmadan ÖNCE canlı yeniden üretildi: sekiz dosya
+toplu indirmeye kuyruğa alındı, gerçek UI bağlamasının yerine geçen bir
+`should_continue`/`on_progress` çifti, geri çağrımın KENDİSİ dosya
+index=3'ü işlerken bir `locked` bayrağını çeviriyor (`_poll_usb`'un
+etkisi, gerçek USB donanımına gerek kalmadan). Düzeltmeden ÖNCEki koda
+karşı, dosya index 3 yine de yazıldı — `saved=4`, kilit noktasının bir
+dosya ötesi.
+
+**Düzeltildi: `should_continue`, ilerleme geri çağrımı döndükten hemen
+sonra, bir sonraki dosya çözülmeden HEMEN önce İKİNCİ KEZ kontrol
+ediliyor** (`CORE/export.py::export_to_directory()`) — döngü bunu
+`on_progress`'i çağırmadan önce zaten bir kez kontrol ediyordu, ama o
+kontrol yeniden girişin MÜMKÜN OLDUĞU TEK noktadan ÖNCE gerçekleşiyor,
+yani o çağrı sırasında oluşan bir kilidi göremiyor. İkinci kontrol tam
+o pencereyi kapatıyor, ve yalnızca `on_progress` GERÇEKTEN verildiyse
+çalışıyor (böylece ilerleme geri çağrımı olmayan bir çağıran — yeniden
+giriş mümkün değil — eskisiyle TAM AYNI çağrı sayısını görüyor;
+buna adanmış bir test bunu sabitliyor). İki kontrol arasında, ve
+`decrypt_file()`/`write_bytes()`'in kendisi sırasında, olay döngüsü hiç
+dönmüyor, yani bir dosya her zaman ya TAMAMEN yazılıyor ya HİÇ
+başlamıyor — asla yarım kalmıyor. `UI/main_window_bulk.py`'nin
+`should_continue` lambda'sı artık İptal düğmesine EK OLARAK
+`self._locked`'ı da okuyor — CORE seviyesindeki düzeltmeyi gerçek kilit
+sinyaline bağlayan tek satırlık değişiklik BU; buna adanmış bir UI
+seviyesi testi gerçek `_on_ctx_bulk_download()` işleyicisini uçtan uca
+sürüyor (gerçek `HycleusWindow`, gerçek şifreleme, TOTP korumalı) ve
+`self._locked`'ı `QProgressDialog.setValue()`'nun İÇİNDEN çeviriyor —
+gerçek ilerleme geri çağrımının yaptığı TAM O çağrı — yalnızca altta
+yatan mekanizmayı değil, bağlamanın kendisini de doğruluyor.
+
+**Zeroize, dürüstçe kapsamlandırıldı.** `decrypt_file()` isteğe bağlı bir
+`zeroizable=True` modu kazandı: `bytes(buf)` — §3'te zaten belgelenmiş
+sınır gereği hiçbir zaman silinemeyecek değiştirilemez bir kopya —
+döndürmek yerine, çözümlemenin yazdığı TA KENDİSİ olan `bytearray`'i
+geri veriyor, çağıranın düz metin işini bitirince onun üzerinde (artık
+genel) `zero_bytearray()`'i çağırmasına izin veriyor. Varsayılmayıp
+CANLI kontrol edilen iki iç garanti: herhangi bir hata yolunda tampon
+hâlâ `decrypt_file()`'ın kendi `finally`'sinde sıfırlanıyor (yalnızca
+`zeroizable=True` ile BAŞARILI dönüş yolu bunu atlıyor, çünkü döndürülen
+değer TAM OLARAK o tamponun kendisi ve `finally` çağırana ulaşmadan
+ÖNCE çalışıyor — orada sıfırlamak çağırana zaten boşalmış bir tampon
+verirdi, bu canlı doğrulanıp sonra korumaya alındı); ve
+`zero_bytearray()` üzerindeki bir casus, her dosya için TAM OLARAK bir
+kez, o dosyanın GERÇEKTEN taşıdığı düz metinle, `write_bytes()`'ten
+HEMEN sonra çağrıldığını doğruluyor. Mevcut çağıranlar ETKİLENMİYOR —
+varsayılan değişmedi, ve diğer her çağrı yeri (`CORE/checkout.py`,
+`CORE/backup.py`, `CORE/hclx.py`, `UI/main_window_files.py`) hâlâ düz
+`bytes` alıyor; yalnızca `export_to_directory()` — bu bulgunun konusu
+olan yol — yeni moda geçirildi. `export_to_zip()` BİLEREK eski (`bytes`)
+yolda bırakıldı: döngüsünde hiçbir yerde `on_progress`/
+`processEvents()` çağrısı yok, yani yeniden giriş yapılabilir değil ve
+ölçülen boşluğun parçası değildi; onu dönüştürmek ayrı, daha düşük
+değerli bir değişiklik — buraya katılmak yerine BACKLOG'a not düşüldü.
 
 ## 5. Kriptografik ayrıntılar
 

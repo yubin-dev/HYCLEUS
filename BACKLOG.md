@@ -5062,3 +5062,136 @@ Tam test suite: 2790 passed, 4 skipped (bu bölümde eklenen 5 yeni test
 dahil), `ruff check .` temiz.
 
 ---
+
+## B-075 — Kilit ekranı checkout'u durduruyordu, toplu indirmeyi değil: USB çekilince arka planda düz metin yazılmaya devam edebiliyordu, düzeltildi
+
+**Durum:** Kapalı
+**Öncelik:** Yüksek (düz metnin diske yazılmaya devam ettiği ölçülen, canlı
+kanıtlanmış bir pencere)
+**Bulundu ve kapatıldı:** 2026-08-29 — aynı turda
+
+### İstek
+
+"USB çekilince kilitlenir" iddiası kısmen yanlış: kilit ekranı görünse
+bile arka planda süren bir işlem (şifre çözme/yazma) devam edip düz
+metni diske yazmaya devam edebilir. USB çıkarma event'inde tüm aktif
+worker'lara abort sinyali gönder, bellekteki hassas tamponları sıfırla
+(zeroize). Test: dosya işlenirken USB'yi çek, worker'ın hemen durduğunu
+ve yarım kalan düz metnin yazılmadığını doğrula.
+
+### Sorgu — haritalama
+
+`UI/main_window_lock.py::_lock()` (`_poll_usb()`'un çağırdığı) yalnızca
+İKİ şey yapıyor: açık checkout'ları senkron kapatmak
+(`_close_all_checkouts()`) ve UI durumunu değiştirmek (overlay,
+bulanıklaştırma). `QThreadPool`'a, herhangi bir worker'a ya da
+`should_continue`/durdurma-olayı mekanizmasına HİÇ dokunmuyor.
+
+Düz metnin diske yazıldığı yerler tarandı: checkout açma
+(`CORE/checkout.py::check_out()`), tekli indirme
+(`UI/main_window_files.py`), toplu indirme
+(`CORE/export.py::export_to_directory()`, `UI/main_window_bulk.py`
+üzerinden). İlk ikisi SENKRON, ana iş parçacığında, aralarında
+`QApplication.processEvents()` OLMADAN çalışıyor — Qt olay döngüsü
+bunlarla iç içe geçemez, `_poll_usb()`'un zamanlayıcısı çağrı bitene
+kadar hiç çalışamaz. **Toplu indirme farklı**: `UI/main_window_bulk.py`
+ilerleme geri çağrımı her dosyada `QApplication.processEvents()`
+çağırıyor — gerçek bir yeniden giriş noktası. `should_continue`
+yalnızca ilerleme penceresinin İptal düğmesini dinliyordu, kilit
+durumunu HİÇ görmüyordu.
+
+`_FileRunnable` (dosya EKLEME, `QThreadPool` işçisi) yalnızca
+`encrypt_file()` çağırıyor, hiç `decrypt_file` çağırmıyor — düz metin
+YAZMIYOR, risk yüzeyi değil.
+
+### Canlı doğrulama
+
+Sekiz dosyalık bir toplu indirme kuyruğa alındı; `on_progress` geri
+çağrımının kendisi, dosya index=3'ü işlerken bir `locked` bayrağını
+`True` yaptı (`_poll_usb`'un etkisi, gerçek USB donanımı olmadan taklit
+edildi). Düzeltmeden ÖNCEki kod, `should_continue` yalnızca döngü
+BAŞINDA kontrol edildiği için, index=3'ü de çözüp yazdı: `saved=4`,
+kilit noktasının bir dosya ötesi.
+
+### Düzeltme
+
+**Abort sinyali.** `CORE/export.py::export_to_directory()` artık
+`should_continue`'u İKİNCİ KEZ kontrol ediyor — `on_progress` döndükten
+hemen sonra, bir sonraki dosya çözülmeden ÖNCE (yalnızca `on_progress`
+GERÇEKTEN verildiyse; yoksa yeniden giriş fırsatı da yok, ikinci kontrol
+`should_continue`'un çağrı SAYISINI gereksiz yere değiştirirdi — bkz.
+`test_directory_export_can_be_cancelled`). İki kontrol arasında olay
+döngüsü hiç dönmediği için bir dosya her zaman ya TAMAMEN yazılıyor ya
+HİÇ başlamıyor. `UI/main_window_bulk.py`'nin `should_continue`
+lambda'sı artık `self._locked`'ı da okuyor — CORE düzeltmesini gerçek
+kilit sinyaline bağlayan tek satır.
+
+**Zeroize.** `decrypt_file()`'a isteğe bağlı `zeroizable=True` parametresi
+eklendi: varsayılan `bytes(buf)` (değiştirilemez, asla sıfırlanamaz —
+SECURITY.md §3'teki bilinen sınır) yerine, çözümlemenin YAZDIĞI aynı
+`bytearray`'i döndürüyor; çağıran işini bitirince (artık genel)
+`zero_bytearray()` (eski `_zero`, yeniden adlandırıldı) ile GERÇEKTEN
+sıfırlayabiliyor. Hata yolunda `finally` hâlâ tamponu sıfırlıyor;
+yalnızca `zeroizable=True` BAŞARI yolu bunu atlıyor (döndürülen değer
+TAM O tamponun kendisi, `finally` çağırana ulaşmadan önce çalışıyor —
+sıfırlarsa boş bir tampon dönerdi, canlı doğrulanıp bir bayrakla
+(`buf_cagirana_devrediliyor`) korumaya alındı). `export_to_directory()`
+artık `zeroizable=True` kullanıyor ve `write_bytes()`'ten hemen sonra
+`zero_bytearray()` çağırıyor. Diğer tüm çağıranlar (`CORE/checkout.py`,
+`CORE/backup.py`, `CORE/hclx.py`, `UI/main_window_files.py`,
+`export_to_zip()`) ETKİLENMEDİ — varsayılan davranış aynı kaldı.
+`export_to_zip()` bilerek eski yolda bırakıldı: `processEvents()` hiç
+çağırmıyor, yeniden giriş yapılamıyor, ölçülen boşluğun parçası değildi.
+
+### Testler
+
+**`tests/test_export.py`** (3 yeni test): `test_lock_ortasinda_daha_
+fazla_dosya_yazilmiyor` — ANA TEST, yukarıdaki canlı senaryonun kalıcı
+hâli; `test_lock_on_progress_YOKSA_ikinci_kontrol_devreye_girmiyor` —
+mutasyon kontrastı, ikinci kontrolün `on_progress` yokken devreye
+girmediğini (eski çağrı-sayısı varsayımının bozulmadığını) doğruluyor;
+`test_lock_sirasinda_zeroizable_tampon_gercekten_sifirlaniyor` —
+`zero_bytearray()`'in her dosya için tam bir kez, doğru içerikle
+çağrıldığını casus bir sarmalayıcıyla ölçüyor.
+
+**`tests/test_crypto.py`** (4 yeni test, yeni bölüm "1b. Bellek
+güvenliği — zeroizable"): varsayılanın hâlâ `bytes` döndürdüğü,
+`zeroizable=True`'nun doğru içerikli bir `bytearray` döndürdüğü,
+`zero_bytearray()` sonrası içeriğin GERÇEKTEN sıfır olduğu, hata
+yolunda da (`AuthenticationError`) tamponun sıfırlandığı (finally'nin
+istisnasız çalıştığı, ikinci bir çağrının çökmediği ile dolaylı kanıt).
+
+**`tests/test_bulk_download_lock.py`** (yeni dosya, 2 test) — gerçek
+`_on_ctx_bulk_download()` üzerinden UÇTAN UCA: gerçek `HycleusWindow`,
+gerçek şifreleme, TOTP korumalı. `self._locked`,
+`QProgressDialog.setValue()`'nun İÇİNDEN (gerçek `_ilerleme()`'nin her
+dosyada yaptığı TAM çağrı) çevriliyor — yalnızca CORE mekanizmasını
+değil, gerçek UI bağlamasını doğruluyor. İkinci test (mutasyon
+kontrastı) kilitlenmeden tüm dosyaların normal indiğini doğruluyor.
+
+**Mutasyon kontrastı — `git stash` ile, üç ayrı düzeyde:**
+- `CORE/export.py` (+ `CORE/crypto.py`) geri alındığında
+  `test_lock_ortasinda_daha_fazla_dosya_yazilmiyor` `saved=4` ile
+  BAŞARISIZ oldu (manuel canlı tekrarla TAM eşleşen sonuç);
+  `test_lock_sirasinda_zeroizable_tampon...` `AttributeError` ile
+  (henüz `zero_bytearray` yok).
+- `CORE/crypto.py` tek başına geri alındığında `tests/test_crypto.py`
+  toplanamadı bile (`ImportError: cannot import name 'zero_bytearray'`)
+  — "bu paket kazayla geçemez"in en güçlü biçimi.
+- `UI/main_window_bulk.py` tek başına geri alındığında (CORE düzeltmesi
+  YERİNDEYKEN) `test_kilit_ortasinda_bulk_indirme_gercekten_duruyor`
+  BAŞARISIZ oldu — CORE mekanizması var olsa bile UI bağlaması eksikse
+  test bunu YAKALIYOR, yalnızca alttaki mekanizmayı değil.
+
+Üçünde de sonra `git stash pop` ile düzeltme geri getirildi.
+
+SECURITY.md'ye yeni bölüm **§4.18** (EN+TR) eklendi: §4.10'un checkout
+için doğru olan iddiasının toplu indirme için neden doğru OLMADIĞI,
+canlı ölçüm, düzeltme, zeroize'ın dürüst kapsamı (`export_to_zip()`'in
+neden dışarıda bırakıldığı dahil). `test_belge_dil_paritesi.py` (27/27)
+ile doğrulandı.
+
+Tam test suite: 2801 passed, 4 skipped (bu turda eklenen 9 yeni test
+dahil), `ruff check .` ve `mypy` temiz.
+
+---

@@ -13,7 +13,13 @@ from pathlib import Path
 import pytest
 
 from CORE import crypto
-from CORE.crypto import AuthenticationError, decrypt_file, encrypt_file, generate_key
+from CORE.crypto import (
+    AuthenticationError,
+    decrypt_file,
+    encrypt_file,
+    generate_key,
+    zero_bytearray,
+)
 
 # .hcl başlık ofsetleri (bkz. CORE/crypto.py modül docstring'i)
 _HDR_NONCE = 5                 # magic(4) + version(1)
@@ -87,6 +93,80 @@ def test_encrypt_decrypt_round_trip_is_byte_identical(plain_file: Path, key: byt
     assert meta["original_sha256"] == sha256_hex
     assert meta["user_id"] == _USER_ID
     assert meta["hwid"] == _HWID
+
+
+# ── 1b. Bellek güvenliği — zeroizable (K1-15) ───────────────────────────────────
+#
+# `decrypt_file()` varsayılan modda `bytes` döndürür — DEĞİŞTİRİLEMEZ, yani
+# çağıran `del content` yapsa bile içerik bellekten fiilen SİLİNEMEZ (SECURITY.md
+# §3'te belgeli, bilinçli bir sınır). `zeroizable=True`, `bytes(buf)` kopyasını
+# HİÇ ÜRETMEDEN çözümlemenin kullandığı AYNI `bytearray`i döndürerek bu sınırı
+# kaldırıyor — çağıran `zero_bytearray()` ile GERÇEK bir sıfırlama yapabilir.
+
+
+def test_zeroizable_false_varsayilan_bytes_donduruyor(plain_file: Path, key: bytes) -> None:
+    """Varsayılan davranış AYNEN korunuyor — `zeroizable` geçilmezse `bytes`."""
+    hcl_path, _sha, _aad = encrypt_file(plain_file, key, _USER_ID, hwid=_HWID)
+    content, _meta = decrypt_file(hcl_path, key, hwid=_HWID)
+    assert type(content) is bytes
+
+
+def test_zeroizable_true_bytearray_donduruyor_ve_dogru_icerigi_tasiyor(
+    plain_file: Path, key: bytes,
+) -> None:
+    original = plain_file.read_bytes()
+    hcl_path, _sha, _aad = encrypt_file(plain_file, key, _USER_ID, hwid=_HWID)
+
+    content, meta = decrypt_file(hcl_path, key, hwid=_HWID, zeroizable=True)
+
+    assert type(content) is bytearray
+    assert bytes(content) == original
+    assert meta["filename"] == plain_file.name
+
+
+def test_zero_bytearray_sonrasi_icerik_gercekten_sifir(plain_file: Path, key: bytes) -> None:
+    """
+    ANA TEST: `zero_bytearray()` çağrıldıktan sonra döndürülen tamponun
+    içeriği GERÇEKTEN sıfır olmalı — `del`'in aksine (referansı kaldırır
+    ama bellekteki byte'lara dokunmaz), bu bir bellek YAZMA işlemi.
+    """
+    hcl_path, _sha, _aad = encrypt_file(plain_file, key, _USER_ID, hwid=_HWID)
+    content, _meta = decrypt_file(hcl_path, key, hwid=_HWID, zeroizable=True)
+
+    assert any(b != 0 for b in content), "test kurulumu hatalı — içerik zaten sıfır"
+
+    zero_bytearray(content)
+
+    assert all(b == 0 for b in content), "zero_bytearray() sonrası içerik sıfır DEĞİL"
+
+
+def test_zeroizable_true_hata_yolunda_da_tamponu_sifirliyor(
+    plain_file: Path, key: bytes,
+) -> None:
+    """
+    Mutasyon kontrastı — hata yolu: `zeroizable=True` iken bir
+    `AuthenticationError` fırlarsa (bkz. ciphertext kurcalama testleri,
+    aşağıda) `buf` hâlâ ara tamponun kendisi ve `finally` onu sıfırlamalı
+    — döndürülen bir değer OLMADIĞI için `buf_cagirana_devrediliyor`
+    bayrağı bu yolda hiç True olmamalı. Doğrudan gözlemlenemez (buf
+    fonksiyon dışına çıkmıyor) ama `decrypt_file()`'ın normal modda
+    (zeroizable=False) AYNI hata yolunda hâlâ doğru AuthenticationError
+    fırlattığını doğrulayarak `finally` bloğunun her iki dalda da
+    çalıştığından emin oluyoruz.
+    """
+    hcl_path, _sha, _aad = encrypt_file(plain_file, key, _USER_ID, hwid=_HWID)
+    nonce, aad, ciphertext, tag = _parse_hcl(hcl_path)
+    bozuk_tag = tag[:-1] + bytes([tag[-1] ^ 0xFF])
+    _rebuild_hcl(hcl_path, aad=aad, ciphertext=ciphertext, tag=bozuk_tag)
+
+    with pytest.raises(AuthenticationError):
+        decrypt_file(hcl_path, key, hwid=_HWID, zeroizable=True)
+    # İkinci bir çağrı (aynı bozuk dosya, zeroizable=False) çökmeden aynı
+    # hatayı vermeye devam ediyor — finally bloğu her iki modda da
+    # istisnasız çalışıyor, kalıcı bir bozulma (ör. serbest bırakılmamış
+    # bir memoryview) yok.
+    with pytest.raises(AuthenticationError):
+        decrypt_file(hcl_path, key, hwid=_HWID)
 
 
 # ── 2. Ciphertext / tag kurcalama ─────────────────────────────────────────────

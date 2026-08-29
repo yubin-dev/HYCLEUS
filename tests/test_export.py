@@ -297,6 +297,143 @@ def test_directory_export_can_be_cancelled(db, tmp_path: Path):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# K1-15 — USB çekilince (kilit) bulk indirme de gerçekten duruyor
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Sorgu (2026-08-29): "USB çekilince kilitlenir" iddiası UI/main_window_lock.py
+# ::_lock() için doğru (açık checkout'ları senkron kapatıyor), ama
+# export_to_directory()'nin ARKA PLANDA sürmesi mümkün — `on_progress`
+# (`UI/main_window_bulk.py::_ilerleme`) her turda `QApplication.
+# processEvents()` çağırıyor, yani bu döngü Qt olay döngüsüne yeniden
+# giriş yapabiliyor. USB tam bu processEvents() sırasında çekilirse
+# `_poll_usb()` → `_lock()` çalışır ve `self._locked = True` olur — ama
+# eski `should_continue=lambda: not prog.wasCanceled()` bunu HİÇ
+# görmüyordu, döngü kalan dosyaları çözüp yazmaya devam ederdi.
+#
+# Aşağıdaki test bunu doğrudan, gerçek şifreleme ile ölçüyor:
+# `on_progress`'in KENDİSİ belirli bir dosyada kilidi tetikliyor (gerçek
+# `_poll_usb`/`_lock()` etkileşiminin taklidi) ve döngünün O ANDAN
+# SONRA hiçbir dosya çözüp yazmadığı doğrulanıyor.
+
+
+def test_lock_ortasinda_daha_fazla_dosya_yazilmiyor(db, tmp_path: Path):
+    """
+    ANA TEST (K1-15). `git stash` ile düzeltmeden ÖNCEki
+    `CORE/export.py`'ye karşı çalıştırıldığında bu test BAŞARISIZ olur:
+    kilit `on_progress(index=3, ...)` sırasında tetiklendiği hâlde
+    dosya_3.txt yine de diske yazılır (`saved=4`, beklenen `saved=3`) —
+    manuel canlı tekrarla TAM eşleşen sonuç.
+    """
+    ogeler = []
+    for i in range(8):
+        fid, yol = _add_encrypted(db, tmp_path, f"dosya_{i}.txt", f"gizli-{i}".encode())
+        ogeler.append((fid, str(yol)))
+    hedef = tmp_path / "indirilenler"
+    hedef.mkdir()
+
+    sahne = {"locked": False}
+
+    def _ilerleme(index: int, kisa_ad: str) -> None:
+        # `_poll_usb()` → `_lock()` taklidi: USB tam bu dosyanın
+        # `on_progress` çağrısı sırasında çekiliyor.
+        if index == 3:
+            sahne["locked"] = True
+
+    sonuc = export_to_directory(
+        db, ogeler, _KEY, hedef,
+        on_progress=_ilerleme,
+        should_continue=lambda: not sahne["locked"],
+    )
+
+    assert sonuc.cancelled is True
+    assert sonuc.saved == 3, (
+        f"kilit index=3'te tetiklendi, saved 3 olmalıydı: {sonuc.saved}"
+    )
+
+    yazilanlar = {p.name for p in hedef.iterdir()}
+    for i in range(3):
+        assert f"dosya_{i}.txt" in yazilanlar, f"dosya_{i}.txt kilitten ÖNCE yazılmalıydı"
+    for i in range(3, 8):
+        assert f"dosya_{i}.txt" not in yazilanlar, (
+            f"dosya_{i}.txt kilitten SONRA yazılmış — yarım kalan/gecikmiş "
+            "düz metin"
+        )
+
+
+def test_lock_on_progress_YOKSA_ikinci_kontrol_devreye_girmiyor(db, tmp_path: Path):
+    """
+    Mutasyon kontrastı — negatif yön: `on_progress` HİÇ verilmezse Qt
+    olay döngüsüne yeniden giriş fırsatı da yok, yani ikinci kontrol
+    gereksiz. Bu test `should_continue`'un tam olarak ESKİ (tek) sayıda
+    çağrıldığını doğruluyor — `test_directory_export_can_be_cancelled`'ın
+    dayandığı çağrı-sayacı varsayımı hâlâ geçerli, K1-15 onu SESSİZCE
+    bozmadı.
+    """
+    ogeler = []
+    for i in range(4):
+        fid, yol = _add_encrypted(db, tmp_path, f"d{i}.txt", b"x")
+        ogeler.append((fid, str(yol)))
+    hedef = tmp_path / "cikti"
+    hedef.mkdir()
+
+    cagri_sayisi = {"n": 0}
+
+    def devam():
+        cagri_sayisi["n"] += 1
+        return True
+
+    export_to_directory(db, ogeler, _KEY, hedef, should_continue=devam)
+
+    assert cagri_sayisi["n"] == len(ogeler), (
+        "on_progress verilmediği hâlde should_continue() beklenenden "
+        "fazla/az çağrıldı"
+    )
+
+
+def test_lock_sirasinda_zeroizable_tampon_gercekten_sifirlaniyor(
+    db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Zeroize kısmı: `export_to_directory()` artık `decrypt_file(...,
+    zeroizable=True)` kullanıyor ve yazdıktan hemen sonra
+    `zero_bytearray()` çağırıyor. `zero_bytearray()`'i CASUS bir
+    sarmalayıcıyla değiştirip GERÇEKTEN, her dosya için TAM OLARAK bir
+    kez çağrıldığını ve argümanının o dosyanın düz metin uzunluğunda bir
+    `bytearray` olduğunu ölçüyoruz — yalnızca varlığını değil.
+    """
+    from CORE import export as export_mod
+
+    cagrilar: list[bytes] = []
+    orijinal = export_mod.zero_bytearray
+
+    def _casus(buf: bytearray) -> None:
+        cagrilar.append(bytes(buf))  # sıfırlanmadan ÖNCEki hâli kopyala
+        orijinal(buf)
+        assert all(b == 0 for b in buf), "zero_bytearray sonrası içerik sıfır DEĞİL"
+
+    monkeypatch.setattr(export_mod, "zero_bytearray", _casus)
+
+    icerikler = [b"birinci-dosyanin-gizli-verisi", b"ikinci-kisa"]
+    ogeler = []
+    for i, icerik in enumerate(icerikler):
+        fid, yol = _add_encrypted(db, tmp_path, f"z{i}.txt", icerik)
+        ogeler.append((fid, str(yol)))
+    hedef = tmp_path / "cikti"
+    hedef.mkdir()
+
+    export_to_directory(db, ogeler, _KEY, hedef)
+
+    assert len(cagrilar) == len(icerikler), (
+        f"zero_bytearray() {len(icerikler)} kez çağrılmalıydı, "
+        f"{len(cagrilar)} kez çağrıldı"
+    )
+    assert set(cagrilar) == set(icerikler), (
+        "zero_bytearray()'e geçen tampon(lar) beklenen düz metinle "
+        "eşleşmiyor"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 4. GİDERİLEN FARK — hwid geri dönüşü (B-010)
 # ══════════════════════════════════════════════════════════════════════════════
 

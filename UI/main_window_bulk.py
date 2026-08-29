@@ -258,12 +258,29 @@ class BulkActionsMixin:
             # doğrulaması sessizce devre dışı kalıyordu.
             hwid_fallback="DEV-HWID-1234" if _DEV_MODE else self._hwid,
             on_progress=_ilerleme,
-            should_continue=lambda: not prog.wasCanceled(),
+            # K1-15: yalnızca "İptal" düğmesi DEĞİL — `self._locked` de.
+            # `_ilerleme()` her turda `QApplication.processEvents()`
+            # çağırıyor, yani bu döngü Qt olay döngüsüne yeniden giriş
+            # yapabiliyor; USB tam bu sırada çekilirse `_poll_usb()` →
+            # `_lock()` çalışır ve `self._locked` True olur. Eskiden bu
+            # döngü bunu HİÇ görmüyordu — kilit ekranı görünse bile
+            # kalan dosyalar çözülüp yazılmaya devam ederdi (ölçüldü,
+            # bkz. tests/test_export.py::
+            # test_lock_ortasinda_daha_fazla_dosya_yazilmiyor).
+            should_continue=lambda: not prog.wasCanceled() and not self._locked,
         )
         saved, errors = sonuc.saved, sonuc.errors
 
         prog.setValue(len(file_ids))
         prog.close()
+
+        if sonuc.cancelled and self._locked and not prog.wasCanceled():
+            QMessageBox.warning(
+                self, "İndirme Durduruldu",
+                f"Oturum kilitlendiği için indirme yarıda durduruldu.\n"
+                f"{saved} dosya kaydedildi, kalanlar işlenmedi.\n\n{save_dir}",
+            )
+            return
 
         msg = f"{saved} dosya kaydedildi:\n{save_dir}"
         if errors:

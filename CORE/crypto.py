@@ -65,7 +65,7 @@ import os
 import struct
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO
+from typing import IO, Literal, overload
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -113,8 +113,15 @@ class AuthenticationError(Exception):
     """Dosya, ciphertext veya AAD metadata bütünlüğü doğrulanamadığında fırlar."""
 
 
-def _zero(buf: bytearray) -> None:
-    """bytearray içeriğini ctypes.memset ile sıfırlar — ara tampon temizliği."""
+def zero_bytearray(buf: bytearray) -> None:
+    """
+    bytearray içeriğini ctypes.memset ile sıfırlar.
+
+    Yalnızca CORE/crypto.py'nin kendi ara tamponları için değil — `bytes`
+    DEĞİŞTİRİLEMEZ olduğu için tek gerçek zeroize yolu bu: hassas içeriği
+    baştan bir `bytearray`de tutup iş bitince burayla sıfırlamak
+    (bkz. `decrypt_file(..., zeroizable=True)`).
+    """
     ctypes.memset(
         (ctypes.c_char * len(buf)).from_buffer(buf),
         0,
@@ -468,7 +475,7 @@ def verify_file(
             # memoryview, bytearray üzerinde dışa aktarılmış tampon tutuyor;
             # ctypes.memset from_buffer() için serbest bırakılması gerekir.
             view.release()
-            _zero(scratch)
+            zero_bytearray(scratch)
 
         meta = json.loads(aad.decode())
         if hwid is not None and meta.get("hwid") is not None and meta["hwid"] != hwid:
@@ -478,26 +485,76 @@ def verify_file(
         return meta
 
 
+@overload
 def decrypt_file(
     src: Path | str,
     key: bytes,
     *,
     hwid: str | None = None,
-) -> tuple[bytes, dict]:
+    zeroizable: Literal[False] = False,
+) -> tuple[bytes, dict]: ...
+
+
+@overload
+def decrypt_file(
+    src: Path | str,
+    key: bytes,
+    *,
+    hwid: str | None = None,
+    zeroizable: Literal[True],
+) -> tuple[bytearray, dict]: ...
+
+
+def decrypt_file(
+    src: Path | str,
+    key: bytes,
+    *,
+    hwid: str | None = None,
+    zeroizable: bool = False,
+) -> tuple[bytes, dict] | tuple[bytearray, dict]:
     """
     data/quarantine/ içindeki .hcl dosyasını çözer.
 
     Returns:
-        (plaintext_bytes, metadata_dict)
-        plaintext_bytes: bytes — işin bitince referansı kaldır: del content
+        (plaintext, metadata_dict)
+        plaintext: varsayılan `bytes` — işin bitince referansı kaldır:
+            del content
+        `zeroizable=True` verilirse `bytearray` — çağıran işi bitince
+            `zero_bytearray(content)` ile GERÇEKTEN sıfırlayabilir
+            (bkz. aşağıdaki "Bellek güvenliği").
 
     Bellek güvenliği:
-        Ara çözümleme tamponu (bytearray) ctypes.memset ile sıfırlanır.
-        Döndürülen bytes kopyasının referansını çağıran kaldırmalı:
+        Ara çözümleme tamponu HER ZAMAN `bytearray` ve iş bitince
+        `zero_bytearray()` ile ctypes.memset üzerinden sıfırlanır — ama
+        varsayılan modda DÖNDÜRÜLEN kopya `bytes(buf)`, yani AYRI bir
+        bellek bölgesi: `bytes` DEĞİŞTİRİLEMEZ olduğu için o kopya asla
+        sıfırlanamaz, çağıranın elinden tek çıkış yolu referansı
+        kaldırmak (`del content`) ve çöp toplayıcıya güvenmek — bkz.
+        `CORE/export.py` modül docstring'i, "Düz metin diske yazılıyor".
+
+        `zeroizable=True` bu sınırı KALDIRMIYOR, farklı bir sınır
+        seçiyor: `bytes(buf)` kopyası hiç ÜRETİLMİYOR, çözümlemenin
+        kullandığı AYNI `bytearray` çağırana döndürülüyor. Çağıran işini
+        bitirince `zero_bytearray(content)` çağırırsa döndürülen
+        tampondaki plaintext GERÇEKTEN, geri alınamaz biçimde
+        sıfırlanır — normal modda mümkün olmayan bir garanti. Bedeli:
+        `bytes` değil `bytearray` almak — `hedef.write_bytes(...)` ve
+        benzeri bytes-benzeri arayüzler bytearray'i sorunsuz kabul
+        ediyor, ama `==` ile sabit bir `bytes` değeriyle karşılaştırma
+        hâlâ çalışır (bytearray/bytes karşılaştırması içerik bazlı).
+
             content, meta = decrypt_file(path, key)
             try:
                 ...  # içeriği işle
             finally:
+                del content
+
+            # ya da gerçek sıfırlama isteniyorsa:
+            content, meta = decrypt_file(path, key, zeroizable=True)
+            try:
+                ...
+            finally:
+                zero_bytearray(content)
                 del content
 
     Raises:
@@ -529,6 +586,15 @@ def decrypt_file(
 
         # bytearray: mutable — finally bloğunda ctypes.memset ile sıfırlanabilir
         buf = bytearray()
+        # `return buf, meta` (zeroizable=True) durumunda finally'nin buf'ı
+        # sıfırlamaMASI gerekiyor — döndürdüğümüz değer TAM OLARAK buf'ın
+        # kendisi (kopya değil), finally return'den SONRA değil ÖNCE
+        # çalışır, yani sıfırlarsak çağıranın eline sıfırlanmış bir
+        # tampon geçerdi. Bu bayrak yalnızca "başarıyla, zeroizable=True
+        # ile döndük" durumunda True olur — hata yolunda (return'e hiç
+        # ulaşılmadan exception fırlarsa) daima False kalır, yani buf
+        # yine sıfırlanır.
+        buf_cagirana_devrediliyor = False
         try:
             remaining = ciphertext_len
             while remaining > 0:
@@ -551,8 +617,12 @@ def decrypt_file(
                 raise AuthenticationError(
                     "HWID uyuşmazlığı — dosya farklı bir cihazda şifrelendi."
                 )
+            if zeroizable:
+                buf_cagirana_devrediliyor = True
+                return buf, meta
             return bytes(buf), meta
         finally:
-            # Hata ya da başarı fark etmeksizin ara tamponu sıfırla
-            if buf:
-                _zero(buf)
+            # Hata ya da başarı fark etmeksizin ara tamponu sıfırla —
+            # TEK istisna: buf'ın kendisi az önce çağırana döndürüldüyse.
+            if buf and not buf_cagirana_devrediliyor:
+                zero_bytearray(buf)

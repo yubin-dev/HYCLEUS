@@ -22,10 +22,30 @@ istediği ve yerini kendi seçtiği kalıcı bir dışa aktarım. SafeZone'un i�
 uygulamanın kendi ürettiği geçici kopyaları temizlemek; kullanıcının
 masaüstüne kaydettiği dosyayı silmek değil.
 
-Çözülmüş içerik yine de bellekte tam olarak bulunuyor (`decrypt_file`
-`bytes` döndürüyor) ve yazıldıktan sonra referans kaldırılıyor. Sınır
-SECURITY.md §3'te anlatılan sınırın aynısı: `bytes` değiştirilemez,
-silinemez.
+Çözülmüş içerik yine de bellekte tam olarak bulunuyor. `export_to_directory()`
+`decrypt_file(..., zeroizable=True)` kullanıyor — `bytes` yerine bir
+`bytearray` alıyor ve yazdıktan HEMEN sonra `zero_bytearray()` ile
+GERÇEKTEN sıfırlıyor (bkz. CORE/crypto.py::decrypt_file, "Bellek
+güvenliği"). `export_to_zip()` henüz eski (varsayılan `bytes`) yolu
+kullanıyor — ZIP akışı bugün yeniden giriş yapılabilir değil (aşağıya
+bkz., "USB çekilince de durur" notu), zeroize edilebilir hâle getirmek
+ayrı bir madde.
+
+USB çekilince de durur — abort sinyali (2026-08-29, K1-15)
+------------------------------------------------------------
+`export_to_directory()`'nin çağrısı `QApplication.processEvents()`
+çalıştıran bir `on_progress` geri çağrımı alıyor (bkz.
+`UI/main_window_bulk.py`), yani bu döngü Qt olay döngüsüne yeniden giriş
+yapabiliyor — USB çekilip `_lock()` tetiklenirse `should_continue()`
+bunu görebilmeli. `should_continue()` bu yüzden döngüde İKİ KEZ kontrol
+ediliyor: `on_progress`'TEN ÖNCE (aynen eskisi gibi) VE `on_progress`'TEN
+SONRA, `decrypt_file()`'ı çağırmadan HEMEN önce — çünkü olay döngüsüne
+yeniden giriş yalnızca `on_progress` içinde olabiliyor, ikinci kontrol
+olmadan USB tam o sırada çekilirse bir dosya daha çözülüp yazılırdı. Bu
+iki kontrol arasında `decrypt_file()`/`write_bytes()` senkron çalışıyor
+— olay döngüsü hiç dönmüyor — yani kilit bir dosyanın YARISINI
+yazdırabilecek bir noktada asla araya giremiyor: her dosya ya TAMAMEN
+yazılıyor ya HİÇ başlamıyor.
 
 
 GİDERİLEN FARK — hwid geri dönüşü (B-010)
@@ -75,7 +95,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from CORE.crypto import AuthenticationError, decrypt_file
+from CORE.crypto import AuthenticationError, decrypt_file, zero_bytearray
 
 _log = logging.getLogger("hycleus.export")
 
@@ -235,7 +255,13 @@ def export_to_directory(
                          ile aynı anlam; iki akış artık aynı kararı
                          veriyor.
         on_progress:     her dosyadan önce (sıra_no, kısa_ad) ile çağrılır.
+                         `QApplication.processEvents()` çağırabilir —
+                         bkz. modül docstring'i "USB çekilince de durur".
         should_continue: False dönerse döngü durur ve `cancelled=True`.
+                         Yalnızca kullanıcının "İptal" düğmesi için değil
+                         — çağıran USB/kilit durumunu da buraya
+                         BAĞLAMALI (bkz. `UI/main_window_bulk.py`), aksi
+                         hâlde kilitlenen bir oturum döngüyü durdurmaz.
 
     `aad_metadata` artık TEK sorguda önden okunuyor (B-009) — bkz.
     `aad_map()`.
@@ -257,6 +283,21 @@ def export_to_directory(
         kisa = Path(filepath).name if filepath else "?"
         if on_progress is not None:
             on_progress(index, kisa)
+            # `on_progress` Qt olay döngüsüne yeniden giriş yapmış olabilir
+            # (`QApplication.processEvents()`) — USB tam O SIRADA çekilip
+            # `_lock()` tetiklenmiş olabilir. Döngü başındaki kontrol bunu
+            # KAÇIRIR (o zaman henüz kilitli değildik); bu yüzden
+            # `decrypt_file()`'a girmeden HEMEN önce YENİDEN soruyoruz —
+            # yalnızca `on_progress` VARSA: yeniden giriş fırsatı yalnızca
+            # onun içinde var, yoksa ikinci kontrol `should_continue`'u
+            # anlamsızca iki kez çağırır (bkz. test_directory_export_
+            # can_be_cancelled — çağrı SAYISINA dayanıyor). Bu iki kontrol
+            # arasında (ve decrypt_file()/write_bytes() sırasında) olay
+            # döngüsü hiç dönmüyor, yani kilit bir dosyanın TAM ortasına
+            # asla giremez — her dosya ya tamamen işlenir ya hiç başlamaz.
+            if should_continue is not None and not should_continue():
+                cancelled = True
+                break
 
         if not filepath:
             errors.append(f"#{file_id} (dosya yolu yok)")
@@ -265,13 +306,19 @@ def export_to_directory(
         try:
             hwid = aad_hwid_of(aadler.get(file_id)) or hwid_fallback
 
-            content, meta = decrypt_file(filepath, key, hwid=hwid)
+            content, meta = decrypt_file(filepath, key, hwid=hwid, zeroizable=True)
             try:
                 hedef = unique_path(
                     hedef_dizin, meta.get("filename", Path(filepath).stem)
                 )
                 hedef.write_bytes(content)
             finally:
+                # `zeroizable=True` sayesinde `content` gerçek bir
+                # `bytearray` — `del` ile referansı kaldırmak yerine
+                # (`bytes` sınırında olduğu gibi) burayı GERÇEKTEN
+                # sıfırlayabiliyoruz. Hata olsa da (`write_bytes()`
+                # patlarsa) çalışır — `finally`.
+                zero_bytearray(content)
                 del content
 
             db.log(
