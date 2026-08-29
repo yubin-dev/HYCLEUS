@@ -5507,3 +5507,107 @@ Tam test suite: 2803 passed, 4 skipped (bir önceki turdan +2 — bu
 dosyaya eklenen 2 yeni test).
 
 ---
+
+## B-077 — Tema seçici dropdown'dan görsel kart grid'e çevrildi; mockup'ın 11 teması teyit edildi
+
+**Durum:** Kapalı
+**Öncelik:** —
+**Bulundu ve kapatıldı:** 2026-08-29 — aynı turda
+
+### Görev
+
+İki parça: (1) tema seçiciyi (`ThemeMixin._on_theme_menu`, düz metin bir
+`QMenu`) mockup'taki gibi her kartın kendi renk paletini canlı önizlediği
+bir kart grid'e çevir; (2) bu geçiş sırasında `register_theme()` ile koda
+hiç geçmemiş kalan mockup temalarını (görev metninde "muhtemelen 6 tane"
+deniyordu) gerçek kod tarafında kaydet.
+
+**2. madde zaten kapalıydı — koddan doğrulandı.** `git log -- UI/
+main_window_theme.py` incelendi: `4b07486` ("Arayuz guncellemesi BOLUM A:
+mockup'in eksik 6 temasi eklendi") bu oturumdan ÖNCE, mockup'ın 11
+temasının kalan 6'sını (Cam/Klasik/Akrilik/Aurora (Cam)/Gün Batımı/Grafit
+(Cam)) zaten `register_theme()` ile kaydetmişti — `UI/main_window_
+palette.py`'de tam token setleriyle (`_CAM`/`_KLASIK`/`_AKRILIK`/
+`_AURORA_CAM`/`_GUN_BATIMI`/`_GRAFIT_CAM`, WCAG AA'ya göre ayarlanmış,
+bkz. `tests/test_tema_kontrasti.py`). Bu turda yeni bir tema EKLENMEDİ —
+`_THEMES`'in gerçekten 11 anahtar taşıdığı (`test_tam_11_tema_kayitli`)
+ve her birinin `_DARK` referans şemasıyla AYNI anahtar kümesine sahip
+olduğu (`test_her_temanin_dark_varyanti_tam_token_setine_sahip`,
+parametrized) testlerle KALICI olarak doğrulandı — biri ileride bir
+tema kaydını yanlışlıkla silerse ya da eksik bir token'la eklerse bu
+testler kırılır.
+
+### 1. madde — yeni dosya: `UI/ThemePickerDialog.py`
+
+`ThemeMixin._on_theme_menu()`'un gövdesi değişti: artık bir `QMenu`
+DEĞİL, `ThemePickerDialog`'u açıyor. Diyalog `available_themes()`'in
+döndürdüğü SIRAYLA 11 kart kuruyor (3 sütunlu grid, kaydırma alanında).
+
+**Token kaynağı — hiçbir yeni renk İCAT EDİLMEDİ.** Diyaloğun KENDİ
+çerçevesi (başlık, arka plan, "Kapat" düğmesi) çağıranın GÜNCEL
+`self._T`'siyle boyanıyor — `ProfileDialog`/`RecoveryShareDialog`'un
+aynı `_stil(T)` deseni. Her kartın İÇİNDEKİ önizleme şeridi ise o kartın
+TEMSİL ETTİĞİ preset'in KENDİ token'larından geliyor (`_THEMES[key]
+["dark"/"light"]`) — kart kendi rengini gösterir, aktif temanın rengini
+değil. Koyu-yalnızca preset'ler (`light is None`, ör. `aurora_borealis`)
+önizlemede HER ZAMAN kendi koyu paletini gösterir, diyaloğun açık/koyu
+modundan bağımsız — `_set_theme()`'in bu preset'i seçince `self._dark`'ı
+zorla `True` yapmasıyla TUTARLI.
+
+Kart tıklanabilirliği `UI/main_window_layout.py`'nin avatar/scrim
+düğmeleriyle AYNI desen: ayrı bir sınıf açmak yerine `mousePressEvent`
+örnek metoduna doğrudan atama (`kart.mousePressEvent = lambda _ev, k=key:
+on_click(k)`) — bu depoda zaten kurulu, yeni bir soyutlama gerekmedi.
+
+`_on_theme_menu()` `ThemePickerDialog`'u YEREL içe aktarıyor (`AdminPanel.
+py`'nin `RecoveryShareDialog`'u içe aktarma deseniyle AYNI) — hem
+`main_window_theme.py` <-> `ThemePickerDialog.py` arasındaki döngüsel
+bağımlılığı modül-seviyesinde değil çağrı anında çözüyor, hem de testlerin
+`UI.ThemePickerDialog.ThemePickerDialog`'u monkeypatch edip `.exec()`'i
+GERÇEKTEN çağırmadan (başsız bir testte sonsuza kadar bloklamadan)
+doğrulamasını sağlıyor.
+
+### Test
+
+`tests/test_theme_picker.py` (yeni dosya, 32 test), dört bölüm:
+
+1. **Kayıt** — `_THEMES` gerçekten 11 anahtar taşıyor mu (tam küme,
+   `available_themes()` aynı sırayla), her preset'in dark/light
+   varyantı referans şemayla (`_DARK`) aynı anahtar kümesine sahip mi
+   (parametrized, 11 tema).
+2. **Diyalog yapısı** — tam 11 kart kuruluyor mu; iki farklı kartın
+   önizlemesi AYNI stylesheet'i üretmiyor mu (mutasyon kanıtı, altta);
+   koyu-yalnızca bir preset'in önizlemesi diyaloğun açık/koyu modundan
+   bağımsız mı.
+3. **Seçim** — şu an seçili tema tek kartta işaretli mi; bir karta
+   "tıklamak" (`mousePressEvent(None)` — kodun kendi atadığı işleyiciyle)
+   doğru anahtarı bildirip diyaloğu `Accepted` ile kapatıyor mu; "Kapat"
+   düğmesi hiçbir şey bildirmeden `Rejected` ile kapatıyor mu.
+4. **Uçtan uca** — gerçek `HycleusWindow` üzerinde 11 temanın HEPSİ
+   (parametrized) `_set_theme(key)` ile seçilip `self._T`'nin preset'in
+   dark/light varyantıyla BİREBİR eşit olduğu doğrulanıyor (görevin asıl
+   istediği "her birinin doğru token setini uyguladığını doğrula");
+   koyu-yalnızca bir tema seçilince `self._dark`'ın zorla `True` olduğu;
+   `_on_theme_menu()`'un `ThemePickerDialog`'u pencerenin GÜNCEL
+   `_T`/`_theme_key`/`_dark`'ıyla kurduğu (sahte sınıfla monkeypatch).
+
+**Mutasyon kanıtı (üçü de bu turda, gerçek dosyada, sonra geri alındı):**
+
+- `ThemePickerDialog.py`'de kart oluşturma çağrısı geçici olarak preset'in
+  KENDİ rengi (`varyant`) yerine aktif temanın rengini (`T`) kullanacak
+  şekilde değiştirildi — `test_farkli_kartlarin_onizlemesi_FARKLI_renkte`
+  **BAŞARISIZ** oldu (iki farklı kartın önizlemesi AYNI çıktı).
+- `main_window_theme.py`'de `register_theme("cam", ...)` çağrısı geçici
+  olarak yorum satırına alındı — 5 test **BAŞARISIZ** oldu (kayıt sayısı,
+  anahtar kümesi, kart sayısı, uçtan uca token uygulaması, açılış
+  kwargs'ları) — tek bir eksik kaydın kaç farklı katmanda YAKALANDIĞININ
+  kanıtı.
+
+İkisi de geri alındıktan sonra `git diff --stat` temiz döndü, tüm paket
+tekrar yeşile döndü.
+
+Tam test suite: 2848 passed, 4 skipped (bir önceki turdan +35 — bu
+dosyaya eklenen 32 yeni test + `test_layering.py`'nin YENİ dosyaları
+otomatik kapsayan parametrizasyonlarından +3).
+
+---

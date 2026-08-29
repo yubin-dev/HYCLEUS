@@ -36,9 +36,6 @@ _ACTIVITY_EVENTS = frozenset({
 
 
 
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QMenu
-
 from CORE.roles import normalize_role
 
 from UI.main_window_palette import (
@@ -131,27 +128,24 @@ class ThemeMixin:
         self._refresh_after_theme_change()
 
     def _on_theme_menu(self) -> None:
-        T = self._T
-        menu = QMenu(self)
-        menu.setStyleSheet(
-            f"QMenu {{ background:{T['topbar']}; color:{T['text']};"
-            f" border:1px solid {T['border']}; border-radius:8px; padding:4px 0; }}"
-            f"QMenu::item {{ padding:9px 22px; font-size:13px; }}"
-            f"QMenu::item:checked {{ font-weight:600; }}"
-            f"QMenu::item:selected {{ background:{T['accent_tint']}; color:{T['tint_text']};"
-            f" border-radius:4px; }}"
+        """Tema seçici — görsel kart grid (bkz. `UI/ThemePickerDialog.py`).
+
+        Eskiden düz metin bir `QMenu` açıyordu (11 tema adı üst üste,
+        önizleme yok). Yerel içe aktarım: `ThemePickerDialog` bu mixin'i
+        (`_THEMES`/`available_themes`) geri içe aktarıyor — döngüsel
+        bağımlılığı modül-seviyesinde DEĞİL, çağrı anında çözüyor. Bu aynı
+        zamanda testlerin `UI.ThemePickerDialog.ThemePickerDialog`'u
+        monkeypatch edebilmesini sağlıyor (`AdminPanel.py`'nin
+        `RecoveryShareDialog`'u içe aktarma deseniyle AYNI, bkz. o
+        dosyadaki `_on_kurtarma_parcasi`).
+        """
+        from UI.ThemePickerDialog import ThemePickerDialog
+
+        dlg = ThemePickerDialog(
+            self, T=self._T, theme_key=self._theme_key, dark=self._dark,
+            on_select=self._set_theme,
         )
-        actions: dict[QAction, str] = {}
-        for key, name in available_themes():
-            act = menu.addAction(name)
-            act.setCheckable(True)
-            act.setChecked(key == self._theme_key)
-            actions[act] = key
-        chosen = menu.exec(self._theme_btn.mapToGlobal(
-            self._theme_btn.rect().bottomLeft()
-        ))
-        if chosen is not None and chosen in actions:
-            self._set_theme(actions[chosen])
+        dlg.exec()
 
     def _toggle_maximize(self) -> None:
         if self.isMaximized():
