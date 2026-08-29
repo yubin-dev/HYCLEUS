@@ -131,6 +131,7 @@ class HycleusWindow(
         self._batch_total:      int  = 0
         self._batch_done:       int  = 0
         self._batch_errors:     int  = 0
+        self._batch_timeouts:   int  = 0
         self._batch_has_folder: bool = False
         self._batch_signals = _ProcessSignals()
         self._batch_signals.file_done.connect(self._on_file_done)

@@ -49,7 +49,14 @@ MPCMDRUN = Path(r"C:\Program Files\Windows Defender\MpCmdRun.exe")
 
 #: Tarama zaman aşımı. ClamAV'ın `clamscan`'i ilk çağrıda ~200 MB imza
 #: veritabanını belleğe alıyor; soğuk başlangıç birkaç saniye sürebiliyor.
+#: CI'daki `timeout-minutes` ilkesiyle aynı ölçek mantığı: tipik bir taramanın
+#: birkaç katı, ama sınırsız değil — bkz. .github/workflows/ci.yml'nin kendi
+#: gerekçesi ("sessiz bir bekleme, açık bir başarısızlıktan her zaman kötüdür").
 SCAN_TIMEOUT = 120
+
+#: `run_tool()`'un zaman aşımından SONRA süreci `kill()` edip son çıkış
+#: durumunu beklerken tanıdığı tavan — bkz. `run_tool()` docstring'i.
+KILL_GRACE = 5
 
 #: ClamAV araçları, TERCİH SIRASIYLA. `clamdscan` çalışan bir daemon'a
 #: konuşur (imza veritabanı zaten yüklü, tarama milisaniyeler); `clamscan`
@@ -83,7 +90,7 @@ class ScanResult:
     harmless:      int
     undetected:    int
     engines_total: int
-    verdict:       str            # "clean" | "suspicious" | "malicious" | "unknown"
+    verdict:       str            # "clean" | "suspicious" | "malicious" | "unknown" | "timeout"
     mock:          bool
     engine:        str = "mock"
     threat:        str | None = None   # imza adı — yalnızca ClamAV doldurur
@@ -114,6 +121,24 @@ def malicious_result(sha256: str, engine: str, threat: str | None = None) -> Sca
     )
 
 
+def timeout_result(sha256: str, engine: str) -> ScanResult:
+    """
+    Tarama SÜRESİ DOLDU — `mock_result()`'tan bilerek AYRI.
+
+    `mock`, motorun HİÇ ÇALIŞMADIĞI (kurulu değil, bulunamadı) anlamına
+    gelir; zaman aşımı motorun ÇALIŞTIĞI ama bitiremediği anlamına gelir —
+    ikisi UI'da ve denetim kaydında AYNI görünürse (`unknown`/mock), "bu
+    dosya hiç taranmadı, muhtemelen zararsız" ile "bu dosya taranmaya
+    çalışıldı ve karar VERİLEMEDİ, elle incelenmeli" birbirine karışır.
+    `mock=False`: gerçek bir deneme yapıldı, sonuç eksik değil BELİRSİZ.
+    """
+    return ScanResult(
+        sha256=sha256, malicious=0, suspicious=0,
+        harmless=0, undetected=0, engines_total=0,
+        verdict="timeout", mock=False, engine=engine,
+    )
+
+
 def sha256_of(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -125,18 +150,57 @@ def sha256_of(path: Path) -> str:
 # ── Alt süreç dikişi ──────────────────────────────────────────────────────────
 
 def run_tool(argv: list[str], timeout: int = SCAN_TIMEOUT) -> subprocess.CompletedProcess[str]:
-    """Tarayıcıyı çalıştırır.
+    """Tarayıcıyı çalıştırır — worker havuzunu KESİN bir tavanla korur.
 
     Testlerin monkeypatch'lediği TEK nokta burası: böylece çıkış kodu eşlemesi
     ve argüman kurulumu, makinede Defender/ClamAV kurulu olmadan da ölçülebilir.
 
     `errors="replace"`: ClamAV çıktısı imza adlarında ASCII dışı bayt
     taşıyabiliyor; bir kod çözme hatası taramayı düşürmemeli.
+
+    NEDEN `subprocess.run(..., timeout=...)` DEĞİL — büyük arşiv dosyaları
+    -----------------------------------------------------------------------
+    `subprocess.run()`'ın kendi zaman aşımı görünüşte yeterliydi ama
+    CPython'un Windows dalında bir tuzak var: `communicate(timeout=...)`
+    zaman aşımına uğrayınca `kill()` çağrılıyor, ama HEMEN ARDINDAN
+    SINIRSIZ (timeout'suz) İKİNCİ bir `communicate()` daha yapılıyor
+    (çıktıyı toplamak için). `MpCmdRun.exe` büyük bir arşivi taranırken bir
+    alt/yardımcı süreç doğurup stdout/stderr pipe tanıtıcısını ona
+    devredebilir — `kill()` yalnızca MpCmdRun.exe'nin kendisini öldürür,
+    torun süreç pipe'ı elinde tutmaya devam eder, pipe hiç kapanmaz ve o
+    ikinci `communicate()` SONSUZA KADAR bekler. Sonuç: `timeout=120`
+    parametresi VARDI ama küçük/orta dosyalarda işe yarayıp büyük arşivlerde
+    worker thread'ini (dolayısıyla `QThreadPool`'daki bir işçi yuvasını)
+    kilitli bırakabiliyordu — CI'nin "sessiz bir bekleme, açık bir
+    başarısızlıktan her zaman kötüdür" dersinin aynısı, bu kez bir GitHub
+    Actions işi değil bir Qt worker thread'i için.
+
+    Çözüm: `Popen` ile elle kurulum, zaman aşımında `kill()` sonrası ikinci
+    bir `communicate()` YOK — yalnızca sürecin kendi çıkış durumunu kısa,
+    sabit bir tavanla (`KILL_GRACE`) bekliyoruz. `wait()` pipe'ların
+    kapanmasına değil sürecin kendi sonlanmasına bakıyor, bu yüzden pipe'ı
+    açık tutan bir torun süreç onu ETKİLEMİYOR — `kill()` MpCmdRun.exe'yi
+    öldürdüğü anda `wait()` hemen dönüyor. Çıktı okunmuyor (zaten zaman
+    aşımı sonucu için gerekmiyor), ama işçi thread'i GARANTİLİ olarak
+    `timeout + KILL_GRACE` saniye içinde serbest kalıyor.
     """
-    return subprocess.run(
-        argv, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=timeout,
+    proc = subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
     )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            # KILL_GRACE içinde bile dönmedi — yine de burada beklemeyi
+            # bırakıyoruz; worker'ı kilitli tutmaktansa bir zombi/artakalan
+            # süreç bırakmak tercih edilen taraf (bkz. docstring).
+            pass
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
 # ── Arka uç arayüzü ───────────────────────────────────────────────────────────
@@ -190,8 +254,8 @@ class DefenderBackend:
         try:
             proc = run_tool(argv)
         except subprocess.TimeoutExpired:
-            _log.warning("defender_timeout  file=%s", path.name)
-            return None
+            _log.warning("defender_timeout  file=%s  timeout=%ds", path.name, SCAN_TIMEOUT)
+            return timeout_result(sha256, self.ad)
         except Exception as exc:  # noqa: BLE001 — tarayıcı yükleme akışını düşürmemeli
             _log.warning("defender_error  %s", exc)
             return None
@@ -312,8 +376,9 @@ class ClamAVBackend:
         try:
             proc = run_tool(argv)
         except subprocess.TimeoutExpired:
-            _log.warning("clamav_timeout  arac=%s  file=%s", Path(arac).name, path.name)
-            return None, False
+            _log.warning("clamav_timeout  arac=%s  file=%s  timeout=%ds",
+                         Path(arac).name, path.name, SCAN_TIMEOUT)
+            return timeout_result(sha256, self.ad), False
         except Exception as exc:  # noqa: BLE001 — tarayıcı yükleme akışını düşürmemeli
             _log.warning("clamav_error  arac=%s  %s", Path(arac).name, exc)
             return None, False

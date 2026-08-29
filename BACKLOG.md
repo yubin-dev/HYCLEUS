@@ -6176,3 +6176,98 @@ temiz bir tekrar koşusu 2923 passed/4 skipped verdi, gerçek bir regresyon
 değildi.)
 
 ---
+
+## B-081 — Büyük arşivlerde MpCmdRun.exe worker havuzunu kilitleyebiliyordu: `subprocess.run`'ın Windows'taki sınırsız ikinci `communicate()`'i bulundu ve düzeltildi
+
+Görev: büyük arşiv dosyalarında MpCmdRun.exe'nin worker havuzunu
+kilitlediği durumu incele, katı bir timeout ekle (CI'daki
+`timeout-minutes` dersini uygulama içine taşı); timeout aşılırsa dosya
+karantinaya alınsın, kullanıcıya net bir mesaj gösterilsin, worker havuzu
+kilitlenmesin.
+
+**Bulgu — `SCAN_TIMEOUT=120` zaten vardı ama garanti DEĞİLDİ.**
+`CORE/scanner_backends.py::run_tool()` zaten `subprocess.run(...,
+timeout=SCAN_TIMEOUT)` çağırıyordu. CPython'un bu timeout mekanizmasının
+Windows dalı belgelenmiş bir kör nokta taşıyor: `TimeoutExpired`'da
+`kill()`'den SONRA SINIRSIZ bir İKİNCİ `communicate()` daha yapıyor.
+`MpCmdRun.exe` büyük bir arşivi taranırken bir yardımcı süreç doğurup
+stdout/stderr pipe tanıtıcısını ona devredebilir — `kill()` yalnızca
+MpCmdRun.exe'yi öldürür, torun süreç pipe'ı açık tutar, ikinci
+`communicate()` SONSUZA KADAR bekler. `timeout=120` görünüşte katı bir
+tavandı, büyük arşiv senaryosunda GERÇEKTEN öyle değildi.
+
+**Düzeltme.** `run_tool()` `subprocess.Popen` ile elle kuruldu: zaman
+aşımında `kill()` sonrası ikinci bir `communicate()` YOK, yalnızca
+`wait(timeout=KILL_GRACE)` (5s) — `wait()` pipe'lara değil sürecin kendi
+sonlanmasına baktığı için torun süreç onu etkilemiyor. Worker
+`timeout + KILL_GRACE` içinde GARANTİLİ serbest kalıyor.
+
+**Ayırt edici verdict + karantina + mesaj.** Yeni `timeout_result()`
+(`verdict="timeout"`, `mock=False`) — eskiden `None` dönüp `mock_result()`
+("unknown") ile karışıyordu, "hiç taranmadı" ile "taranmaya çalışıldı,
+karar verilemedi" ayırt edilemiyordu. UI: yeni rozet (`⏱ Zaman Aşımı`,
+`UI/main_window_palette.py`); manuel yeniden tarama akışında
+(`_on_ctx_scan_done`) net bir uyarı kutusu — "tarama zaman aşımına uğradı,
+manuel inceleme gerekli." Dosya TAŞINMIYOR: "🔍 Tara" zaten yalnızca
+Karantina etiketli satırlarda sunuluyor (kontrol edildi — her yükleme
+yolu `label="Karantina"` varsayılanıyla ekliyor), yani dosya zaten doğru
+yerde. Toplu yükleme akışında dosya başına kutu YERİNE bir sayaç
+tutuluyor, tur-sonu özetine ekleniyor (`_on_batch_complete`).
+
+**Testler — üç katmanda:**
+
+- `tests/test_scanner_backends.py` — `run_tool()`'un kendisi: sahte bir
+  `Popen` ile `communicate()`'in TAM BİR kez çağrıldığını, `kill()`'den
+  sonra ikinci bir `communicate()` DEĞİL sınırlı `wait()`'in geldiğini
+  kanıtlıyor (`test_run_tool_zaman_asiminda_IKINCI_bir_communicate_
+  YAPMIYOR`); gerçek bir alt süreçle (`time.sleep(30)`, `timeout=1`) tavanın
+  uçtan uca tuttuğunu doğrulayan bir eşlik testi de var. Ayrıca her iki
+  arka ucun (Defender/ClamAV) `TimeoutExpired`'da ayırt edici
+  `timeout_result()` döndürdüğü ayrıca kanıtlandı.
+- `tests/test_scan_timeout_worker_pool.py` — görevin asıl istediği iddia:
+  gerçek bir `QThreadPool`'da (2 thread, 3 dosya, biri yapay yavaş) hızlı
+  iki dosya yavaş olan BİTMEDEN tamamlanıyor.
+- `tests/test_scan_timeout_ui.py` — `_on_ctx_scan_done()`'ın net mesaj
+  gösterdiğini, rozetin ayırt edici olduğunu, dosyanın YANLIŞLIKLA
+  taşınmadığını, `malicious`/`timeout`/`clean` üçünün birbirinden farklı
+  davrandığını kanıtlıyor.
+- `tests/test_scanner_flow.py` — `timeout` verdict'inin karantina audit
+  kaydına `mock`/`unknown` ile karışmadan düştüğünü kanıtlıyor.
+
+**Mutasyon kanıtları (üçü de geri alındı, `git diff --stat` temiz):**
+
+- `run_tool()`'a tehlikeli ikinci `communicate()` geri eklendi — birim
+  testi **BAŞARISIZ** oldu.
+- Worker-havuzu testinde HER dosyanın taraması eşit derecede yavaş
+  yapıldı (yalnızca biri değil) — zamanlama iddiaları **BAŞARISIZ** oldu.
+- `_on_ctx_scan_done()`'daki `elif result.verdict == "timeout"` dalı
+  geçici olarak devre dışı bırakıldı — iki UI testi **BAŞARISIZ** oldu.
+
+**Ayrı bir bulgu — bilerek DÜZELTİLMEDİ, gelecek bir tur için not
+düşüldü.** Worker-havuzu testinin ilk sürümü gerçek `_FileRunnable`'ı
+(şifreleme + DB yazma + tarama) uçtan uca kullanıyordu ve ~10 çalıştırmada
+1 aralıklı olarak SQLite hatalarıyla (`"another row available"`,
+`"cannot commit - no transaction is active"`) düşüyordu. Kök neden:
+`_FileRunnable.run()`, DB yazması (`record_encrypted_file`) için TEK bir
+`sqlite3.Connection`'ı (`check_same_thread=False`, ama eşzamanlı erişim
+için GÜVENLİ DEĞİL) birden fazla GERÇEK `QThreadPool` worker thread'i
+arasında paylaşıyor. `CORE/scanner.py::_save_to_db()` tam bunu önlemek
+için zaten kendi bağlantısını açıyor (docstring'i bunu açıkça söylüyor);
+`_FileRunnable.run()` bu deseni takip etmiyor. Bu GERÇEK ve bu turun
+kapsamı DIŞINDA bir eşzamanlılık kusuru (eşzamanlı dosya EKLEME
+yazmalarıyla ilgili, tarama zaman aşımıyla değil) — düzeltilmedi, test
+yalnızca `scan_file()` adımını yalıtacak biçimde yeniden yazıldı. Gelecek
+bir turda: `_FileRunnable.run()`'ın DB yazması `_save_to_db()`'nin
+deseniyle (thread başına ayrı bağlantı) hizalanmalı.
+
+SECURITY.md §4.22'ye (EN+TR) belgelendi.
+
+Tam test suite: 2938 passed, 4 skipped (bir önceki turdan +15 — dört yeni
+test dosyası/eklemesi). Ruff/mypy/bandit temiz. (Not: bir ara koşuda
+`test_belge_dil_paritesi.py`'nin üç testi yanlışlıkla düştü — arka planda
+koşan tam suite SECURITY.md'yi ben hâlâ BACKLOG.md'yi düzenlerken okumuştu,
+aynı dosya-düzenleme yarışı; SECURITY.md'ye hiçbir eş zamanlı dokunuş
+olmadan yapılan temiz bir tekrar koşusu 2938 passed/4 skipped verdi,
+gerçek bir regresyon değildi.)
+
+---

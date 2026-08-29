@@ -385,6 +385,17 @@ class FileActionsMixin:
                                 "Tarama zararlı içerik tespit etti.\n"
                                 "Dosya otomatik olarak İmha Odası'na taşınıyor.")
             self._on_ctx_move_label(row, file_id, "Imha", auto=True)
+        elif result.verdict == "timeout":
+            # "🔍 Tara" yalnızca Karantina sekmesinde sunuluyor (bkz. context
+            # menu kurulumu, ~satır 132) — dosya ZATEN Karantina'da, taşımaya
+            # gerek yok. Buradaki iş yalnızca kullanıcıya AÇIKÇA söylemek:
+            # bu "temiz" ya da "motor kurulu değil" ile KARIŞTIRILMAMALI.
+            QMessageBox.warning(
+                self, "Tarama Zaman Aşımına Uğradı",
+                "Tarama zaman aşımına uğradı, manuel inceleme gerekli.\n\n"
+                "Dosya Karantina'da tutulmaya devam ediyor — motor sonuca "
+                "ulaşamadı, bu 'temiz' anlamına gelmiyor.",
+            )
 
     def _on_ctx_move_label(
         self, row: int, file_id: int | None, new_label: str, *, auto: bool = False,

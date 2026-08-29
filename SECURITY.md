@@ -2336,6 +2336,93 @@ both tests, and reordering `_dequeue()` before the `files` DELETE inside
 
 ---
 
+### 4.22 A scan timeout could hang the worker pool on large archives — Python's own `subprocess.run` timeout has a Windows blind spot
+
+> **Attacker models:** none directly — this is an availability/resilience
+> fix (a large or adversarially-crafted archive degrading the upload
+> pipeline), not a confidentiality or integrity boundary. A malicious
+> archive engineered to trigger this would be a nuisance (files stuck
+> "Taranıyor…"), not a bypass: the file stays in Karantina either way.
+
+**The gap looked closed and wasn't.** `CORE/scanner_backends.py::run_tool()`
+already called `subprocess.run(argv, timeout=SCAN_TIMEOUT)` (120s) —
+on paper, a strict ceiling. CPython's own Windows branch of that timeout
+handling has a documented blind spot: on `TimeoutExpired`, `run()` calls
+`process.kill()` and then, on Windows specifically, makes a **second,
+unbounded** `communicate()` call to drain whatever output remains. If the
+killed process had spawned a child that inherited the stdout/stderr pipe
+handles — plausible for `MpCmdRun.exe` scanning a large archive, which may
+spin up a helper process to unpack/inspect it — killing the parent does
+not close those handles. The pipe never reaches EOF, and that second
+`communicate()` blocks forever. The `timeout=120` parameter that looked
+like a hard ceiling was, for exactly the large-archive case named in the
+task, not actually one: a `QThreadPool` worker slot (`UI/main_window.py`
+caps the pool at 6) could be occupied indefinitely, the same "silent hang
+instead of a fast, visible failure" shape `.github/workflows/ci.yml`'s own
+`timeout-minutes` comment describes for a stuck CI step.
+
+**The fix moves the CI lesson inside the process, not just onto it.**
+`run_tool()` now drives `subprocess.Popen` directly: on timeout it calls
+`kill()` and then `wait(timeout=KILL_GRACE)` — never a second
+`communicate()`. `wait()` watches the process's own exit status, not pipe
+closure, so a lingering grandchild holding the pipe open cannot block it;
+the worker is freed within `timeout + KILL_GRACE` regardless of what the
+killed tree does afterward, at the acceptable cost of not draining output
+that a timed-out run has no use for anyway.
+
+**Timeout is now a distinct verdict, not folded into "unknown."** Before
+this change, a timeout and "no antivirus installed" produced the same
+signal (`mock_result()`, `verdict="unknown"`) — a file nobody could scan
+looked identical to a file that genuinely couldn't be reached. Both
+backends now return `timeout_result()` (`verdict="timeout"`, `mock=False`
+— a real attempt was made, the outcome just isn't known) instead of `None`
+on `subprocess.TimeoutExpired`. The UI surfaces this distinctly: a new
+badge (`⏱ Zaman Aşımı`), and on the manual rescan path
+(`UI/main_window_files.py::_on_ctx_scan_done()`) an explicit warning —
+"tarama zaman aşımına uğradı, manuel inceleme gerekli." No file move is
+needed here: the "🔍 Tara" action only appears on rows already labeled
+Karantina (every upload path defaults new files to Karantina — checked
+directly, every `_handle_dropped_file`/`_handle_dropped_folder` call site
+passes `label="Karantina"` explicitly), so a timeout simply leaves the
+file where quarantine already put it. The batch-upload path collects a
+count instead of popping one dialog per large file and reports it in the
+existing end-of-batch summary.
+
+**Verified two ways, at two different layers.** `tests/test_scanner_backends.py`
+proves the `run_tool()` fix directly: a mocked `Popen` asserts
+`communicate()` is called exactly once and `wait(KILL_GRACE)` — not a
+second `communicate()` — follows `kill()`; a companion test with a real
+subprocess (`python -c "time.sleep(30)"`, `timeout=1`) confirms the bound
+holds end to end. `tests/test_scan_timeout_worker_pool.py` proves the
+higher-level claim the task actually asked for: inside a real `QThreadPool`
+(2 threads, 3 files, one made artificially slow), the two fast files
+complete *before* the slow one finishes, not after — a stuck scan does not
+serialize the pool behind it. Three live mutations confirmed all of this
+is load-bearing: reintroducing the dangerous second `communicate()` broke
+the `run_tool()` unit test; making every simulated scan equally slow (not
+just one) broke the worker-pool test's timing assertions; disabling the
+new `elif result.verdict == "timeout"` branch broke the UI-message tests.
+
+**A separate, pre-existing bug surfaced and was deliberately left alone.**
+The first version of the worker-pool test used the real `_FileRunnable`
+end to end (encryption, DB write, and scan) and was intermittently flaky —
+about 1 run in 10 — with SQLite errors (`"another row available"`,
+`"cannot commit - no transaction is active"`) that trace to
+`_FileRunnable.run()` sharing one `sqlite3.Connection`
+(`check_same_thread=False`, but not otherwise safe for concurrent access)
+across multiple real `QThreadPool` worker threads for its DB write.
+`CORE/scanner.py::_save_to_db()` already opens its own connection per scan
+thread specifically to avoid this; `_FileRunnable.run()`'s own
+`record_encrypted_file()` call does not follow that pattern. This is a
+real, independent concurrency defect, not an artifact of the test — but it
+is about concurrent *file-add* writes, not about scan timeouts, so it is
+out of scope here and was not fixed; the test was rewritten to isolate
+just the `scan_file()` step (matching what `_FileRunnable.run()` itself
+calls) so it no longer depends on the unrelated race. Noted in `BACKLOG.md`
+for a future turn.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -4995,6 +5082,98 @@ edilen çökmeyi yutup döngünün YANLIŞLIKLA üçüncü satıra devam etmesin
 izin verirdi) ikisini de kırdı, `resume_pending_disposals()` içinde
 `_dequeue()`'yu `files` DELETE'inden ÖNCEYE almak özellikle DB-adımı
 testini kırdı.
+
+---
+
+### 4.22 Büyük arşivlerde bir tarama zaman aşımı worker havuzunu kilitleyebiliyordu — Python'un kendi `subprocess.run` timeout'unun Windows'ta bir kör noktası var
+
+> **Saldırgan modelleri:** doğrudan yok — bu bir gizlilik/bütünlük sınırı
+> değil, kullanılabilirlik/dayanıklılık düzeltmesi (büyük ya da bilerek
+> hazırlanmış bir arşivin yükleme hattını yavaşlatması). Bunu tetiklemek
+> için tasarlanmış zararlı bir arşiv bir bypass değil bir can sıkıcı olurdu
+> (dosyalar "Taranıyor…" durumunda takılı kalırdı) — dosya her hâlükârda
+> Karantina'da kalır.
+
+**Boşluk kapalı GÖRÜNÜYORDU ve değildi.** `CORE/scanner_backends.py::
+run_tool()` zaten `subprocess.run(argv, timeout=SCAN_TIMEOUT)` (120s)
+çağırıyordu — kağıt üzerinde katı bir tavan. CPython'un bu timeout
+işleyişinin Windows dalında belgelenmiş bir kör nokta var: `TimeoutExpired`
+oluşunca `run()` `process.kill()` çağırıyor, sonra ÖZELLİKLE Windows'ta,
+kalan çıktıyı toplamak için İKİNCİ, SINIRSIZ bir `communicate()` daha
+yapıyor. Öldürülen süreç stdout/stderr pipe tanıtıcılarını devralan bir alt
+süreç doğurmuşsa — `MpCmdRun.exe`'nin büyük bir arşivi taranırken onu açıp
+incelemek için bir yardımcı süreç başlatması makul bir ihtimal — ana
+süreci öldürmek o tanıtıcıları KAPATMIYOR. Pipe hiç EOF'a ulaşmıyor ve o
+ikinci `communicate()` SONSUZA KADAR bekliyor. Katı bir tavan gibi görünen
+`timeout=120` parametresi, görevin tam olarak andığı büyük-arşiv durumunda
+GERÇEKTEN bir tavan DEĞİLDİ: bir `QThreadPool` işçi yuvası (`UI/main_window.py`
+havuzu 6 ile sınırlıyor) sınırsız süre işgal edilebiliyordu — takılan bir
+CI adımı için `.github/workflows/ci.yml`'nin kendi `timeout-minutes`
+yorumunun tarif ettiği AYNI "sessiz bekleme, hızlı ve görünür bir
+başarısızlık yerine" şekli.
+
+**Düzeltme, CI dersini sürecin ÜSTÜNE değil İÇİNE taşıyor.** `run_tool()`
+artık `subprocess.Popen`'ı doğrudan sürüyor: zaman aşımında `kill()`
+çağırıyor, sonra `wait(timeout=KILL_GRACE)` — ASLA ikinci bir
+`communicate()` değil. `wait()` pipe'ların kapanmasına değil sürecin kendi
+çıkış durumuna bakıyor, bu yüzden pipe'ı elinde tutan bir torun süreç onu
+engelleyemiyor; worker, öldürülen süreç ağacı sonrasında ne yaparsa yapsın
+`timeout + KILL_GRACE` içinde serbest kalıyor — kabul edilebilir bedel,
+zaten zaman aşımına uğramış bir çalıştırmanın hiçbir işine yaramayacak
+çıktıyı okumaktan vazgeçmek.
+
+**Zaman aşımı artık "unknown"a karışmayan ayrı bir verdict.** Bu
+değişiklikten önce zaman aşımı ile "antivirüs kurulu değil" AYNI sinyali
+üretiyordu (`mock_result()`, `verdict="unknown"`) — hiç kimsenin
+tarayamadığı bir dosya, gerçekten erişilemeyen bir dosyayla AYNI
+görünüyordu. İki arka uç da artık `subprocess.TimeoutExpired`'da `None`
+yerine `timeout_result()` döndürüyor (`verdict="timeout"`, `mock=False` —
+gerçek bir deneme yapıldı, yalnızca sonuç bilinmiyor). UI bunu ayırt edici
+biçimde gösteriyor: yeni bir rozet (`⏱ Zaman Aşımı`), ve manuel yeniden
+tarama yolunda (`UI/main_window_files.py::_on_ctx_scan_done()`) açık bir
+uyarı — "tarama zaman aşımına uğradı, manuel inceleme gerekli." Burada
+dosya taşımaya gerek yok: "🔍 Tara" eylemi zaten yalnızca Karantina
+etiketli satırlarda görünüyor (her yükleme yolu yeni dosyaları varsayılan
+olarak Karantina'ya koyuyor — doğrudan kontrol edildi, her
+`_handle_dropped_file`/`_handle_dropped_folder` çağrı yeri `label="Karantina"`ı
+açıkça geçiyor), yani zaman aşımı dosyayı karantinanın zaten koyduğu
+yerde bırakıyor. Toplu yükleme yolu büyük dosya başına bir kutu açmak
+yerine bir sayaç topluyor ve bunu mevcut turun-sonu özetinde bildiriyor.
+
+**İki farklı katmanda, iki yolla doğrulandı.** `tests/test_scanner_backends.py`
+`run_tool()` düzeltmesini doğrudan kanıtlıyor: sahte bir `Popen`,
+`communicate()`'in tam olarak BİR kez çağrıldığını ve `kill()`'den sonra
+ikinci bir `communicate()` değil `wait(KILL_GRACE)`'in geldiğini
+doğruluyor; gerçek bir alt süreçle (`python -c "time.sleep(30)"`,
+`timeout=1`) eşlik eden test tavanın uçtan uca tuttuğunu teyit ediyor.
+`tests/test_scan_timeout_worker_pool.py` görevin asıl istediği daha üst
+seviye iddiayı kanıtlıyor: gerçek bir `QThreadPool` içinde (2 thread, 3
+dosya, biri yapay olarak yavaş), hızlı iki dosya yavaş olan BİTMEDEN
+tamamlanıyor, sonra değil — takılı bir tarama havuzu onun ARKASINA
+sıralamıyor. Üç canlı mutasyon bunların hepsinin gerçekten yük taşıdığını
+doğruladı: tehlikeli ikinci `communicate()`'i geri getirmek `run_tool()`
+birim testini kırdı; her simüle taramayı (yalnızca biri değil) eşit
+derecede yavaş yapmak worker-havuzu testinin zamanlama iddialarını kırdı;
+yeni `elif result.verdict == "timeout"` dalını devre dışı bırakmak UI-mesaj
+testlerini kırdı.
+
+**Ayrı, önceden var olan bir hata ortaya çıktı ve bilerek dokunulmadan
+bırakıldı.** Worker-havuzu testinin ilk sürümü gerçek `_FileRunnable`'ı
+uçtan uca kullanıyordu (şifreleme, DB yazma, tarama) ve aralıklı olarak
+kırılgandı — yaklaşık 10 çalıştırmada 1 — `"another row available"`,
+`"cannot commit - no transaction is active"` gibi SQLite hatalarıyla; kök
+neden `_FileRunnable.run()`'ın DB yazması için TEK bir `sqlite3.Connection`'ı
+(`check_same_thread=False`, ama aksi hâlde eşzamanlı erişim için güvenli
+DEĞİL) birden fazla GERÇEK `QThreadPool` worker thread'i arasında
+paylaşması. `CORE/scanner.py::_save_to_db()` tam bunu önlemek için zaten
+her tarama thread'inde kendi bağlantısını açıyor; `_FileRunnable.run()`'ın
+kendi `record_encrypted_file()` çağrısı bu deseni TAKİP ETMİYOR. Bu gerçek,
+bağımsız bir eşzamanlılık kusuru — testin bir yapaylığı değil — ama
+eşzamanlı *dosya ekleme* yazmalarıyla ilgili, tarama zaman aşımıyla değil,
+bu yüzden burada kapsam dışı bırakıldı ve DÜZELTİLMEDİ; test yalnızca
+`scan_file()` adımını (`_FileRunnable.run()`'ın kendisinin çağırdığı aynı
+adım) yalıtacak biçimde yeniden yazıldı, böylece ilgisiz yarış durumuna
+artık bağımlı değil. Gelecek bir tur için `BACKLOG.md`'ye not düşüldü.
 
 ---
 

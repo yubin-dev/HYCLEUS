@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -219,11 +221,106 @@ def test_ikinci_arac_yoksa_dusus_denenmiyor(kosu):
     assert len(sahte.cagrilar) == 1
 
 
+# ── run_tool() — worker havuzunu kilitleyen büyük-arşiv zaman aşımı ────────────
+#
+# Bu bölüm `sahte çalıştırıcı`yı (`kosu`) DEĞİL, `run_tool()`'un kendisini
+# test ediyor — çünkü boşluk `run_tool()`'un İÇİNDEYDİ (`subprocess.run(...,
+# timeout=...)`'ın Windows dalındaki sınırsız ikinci `communicate()`'i),
+# yukarıdaki `kosu` fixture'ı ise `run_tool`'u TAMAMEN ikame ettiği için o
+# boşluğu hiç görmüyordu.
+
+
+class _SahteSurec:
+    """`subprocess.Popen`'ın yerine geçer; `kill`/`wait`/`communicate` çağrılarını sayar."""
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.kill_called = False
+        self.communicate_calls: list[float | None] = []
+        self.wait_calls: list[float | None] = []
+
+    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+        self.communicate_calls.append(timeout)
+        if len(self.communicate_calls) == 1:
+            raise subprocess.TimeoutExpired(cmd="sahte-arac", timeout=timeout)
+        # Buraya gelinmesi eski, tehlikeli deseni gösterir: `run_tool()`
+        # `kill()`'den SONRA communicate()'i İKİNCİ KEZ çağırmamalı — bkz.
+        # `run_tool()` docstring'i (CPython'un Windows'taki sınırsız ikinci
+        # communicate()'i, torun süreç pipe'ı açık tutarsa sonsuza kadar
+        # bekler).
+        raise AssertionError(
+            "communicate() İKİNCİ KEZ çağrıldı — sınırsız-ikinci-"
+            "communicate() deseni geri gelmiş, worker havuzu yine "
+            "kilitlenebilir"
+        )
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls.append(timeout)
+        self.returncode = -9
+        return self.returncode
+
+    def kill(self) -> None:
+        self.kill_called = True
+
+
+def test_run_tool_zaman_asiminda_IKINCI_bir_communicate_YAPMIYOR(monkeypatch):
+    """
+    Kök nedenin testi. `kill()`'den sonra ikinci bir `communicate()`
+    YERİNE, sınırlı (`KILL_GRACE`) bir `wait()` çağrılmalı — `wait()`
+    pipe'ların kapanmasına değil sürecin kendi sonlanmasına baktığı için
+    torun bir süreç pipe'ı elinde tutsa bile burada TAKILMAZ.
+    """
+    sahte = _SahteSurec()
+    monkeypatch.setattr(sb.subprocess, "Popen", lambda *a, **k: sahte)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        sb.run_tool(["sahte-arac"], timeout=1)
+
+    assert sahte.kill_called is True
+    assert sahte.communicate_calls == [1]           # yalnızca BİR kez, timeout'lu
+    assert sahte.wait_calls == [sb.KILL_GRACE]       # ikinci communicate() DEĞİL, sınırlı wait()
+
+
+def test_run_tool_gercek_alt_surecte_zaman_asimi_tavanli_donuyor():
+    """
+    Sahte/mock değil, GERÇEK bir alt süreçle: 30 saniye uyuyan bir Python
+    süreci `timeout=1` ile çağrılıyor — worker'ın `timeout + KILL_GRACE`'in
+    çok ötesinde bekletilmediği ölçülüyor (büyük bir pay bırakılarak, CI
+    koşucusu yavaşsa yanlış alarm üretmesin diye).
+    """
+    argv = [sys.executable, "-c", "import time; time.sleep(30)"]
+    basla = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        sb.run_tool(argv, timeout=1)
+    gecen = time.monotonic() - basla
+    assert gecen < 1 + sb.KILL_GRACE + 10, f"run_tool beklenenden uzun sürdü: {gecen:.1f}s"
+
+
 # ── Hata yolları ──────────────────────────────────────────────────────────────
 
-def test_zaman_asimi_None_dondurur_yukselmez(kosu):
+def test_clamav_zaman_asimi_ayirt_edici_timeout_verdictiyle_doner(kosu):
+    """
+    2026-08-30: eskiden `None` dönüyordu (çağıran mock'a düşerdi, "hiç
+    taranmadı" ile "taranmaya çalışıldı ama karar verilemedi" ayırt
+    edilemezdi). Artık `verdict="timeout", mock=False` — bkz.
+    `timeout_result()` docstring'i.
+    """
     kosu(subprocess.TimeoutExpired(cmd="clamscan", timeout=120))
-    assert clam().scan(YOL, SHA) is None
+    sonuc = clam().scan(YOL, SHA)
+    assert sonuc is not None
+    assert sonuc.verdict == "timeout"
+    assert sonuc.mock is False
+    assert sonuc.sha256 == SHA
+    assert sonuc.engine == "clamav"
+
+
+def test_defender_zaman_asimi_ayirt_edici_timeout_verdictiyle_doner(kosu, tmp_path):
+    kosu(subprocess.TimeoutExpired(cmd="MpCmdRun.exe", timeout=120))
+    sonuc = defender(tmp_path).scan(YOL, SHA)
+    assert sonuc is not None
+    assert sonuc.verdict == "timeout"
+    assert sonuc.mock is False
+    assert sonuc.engine == "windows_defender"
 
 
 def test_beklenmeyen_istisna_None_dondurur(kosu):

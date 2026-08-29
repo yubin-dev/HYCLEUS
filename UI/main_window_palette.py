@@ -482,10 +482,11 @@ _ROLE_BADGE: dict[str, tuple[str, str]] = {
 
 
 _VERDICT_BADGE: dict[str, tuple[str, str]] = {
-    "clean":      ("✓ Temiz",    "#059669"),
-    "suspicious": ("⚠ Şüpheli", "#D97706"),
-    "malicious":  ("✗ Zararlı",  "#DC2626"),
-    "unknown":    ("—",          "#9CA3AF"),
+    "clean":      ("✓ Temiz",         "#059669"),
+    "suspicious": ("⚠ Şüpheli",      "#D97706"),
+    "malicious":  ("✗ Zararlı",       "#DC2626"),
+    "unknown":    ("—",               "#9CA3AF"),
+    "timeout":    ("⏱ Zaman Aşımı", "#D97706"),
 }
 
 

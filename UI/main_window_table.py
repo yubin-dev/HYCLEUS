@@ -591,9 +591,10 @@ class TableMixin:
             return
 
         if self._batch_done >= self._batch_total:
-            self._batch_total  = 0
-            self._batch_done   = 0
-            self._batch_errors = 0
+            self._batch_total    = 0
+            self._batch_done     = 0
+            self._batch_errors   = 0
+            self._batch_timeouts = 0
             self._batch_has_folder = False
 
         self._batch_total += len(files)
@@ -626,6 +627,17 @@ class TableMixin:
                 expires_at=result["expires_at"],
             )
             self._table.scrollToBottom()
+            if result["verdict"] == "timeout":
+                # Toplu yükleme sırasında dosya başına bir uyarı kutusu
+                # AÇILMIYOR — bir arşiv klasörü büyük dosyalarla doluysa bu,
+                # arka arkaya onlarca modal demek olurdu (bkz. `_on_ctx_
+                # scan_done`'daki tek-dosya karşılığı, orada kutu açmak
+                # doğru çünkü kullanıcının BİLEREK tetiklediği tek bir eylem).
+                # Sayaç burada tutulur, tek bir özet `_on_batch_complete()`'te
+                # gösterilir. Dosya zaten `label="Karantina"` ile eklendi
+                # (bkz. `_handle_dropped_file`/`_handle_dropped_folder`
+                # varsayılanları) — taşımaya gerek yok, zaten orada.
+                self._batch_timeouts += 1
         else:
             self._batch_errors += 1
             _log.warning("batch_file_error  file=%s  err=%s",
@@ -635,14 +647,21 @@ class TableMixin:
             self._on_batch_complete()
 
     def _on_batch_complete(self) -> None:
-        success = self._batch_done - self._batch_errors
-        errors  = self._batch_errors
+        success  = self._batch_done - self._batch_errors
+        errors   = self._batch_errors
+        timeouts = self._batch_timeouts
         self._progress_banner.setVisible(False)
         if self._batch_has_folder:
             self._refresh_folder_sidebar()
         msg = f"Tamamlandı — {success}/{self._batch_done} dosya işlendi"
         if errors:
             msg += f", {errors} hata"
+        if timeouts:
+            msg += (
+                f"\n\n⏱ {timeouts} dosyanın taraması zaman aşımına uğradı, "
+                "manuel inceleme gerekli. Bu dosyalar Karantina'da tutuluyor "
+                "— 'temiz' anlamına gelmiyor."
+            )
         QMessageBox.information(self, "Yükleme Tamamlandı", msg)
 
     def _update_progress_banner(self) -> None:

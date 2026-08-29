@@ -16,7 +16,13 @@ import pytest
 
 from CORE import scanner, scanner_backends as sb
 from CORE.audit_chain import verify_audit_chain
-from CORE.scanner_backends import ScanResult, clean_result, malicious_result, mock_result
+from CORE.scanner_backends import (
+    ScanResult,
+    clean_result,
+    malicious_result,
+    mock_result,
+    timeout_result,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -221,3 +227,32 @@ def test_mock_sonuc_clean_DEGIL():
     assert mock_result("x" * 64).verdict == "unknown"
     assert mock_result("x" * 64).mock is True
     assert clean_result("x" * 64, "clamav").verdict == "clean"
+
+
+def test_timeout_sonuc_mock_ile_KARISTIRILMIYOR():
+    """
+    2026-08-30: ikinci en tehlikeli karışıklık — "hiç taranmadı" (mock,
+    motor yok) ile "taranmaya çalışıldı, karar verilemedi" (timeout, motor
+    var ama süre doldu) de aynı şey DEĞİL. `mock=False`: gerçek bir deneme
+    yapıldı.
+    """
+    sonuc = timeout_result("x" * 64, "windows_defender")
+    assert sonuc.verdict == "timeout"
+    assert sonuc.mock is False
+    assert sonuc.verdict != mock_result("x" * 64).verdict
+
+
+def test_timeout_sonucu_karantina_kaydina_ayirt_edici_bicimde_dusuyor(db, tmp_path, arka_uc):
+    """Zaman aşımı verdict'i, denetim kaydına 'unknown'/mock ile KARIŞMADAN düşmeli."""
+    arka_uc(timeout_result("x" * 64, "windows_defender"),
+            ad="windows_defender", audit_action="defender_scan")
+    fid = _kayit(db, 6)
+
+    scanner.scan_file(_dosya(tmp_path), file_id=fid)
+
+    kayit = json.loads(
+        db.execute("SELECT reason FROM quarantine WHERE file_id = ?", (fid,)).fetchone()["reason"]
+    )
+    assert kayit["verdict"] == "timeout"
+    assert kayit["mock"] is False
+    assert kayit["source"] == "windows_defender"
