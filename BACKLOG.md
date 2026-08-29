@@ -3749,8 +3749,9 @@ açmamak için — bkz. B-056'daki benzer "tek kaynak" dersi).
 
 ## B-069 — "Kurtarma parçasıyla giriş" ekranı — wontfix
 
-**Durum:** Kapalı — wontfix, kod DEĞİŞTİRİLMEDİ (karar aynı; gerekçe
-2026-08-28'de koddan yeniden doğrulanıp düzeltildi — bkz. altta)
+**Durum:** Kapalı — wontfix NİHAİ (2026-08-29), kod DEĞİŞTİRİLMEDİ;
+gerekçe 2026-08-28'de koddan yeniden doğrulanıp düzeltildi, 2026-08-29'da
+kalıcı bir testle korunmaya alındı (bkz. altta)
 **Öncelik:** —
 **Bulundu:** 2026-08-26 — Arayüz güncellemesi (BÖLÜM B) mockup taraması,
 Giriş ekranı restyle turu
@@ -3910,6 +3911,69 @@ Test: `tests/test_kurtarma_usb_kapisi.py` — 5 test, ikisi Katman 1'in
 sağlam olduğunu (üç `_cmd_*` fonksiyonu doğrudan çağrıldığında bile
 `SystemExit`), ikisi Katman 2'de kapının YOKLUĞUNU (kaynak taraması +
 uçtan uca gerçek kurtarma, PIN'siz dal dahil) kanıtlıyor.
+
+### 2026-08-29 (nihai) — karar onaylandı; "bilinçli olarak yok" artık kalıcı bir testle korunuyor
+
+Bir sonraki turda net bir soru soruldu: mockup'taki "Kurtarma parçasıyla
+gir" ekranı (Base32/QR ile `share_3` girişi, Giriş ekranından doğrudan
+erişim) gerçek uygulamaya eklenecek mi, eklenmeyecek mi — B-003'ün
+"kullanıcıyı hapsetme" dersiyle çelişebileceği endişesiyle birlikte.
+
+**Karar: eklenmiyor, wontfix NİHAİ.** Yukarıdaki iki tur zaten teknik
+sonucu kurmuştu: böyle bir ekran B-003'ün dersine aykırı OLMAZDI (onay
+kutusu / hapsetme meselesi değil — `RecoveryShareDialog`'un KENDİSİ
+zaten Esc ile kapanabiliyor, bkz. §4.4'ün "onay kutusu bir güvenlik
+kontrolü değil" paragrafı), gerçek engel BAŞKA: böyle bir ekran, bugün
+yalnızca Katman 1'in (`recover_vault.py` CLI'ı) `_require_hwid()`
+kapısının arkasında duran bir yeteneği (USB YOK + PIN YOK →
+master_key, Seçenek 2/share_1-kayıp dalında) UYGULAMANIN KENDİ
+ARAYÜZÜNE, yani normal şekilde uygulamayı kullanan HERKESE açardı —
+bugün bunu yapmak için Python kod çalıştırma erişimi (M2/M3) gerekiyor.
+B-003 farklı bir sorunun (kullanıcıyı bir pencerede TUTMAK) dersiydi; bu
+madde bambaşka bir sorun (kimin bu yeteneğe ERİŞEBİLDİĞİ). İkisini
+karıştırmak yanlış bir gerekçeye varırdı — bu yüzden karar B-003'e değil,
+yukarıdaki iki turun kod-kanıtlı analizine dayanıyor.
+
+**Boşluk: karar vardı, kalıcı bir KORUMA yoktu.** 2026-08-26'nın "tek
+bir satır bile yok" ölçümü elle yapılmış bir grep'ti — `login_dialog.py`
+ileride (ör. mockup'a yeniden bakan bir restyle turunda) bu ekranı
+sessizce geri alsa hiçbir test kırılmazdı. İki dosya eklendi/genişletildi:
+
+- `tests/test_kurtarma_usb_kapisi.py`'ye YENİ bir bölüm (3, YAPISAL):
+  - `test_login_dialog_KAYNAGINDA_kurtarma_giris_terimi_YOK` —
+    `login_dialog.py`'nin kaynağı `decode_share`/`recover_master_key`/
+    `export_recovery_share`/`share_3`/`RecoveryShareDialog`/"Kurtarma
+    parça..." gibi terimler için taranıyor (B-071/B-076'nın aynı deseni).
+  - `test_tarayici_enjekte_edilen_kurtarma_terimini_YAKALIYOR` —
+    denetimin kendisi çalışıyor mu (B-024 dersi), `tmp_path` ile.
+- YENİ dosya `tests/test_login_dialog_kurtarma_ekrani_yok.py`
+  (DAVRANIŞSAL): `test_login_dialog_TAM_IKI_sayfali_UCUNCU_kurtarma_
+  sayfasi_YOK` — gerçek `LoginDialog`, `_stack.count() == 2` (Giriş Yap +
+  Kayıt Ol) — üçüncü bir sayfa eklenirse bu test kırılır. AYRI dosyada,
+  kasıtlı: `test_kurtarma_usb_kapisi.py` modül seviyesinde Qt/UI ithal
+  ETMİYOR ve öyle kalmalı — `tests/test_layering.py` bu depo genelinde
+  korumasız bir modül-seviyesi Qt ithalinin TÜM paketi (Qt'siz bir
+  ortamda) toplama hatasıyla durdurabileceğini zorunlu kılıyor; ilk
+  yazımda ikisini TEK dosyada birleştirmek denendi ve tam da bu kuralı
+  ÇİĞNEDİ (`test_layering.py::test_test_modulu_TOPLAMA_HATASI_uretemiyor`
+  kırmızıya döndü) — düzeltme, davranışsal testi diğer yedi UI test
+  dosyasıyla AYNI standart `try/except ImportError: pytest.skip(...,
+  allow_module_level=True)` korumasına sahip ayrı bir dosyaya taşımaktı.
+
+**Mutasyon kanıtı (üçü de bu turda, gerçek dosyada, sonra geri
+alındı):** `login_dialog.py`'ye geçici bir `_MUTASYON_KANITI_B069 =
+"share_3"` satırı eklenip yapısal test çalıştırıldı — **BAŞARISIZ**
+oldu, doğru terimi (`share_3`) rapor ederek. Ayrı olarak `self._stack`'e
+üçüncü bir `QWidget()` eklenip davranışsal test çalıştırıldı —
+**BAŞARISIZ** oldu (`3 == 2` diff'i ile) — dosya bölündükten SONRA
+tekrarlanıp aynı sonucu verdiği doğrulandı. Üçü de geri alındıktan sonra
+`git diff --stat UI/login_dialog.py` boş döndü (dosya orijinal hâline
+birebir döndü) ve tüm paket (`test_layering.py` dahil) tekrar yeşile
+döndü.
+
+Tam test suite: 2808 passed, 4 skipped (bir önceki turdan +5 — 2 yapısal
+test + 1 davranışsal test + `test_layering.py`'nin YENİ dosyayı otomatik
+kapsayan parametrizasyonlarından +2).
 
 ---
 

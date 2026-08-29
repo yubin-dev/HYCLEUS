@@ -41,6 +41,24 @@ basılı parça + PIN ile" bir kurtarma akışı ekleme olasılığını tartı�
 — `recover_master_key()`'e koşulsuz bir fiziksel-USB kontrolü gömmek bu
 gelecekteki tasarımı YAPISAL OLARAK imkânsız kılardı. Bkz. SECURITY.md
 §4.4 ve BACKLOG B-069/B-036.
+
+2026-08-29 — nihai karar teyit edildi: mockup'ın ekranı EKLENMEYECEK
+-------------------------------------------------------------------------
+Yukarıdaki analiz zaten "böyle bir ekran, bugün fiilen duran tek
+savunmayı (Katman 1'in `_require_hwid()`'i) bilerek kaldırıp §4.4'ün
+uyardığı saldırı yolunu (basılı kurtarma parçası + makineye erişim, USB
+YOK, PIN YOK → master_key) UYGULAMANIN KENDİ ARAYÜZÜNE taşırdı" sonucuna
+varmıştı. Bu turda o sonuç NİHAİ karar olarak onaylandı — wontfix kalıcı.
+
+Önceki turlarda bu kararı yalnızca `_require_hwid()`'in davranışı
+KANITLIYORDU (bölüm 1-2, üstte); mockup'ın ekranının GERÇEKTEN
+`UI/login_dialog.py`'ye hiç eklenmediğini kalıcı olarak KORUYAN bir test
+yoktu — 2026-08-26 tarihli "tek satır bile yok" ölçümü o turda elle
+yapılmış bir grep'ti, kalıcı bir regresyon koruması değildi. Bölüm 3
+(altta) bu boşluğu kapatıyor: `login_dialog.py`'nin kaynağı yasaklı
+terimlerle taranıyor VE ekranın gerçekten iki sayfalı kaldığı (Giriş
+Yap + Kayıt Ol, ÜÇÜNCÜ bir "Kurtarma ile Gir" sayfası YOK) davranışsal
+olarak doğrulanıyor.
 """
 from __future__ import annotations
 
@@ -151,3 +169,65 @@ def test_recover_master_key_USB_KAPISINDAN_GECMEDEN_dogrudan_calisiyor(
         # dosya adından öğrenilen hwid + elde bulunan share_3.
         kurtarilan_2 = recover_master_key(ogrenilen_hwid, recovery_share=share_3, pin=None)
         assert kurtarilan_2 == master_key_orig
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3. UI katmanı (YAPISAL kısmı) — mockup'ın "Kurtarma parçasıyla gir"
+#    ekranı GERÇEK `login_dialog.py`'ye hiç eklenmemiş; bu KALICI olarak
+#    korunuyor (2026-08-29, nihai wontfix onayı).
+#
+#    DAVRANIŞSAL kanıt (gerçek `LoginDialog`, `_stack.count() == 2`)
+#    KASITLI olarak BURADA DEĞİL: bu dosya modül seviyesinde Qt/UI ithal
+#    ETMİYOR — bu yüzden Qt kurulu olmayan bir ortamda bile (ör. çıplak
+#    bir Linux runner'ı) bölüm 1-2'deki CLI/çekirdek katman testleri
+#    toplanabiliyor (bkz. `tests/test_layering.py`'nin bu depo genelinde
+#    zorunlu kıldığı kural: korumasız bir modül-seviyesi Qt/UI ithali TÜM
+#    paketi TOPLAMA HATASIYLA durdurur). Davranışsal test, standart
+#    "try/except ImportError: pytest.skip(..., allow_module_level=True)"
+#    korumasıyla ayrı bir dosyada:
+#    `tests/test_login_dialog_kurtarma_ekrani_yok.py`.
+# ══════════════════════════════════════════════════════════════════════════════
+
+#: Ekranın gerçek koda girmiş olacağını gösterecek terimler — kurtarma
+#: payını (`share_3`) kullanıcıdan ALAN bir giriş noktasının izi. Yasaklı
+#: listesi `tests/test_kayit_ekrani.py::_YASAKLI_METINLER`'in aynı deseni
+#: (B-071/B-076): somut, kod-tarzı isimler + Türkçe görünen etiketler.
+_KURTARMA_GIRIS_TERIMLERI = (
+    "decode_share",
+    "recover_master_key",
+    "export_recovery_share",  # bu bir DIŞA AKTARIM çağrısı — login_dialog.py'de olmamalı
+    "share_3",
+    "RecoveryShareDialog",
+    "Kurtarma parça",
+    "kurtarma_parcasi",
+    "kurtarma parçasıyla",
+)
+
+
+def test_login_dialog_KAYNAGINDA_kurtarma_giris_terimi_YOK() -> None:
+    """
+    YAPISAL kanıt: `UI/login_dialog.py`'nin kaynağında kurtarma payını
+    ALAN bir giriş noktasının izi yok. 2026-08-26'da bu elle bir grep'ti
+    (B-069'un ilk metni, "tek bir satır bile yok" diyordu) — kalıcı bir
+    test DEĞİLDİ, yani biri ekranı geri getirse fark edilmeyebilirdi. Bu
+    test o boşluğu kapatıyor.
+    """
+    kaynak = (Path(__file__).resolve().parent.parent / "UI" / "login_dialog.py").read_text(
+        encoding="utf-8"
+    )
+    bulunan = [t for t in _KURTARMA_GIRIS_TERIMLERI if t.lower() in kaynak.lower()]
+    assert not bulunan, (
+        f"UI/login_dialog.py'de kurtarma-girişi terimi bulundu: {bulunan} — "
+        "B-069 wontfix kararı bozulmuş olabilir, bkz. BACKLOG.md B-069"
+    )
+
+
+def test_tarayici_enjekte_edilen_kurtarma_terimini_YAKALIYOR(tmp_path: Path) -> None:
+    """Denetimin kendisi çalışıyor mu — B-024 dersi (bkz. `test_tpm_sealing.py`,
+    `test_ui_yasakli_iddia_terimleri.py`): sahte bir dosyaya terim ekilip
+    tarama fonksiyonunun AYNISI (elle tekrarlanmadan) buna karşı çalıştırılıyor."""
+    gecici = tmp_path / "sahte_login_dialog.py"
+    gecici.write_text('baslik = "Kurtarma parçasıyla gir"\n', encoding="utf-8")
+    kaynak = gecici.read_text(encoding="utf-8")
+    bulunan = [t for t in _KURTARMA_GIRIS_TERIMLERI if t.lower() in kaynak.lower()]
+    assert bulunan, "enjekte edilen kurtarma-girişi terimi yakalanmadı"
