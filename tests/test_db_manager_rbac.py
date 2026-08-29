@@ -79,6 +79,10 @@ _KOK = Path(__file__).resolve().parent.parent
             "INSERT INTO retention_profiles (name, duration_value, duration_unit) "
             "VALUES ('p', 1, 'gun')",
         ),
+        (
+            "disposal_queue",
+            "INSERT INTO disposal_queue (file_id, action) VALUES (1, 'purge_file')",
+        ),
     ],
 )
 def test_salt_okunur_is_verisi_tablolarina_dogrudan_yazamiyor(

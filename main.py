@@ -91,6 +91,7 @@ from CORE.audit_chain import (
     write_anchor,
 )
 from CORE.console import ensure_utf8_console
+from CORE.disposal import resume_pending_disposals
 from CORE.safezone import purge_on_exit, purge_orphans
 from CORE.scheduler import start_scheduler, stop_scheduler
 from CORE.secret_migration import MigrationError, run_migrations
@@ -435,6 +436,26 @@ def main() -> None:
             )
     except Exception as exc:  # temizlik sorunu açılışı engellemesin
         _log.error("SafeZone açılış temizliği başarısız: %s", exc)
+
+    # ── Yarım kalan imhaların tamamlanması ────────────────────────────────────
+    # `disposal_queue`'da satır bulmak, önceki oturumun bir dosyayı KALICI
+    # silerken (purge_file/purge_expired_file) çöktüğü anlamına gelir — bkz.
+    # CORE/disposal.py modül docstring'i, SafeZone artakalan temizliğiyle
+    # aynı desen. Yarım kalan işlem burada kaldığı yerden tamamlanır.
+    try:
+        imha_raporu = resume_pending_disposals(DBManager())
+        if imha_raporu.had_pending:
+            _log.warning("Açılışta yarım kalan imha: %s", imha_raporu.summary())
+        if imha_raporu.failed:
+            QMessageBox.warning(
+                None,
+                "Yarım Kalan İmha",
+                "Önceki oturum çökmüş ve bazı imha işlemleri tamamlanamadı:\n\n"
+                + "\n".join(f"· {ad}: {hata}" for ad, hata in imha_raporu.errors[:5])
+                + "\n\nBu dosyalar sonraki açılışta yeniden denenecek.",
+            )
+    except Exception as exc:  # kurtarma sorunu açılışı engellemesin
+        _log.error("Yarım kalan imha kurtarması başarısız: %s", exc)
 
     # ── Sır migration'ı ──────────────────────────────────────────────────────
     # Düz metin sırları (DB usb_tokens.share_2, data/totp_secret.json) kasaya

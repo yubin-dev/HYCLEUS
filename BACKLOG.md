@@ -5978,3 +5978,84 @@ Tam test suite: 2913 passed, 4 skipped (bir önceki turdan +3 — bu iki
 yeni test). Ruff/mypy/bandit temiz.
 
 ---
+
+## B-080 — Kalıcı silme bir çökmede yarıda kesilebiliyordu: `disposal_queue` ile açılışta otomatik tamamlanıyor
+
+Görev: uygulama bir dosyayı KALICI olarak silerken (İmha Odası'ndan
+kalıcı silme ya da süresi dolmuş sayacın otomatik temizliği) tam ortasında
+çökerse (güç kesintisi vb.), yarım kalan işlemin açılışta `disposal.py`
+içindeki bir kuyruktan otomatik tamamlanmasını sağla.
+
+**Önce boşluk doğrulandı.** `CORE/disposal.py::purge_file()`/
+`purge_expired_file()` bir dosyayı silerken iki bağımsız adım atıyordu:
+`Path.unlink()` (disk) ve `DELETE FROM files` (DB) — aralarında hiçbir
+kalıcı kayıt yoktu. Süreç tam bu ikisinin arasında ölürse, veritabanı
+artık diskte olmayan bir dosyayı hâlâ var sanmaya devam ediyordu; hiçbir
+mekanizma bunu tespit etmiyordu. Görevin öncülü olan "disposal.py'deki
+kuyruk" o an HİÇ YOKTU — kurulması gereken yeni bir altyapıydı, düzeltme
+değil.
+
+**Çözüm — yazarkasa deseni.** `DB/migrations.py` Migration 25:
+`disposal_queue` tablosu. `db.execute()` her çağrıda kendi kendine commit
+ettiği için (`DB/db_manager.py::execute()`), fiziksel silmeden ÖNCE bu
+tabloya yazılan bir niyet satırı, sonrasında süreç ne zaman ölürse ölsün
+diskte kalıcı kalıyor. Sıra: (1) `_enqueue()` niyeti yazar, (2)
+`unlink()` denenir, (3) `files` satırı ve kuyruk satırı silinir
+(`_dequeue()`). (2) ve (3) İKİSİ de idempotent (dosya zaten silinmişse
+`exists()` False; satır zaten silinmişse DELETE etkisiz) — yani hangi
+adımda kesildiği kurtarma açısından önemsiz.
+
+**Kurtarma — `resume_pending_disposals()`.** Açılışta, `main.py`'de tam
+`CORE/safezone.py::purge_orphans()`'ı çağıran bölümün hemen ardından
+çağrılıyor — AYNI "kapanışta boş kalır, doluysa önceki oturum çökmüştür"
+deseni. Kuyrukta kalan her satır için (2) ve (3)'ü tekrar oynatıyor,
+dosya başına `disposal_resumed` audit kaydı düşüyor; tek satırın hatası
+(kilitli dosya vb.) döngüyü durdurmuyor. `main.py`'de bir hata görürse
+(`try/except`) açılışı ENGELLEMİYOR — SafeZone/denetim çıpası
+bölümleriyle aynı "görünürlük açılışı durdurmaz" ilkesi; kalan hata
+sayısı >0 ise kullanıcıya bir uyarı kutusu gösteriliyor.
+
+**RBAC yan etkisi.** `disposal_queue`, `DB/db_manager.py::
+_RBAC_KORUMALI_TABLOLAR`'a eklendi — eklenmeseydi Salt Okunur bir oturum
+`files`'a yazamasa bile bu kuyruğa ham SQL ile satır ekleyip
+`_require_approval()`'ı hiç görmeden bir dosyanın gelecekte silinmesini
+tetikleyebilirdi. `resume_pending_disposals()` ve `purge_expired_file()`
+içindeki enqueue/dequeue çağrıları bu yüzden `db.system_write()`
+altında — `sweep_retention_expired()`'daki aynı gerekçe.
+`tests/test_db_manager_rbac.py::test_salt_okunur_is_verisi_
+tablolarina_dogrudan_yazamiyor`'un mevcut parametrizasyonuna
+`disposal_queue` durumu eklendi.
+
+**Testler — `tests/test_disposal.py::TestYarimKalanImhaKurtarmasi` (6
+yeni test).** Gerçek bir process kill'i taklit etmek mümkün değil; bunun
+yerine çökmenin DB'de bıraktığı DURUM elle kuruluyor (kuyrukta niyet
+satırı var, temizlik adımları henüz çalışmamış) ve yalnızca kurtarma
+tarafı test ediliyor:
+
+- `test_unlink_SONRASI_files_DELETE_ONCESI_kesilen_silme_tamamlaniyor` —
+  disk zaten silinmiş, `files` satırı hâlâ duruyor.
+- `test_enqueue_SONRASI_unlink_ONCESI_kesilen_silme_tamamlaniyor` — disk
+  dosyası HÂLÂ duruyor, resume'un kendisi silmeli.
+- `test_birden_fazla_yarim_kalan_islem_tek_turda_tamamlaniyor` — aynı
+  kuyrukta İKİ farklı çökme durumundaki dosya, tek turda ikisi de
+  temizleniyor.
+- `test_normal_akiste_kuyrukta_artik_kalmiyor` — mutlu yolda (çökme yok)
+  kuyruk boş kalıyor.
+- `test_ikinci_calistirma_etkisiz`, `test_bos_kuyruk_hicbir_sey_yapmiyor`
+  — kurtarmanın kendisi idempotent.
+
+**Mutasyon kanıtları (ikisi de geri alındı, `git diff --stat` temiz):**
+
+- `resume_pending_disposals()` içindeki `files` DELETE'i geçici olarak
+  devre dışı bırakıldı (`if False:`) — 3 test **BAŞARISIZ** oldu (`files`
+  satırı silinmemiş kaldı).
+- Aynı fonksiyondaki disk `unlink()` çağrısı geçici olarak devre dışı
+  bırakıldı — 2 test **BAŞARISIZ** oldu (dosya diskte kalmaya devam etti).
+
+SECURITY.md §4.21'e (EN+TR) belgelendi.
+
+Tam test suite: 2920 passed, 4 skipped (bir önceki turdan +7 — bu altı
+yeni test + `test_db_manager_rbac.py`'nin mevcut parametrizasyonuna
+eklenen `disposal_queue` durumu). Ruff/mypy/bandit temiz.
+
+---

@@ -167,7 +167,7 @@ class YazmaYetkisiYokError(PermissionError):
 #: kapsamı değil.
 _RBAC_KORUMALI_TABLOLAR: frozenset[str] = frozenset({
     "files", "folders", "tags", "file_tags", "quarantine",
-    "retention_profiles",
+    "retention_profiles", "disposal_queue",
 })
 
 #: `execute()`'a gelen SQL'in hedef tablosunu çıkarır. Bu depoda `execute()`

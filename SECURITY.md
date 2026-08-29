@@ -2203,6 +2203,75 @@ when the fix is absent, not just when the DB or window state is wrong.
 
 ---
 
+### 4.21 Permanent deletion could be torn by a crash — a durable intent queue closes the window
+
+> **Attacker models:** none — this is a data-integrity/resilience fix
+> against process crashes and power loss, not an access-control boundary.
+> The RBAC change made along the way (below) is the one item here with a
+> real attacker model.
+
+**The gap.** `CORE/disposal.py::purge_file()` and `purge_expired_file()`
+permanently destroy a file in two independent steps: `Path.unlink()` on
+disk, then `DELETE FROM files WHERE id = ?` in the database. If the
+process dies between the two — power loss, a kill, a crash — the database
+is left believing a file exists that no longer does on disk. Nothing
+detected this; the next read of that row would simply fail to open a file
+that isn't there, with no record of why.
+
+**The fix: a write-ahead intent queue, not a bigger transaction.** SQLite
+can't make `unlink()` and a `DELETE` atomic together — one is a filesystem
+call, the other a database write. Instead, `disposal_queue`
+(`DB/migrations.py` Migration 25) records the intent to delete *before*
+either physical step runs: `db.execute()` commits immediately per call
+(`DB/db_manager.py::execute()`), so once the row is inserted it is durable
+regardless of what happens next. The sequence is then: (1) insert the
+queue row, (2) `unlink()` the file, (3) delete the `files` row and the
+queue row. Both (2) and (3) are idempotent — `unlink()` only runs if the
+path still `exists()`, and deleting an already-gone row is a no-op — so it
+does not matter which exact instruction the process died on; any leftover
+queue row unambiguously means steps (2)/(3) did not both finish.
+
+`resume_pending_disposals()` is called once at startup, in `main.py`, in
+the same section that already calls `CORE/safezone.py::purge_orphans()`
+right before it — the same "empty on a clean shutdown, non-empty means the
+previous session crashed" pattern §4.8 established for SafeZone, applied
+to permanent-deletion bookkeeping instead of leftover plaintext. It
+replays steps (2) and (3) for every row still in the queue and logs
+`disposal_resumed` per file; a single row's failure (a locked file, etc.)
+does not stop the rest, matching `CORE/safezone.py::purge()`'s existing
+reasoning that stopping early would leave recoverable rows stuck.
+
+**RBAC follow-on.** `disposal_queue` was added to `DB/db_manager.py::
+_RBAC_KORUMALI_TABLOLAR` alongside `files`. Without that, a Salt Okunur
+(read-only) session — which cannot write to `files` directly — could still
+have inserted a row into `disposal_queue` with raw SQL, and had a future
+startup delete that file for it, going around `_require_approval()`
+entirely. `resume_pending_disposals()` and the enqueue/dequeue calls
+inside `purge_expired_file()` run under `db.system_write()` for the same
+reason `sweep_retention_expired()` already does: startup recovery acts for
+the system, not on behalf of anyone's interactive role.
+`tests/test_db_manager_rbac.py::
+test_salt_okunur_is_verisi_tablolarina_dogrudan_yazamiyor` gained a
+`disposal_queue` case in its existing parametrization, proving a read-only
+session is rejected the same way it already is for `files`.
+
+**Verified with mutation contrast, twice.** `tests/test_disposal.py::
+TestYarimKalanImhaKurtarmasi` constructs the crash state directly (a
+`disposal_queue` row with no corresponding cleanup having run yet) rather
+than attempting to actually kill a process mid-write, and covers both
+orderings: disk deletion already done but the `files` row not yet
+(simulating a crash right after `unlink()`), and neither step done yet
+(simulating a crash right after the intent was recorded). Two live
+mutations confirmed the tests actually discriminate: disabling the
+`files` DELETE inside `resume_pending_disposals()` failed three of the six
+new tests, and separately disabling its disk `unlink()` failed two —
+including `test_birden_fazla_yarim_kalan_islem_tek_turda_tamamlaniyor`,
+which leaves two files in the two different crash states in the same
+queue and asserts both are cleaned up in one pass, not just the first one
+found.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -4726,6 +4795,78 @@ devre dışı olduğunu, "Destek"in görünür kaldığını doğruluyor; eşle�
 bir admin-rolü testi ve iki canlı mutasyon (her yeni kapıyı ayrı ayrı geri
 alarak) düzeltme yokken iki testin de GERÇEKTEN kırıldığını doğruladı,
 yalnızca DB ya da pencere durumu bozulduğunda değil.
+
+### 4.21 Kalıcı silme bir çökmeyle YARIDA KESİLEBİLİYORDU — kalıcı bir niyet kuyruğu bu pencereyi kapatıyor
+
+> **Saldırgan modelleri:** yok — bu bir erişim-kontrolü sınırı değil,
+> süreç çökmelerine ve elektrik kesintisine karşı bir veri bütünlüğü/
+> dayanıklılık düzeltmesi. Yol boyunca yapılan RBAC değişikliği (aşağıda)
+> gerçek bir saldırgan modeli taşıyan tek madde.
+
+**Boşluk.** `CORE/disposal.py::purge_file()` ve `purge_expired_file()` bir
+dosyayı KALICI olarak yok ederken iki bağımsız adım atıyor: diskte
+`Path.unlink()`, veritabanında `DELETE FROM files WHERE id = ?`. Süreç bu
+ikisinin arasında ölürse — elektrik kesintisi, öldürme, çökme —
+veritabanı artık diskte olmayan bir dosyayı hâlâ var sanmaya devam eder.
+Bunu hiçbir şey yakalamıyordu; o satırın sonraki okuması yalnızca orada
+olmayan bir dosyayı açmayı başaramazdı, nedeni hakkında hiçbir kayıt
+olmadan.
+
+**Düzeltme: daha büyük bir transaction değil, bir yazarkasa niyet
+kuyruğu.** SQLite `unlink()` ile bir `DELETE`'i birlikte atomik yapamaz —
+biri dosya sistemi çağrısı, diğeri veritabanı yazısı. Bunun yerine
+`disposal_queue` (`DB/migrations.py` Migration 25) niyeti HER İKİ fiziksel
+adımdan ÖNCE kaydediyor: `db.execute()` her çağrıda kendi kendine commit
+ediyor (`DB/db_manager.py::execute()`), yani satır bir kez eklendi mi
+sonrasında ne olursa olsun kalıcı. Sıra şöyle: (1) kuyruk satırını ekle,
+(2) dosyayı `unlink()` et, (3) `files` satırını ve kuyruk satırını sil.
+(2) ve (3) İKİSİ de idempotent — `unlink()` yalnızca yol hâlâ `exists()`
+ise çalışıyor, zaten gitmiş bir satırı silmek etkisiz — yani sürecin TAM
+HANGİ komutta öldüğü önemli değil; kalan herhangi bir kuyruk satırı,
+(2)/(3)'ün ikisinin de bitmediğini tartışmasız gösteriyor.
+
+`resume_pending_disposals()` açılışta BİR KEZ çağrılıyor, `main.py`'de,
+tam da `CORE/safezone.py::purge_orphans()`'ı zaten çağıran bölümün hemen
+öncesinde — §4.8'in SafeZone için kurduğu AYNI "normal kapanışta boş
+kalır, doluysa önceki oturum çökmüştür" deseni, bu kez artakalan düz metin
+yerine kalıcı-silme defterine uygulanmış. Kuyrukta kalan her satır için
+(2) ve (3)'ü yeniden oynatıyor ve dosya başına `disposal_resumed`
+kaydediyor; tek bir satırın hatası (kilitli dosya, vb.) kalanları
+DURDURMUYOR — `CORE/safezone.py::purge()`'ün erken çıkmanın kurtarılabilir
+satırları da takılı bırakacağı gerekçesiyle aynı.
+
+**RBAC yan etkisi.** `disposal_queue`, `DB/db_manager.py::
+_RBAC_KORUMALI_TABLOLAR`'a `files`'ın yanına eklendi. Bu olmasaydı,
+`files`'a doğrudan yazamayan bir Salt Okunur oturumu yine de
+`disposal_queue`'ya ham SQL ile bir satır ekleyebilir ve bir sonraki
+açılışın o dosyayı kendisi için silmesini sağlayabilirdi —
+`_require_approval()`'ı tamamen atlayarak. `resume_pending_disposals()`
+ve `purge_expired_file()` içindeki enqueue/dequeue çağrıları
+`db.system_write()` altında çalışıyor, `sweep_retention_expired()`'ın
+zaten aynı gerekçeyle yaptığı gibi: açılış kurtarması sistem adına
+çalışıyor, kimsenin arayüz rolü adına değil. `tests/test_db_manager_rbac.py::
+test_salt_okunur_is_verisi_tablolarina_dogrudan_yazamiyor` mevcut
+parametrizasyonuna bir `disposal_queue` durumu kazandı, Salt Okunur bir
+oturumun `files` için zaten reddedildiği AYNI şekilde reddedildiğini
+kanıtlıyor.
+
+**Mutasyon kontrastıyla, iki kez doğrulandı.** `tests/test_disposal.py::
+TestYarimKalanImhaKurtarmasi` gerçek bir süreci ortasında öldürmeye
+çalışmak yerine (mümkün değil) çökme durumunu doğrudan kuruyor —
+temizliği henüz yapılmamış bir `disposal_queue` satırı — ve iki sırayı da
+kapsıyor: disk silme zaten bitmiş ama `files` satırı henüz değil
+(`unlink()`'ten hemen sonraki çökmeyi taklit ediyor) ve ikisi de HİÇ
+bitmemiş (niyet kaydedildikten hemen sonraki çökmeyi taklit ediyor). İki
+canlı mutasyon testlerin GERÇEKTEN ayırt ettiğini doğruladı:
+`resume_pending_disposals()` içindeki `files` DELETE'i devre dışı
+bırakmak altı yeni testten üçünü kırdı, ayrıca diskteki `unlink()`'i
+devre dışı bırakmak ikisini kırdı —
+`test_birden_fazla_yarim_kalan_islem_tek_turda_tamamlaniyor` dahil, bu
+test aynı kuyrukta iki farklı çökme durumundaki iki dosyayı bırakıp
+ikisinin de TEK turda temizlendiğini, yalnızca ilk bulunanın değil,
+doğruluyor.
+
+---
 
 ## 5. Kriptografik ayrıntılar
 

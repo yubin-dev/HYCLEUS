@@ -23,6 +23,7 @@ from CORE.disposal import (
     purge_expired_file,
     move_to_imha,
     purge_file,
+    resume_pending_disposals,
     sweep_retention_expired,
 )
 from CORE.retention import (
@@ -862,3 +863,120 @@ class TestSchedulerEntegrasyonu:
 
         monkeypatch.setattr("CORE.disposal.sweep_retention_expired", patla)
         scheduler._sweep_retention()      # istisna dışarı sızmamalı
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2026-08-29 — çökmeye dayanıklı kalıcı silme kuyruğu (disposal_queue)
+#
+# purge_file()/purge_expired_file() bir dosyayı silerken iki bağımsız adım
+# atıyor: disk unlink() ve `files` DELETE'i. Süreç TAM ARADA ölürse (güç
+# kesintisi, kill -9), açılışta resume_pending_disposals() kuyrukta kalan
+# satırı bulup kaldığı yerden bitirmeli. Testler burada gerçek bir process
+# kill'i TAKLİT ETMİYOR (mümkün değil) — çökmenin DB'de bıraktığı durumu
+# elle üretip yalnızca kurtarma tarafını doğruluyor; asıl kanıtlanması
+# gereken şey kesintinin kendisi değil, kaldığı yerden tamamlanma.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _kuyruga_yaz(db, *, file_id, filename, filepath, action="purge_file", source="test"):
+    """`_enqueue()`'un yaptığı INSERT'in testteki karşılığı — çökme ANINI kurar."""
+    cur = db.execute(
+        "INSERT INTO disposal_queue (file_id, filename, filepath, action, source)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (file_id, filename, filepath, action, source),
+    )
+    return int(cur.lastrowid)
+
+
+def _kuyruk_satirlari(db):
+    return db.fetchall("SELECT * FROM disposal_queue")
+
+
+class TestYarimKalanImhaKurtarmasi:
+    def test_bos_kuyruk_hicbir_sey_yapmiyor(self, db):
+        rapor = resume_pending_disposals(db)
+        assert rapor.had_pending is False
+        assert rapor.resumed == 0
+        assert rapor.failed == 0
+
+    def test_unlink_SONRASI_files_DELETE_ONCESI_kesilen_silme_tamamlaniyor(
+        self, db, tmp_path
+    ):
+        """
+        Süreç `unlink()` BAŞARILI OLDUKTAN hemen sonra, `files` satırı
+        silinmeden ÖNCE öldürülmüş: disk dosyası zaten yok, `files` satırı
+        hâlâ duruyor, kuyrukta niyet satırı var. Bu, docstring'deki 1-3
+        adımlarının en kritik ara durumu — DB, artık var olmayan bir
+        dosyayı hâlâ "var" sanıyor.
+        """
+        fid, hcl = _mk_file(db, tmp_path, filename="yarim_unlink_sonrasi.pdf")
+        queue_id = _kuyruga_yaz(db, file_id=fid, filename="yarim_unlink_sonrasi.pdf",
+                                 filepath=str(hcl))
+        hcl.unlink()  # crash öncesi adım 2 zaten TAMAMLANMIŞTI
+
+        assert hcl.exists() is False
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid,)) is not None
+
+        rapor = resume_pending_disposals(db)
+
+        assert rapor.resumed == 1
+        assert rapor.failed == 0
+        assert "yarim_unlink_sonrasi.pdf" in rapor.names
+        # Tutarlı son durum: disk YOK, files satırı YOK, kuyruk BOŞ.
+        assert hcl.exists() is False
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid,)) is None
+        assert db.fetchone("SELECT id FROM disposal_queue WHERE id = ?", (queue_id,)) is None
+        assert "disposal_resumed" in _actions(db, fid)
+
+    def test_enqueue_SONRASI_unlink_ONCESI_kesilen_silme_tamamlaniyor(self, db, tmp_path):
+        """
+        Süreç niyet kuyruğa yazıldıktan HEMEN sonra, disk `unlink()` hiç
+        başlamadan öldürülmüş: disk dosyası HÂLÂ DURUYOR. Kurtarma bu
+        durumda diskten silmeyi KENDİSİ yapmalı — resume iki adımı da
+        (unlink + DELETE) üstlenebilmeli, yalnızca ikinciyi değil.
+        """
+        fid, hcl = _mk_file(db, tmp_path, filename="yarim_enqueue_sonrasi.pdf")
+        queue_id = _kuyruga_yaz(db, file_id=fid, filename="yarim_enqueue_sonrasi.pdf",
+                                 filepath=str(hcl))
+
+        assert hcl.exists() is True  # crash öncesi adım 2 HİÇ başlamamıştı
+
+        rapor = resume_pending_disposals(db)
+
+        assert rapor.resumed == 1
+        assert hcl.exists() is False  # resume disk silmeyi kendisi yaptı
+        assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid,)) is None
+        assert db.fetchone("SELECT id FROM disposal_queue WHERE id = ?", (queue_id,)) is None
+
+    def test_birden_fazla_yarim_kalan_islem_tek_turda_tamamlaniyor(self, db, tmp_path):
+        """Bir önceki oturum tek dosyada değil BİRDEN FAZLA imhanın ortasında ölmüş olabilir."""
+        fid1, hcl1 = _mk_file(db, tmp_path, filename="c1.pdf")
+        fid2, hcl2 = _mk_file(db, tmp_path, filename="c2.pdf")
+        _kuyruga_yaz(db, file_id=fid1, filename="c1.pdf", filepath=str(hcl1))
+        _kuyruga_yaz(db, file_id=fid2, filename="c2.pdf", filepath=str(hcl2))
+        hcl1.unlink()  # biri unlink sonrası, diğeri unlink öncesi kesilmiş
+
+        rapor = resume_pending_disposals(db)
+
+        assert rapor.resumed == 2
+        assert not hcl1.exists() and not hcl2.exists()
+        for fid in (fid1, fid2):
+            assert db.fetchone("SELECT id FROM files WHERE id = ?", (fid,)) is None
+        assert _kuyruk_satirlari(db) == []
+
+    def test_normal_akiste_kuyrukta_artik_kalmiyor(self, db, tmp_path):
+        """Mutlu yol (çökme YOK): purge_file() biter bitmez kuyruk boş olmalı."""
+        fid, hcl = _mk_file(db, tmp_path, filename="normal.pdf")
+        purge_file(db, fid)
+        assert _kuyruk_satirlari(db) == []
+
+    def test_ikinci_calistirma_etkisiz(self, db, tmp_path):
+        """Kurtarma iki kez çalışsa da (ör. açılış iki kez tetiklenirse) zarar vermemeli."""
+        fid, hcl = _mk_file(db, tmp_path, filename="tekrar.pdf")
+        _kuyruga_yaz(db, file_id=fid, filename="tekrar.pdf", filepath=str(hcl))
+
+        birinci = resume_pending_disposals(db)
+        ikinci = resume_pending_disposals(db)
+
+        assert birinci.resumed == 1
+        assert ikinci.had_pending is False

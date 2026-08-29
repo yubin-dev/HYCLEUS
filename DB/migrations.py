@@ -455,6 +455,44 @@ def _m24_auth_codes_kaldir(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS auth_codes")
 
 
+def _m25_disposal_queue(conn: sqlite3.Connection) -> None:
+    """`disposal_queue` tablosu — çökmeye dayanıklı kalıcı silme (2026-08-29).
+
+    `CORE/disposal.py::purge_file()`/`purge_expired_file()` bir dosyayı
+    KALICI olarak silerken iki bağımsız adım atıyor: diskten `unlink()` ve
+    `files` satırının `DELETE`'i. Süreç tam bu ikisinin arasında ölürse
+    (güç kesintisi, kilitlenme, öldürülen süreç), veritabanı hâlâ artık
+    diskte olmayan bir dosyayı var sanır — sessiz bir tutarsızlık.
+
+    Bu tablo niyeti FİİLİ silmeden ÖNCE kalıcı olarak kaydeder
+    (`db.execute()` her çağrıda kendi kendine commit ediyor, bkz.
+    `DB/db_manager.py::execute()`), silme tamamlanınca satır kaldırılır.
+    Açılışta `resume_pending_disposals()` kalan satırları bulur ve
+    kaldığı yerden bitirir — `CORE/safezone.py::purge_orphans()` ile aynı
+    "normal kapanışta boş kalır, doluysa önceki oturum çökmüştür" deseni.
+
+    `disposal_queue` RBAC korumalı tablolar listesine de eklendi
+    (`DB/db_manager.py::_RBAC_KORUMALI_TABLOLAR`): korunmasaydı Salt
+    Okunur bir oturum `files`'a yazamasa bile bu kuyruğa ham SQL ile
+    satır ekleyip bir sonraki açılışta o dosyanın silinmesini
+    `_require_approval()`'ı hiç görmeden tetikleyebilirdi.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS disposal_queue (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id    INTEGER NOT NULL,
+            filename   TEXT,
+            filepath   TEXT,
+            action     TEXT    NOT NULL
+                       CHECK(action IN ('purge_file', 'purge_expired_file')),
+            user_id    INTEGER,
+            source     TEXT,
+            created_at TEXT    NOT NULL
+                       DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        )
+    """)
+
+
 #: Numaralı, SIRALI, değişmez göç listesi. Sıra anlamlıdır: 11 numara
 #: `folders` tablosuna referans veriyor, yani 10'dan sonra gelmek ZORUNDA.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -541,8 +579,12 @@ MIGRATIONS: tuple[Migration, ...] = (
               "auth_codes tablosunu kaldırır (B-062) — hiçbir yerde "
               "doğrulanmayan, rol kontrolsüz yarım bir özellikti.",
               _m24_auth_codes_kaldir),
-    # Migration(25, "tpm-...", "...", _m25_...),
-    # Migration(26, "hclx-...", "...", _m26_...),
+    Migration(25, "disposal-queue-tablosu",
+              "Kalıcı silmeler için çökmeye dayanıklı niyet kuyruğu — "
+              "açılışta yarım kalan silmeler resume_pending_disposals() "
+              "ile tamamlanır.",
+              _m25_disposal_queue),
+    # Migration(26, "tpm-...", "...", _m26_...),
 )
 
 

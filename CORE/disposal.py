@@ -52,11 +52,36 @@ fonksiyonlar o çağrı yerlerinin birebir karşılığı olacak biçimde yazıl
     _on_ctx_move_to_imha / _on_ctx_move_label(..., "Imha")  → move_to_imha()
     _purge_expired_file                                     → purge_file()
     scheduler._purge_expired                                → korundu, guard eklendi
+
+Çökmeye dayanıklı KALICI silme (2026-08-29)
+--------------------------------------------
+`purge_file()`/`purge_expired_file()` bir dosyayı yok ederken iki bağımsız
+adım atıyor: diskten `unlink()` ve `files` satırının `DELETE`'i. Süreç TAM
+BU İKİSİNİN ARASINDA ölürse (güç kesintisi, kilitlenme, öldürülen süreç),
+veritabanı artık diskte olmayan bir dosyayı hâlâ var sanır.
+
+Bu ikisi arasına `disposal_queue` tablosu (DB/migrations.py Migration 25)
+girer — bir yazarkasa defteri gibi:
+
+    1. FİİLİ silmeden ÖNCE niyet `disposal_queue`'ya yazılır (`_enqueue()`).
+       `db.execute()` her çağrıda kendi COMMIT'ini yapıyor (DB/db_manager.py),
+       yani bu satır artık DİSKTE KALICI.
+    2. Diskten `unlink()` denenir.
+    3. `files` satırı silinir, kuyruk satırı kaldırılır (`_dequeue()`).
+
+Süreç 1-3 arasının HERHANGİ bir noktasında ölse de sonuç aynı: kuyrukta bir
+satır kalır. `resume_pending_disposals()` açılışta bu satırları bulur ve
+kaldığı yerden bitirir — 2 ve 3'ün HER İKİSİ de idempotent (dosya zaten
+silinmişse `exists()` False döner; `files`/kuyruk satırı zaten silinmişse
+DELETE etkisiz), yani hangi adımda kesildiği önemli değil, sonuç hep aynı
+tutarlı duruma yakınsıyor. Bu, `CORE/safezone.py::purge_orphans()` ile aynı
+"normal kapanışta boş kalır, doluysa önceki oturum çökmüştür" deseni
+(main.py'de aynı açılış bölümünde, ondan hemen sonra çağrılır).
 """
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -284,6 +309,134 @@ def _require_approval(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Çökmeye dayanıklı kuyruk — modül docstring'indeki "yazarkasa defteri"
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _enqueue(
+    db: DBManager,
+    *,
+    file_id: int,
+    filename: str | None,
+    filepath: str | None,
+    action: str,
+    user_id: int | None,
+    source: str | None,
+) -> int:
+    """Fiziksel silmeden ÖNCE niyeti kalıcı olarak kaydeder; kuyruk id'sini döndürür."""
+    cur = db.execute(
+        "INSERT INTO disposal_queue"
+        " (file_id, filename, filepath, action, user_id, source)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (file_id, filename, filepath, action, user_id, source),
+    )
+    return int(cur.lastrowid or 0)
+
+
+def _dequeue(db: DBManager, queue_id: int) -> None:
+    """İşlem tamamlandı — kuyruk satırı kaldırılır. Zaten yoksa etkisiz (idempotent)."""
+    db.execute("DELETE FROM disposal_queue WHERE id = ?", (queue_id,))
+
+
+@dataclass(frozen=True)
+class DisposalResumeReport:
+    """`resume_pending_disposals()`'ın sonucu — `CORE/safezone.py::PurgeReport` ile aynı biçim."""
+
+    resumed: int = 0
+    failed: int = 0
+    #: Tamamlanan dosyaların adları — denetim/UI için.
+    names: list[str] = field(default_factory=list)
+    #: (dosya adı, hata) çiftleri.
+    errors: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def had_pending(self) -> bool:
+        return self.resumed > 0 or self.failed > 0
+
+    def summary(self) -> str:
+        if not self.had_pending:
+            return "İmha kuyruğu temiz — yarım kalan işlem yok."
+        parcalar = [f"{self.resumed} işlem tamamlandı"]
+        if self.failed:
+            parcalar.append(f"{self.failed} işlem TAMAMLANAMADI")
+        return "İmha kuyruğu: " + ", ".join(parcalar) + "."
+
+
+def resume_pending_disposals(db: DBManager) -> DisposalResumeReport:
+    """
+    Açılış kurtarması — `disposal_queue`'da satır varsa ÖNCEKİ OTURUM çökmüştür.
+
+    Her satır 1-3 adımlarının (modül docstring'i) hangi noktasında kesildiği
+    bilinmeden aynı şekilde ele alınır, çünkü ikisi de idempotent:
+
+        1. Diskteki dosya hâlâ duruyorsa silinir (yoksa zaten adım 2
+           tamamlanmış demektir, atlanır).
+        2. `files` satırı silinir (yoksa zaten etkisiz).
+        3. Kuyruk satırı kaldırılır.
+
+    Tek bir satırın hatası (kilitli dosya, vb.) döngüyü DURDURMAZ — kalan
+    satırlar yine denenir ve arıza raporda görünür; `CORE/safezone.py::
+    purge()`'ün "erken çıkmak silinebilecekleri de bırakırdı" gerekçesiyle
+    aynı. `system_write()` ile sarılı: bu açılış zamanı bir sistem işlemi,
+    kimsenin arayüz rolü ADINA değil (`sweep_retention_expired()`'daki aynı
+    gerekçe) — ayrıca `disposal_queue` de RBAC korumalı bir tablo olduğu
+    için sarmalama olmadan `_dequeue()` bile başarısız olurdu.
+    """
+    rows = db.fetchall("SELECT * FROM disposal_queue ORDER BY id")
+    resumed = 0
+    failed = 0
+    names: list[str] = []
+    errors: list[tuple[str, str]] = []
+
+    for row in rows:
+        queue_id = row["id"]
+        file_id = row["file_id"]
+        filename = row["filename"] or "?"
+        filepath = row["filepath"]
+        try:
+            if filepath:
+                try:
+                    path = Path(filepath)
+                    if path.exists():
+                        path.unlink()
+                except OSError as exc:
+                    logger.warning(
+                        "Yarım kalan imha: dosya diskten silinemedi %s: %s", filepath, exc,
+                    )
+
+            with db.system_write():
+                db.execute("DELETE FROM files WHERE id = ?", (file_id,))
+                _dequeue(db, queue_id)
+
+            db.log(
+                "disposal_resumed",
+                target_type="file",
+                target_id=file_id,
+                detail=(
+                    f"filename={filename} filepath={filepath} action={row['action']}"
+                    f" source={row['source']} queue_id={queue_id}"
+                ),
+            )
+            resumed += 1
+            names.append(filename)
+        except Exception as exc:  # bir satırın hatası kalanları durdurmamalı
+            failed += 1
+            errors.append((filename, f"{type(exc).__name__}: {exc}"))
+            logger.error(
+                "Yarım kalan imha tamamlanamadı (queue_id=%s, file_id=%s): %s",
+                queue_id, file_id, exc,
+            )
+
+    if resumed or failed:
+        logger.warning(
+            "Açılışta %d yarım kalan imha işlemi bulundu (%d tamamlandı, %d "
+            "başarısız) — önceki oturum düzgün kapanmamış olabilir.",
+            resumed + failed, resumed, failed,
+        )
+    return DisposalResumeReport(resumed=resumed, failed=failed, names=names, errors=errors)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Senaryo 1 — kullanıcı kaynaklı silme (erken silme koruması burada uygulanır)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -384,6 +537,11 @@ def purge_file(
     )
 
     filepath = row["filepath"]
+    queue_id = _enqueue(
+        db, file_id=file_id, filename=row["filename"], filepath=filepath,
+        action="purge_file", user_id=user_id, source="purge_file",
+    )
+
     if filepath:
         try:
             path = Path(filepath)
@@ -393,6 +551,7 @@ def purge_file(
             logger.warning("Dosya diskten silinemedi %s: %s", filepath, exc)
 
     db.execute("DELETE FROM files WHERE id = ?", (file_id,))
+    _dequeue(db, queue_id)
     detail = f"filename={row['filename']} filepath={filepath} decision={check.decision}"
     if note:
         detail = f"{detail} onay={note}"
@@ -538,6 +697,16 @@ def purge_expired_file(
     ad = row["filename"] if row else "?"
     yol = filepath or (row["filepath"] if row else None)
 
+    # RBAC (DB/db_manager.py) — bkz. sweep_retention_expired()'daki aynı
+    # gerekçe: bu bir sayaç işlemi, kullanıcının rolü ADINA değil. Kuyruk
+    # (`disposal_queue`) da korumalı tablolardan, o yüzden enqueue/dequeue
+    # de bu sarmalamanın içinde.
+    with db.system_write():
+        queue_id = _enqueue(
+            db, file_id=file_id, filename=ad, filepath=yol,
+            action="purge_expired_file", user_id=None, source=source,
+        )
+
     if yol:
         try:
             path = Path(yol)
@@ -549,10 +718,9 @@ def purge_expired_file(
             # dosyayı listede görmeye devam ederdi.
             logger.warning("Dosya diskten silinemedi %s: %s", yol, exc)
 
-    # RBAC (DB/db_manager.py) — bkz. sweep_retention_expired()'daki aynı
-    # gerekçe: bu bir sayaç işlemi, kullanıcının rolü ADINA değil.
     with db.system_write():
         db.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        _dequeue(db, queue_id)
     db.log(
         "expired_purge",
         target_type="file",
