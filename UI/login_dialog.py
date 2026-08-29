@@ -735,12 +735,24 @@ class LoginDialog(QDialog):
         lay.addWidget(_field("PIN Tekrar", self._reg_pin2))
         lay.addSpacing(20)
 
-        # ── Rol ───────────────────────────────────────────────────────────
+        # ── Talep Edilen Rol ─────────────────────────────────────────────────
+        # Etiket 2026-08-29'da "Rol"den değiştirildi (bkz. BACKLOG B-076).
+        # Backend zaten TAM olarak bunu yapıyordu — `register_new_user()`
+        # bu seçimi `status='pending'` bir satıra yazıyor, GERÇEK yetkiye
+        # yönetici `AdminPanel`'in "Bekleyen Kayıtlar" sekmesinden onay
+        # verene kadar dönüşmüyor (bkz. CORE/registration.py). Yeni bir
+        # `requested_role` sütunu EKLENMEDİ — mevcut `role` sütunu zaten bu
+        # semantiği taşıyor, ikinci bir sütun yalnızca aynı bilgiyi iki
+        # kopya hâlinde tutup senkronizasyon/kaynak-otorite belirsizliği
+        # yaratırdı. Bu yüzden yalnızca etiket değişti, şema değişmedi.
+        # `UI/RegisterDialog.py`nin admin-başlatan akışında etiket KASITLI
+        # olarak "Rol" kaldı — orada yöneticinin KENDİSİ seçiyor, "talep"
+        # kelimesi kafa karıştırırdı.
         self._reg_role = QComboBox()
         self._reg_role.addItems(["Standart", "Salt Okunur"])
         self._reg_role.setStyleSheet(_QSS_COMBO)
         self._reg_role.setMinimumHeight(48)
-        lay.addWidget(_field("Rol", self._reg_role))
+        lay.addWidget(_field("Talep Edilen Rol", self._reg_role))
         lay.addSpacing(20)
 
         # ── Referans Kodu — YALNIZCA Kurumsal modda ─────────────────────────

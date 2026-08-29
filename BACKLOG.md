@@ -5242,3 +5242,114 @@ Tam test suite: 2801 passed, 4 skipped (bu turda eklenen 9 yeni test
 dahil), `ruff check .` ve `mypy` temiz.
 
 ---
+
+## B-076 — Kayıt Ol ekranındaki üç mockup alanı ("Kurum Planı", "Referans Kodu", "Talep Edilen Rol") tek tek karara bağlandı
+
+**Durum:** Kapalı
+**Öncelik:** Orta (kod-mockup ayrışması; kırılan bir şey değil ama üç
+alan aynı soruyu soruyor gibi görünüp aslında üç FARKLI durumda)
+**Bulundu ve kapatıldı:** 2026-08-29 — aynı turda
+
+### Görev
+
+Kayıt Ol ekranı mockup'ının üç alanı için net bir karar istendi: (a)
+gerçek backend kur, ya da (b) mockup'tan çıkar. Üçü TEK bir soru gibi
+sorulsa da inceleme üçünün üç FARKLI durumda olduğunu gösterdi — tek bir
+blok karar (hepsi (a) ya da hepsi (b)) en az birini yanlış temsil
+ederdi.
+
+### 1. "Kurum Planı" kutusu (plan/tier) — **(b), zaten karar verilmiş, DEĞİŞMEDİ**
+
+`077159e` (2026-08-23) bunu zaten "plan/tier chip" olarak ele almıştı:
+backend karşılığı yok (kullanıcı/kurum/tier sütunu yok, çoklu-kiracı ya
+da faturalama kavramı hiç yok), hiçbir moda eklenmedi. HYCLEUS
+çok-kiracılı, faturalamalı bir SaaS DEĞİL — böyle bir kutu, B-071'in
+AIR-GAPPED/ÇEVRİMDIŞI'de öğrettiği AYNI dersin bir varyantı: kullanıcıyı
+olmayan bir yeteneğe inandırmak. Karar DEĞİŞMEDİ.
+
+Tek fark: bu turda "Kurum Planı" metninin kendisi `tests/test_kayit_
+ekrani.py`'nin `_YASAKLI_METINLER` listesine AYRICA eklendi — önceki
+liste yalnızca `plan_chip`/`tier_chip`/`plan_badge`/`tier_badge` gibi
+kod-tarzı isimleri kapsıyordu, mockup'ın kullanabileceği Türkçe görünen
+metni ("Kurum Planı") değil. Bu, taramanın kendi kapsamındaki bir
+boşluktu, koddaki bir boşluk değil — kapatıldı.
+
+**Mockup kaynağı güncellenmedi.** Bu turda ulaşılabilen tek mockup
+kaynağı (bkz. K0-6, aynı gün önceki bulgu) `https://claude.ai/code/
+artifact/f348a8a1-...` Artifact'ı — o dosyada "Kurum Planı" ya da "Talep
+Edilen Rol" metni ARANDI, BULUNAMADI. `DesignSync` (gerçek claude.ai/
+design "Design System" projesi erişimi) bu oturumda YETKİLENDİRİLMEMİŞ
+(`/design-login` etkileşimli olmayan bir oturumda çalışamıyor) — yani
+kullanıcının bahsettiği mockup, erişilen Artifact'tan FARKLI bir kaynak
+olabilir. Bu dürüstçe kaydediliyor: kodun kararı yukarıdaki gerekçeyle
+sağlam, ama mockup tarafının GÖRSEL olarak teyit edilmesi bu oturumun
+kapsamı dışında kaldı.
+
+### 2. "Referans Kodu" — **zaten (a), zaten kurulu, DEĞİŞMEDİ**
+
+2026-08-26'da (arayüz güncellemesi turu) GERÇEK bir backend kuruldu:
+`CORE/referans_id.py` (kurulum-geneli tek değer, `settings` tablosunda,
+`secrets.choice` ile 32⁸ olasılıklı `KRM-XXXXXXXX` biçiminde), `UI/
+login_dialog.py`'de KURUMSAL modda gerçekten karşılaştırılıyor (yanlış/
+boş kod → kayıt reddedilir, DB'ye hiçbir satır yazılmaz). Bu turda YENİ
+bir karar verilmedi — yalnızca teyit edildi: `tests/test_kayit_
+kurumsal_referans.py` (6 test) + `tests/test_referans_id.py` (4 test) +
+`tests/test_kayit_ekrani.py`'nin ilgili testleri yeniden koşuldu, hepsi
+yeşil (aşağıdaki "Test" bölümü).
+
+### 3. "Talep Edilen Rol" — **özünde zaten (a); yeni sütun EKLENMEDİ, yalnızca etiket hizalandı**
+
+Kayıt formundaki mevcut "Rol" alanı (`self._reg_role`, Standart/Salt
+Okunur) zaten TAM olarak bu semantiği taşıyor: seçilen değer `CORE/
+registration.py::register_new_user()` ile `status='pending'` bir
+`users` satırına yazılıyor, GERÇEK yetkiye (`status='approved'`)
+yönetici `AdminPanel`'in "Bekleyen Kayıtlar" sekmesinden `✓ Onayla`
+diyene kadar DÖNÜŞMÜYOR — yani kullanıcı bir rol SEÇMİYOR, TALEP ediyor,
+tam da mockup'ın etiketinin söylediği gibi.
+
+Buna rağmen ayrı bir `requested_role` sütunu EKLENMEDİ. Gerekçe: `role`
+sütunu zaten bu değeri taşıyor; ikinci bir sütun aynı bilgiyi iki kopya
+hâlinde tutardı ve "onaydan sonra ikisi ayrışırsa hangisi doğru" gibi bir
+kaynak-otorite belirsizliği yaratırdı — çözülen bir sorun için yeni bir
+tutarlılık riski açmak olurdu. Uygulanan tek değişiklik: `UI/
+login_dialog.py`'deki alan etiketi "Rol"den "Talep Edilen Rol"e
+değiştirildi — **yalnızca** self-servis Kayıt Ol ekranında.
+
+`UI/RegisterDialog.py`'nin admin-başlatan akışında ("AdminPanel → Yeni
+Kullanıcı Kaydet") etiket KASITLI olarak "Rol" kaldı: orada yönetici
+BAŞKASI için değil, doğrudan KENDİ seçtiği bir değeri giriyor — "talep"
+kelimesi orada yanlış bir aktör ima ederdi. İki ekranın etiketinin
+BİLEREK farklı kalması `tests/test_kayit_ekrani.py::test_register_
+dialog_rol_alani_KASITLI_olarak_ROL_kaliyor` ile kalıcı hale getirildi.
+
+### Test
+
+`tests/test_kayit_ekrani.py`'ye 2 yeni test (dosyanın toplamı 11'e
+çıktı):
+
+- `test_kayit_ol_rol_alani_TALEP_EDILEN_ROL_diye_etiketleniyor` — ANA
+  TEST, `_reg_role`'ün widget ağacındaki kardeş `QLabel`'ini yapısal
+  olarak bulup metnini doğruluyor (`_field()` etiketi `self`'e
+  saklamıyor, doğrudan bir öznitelik yok).
+- `test_register_dialog_rol_alani_KASITLI_olarak_ROL_kaliyor` — negatif/
+  kontrast: admin akışının etiketi "Rol" kalıyor, "Talep Edilen Rol"
+  oraya SIZMAMIŞ.
+
+Ayrıca `_YASAKLI_METINLER`'e "Kurum Planı"/"kurum_plani"/"corporate_plan"
+eklendi (madde 1).
+
+**Mutasyon kanıtı:** `UI/login_dialog.py`'deki etiket geçici olarak
+"Rol"e geri alınıp `test_kayit_ol_rol_alani_TALEP_EDILEN_ROL_diye_
+etiketleniyor` çalıştırıldı — **BAŞARISIZ oldu** (`AssertionError: 'Rol'
+== 'Talep Edilen Rol'`), doğru diff ile. Düzeltme geri konup test tekrar
+yeşile döndü.
+
+Referans Kodu'nun mevcut testleri (madde 2) de bu turda yeniden koşuldu:
+`tests/test_kayit_kurumsal_referans.py` (6) + `tests/test_referans_id.py`
+(4) + `tests/test_kayit_ekrani.py`'nin geri kalanı (9) — hepsi yeşil,
+regresyon yok.
+
+Tam test suite: 2803 passed, 4 skipped (bir önceki turdan +2 — bu
+dosyaya eklenen 2 yeni test).
+
+---

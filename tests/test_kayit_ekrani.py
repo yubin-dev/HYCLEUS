@@ -10,14 +10,41 @@ Referans Kodu artık KURUMSAL modda GERÇEKTEN var ve gerçekten doğrulanıyor.
 Kurum e-postası ve plan/tier chip kararı DEĞİŞMEDİ — ikisi de hâlâ hiçbir
 modda yok, hâlâ backend karşılığı yok.
 
+**2026-08-29 (B-076) — üç mockup alanı için ayrı ayrı karar.** Bir sonraki
+turda mockup'ın "Kurum Planı" kutusu, "Referans Kodu" ve "Talep Edilen
+Rol" alanları TEK TEK değerlendirildi — üçü aynı kararı hak etmiyordu:
+
+- **Kurum Planı** (plan/tier kutusu) — (b), mockup'tan/koddan dışarıda
+  kalmaya DEVAM ediyor. 077159e'nin "plan/tier chip" kararının aynısı;
+  HYCLEUS çok-kiracılı/faturalamalı bir SaaS değil, böyle bir kutu
+  olmayan bir yeteneği ima ederdi (AIR-GAPPED/ÇEVRİMDIŞI dersinin aynısı,
+  bkz. B-071). "Kurum Planı" metni bu yüzden `_YASAKLI_METINLER`'e AYRICA
+  eklendi — yalnızca eski "plan_chip"/"tier_chip" değil.
+- **Referans Kodu** — zaten (a); 2026-08-26'da GERÇEK backend kuruldu
+  (bu docstring'in üstündeki paragraf). Bu turda YENİDEN karar verilmedi,
+  yalnızca teyit edildi (testler bu dosyada, hâlâ yeşil).
+- **Talep Edilen Rol** — özünde zaten (a): kayıt formundaki rol seçimi
+  `register_new_user()` ile `status='pending'` bir satıra yazılıyor,
+  GERÇEK yetkiye yönetici `AdminPanel`'in "Bekleyen Kayıtlar" sekmesinden
+  onay verene kadar dönüşmüyor (bkz. `CORE/registration.py`). Ayrı bir
+  `requested_role` sütunu EKLENMEDİ — mevcut `role` sütunu zaten bu
+  semantiği taşıyor, ikinci bir sütun yalnızca aynı bilgiyi iki kopya
+  hâlinde tutup kaynak-otorite belirsizliği yaratırdı. Uygulanan tek
+  değişiklik: `UI/login_dialog.py`'deki alan etiketi "Rol"den "Talep
+  Edilen Rol"e değişti (yalnızca self-servis Kayıt Ol ekranında —
+  `UI/RegisterDialog.py`'nin admin-başlatan akışında "Rol" KASITLI
+  olarak kaldı, orada yönetici kendisi seçiyor). Tam gerekçe: `BACKLOG.md`
+  **B-076**.
+
 Sonuç: kayıt ekranı BİREYSEL modda bugünkü gerçek akışın (Kullanıcı Adı +
-PIN + PIN Tekrar + Rol) aynısı; KURUMSAL modda buna GERÇEK bir Referans
-Kodu doğrulaması ekleniyor (yanlış/boş kod → kayıt reddedilir, DB'ye hiçbir
-satır yazılmaz). `UI/login_dialog.py`'nin "Kayıt Ol" sekmesi hedef alındı:
-`UI/AdminPanel.py` → `RegisterDialog.py` yolu zaten `_apply_mode_visibility()`
-ile Bireysel modda TAMAMEN gizli (bkz. `UI/AdminPanel.py:1233`, "Bekleyen
-Kayıtlar" sekmesi) — yani mockup'ın betimlediği, her modda erişilebilir
-kalan tek kayıt ekranı budur.
+PIN + PIN Tekrar + Talep Edilen Rol) aynısı; KURUMSAL modda buna GERÇEK
+bir Referans Kodu doğrulaması ekleniyor (yanlış/boş kod → kayıt
+reddedilir, DB'ye hiçbir satır yazılmaz). `UI/login_dialog.py`'nin
+"Kayıt Ol" sekmesi hedef alındı: `UI/AdminPanel.py` → `RegisterDialog.py`
+yolu zaten `_apply_mode_visibility()` ile Bireysel modda TAMAMEN gizli
+(bkz. `UI/AdminPanel.py:1233`, "Bekleyen Kayıtlar" sekmesi) — yani
+mockup'ın betimlediği, her modda erişilebilir kalan tek kayıt ekranı
+budur.
 
 Bu paket şunları ölçüyor
 -------------------------
@@ -29,6 +56,9 @@ Bu paket şunları ölçüyor
    doğru Referans Kodu ile geçiyor, yanlış/boş kodla GERÇEKTEN reddediliyor
    (mutasyon kanıtı: `tests/test_kayit_kurumsal_referans.py`). İki modda
    üretilen `users` satırının ŞEKLİ (sütun kümesi) hâlâ birebir aynı.
+3. ETİKET (B-076) — Kayıt Ol ekranındaki rol alanı "Talep Edilen Rol"
+   diye etiketleniyor, `RegisterDialog.py`'deki admin akışı "Rol" olarak
+   kalıyor — iki ekranın kasıtlı ayrımı.
 """
 from __future__ import annotations
 
@@ -41,7 +71,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QLabel
 
     from UI.login_dialog import LoginDialog
 except ImportError as _exc:  # pragma: no cover — ortama bağlı
@@ -75,6 +105,11 @@ _YASAKLI_METINLER = (
     "tier_chip",
     "plan_badge",
     "tier_badge",
+    # B-076 (2026-08-29): "Kurum Planı" kutusu ayrıca karara bağlandı —
+    # 077159e'nin plan/tier chip kararının aynısı, hâlâ dışarıda.
+    "Kurum Planı",
+    "kurum_plani",
+    "corporate_plan",
 )
 
 _KAYIT_DOSYALARI = ("UI/login_dialog.py", "UI/RegisterDialog.py")
@@ -316,3 +351,53 @@ def test_giris_ekraninda_surum_etiketi_versiyon_py_ile_birebir_eslesiyor(
     dlg_mutasyonlu = _kayit_ekrani(qapp)
     assert dlg_mutasyonlu._surum_etiketi.text() == "HYCLEUS v9.9.9-mutasyon"
     assert dlg_mutasyonlu._surum_etiketi.text() != onceki
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. B-076 — "Talep Edilen Rol" etiketi: self-servis ekranda VAR, admin
+#    akışında (RegisterDialog.py) KASITLI olarak YOK
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_kayit_ol_rol_alani_TALEP_EDILEN_ROL_diye_etiketleniyor(
+    qapp, db, kasa_dizini, totp_gecerli, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    `_field()` etiketi ile widget'ı aynı anonim konteynerin çocukları
+    olarak ekliyor (bkz. `UI/login_dialog.py::_field`) — `self._reg_role`
+    üzerinden doğrudan bir etiket referansı YOK, o yüzden widget ağacı
+    üzerinden yapısal olarak bulunuyor: `_reg_role`'ün ebeveyni, tek
+    `QLabel` çocuğu olan `_field()` konteyneridir.
+    """
+    import UI.login_dialog as ld
+
+    monkeypatch.setattr(ld, "get_usb_hwid", lambda: f"{_HWID_BASE}-etiket")
+    dlg = _kayit_ekrani(qapp)
+
+    konteyner = dlg._reg_role.parentWidget()
+    assert konteyner is not None, "_reg_role'ün _field() konteyneri bulunamadı"
+    etiket = konteyner.findChild(QLabel)
+    assert etiket is not None, "_reg_role'ün yanında bir QLabel yok"
+    assert etiket.text() == "Talep Edilen Rol", (
+        f"Kayıt Ol ekranındaki rol alanı etiketi beklenmedik: {etiket.text()!r}"
+    )
+
+
+def test_register_dialog_rol_alani_KASITLI_olarak_ROL_kaliyor() -> None:
+    """
+    `RegisterDialog.py` — admin `AdminPanel`'den doğrudan bir kullanıcı
+    kaydediyor, kendisi için bir rol TALEP etmiyor; etiket bilerek "Rol"
+    olarak kaldı (bkz. B-076, `UI/login_dialog.py`'deki yorum). Bu test o
+    kasıtlı AYRIMIN geri kaymadığını doğruluyor — biri "tutarlılık" adına
+    ikisini de "Talep Edilen Rol" yaparsa admin akışında yanıltıcı olurdu.
+    """
+    kaynak = _kaynak("UI/RegisterDialog.py")
+    assert 'QLabel("Rol")' in kaynak, (
+        "RegisterDialog.py'nin Rol etiketi değişmiş görünüyor — B-076'nın "
+        "kasıtlı ayrımını kontrol et"
+    )
+    assert "Talep Edilen Rol" not in kaynak, (
+        "RegisterDialog.py'ye 'Talep Edilen Rol' etiketi sızmış — bu ekran "
+        "admin-başlatan bir akış, B-076 burayı KASITLI olarak dışarıda "
+        "bıraktı"
+    )
