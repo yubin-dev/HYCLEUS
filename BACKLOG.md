@@ -6868,3 +6868,78 @@ Ayrıntı: SECURITY.md §4.25, §4.16 (K4-20/F2-2'nin daha önceki
 referansları).
 
 ---
+
+## B-088 — CSV dışa aktarımı formül enjeksiyonuna (CWE-1236) açıktı: bulundu, gerçek veriyle kanıtlandı, düzeltildi
+
+Görev: CSV export'unda formül enjeksiyonu riskini incele, kanıtla,
+gerekirse düzelt — tüm mutasyon testleri dahil.
+
+**Kod incelemesi — kanıt.** `export_csv()`'nin özgün gövdesi
+`writer.writerow([s.id, s.zaman, s.islem, s.kullanici, ..., s.detay,
+...])` — hiçbir kaçışlama YOKTU. `csv` modülünün kendi kaçışlaması
+(RFC 4180 virgül/tırnak/satır-içi-yenisatır) CSV SÖZDİZİMİNİ koruyor,
+Excel/LibreOffice Calc'in bir hücreyi FORMÜL sanmasını KAPSAMIYOR —
+tamamen ayrı bir kusur sınıfı.
+
+**Gerçek veriyle enjeksiyon testi.** `kullanici="=1+1"` olan bir
+`DenetimSatiri` dışa aktarıldı; `csv.reader` ile geri okunan hücre TAM
+OLARAK `=1+1` — kaçışlanmamış. `+cmd|'/c calc'!A1`, `-2+3+cmd|'/c
+calc'!A1`, `@SUM(1+1)`, sekme/CR önekli varyantlar da AYNI şekilde ham
+yazılıyordu.
+
+**"Gerçek elektronik tablo doğrulaması" — bu ortamda kurulu değil,
+kaynak gösterildi.** Ne LibreOffice ne `openpyxl`/`pandas` bu makinede
+kurulu; kurulu olsalar bile ikisi de PARSER, hesaplama motoru DEĞİL —
+bir formülü GERÇEKTEN çalıştırmazlardı. "`=`/`+`/`-`/`@` ile başlayan
+kaçışlanmamış bir hücrenin Excel/LibreOffice Calc'te formül olarak
+değerlendirilmesi" OWASP'ın CSV Injection (CWE-1236) rehberinde
+belgelenmiş, DIŞ bir uygulama davranışı — bu sandbox içinde yeniden
+üretilecek bir şey değil, kaynak gösterildi.
+
+**Düzeltme — yeni `CORE/csv_utils.py::csv_hucre_guvenli()`.** Tehlikeli
+bir önekle (`=`/`+`/`-`/`@`/sekme/CR — OWASP'ın standart kümesi)
+başlayan hücrenin BAŞINA tek bir tek-tırnak (`'`) ekliyor: Excel/
+LibreOffice bunu "bu hücre KESİNLİKLE metin" işareti olarak okuyor,
+DEĞERLENDİRMİYOR. TÜM metin sütunlarına (kullanıcı, işlem, HWID, detay)
+İSTİSNASIZ uygulandı — `detay`'ın BUGÜN her zaman bir `key=value`
+önekiyle geldiği (dolayısıyla asla çıplak tehlikeli karakterle
+BAŞLAMADIĞI) doğru, ama bu MEVCUT çağıranların bir tesadüfü, hiçbir
+yerde ZORUNLU KILINAN bir garanti değil — buna güvenmek düzeltmeyi
+gelecekteki bir `detail=` çağrı yerinden bir adım uzakta bırakırdı.
+
+**AYNI kusur, kardeş fonksiyonda: `CORE/inventory.py::
+export_inventory_csv()`.** İlkini düzeltirken bulundu, sonraya
+BIRAKILMADI — dosya adı/kullanıcı adı AYNI şekilde kaçışlanmıyordu. İki
+fonksiyon da artık AYNI paylaşılan yardımcıyı kullanıyor, iki ayrı kopya
+YAZILMADI (`escape_for_reportlab()`'ın zaten kurduğu paylaşım deseniyle
+AYNI).
+
+**Mutasyon testleri — üç eksen.**
+  a. Düzeltme `git stash`'le (yeni `csv_utils.py` DAHİL, `-u` bayrağıyla)
+     geçici olarak geri alındı — enjeksiyon testleri HER payload
+     varyantında VE İKİ fonksiyonda da (16 test) KIRMIZI yakalandı; geri
+     getirilip hepsi yeşile döndü.
+  b. Tehlikeli-önek demeti teste ÖZGÜ bir monkeypatch'le yalnızca `("=",)`
+     ile sınırlandı — `+`/`-`/`@` payload'larının o zaman
+     ETKİSİZLEŞTİRİLMEDEN geçtiği doğrulandı: gerçek test takımının,
+     yalnızca `=`'i kapsayıp diğer üç öneki KAÇIRAN eksik bir düzeltmeyi
+     gerçekten YAKALADIĞININ kanıtı.
+  c. Negatif test: "Ahmet Yılmaz", "2026-08-30", ORTASINDA `=` geçen (ama
+     BAŞINDA geçmeyen) bir `detay` alanı — hiçbiri değişmiyor. Sayılar/
+     `None` `csv_hucre_guvenli()`'den hiç dokunulmadan (dizeye bile
+     çevrilmeden) geçiyor.
+  d. Tüm mutasyonlar geri alındı, `git status --short` yalnızca kalıcı
+     değişiklikleri gösterdiği doğrulandı.
+
+**Kapsam dışı, bilinçli: PDF.** PDF formül DEĞERLENDİRMEZ (sabit bir
+görsel belge, yeniden açılan bir hesaplama motoru değil) — CSV
+formül-enjeksiyonu PDF'e uygulanmıyor, PDF'e ayrı bir kaçışlama
+eklenmedi.
+
+SECURITY.md §4.25'e (EN+TR) eklendi.
+
+Tam test suite: 3019 passed, 4 skipped (bir önceki turdan +19 — `CORE/
+csv_utils.py` için birim testleri, `export_csv()`/`export_inventory_csv()`
+için enjeksiyon/negatif/mutasyon testleri). Ruff/mypy/bandit temiz.
+
+---

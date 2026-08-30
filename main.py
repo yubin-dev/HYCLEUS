@@ -125,6 +125,7 @@ _SELFTEST_MODULLERI: tuple[str, ...] = (
     "CORE.app_mode",
     "CORE.audit_chain", "CORE.audit_report", "CORE.backup", "CORE.backup_cli",
     "CORE.backup_reminder", "CORE.checkout", "CORE.console", "CORE.crypto",
+    "CORE.csv_utils",
     "CORE.disposal", "CORE.duplicates", "CORE.expiry", "CORE.export",
     "CORE.file_queries", "CORE.file_records", "CORE.folders",
     "CORE.hclx", "CORE.hwid_probe",

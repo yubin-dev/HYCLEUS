@@ -10,6 +10,7 @@ o metni gerçekten kullandığı AST ile denetleniyor.
 """
 from __future__ import annotations
 
+import csv
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -511,6 +512,180 @@ def test_csv_ozel_karakterli_detay_dosyayi_bozmuyor(tmp_path: Path):
     )
     metin = out.read_text(encoding="utf-8-sig")
     assert "<script>alert(1)</script> & diger, virgullu" in metin
+
+
+# ── CSV formül enjeksiyonu (CWE-1236) ────────────────────────────────────────
+#
+# Kod incelemesi: `csv.writer`'ın kendi kaçışlaması (RFC 4180 — virgül/
+# tırnak/satır-içi-yenisatır) CSV SÖZDİZİMİNİ koruyor, hedef uygulamanın
+# (Excel/LibreOffice Calc) bir hücreyi FORMÜL sanmasını KAPSAMIYOR — bu
+# tamamen ayrı bir kusur sınıfı ve `export_csv()`/`export_inventory_csv()`
+# bu turdan ÖNCE ona karşı HİÇBİR ŞEY yapmıyordu (satırlar `writer.
+# writerow([s.id, s.zaman, ..., s.kullanici, ..., s.detay, ...])` ile
+# doğrudan, kaçışlanmadan yazılıyordu — bkz. bu dosyanın Git geçmişi).
+# Gerçek veriyle ölçüldü: kullanıcı adı `=1+1` olan bir kullanıcının
+# denetim kaydı dışa aktarıldığında, üretilen CSV'nin o hücresi TAM
+# OLARAK `=1+1` olarak, `csv.reader` ile geri okununca bile hâlâ ham
+# hâliyle çıkıyordu — Excel/LibreOffice Calc'te açıldığında FORMÜL olarak
+# değerlendirilirdi (OWASP CSV Injection / CWE-1236, yerleşik bir kusur
+# sınıfı — bu depoda YENİDEN üretilmesi gerekmedi, doğrudan ölçüldü).
+#
+# Düzeltme: `CORE/csv_utils.py::csv_hucre_guvenli()` — tehlikeli bir
+# önekle (`=`/`+`/`-`/`@`/sekme/CR) başlayan hücrenin BAŞINA tek bir
+# tek-tırnak (`'`) ekliyor, standart CSV-injection savunması. Hem
+# `export_csv()` (bu turun konusu) hem `export_inventory_csv()` (AYNI
+# kusur, yol boyunca kardeş fonksiyonda bulundu) artık bu fonksiyonu
+# kullanıyor — ikinci bir düzeltme kopyası YAZILMADI.
+
+
+_TEHLIKELI_PAYLOADLAR = [
+    "=1+1",
+    "+cmd|'/c calc'!A1",
+    "-2+3+cmd|'/c calc'!A1",
+    "@SUM(1+1)",
+    "\t=1+1",
+    "\r=1+1",
+]
+
+
+def _csv_hucreleri(out: Path) -> list[list[str]]:
+    """Üretilen CSV'yi GERÇEK `csv.reader` ile geri okur — ham metin
+    araması değil, hücrenin bir CSV ayrıştırıcısının göreceği TAM
+    değeri (bkz. görev notu: LibreOffice/openpyxl/pandas bu ortamda
+    kurulu değil; `csv.reader` CSV-sözdizimi katmanını doğru şekilde
+    çözüyor, bir sonraki katman — Excel/LibreOffice'in bir hücreyi
+    formül SAYIP saymadığı — belgelenmiş, endüstri standardı bir kural:
+    hücrenin HAM metni `=`/`+`/`-`/`@` ile başlıyorsa formül olarak
+    değerlendirilir; `csv_hucre_guvenli()`'nin ürettiği baştaki `'`
+    Excel/LibreOffice'in "bu hücre KESİNLİKLE metin" işaretidir)."""
+    with out.open(encoding="utf-8-sig", newline="") as handle:
+        return list(csv.reader(handle))
+
+
+@pytest.mark.parametrize("payload", _TEHLIKELI_PAYLOADLAR)
+def test_csv_formul_enjeksiyonu_kullanici_alaninda_etkisizlestiriliyor(
+    tmp_path: Path, payload: str,
+):
+    """
+    Asıl kanıt: kullanıcının KENDİ SEÇTİĞİ kullanıcı adı (kayıt sırasında
+    serbestçe girilebiliyor — dosya adının aksine dosya sistemi
+    kısıtlamalarına da tabi değil) tehlikeli bir önekle başlıyorsa, dışa
+    aktarılan CSV'deki hücre artık ham DEĞİL — başında `'` var.
+    """
+    out = export_csv([_satir(kullanici=payload)], tmp_path / "d.csv")
+    satirlar = _csv_hucreleri(out)
+    hucre = satirlar[1][3]  # sütun 3 = Kullanıcı
+    assert hucre == "'" + payload, (
+        f"GUARD REGRESYONU: {payload!r} kaçışlanmadan yazılmış — "
+        f"hücre: {hucre!r}"
+    )
+    assert not hucre.startswith(("=", "+", "-", "@", "\t", "\r")), (
+        "kaçışlama sonrası hücre HÂLÂ tehlikeli bir önekle başlıyor"
+    )
+
+
+@pytest.mark.parametrize("payload", _TEHLIKELI_PAYLOADLAR)
+def test_csv_formul_enjeksiyonu_detay_alaninda_etkisizlestiriliyor(
+    tmp_path: Path, payload: str,
+):
+    """AYNI denetim, `detay` (audit_log.detail — dosya adı gibi kullanıcı
+    girdisi taşıyabilen ham alan) için."""
+    out = export_csv([_satir(detay=payload)], tmp_path / "d.csv")
+    satirlar = _csv_hucreleri(out)
+    hucre = satirlar[1][6]  # sütun 6 = Detay
+    assert hucre == "'" + payload
+
+
+def test_csv_formul_enjeksiyonu_hwid_alaninda_da_etkisizlestiriliyor(tmp_path: Path):
+    out = export_csv([_satir(hwid="=1+1")], tmp_path / "d.csv")
+    satirlar = _csv_hucreleri(out)
+    assert satirlar[1][5] == "'=1+1"  # sütun 5 = HWID
+
+
+def test_csv_zararsiz_degerler_DEGISMIYOR(tmp_path: Path):
+    """
+    Negatif test — yanlış pozitif üretmiyor: tehlikeli bir önekle
+    BAŞLAMAYAN değerler (isim, tarih, ORTASINDA `=` geçen bir detay
+    alanı) `csv_hucre_guvenli()`'den ETKİLENMEDEN geçiyor.
+    """
+    out = export_csv(
+        [_satir(
+            id=1, zaman="2026-08-30T12:00:00Z", kullanici="Ahmet Yılmaz",
+            hwid="ABCDEF1234567890", detay="hwid=ABCDEF1234567890 role=Standart",
+        )],
+        tmp_path / "d.csv",
+    )
+    satirlar = _csv_hucreleri(out)
+    satir = satirlar[1]
+    assert satir[1] == "2026-08-30T12:00:00Z"
+    assert satir[3] == "Ahmet Yılmaz"
+    assert satir[5] == "ABCDEF1234567890"
+    assert satir[6] == "hwid=ABCDEF1234567890 role=Standart", (
+        "ORTASINDA '=' geçen ama BAŞINDA geçmeyen bir alan yanlışlıkla "
+        "değiştirilmiş"
+    )
+
+
+def test_csv_hucre_guvenli_yalnizca_baslangictaki_oneke_bakiyor():
+    """Birim düzeyinde — dosya I/O olmadan, `csv_hucre_guvenli()`'nin
+    kendisi: hem pozitif hem negatif uçlar."""
+    from CORE.csv_utils import csv_hucre_guvenli
+
+    for tehlikeli in _TEHLIKELI_PAYLOADLAR:
+        assert csv_hucre_guvenli(tehlikeli) == "'" + tehlikeli
+    for zararsiz in ("Ahmet Yılmaz", "2026-08-30", "a=b", "dosya (1).hcl", ""):
+        assert csv_hucre_guvenli(zararsiz) == zararsiz
+    # Sayılar/None hiç dokunulmadan dönüyor.
+    assert csv_hucre_guvenli(42) == 42
+    assert csv_hucre_guvenli(None) is None
+
+
+def test_csv_hucre_guvenli_bozuk_bir_onek_kumesi_yakalanir(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    Mutasyon testi (b) — kapsamı EKSİK bir düzeltme (yalnızca `=`'i
+    kontrol edip `+`/`-`/`@`'yi ATLAYAN bozuk bir versiyon) testte
+    GERÇEKTEN yakalanıyor mu.
+    """
+    import CORE.csv_utils as cu
+
+    monkeypatch.setattr(cu, "_TEHLIKELI_ONEKLER", ("=",))  # bilerek eksik
+
+    assert cu.csv_hucre_guvenli("=1+1") == "'=1+1"  # bu hâlâ yakalanır
+    for atlanan in ("+cmd|'/c calc'!A1", "-2+3+cmd|'/c calc'!A1", "@SUM(1+1)"):
+        yakalanmadi = cu.csv_hucre_guvenli(atlanan)
+        assert yakalanmadi == atlanan, (
+            "test kurulumu hatalı — eksik önek kümesiyle bile kaçışlanmış"
+        )
+        assert yakalanmadi.startswith(("+", "-", "@")), (
+            f"MUTASYON KONTRASTI BAŞARISIZ: eksik önek kümesi {atlanan!r}'i "
+            "hâlâ yakalıyor gibi görünüyor — bu test kapsam eksikliğini "
+            "GERÇEKTEN ölçmüyor olabilir"
+        )
+
+
+def test_inventory_csv_da_formul_enjeksiyonuna_karsi_korunuyor(tmp_path: Path):
+    """
+    Yol boyunca bulunan AYNI kusur, kardeş fonksiyonda: `CORE/
+    inventory.py::export_inventory_csv()` da kullanıcı girdisi taşıyan
+    sütunlar (dosya adı, sahip) için `csv_hucre_guvenli()`'yi kullanıyor
+    mu — ikinci bir kopya, iki ayrı düzeltme YAZILMADI.
+    """
+    from CORE.inventory import InventoryRow, export_inventory_csv
+
+    satir = InventoryRow(
+        file_id=1, filename="=1+1", filepath="/vault/x.hcl",
+        profile_id=None, profile_name="—", owner="+cmd|'/c calc'!A1",
+        added_at="2026-08-30T12:00:00Z", destruction_date=None,
+        status="aktif", last_activity=None,
+    )
+    out = export_inventory_csv([satir], tmp_path / "envanter.csv")
+    with out.open(encoding="utf-8-sig", newline="") as handle:
+        satirlar = list(csv.reader(handle))
+    veri_satiri = satirlar[1]
+    assert veri_satiri[0] == "'=1+1", "dosya adı kaçışlanmamış"
+    assert veri_satiri[3] == "'+cmd|'/c calc'!A1", "sahip alanı kaçışlanmamış"
 
 
 # ── PDF ──────────────────────────────────────────────────────────────────────

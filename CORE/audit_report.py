@@ -53,6 +53,7 @@ from CORE.audit_chain import (
     verify_against_anchor,
     verify_audit_chain,
 )
+from CORE.csv_utils import csv_hucre_guvenli
 from CORE.pdf_utils import escape_for_reportlab as _escape
 
 #: HALKA durumu → görüntü metni. TEK yerden: `UI/AuditLogView.py` (tablo
@@ -259,6 +260,12 @@ def export_csv(satirlar: list[DenetimSatiri], path: str | Path) -> Path:
     sanıp Türkçe karakterleri bozuyor. `newline=""` ZORUNLU: csv modülü
     satır sonunu kendi yönetir, aksi hâlde Windows'ta satır araları
     boşluklu çıkar.
+
+    Her hücre `csv_hucre_guvenli()`'den GEÇİYOR — CSV formül enjeksiyonuna
+    (CWE-1236) karşı, bkz. `CORE/csv_utils.py`'nin modül docstring'i.
+    `kullanici` (kullanıcı kendi adını seçiyor) VE `detay` (dosya adı gibi
+    kullanıcı girdisi taşıyabilir) BİLEREK istisnasız işleniyor — hangi
+    alanın "bugün güvenli" olduğuna güvenmek yerine.
     """
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -267,9 +274,11 @@ def export_csv(satirlar: list[DenetimSatiri], path: str | Path) -> Path:
         writer.writerow(CSV_BASLIKLAR)
         for s in satirlar:
             writer.writerow([
-                s.id, s.zaman, s.islem, s.kullanici,
-                s.kullanici_id if s.kullanici_id is not None else "",
-                s.hwid, s.detay, HALKA_METNI.get(s.halka, s.halka),
+                csv_hucre_guvenli(v) for v in (
+                    s.id, s.zaman, s.islem, s.kullanici,
+                    s.kullanici_id if s.kullanici_id is not None else "",
+                    s.hwid, s.detay, HALKA_METNI.get(s.halka, s.halka),
+                )
             ])
     return out
 

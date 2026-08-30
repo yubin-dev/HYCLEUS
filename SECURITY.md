@@ -2939,6 +2939,68 @@ searchable) without adding a PDF-parsing dependency for either module,
 at the cost of a larger, uncompressed file — an acceptable trade for an
 export a human occasionally downloads, not a hot path.
 
+**A follow-up audit found the new CSV export vulnerable to formula
+injection (CWE-1236/OWASP CSV Injection) — measured with real data, not
+assumed.** `export_csv()`'s original body wrote every cell straight to
+`csv.writer` with no treatment beyond what the `csv` module itself
+provides — and that module only guarantees CSV *syntax* (RFC 4180 comma/
+quote/embedded-newline escaping), which is a completely different
+concern from whether Excel or LibreOffice Calc treats a cell's content
+as a formula. Reproduced directly: a `DenetimSatiri` with `kullanici`
+(username — a value a user picks for themselves at registration, with no
+character restriction tying it to filesystem rules) set to `=1+1` was
+exported, the resulting file was read back with Python's own
+`csv.reader` (not text search — the CSV-syntax layer, which correctly
+parses the field regardless of escaping), and the cell value came back
+as the literal, four-character string `=1+1` — un-neutralized. A cell
+beginning with `=`, `+`, `-`, or `@` (and, per the fuller OWASP guidance,
+a leading tab or carriage return) is evaluated as a formula by Excel and
+LibreOffice Calc by default; this is documented, external application
+behavior, not something reproducible inside this sandbox (no
+spreadsheet application or `.xlsx`-reading library is installed here,
+and neither would actually execute a formula anyway — `openpyxl`/
+`pandas` are parsers, not calculation engines), so it is cited rather
+than re-demonstrated live. **Fixed:** `CORE/csv_utils.py::
+csv_hucre_guvenli()` — the standard mitigation, prefixing any cell whose
+string form starts with a dangerous character with a single leading
+`'`, which both applications read as an explicit "this cell is text"
+marker rather than evaluating it. Applied uniformly to every string
+field (`kullanici`, `islem`, `hwid`, `detay`) rather than only the one
+reproduced above — `detay` in this codebase's current call sites always
+happens to carry a `key=value` prefix (so it never today reaches a
+writer with a bare dangerous character at position zero), but that is
+an accident of current callers, not a property enforced anywhere, and
+trusting it would leave the fix one new `db.log(..., detail=...)` call
+site away from silently regressing. Numbers and `None` pass through
+`csv_hucre_guvenli()` completely untouched (`str(42)` doesn't start with
+a dangerous prefix, so the original `int` is returned, not a stringified
+copy), and harmless text (`"Ahmet Yılmaz"`, a `detail` field with `=`
+only in the *middle*) is verified byte-for-byte unchanged — the fix is
+only checked when it needs to fire.
+
+**The same defect existed in `CORE/inventory.py::
+export_inventory_csv()` — found while fixing the first one, not left for
+later.** It shares the exact same shape: filenames and usernames written
+to `csv.writer` with zero formula-prefix handling. Both functions now
+call the same shared `csv_hucre_guvenli()` rather than each carrying its
+own copy — the same "one shared helper, not two copies that drift"
+decision already made for `escape_for_reportlab()` in this same section.
+
+**Mutation-proved on all three axes the task asked for.** (a) The fix
+being load-bearing: temporarily reverting `CORE/csv_utils.py` and both
+call sites (`git stash`) and rerunning the injection tests reproduced
+16 failures across every payload variant and both vulnerable functions;
+restoring the fix returned all of them to green. (b) The fix's *scope*
+being complete, not just present: a dedicated test monkeypatches the
+dangerous-prefix tuple down to `("=",)` only and confirms `+`/`-`/`@`
+payloads then pass through un-neutralized — proving the real test suite
+would catch a version of this fix that covered only `=` and missed the
+other three prefixes OWASP also names. (c) No false positives: a
+dedicated negative test asserts ordinary values are returned identically
+by `csv_hucre_guvenli()`, and the injection tests' own construction
+(only the deliberately dangerous field is exercised per test) keeps the
+positive and negative claims from being conflated.
+
 ---
 
 ## 5. Cryptographic details
@@ -6234,6 +6296,70 @@ düzeltti (AYNI işaretin aranabilir hâle geldiği doğrulandı) — HERHANGİ
 bir modüle bir PDF-ayrıştırma bağımlılığı EKLEMEDEN, bedeli daha büyük,
 sıkıştırılmamış bir dosya — bir insanın ara sıra indirdiği bir dışa
 aktarım için kabul edilebilir bir takas, sık çalışan bir yol değil.
+
+**Bir takip denetimi, yeni CSV dışa aktarımının formül enjeksiyonuna
+(CWE-1236/OWASP CSV Injection) açık olduğunu buldu — gerçek veriyle
+ÖLÇÜLDÜ, varsayılmadı.** `export_csv()`'nin özgün gövdesi her hücreyi
+`csv` modülünün KENDİSİNİN sağladığından FAZLA hiçbir işlem yapmadan
+doğrudan `csv.writer`'a yazıyordu — ve o modül yalnızca CSV SÖZDİZİMİNİ
+(RFC 4180 virgül/tırnak/satır-içi-yenisatır kaçışı) garanti ediyor, ki
+bu Excel'in ya da LibreOffice Calc'in bir hücrenin içeriğini FORMÜL
+sayıp saymayacağından TAMAMEN AYRI bir mesele. Doğrudan yeniden üretildi:
+`kullanici` (kullanıcı adı — kullanıcının kayıt sırasında KENDİ SEÇTİĞİ,
+dosya sistemi kurallarına bağlı bir karakter kısıtlaması OLMAYAN bir
+değer) `=1+1` olan bir `DenetimSatiri` dışa aktarıldı, üretilen dosya
+Python'un KENDİ `csv.reader`'ıyla (metin araması DEĞİL — kaçışlamadan
+bağımsız olarak alanı doğru ayrıştıran CSV-sözdizimi katmanı) geri
+okundu, ve hücre değeri ham, dört karakterlik `=1+1` dizesi olarak
+geldi — etkisizleştirilmemiş. `=`, `+`, `-`, ya da `@` ile başlayan
+(daha kapsamlı OWASP rehberine göre, başında sekme ya da satır başı da
+dahil) bir hücre, Excel ve LibreOffice Calc tarafından VARSAYILAN olarak
+formül sayılıp değerlendiriliyor; bu belgelenmiş, DIŞ bir uygulama
+davranışı, bu sandbox İÇİNDE yeniden üretilebilir bir şey DEĞİL (burada
+ne bir elektronik tablo uygulaması ne de bir `.xlsx`-okuma kütüphanesi
+kurulu, ve ikisi de zaten bir FORMÜL ÇALIŞTIRMAZDI — `openpyxl`/`pandas`
+ayrıştırıcı, hesaplama motoru DEĞİL) — bu yüzden yeniden canlı gösterilmek
+yerine KAYNAK GÖSTERİLİYOR. **Düzeltildi:** `CORE/csv_utils.py::
+csv_hucre_guvenli()` — standart savunma, metin hâli tehlikeli bir
+karakterle başlayan HER hücrenin başına tek bir `'` ekliyor, ki iki
+uygulama da bunu "bu hücre KESİNLİKLE metin" işareti olarak okuyor,
+DEĞERLENDİRMİYOR. TÜM metin alanlarına (`kullanici`, `islem`, `hwid`,
+`detay`) EŞİT UYGULANDI, yalnızca üstte yeniden üretilene DEĞİL — bu
+kod tabanının BUGÜNKÜ `detay` çağrı yerlerinin HEPSİ tesadüfen bir
+`key=value` öneki taşıyor (yani bugün asla sıfır konumunda çıplak bir
+tehlikeli karakterle bir yazıcıya ULAŞMIYOR), ama bu MEVCUT çağıranların
+bir tesadüfü, hiçbir yerde ZORUNLU KILINAN bir özellik DEĞİL — buna
+güvenmek düzeltmeyi yeni bir `db.log(..., detail=...)` çağrı yerinden
+BİR ADIM uzakta, sessizce gerileyebilecek hâlde bırakırdı. Sayılar ve
+`None` `csv_hucre_guvenli()`'den TAMAMEN dokunulmadan geçiyor (`str(42)`
+tehlikeli bir önekle BAŞLAMIYOR, yani orijinal `int` dönüyor, dizeye
+çevrilmiş bir kopya DEĞİL), ve zararsız metin (`"Ahmet Yılmaz"`,
+ORTASINDA `=` geçen bir `detay` alanı) BAYT BAYT DEĞİŞMEDEN doğrulandı —
+düzeltme YALNIZCA gerçekten tetiklenmesi gerektiğinde devreye giriyor.
+
+**AYNI kusur `CORE/inventory.py::export_inventory_csv()`'de de vardı —
+İLKİNİ düzeltirken bulundu, sonraya BIRAKILMADI.** TAM OLARAK AYNI
+biçimde: dosya adları ve kullanıcı adları `csv.writer`'a SIFIR formül-
+öneki işlemiyle yazılıyordu. İki fonksiyon da artık AYNI paylaşılan
+`csv_hucre_guvenli()`'yi çağırıyor, ikisi kendi kopyasını TAŞIMIYOR —
+bu bölümdeki `escape_for_reportlab()` için ZATEN verilmiş "tek paylaşılan
+yardımcı, ayrışan iki kopya değil" kararının AYNISI.
+
+**Görevin istediği ÜÇ eksende de mutasyonla kanıtlandı.** (a) Düzeltmenin
+yük taşıdığı: `CORE/csv_utils.py`'yi VE iki çağrı yerini geçici olarak
+geri almak (`git stash`) ve enjeksiyon testlerini yeniden koşturmak, HER
+payload varyantında VE İKİ savunmasız fonksiyonda da 16 başarısızlık
+üretti; düzeltme geri getirilince HEPSİ yeşile döndü. (b) Düzeltmenin
+KAPSAMININ tam olduğu, yalnızca VAR olduğu değil: ayrı bir test
+tehlikeli-önek demetini `("=",)` ile SINIRLAYACAK şekilde
+monkeypatch'liyor ve `+`/`-`/`@` payload'larının o zaman
+ETKİSİZLEŞTİRİLMEDEN geçtiğini doğruluyor — gerçek test takımının, bu
+düzeltmenin yalnızca `=`'i kapsayıp OWASP'ın ADLANDIRDIĞI diğer üç öneki
+KAÇIRAN bir versiyonunu YAKALAYACAĞINI kanıtlıyor. (c) Yanlış pozitif
+YOK: ayrı bir negatif test, sıradan değerlerin `csv_hucre_guvenli()`'den
+AYNEN döndüğünü doğruluyor, ve enjeksiyon testlerinin kendi kurgusu
+(test başına yalnızca kasıtlı olarak tehlikeli alan sınanıyor) pozitif
+ve negatif iddiaların BİRBİRİNE KARIŞMASINI önlüyor.
 
 ---
 

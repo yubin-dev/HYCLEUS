@@ -33,6 +33,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from CORE.csv_utils import csv_hucre_guvenli
 from CORE.disposal import LABEL_IMHA, check_disposal
 from CORE.pdf_utils import escape_for_reportlab as _escape
 from CORE.retention import RetentionError, parse_date
@@ -355,6 +356,12 @@ def export_inventory_csv(rows: list[InventoryRow], path: str | Path) -> Path:
 
     `newline=""` şart — csv modülü satır sonunu kendi yönetir, aksi hâlde
     Windows'ta her satır arasına boş satır girer.
+
+    Her hücre `csv_hucre_guvenli()`'den GEÇİYOR — CSV formül enjeksiyonuna
+    (CWE-1236) karşı, bkz. `CORE/csv_utils.py`'nin modül docstring'i.
+    `filename`/`owner` kullanıcı girdisi taşıyor (dosya adı, kullanıcı
+    adı) — hangisinin "bugün güvenli" olduğuna güvenmek yerine tüm sütunlar
+    istisnasız işleniyor.
     """
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -362,7 +369,7 @@ def export_inventory_csv(rows: list[InventoryRow], path: str | Path) -> Path:
         writer = csv.writer(handle)
         writer.writerow(COLUMN_HEADERS)
         for row in rows:
-            writer.writerow(row.as_export_row())
+            writer.writerow([csv_hucre_guvenli(v) for v in row.as_export_row()])
     return out
 
 
