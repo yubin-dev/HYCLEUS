@@ -154,14 +154,14 @@ def test_usb_lock_shows_the_usb_message(sahne):
     sahne._lock("usb")
     assert sahne._locked
     assert not sahne._overlay.isHidden()
-    assert "USB" in sahne._overlay._title.text()
+    assert "Kasa" in sahne._overlay._title.text()
     assert sahne.centralWidget().isEnabled() is False
 
 
 def test_idle_lock_shows_the_idle_message(sahne):
     sahne._lock("idle")
     assert "Hareketsizlik" in sahne._overlay._sub.text()
-    assert "USB" not in sahne._overlay._title.text()
+    assert "Kasa" not in sahne._overlay._title.text()
 
 
 def test_single_reason_unlocks_normally(sahne):
@@ -192,7 +192,7 @@ def test_remaining_reason_message_is_shown_after_partial_unlock(sahne):
     """Örtü kalkmıyorsa kullanıcı NEDEN kilitli olduğunu görebilmeli."""
     sahne._lock("idle")
     sahne._lock("usb")
-    assert "USB" in sahne._overlay._title.text()
+    assert "Kasa" in sahne._overlay._title.text()
 
     sahne._unlock("usb")
     assert "Hareketsizlik" in sahne._overlay._sub.text()
@@ -207,7 +207,7 @@ def test_idle_unlock_does_not_clear_a_usb_lock(sahne):
 
     assert sahne._locked is True
     assert sahne._lock_reasons == {"usb"}
-    assert "USB" in sahne._overlay._title.text()
+    assert "Kasa" in sahne._overlay._title.text()
 
 
 def test_both_reasons_cleared_unlocks(sahne):
@@ -325,7 +325,7 @@ def test_ucdan_uca_usb_cikarilinca_uyari_gosteriliyor_geri_takilinca_devam_ediyo
     sahne._poll_usb()
     assert sahne._locked is True
     assert not sahne._overlay.isHidden()
-    assert "USB" in sahne._overlay._title.text()
+    assert "Kasa" in sahne._overlay._title.text()
     assert sahne.centralWidget().isEnabled() is False
 
     # USB GERİ TAKILDI — aynı fiziksel cihaz, aynı HWID.

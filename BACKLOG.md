@@ -7673,3 +7673,52 @@ Tam test suite: 3105 passed, 4 skipped (+9 — yeni round-trip/sınır
 testleri). Ruff temiz.
 
 ---
+
+## B-096 — USB kilit ekranı başlığı mockup'a uygun "Kasa Kilitlendi"ye çevrildi (yalnızca metin, mantık değişmedi)
+
+Görev: "Kayıtlı USB Token Çıkarıldı" kilit ekranı metnini mockup'taki
+"Kasa kilitlendi" metnine ve tonuna güncelle — yalnızca metin/kopya
+değişikliği, mantığa dokunma.
+
+**Değişiklik.** `UI/main_window.py::HycleusWindow._LOCK_MESSAGES["usb"]`
+başlığı "Kayıtlı USB Token Çıkarıldı"dan "Kasa Kilitlendi"ye çevrildi
+(dict'in Title Case kuralına uygun — bkz. "Oturum Kilitlendi", "Erişim
+İptal Edildi"). Alt metin DOKUNULMADI ("Oturuma devam etmek için USB'yi
+yeniden takın — algılanınca otomatik devam eder") — talep yalnızca
+başlığı adlandırıyordu, alt metnin içeriği hâlâ doğru/gerekli.
+
+**Kapsam DIŞI bırakılan, kasıtlı.** `UI/main_window_lock.py:134`'teki
+`_LockOverlay.__init__`'in inşa-anındaki varsayılan `QLabel("USB Token
+Çıkarıldı")` metnine DOKUNULMADI — `set_message()` HER ZAMAN `.show()`
+öncesi çağrıldığı için (bkz. satır 317/321) bu metin kullanıcıya HİÇBİR
+ZAMAN görünmüyor; değiştirmek "mantığa dokunma" sınırının dışına
+taşırdı ve gereksizdi. `tests/test_lock_overlay.py::
+test_overlay_defaults_to_the_usb_message` bu inşa-anı varsayılanını
+zaten test ediyordu, DOKUNULMADI, hâlâ geçiyor.
+
+**Test güncellemesi — beklenen yan etki, mantık DEĞİL.**
+`tests/test_lock_overlay.py`'deki 5 test, GERÇEK kilit akışının
+(`_lock("usb")` → `_LOCK_MESSAGES["usb"]` → `set_message()`) ürettiği
+başlığı `"USB" in ...` alt dizesiyle doğruluyordu — yeni başlık "USB"
+içermediği için bu beş assert YANLIŞ (ama anlamsız) bir kırılmayla
+başarısız olurdu. Alt dize `"Kasa"`ya güncellendi (aynı hafif-dokunuşlu
+stil, dosyanın geri kalanıyla tutarlı):
+`test_usb_lock_shows_the_usb_message`,
+`test_idle_lock_shows_the_idle_message` (negatif kontrol),
+`test_remaining_reason_message_is_shown_after_partial_unlock`,
+`test_idle_unlock_does_not_clear_a_usb_lock`,
+`test_ucdan_uca_usb_cikarilinca_uyari_gosteriliyor_geri_takilinca_devam_ediyor`.
+
+**Mutasyon kanıtı (geçici, geri alındı).** Başlığı `"MUTATION-DEGISTI"`ye
+bozmak yukarıdaki 5 testin TAMAMINI beklenen nedenle kırdı; geri alındı,
+`grep -n "MUTATION"` (temiz) ve `git diff --stat` (yalnızca beklenen 2
+dosya) ile doğrulandı.
+
+Etkilenen dosyalar: `tests/test_lock_overlay.py`,
+`tests/test_authz_invariants.py`, `tests/test_checkout_ui.py`,
+`tests/test_idle_lock.py`, `tests/test_main_window_smoke.py` — hepsi
+çalıştırıldı (234 test), yeşil. Tam suite: 3106 passed, 4 skipped
+(değişmedi — yeni test eklenmedi, yalnızca 5 assert güncellendi). Ruff
+temiz.
+
+---

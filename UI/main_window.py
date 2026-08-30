@@ -692,7 +692,7 @@ class HycleusWindow(
 
     _LOCK_MESSAGES = {
         "usb": (
-            "Kayıtlı USB Token Çıkarıldı",
+            "Kasa Kilitlendi",
             "Oturuma devam etmek için USB'yi yeniden takın — algılanınca otomatik devam eder",
         ),
         "idle": ("Oturum Kilitlendi", "Hareketsizlik nedeniyle — devam etmek için PIN girin"),
