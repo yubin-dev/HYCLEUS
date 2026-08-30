@@ -263,15 +263,15 @@ class HycleusWindow(
             self._pending_btn.setVisible(False)
             self._pending_btn.setEnabled(False)
 
-        # "Kullanıcı Adı" sütunu — sekmenin/düğmenin kendi görünürlüğünden
-        # AYRI bir kontrol, aynı "gizlemek silmek değil" ilkesiyle burada:
-        # düğme zaten gizli olsa da, mod Kurumsal'a dönüp düğme tekrar
-        # görünür olduğunda sütunun da doğru durumda (görünür) olması
+        # "Kullanıcı Adı" — düğmenin kendi görünürlüğünden AYRI bir
+        # kontrol, aynı "gizlemek silmek değil" ilkesiyle burada: düğme
+        # zaten gizli olsa da, mod Kurumsal'a dönüp düğme tekrar görünür
+        # olduğunda kartların da doğru durumda (isim görünür) olması
         # gerekiyor — tek yerden, aynı çağrıyla (eski `AdminPanel.
-        # _apply_mode_visibility`'nin aynı gerekçesi).
-        self._pending_view._pending_table.setColumnHidden(
-            0, is_bireysel(self._app_mode)
-        )
+        # _apply_mode_visibility`'nin aynı gerekçesi; kartlara taşınırken
+        # `set_kullanici_adi_gizli()` oldu, bkz. `UI/
+        # PendingRegistrationsView.py`'nin modül docstring'i).
+        self._pending_view.set_kullanici_adi_gizli(is_bireysel(self._app_mode))
 
         # ── Yazma/düzenleme işlemleri: Salt Okunur'da tamamen kapalı ─────
         self.setAcceptDrops(can_write)

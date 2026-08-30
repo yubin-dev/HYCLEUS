@@ -445,11 +445,15 @@ def test_migration_global_sir_YOKSA_hicbir_sey_yapmiyor(db, kasa_dizini) -> None
 
 def _sahte_pencere(hwid: str, role: str):
     """`test_b066_...`'daki `_Sahne` ile AYNI minimal sahte pencere —
-    gerçek `HycleusWindow._lock`/`_unlock`'u ödünç alıyor."""
+    gerçek `HycleusWindow._lock`/`_unlock`'u ödünç alıyor. `_T` — B-089:
+    `PendingRegistrationsView._load_pending()` artık kartları kurup
+    `_restyle()` çağırıyor (kartlar SIFIRDAN widget, boyanmaları gerekiyor),
+    bu da `pencere._T`'ye ihtiyaç duyuyor."""
     from PySide6.QtWidgets import QWidget
 
     from UI.main_window import HycleusWindow
     from UI.main_window_lock import _LockOverlay
+    from UI.main_window_palette import _DARK
 
     class _Sahne:
         _LOCK_MESSAGES = HycleusWindow._LOCK_MESSAGES
@@ -466,6 +470,7 @@ def _sahte_pencere(hwid: str, role: str):
             self._hwid = hwid
             self._role = role
             self._checkouts = None
+            self._T = _DARK
 
         def centralWidget(self):
             return self._central
@@ -521,12 +526,15 @@ def test_b064_bekleyen_kayitlar_usb_cikinca_onayi_reddediyor(
     sahne = _sahte_pencere(admin_hwid, "Yönetici")
     sayfa = PendingRegistrationsView(sahne)
     sayfa._load_pending()
-    sayfa._pending_table.selectRow(0)
 
     # USB fiziksel olarak çekiliyor.
     monkeypatch.setattr(ac, "get_usb_hwid", lambda: None)
 
-    sayfa._on_approve()
+    # B-089: kart listesinde "seçim" yok — bir kartın "Onayla"sına basmak
+    # zaten HANGİ kaydın kastedildiğini taşıyor (bkz. UI/
+    # PendingRegistrationsView.py modül docstring'i), o yüzden doğrudan
+    # bilinen hwid/username ile çağrılıyor.
+    sayfa._on_approve(pending_hwid, "bekleyen.kullanici")
 
     row = db.fetchone("SELECT status FROM users WHERE hwid = ?", (pending_hwid,))
     assert row["status"] == "pending", (
@@ -583,13 +591,12 @@ def test_b064_guard_kaldirilirsa_test_gercekten_dusuyor(
     sahne = _sahte_pencere(admin_hwid, "Yönetici")
     sayfa = prv.PendingRegistrationsView(sahne)
     sayfa._load_pending()
-    sayfa._pending_table.selectRow(0)
 
     # Eski (savunmasız) davranışı simüle et: guard'ı devre dışı bırak.
     monkeypatch.setattr(prv.admin_common, "yonetici_hala_yetkili", lambda *a, **k: True)
     monkeypatch.setattr(ac, "get_usb_hwid", lambda: None)
 
-    sayfa._on_approve()
+    sayfa._on_approve(pending_hwid, "bekleyen.kullanici.2")
 
     row = db.fetchone("SELECT status FROM users WHERE hwid = ?", (pending_hwid,))
     assert row["status"] == "approved", (

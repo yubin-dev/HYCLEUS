@@ -6943,3 +6943,59 @@ csv_utils.py` için birim testleri, `export_csv()`/`export_inventory_csv()`
 için enjeksiyon/negatif/mutasyon testleri). Ruff/mypy/bandit temiz.
 
 ---
+
+## B-089 — Bekleyen Kayıtlar tablodan kart listesine döndü: mockup'a uygun, veri/mantık dokunulmadan; onayla/reddet bağlanması API-şekli değişikliği gerektirdi
+
+Görev: Bekleyen Kayıtlar tablosunu mockup'taki gibi kart listesine çevir
+(isim + rol + HWID + kayıt tarihi, Onayla/Reddet butonları). Kozmetik bir
+değişiklik, veri/mantığa dokunma. Test: onaylama/reddetme akışının yeni
+kart görünümünde de doğru çalıştığını doğrula.
+
+**Değişiklik.** `UI/PendingRegistrationsView.py` bir `QTableWidget`'tan
+kart listesine (her kart `QFrame`, `UI/GuvenlikView.py::_kart()`'ın
+ZATEN kurduğu görsel desen — `search_bg`/`border`/8px radius — yeni
+`admin_common.kart_stil(T)` üzerinden ÖDÜNÇ ALINDI, yeniden İCAT
+EDİLMEDİ) tamamen yeniden yazıldı. SQL sorgusu (`SELECT username, hwid,
+role, created_at FROM users WHERE status='pending' ORDER BY created_at
+DESC`), onay/red diyalog metinleri ve denetim kaydı `detail=` biçimi
+BAYT BAYT AYNI kaldı.
+
+**Kozmetik kalamayan tek şey: `_on_approve`/`_on_reject` imzası.** Tabloda
+"seçili satır" vardı; kart listesinde yok — her kartın kendi düğmesi
+kendi `hwid`/`username`'ini taşımak zorunda. İkisi de sıfır-argümandan
+`(hwid, username)`-zorunlu imzaya döndü, `functools.partial` ile kart
+kurulurken bağlanıyor (döngü-içi lambda'nın geç-bağlama hatasından
+KAÇINILDI). "Kullanıcı Adı" Bireysel-modda gizleme (`setColumnHidden`)
+yeni `set_kullanici_adi_gizli(bool)` metoduna taşındı — AYNI anında-etki
+garantisiyle.
+
+**Kendi kendine bulunan bir layout hatası.** İlk taslak, boş-durum
+etiketini ("Bekleyen kayıt yok.") kart temizleme döngüsünün YANLIŞLIKLA
+sildiği bir hataya sahipti — biçimsel testler çalışmadan ÖNCE elle
+smoke-testle bulunup `self._kart_widgetleri` ile açıkça izlenerek
+düzeltildi.
+
+**Test — üç dosyanın güncellenmesi + bir yeni özel dosya.**
+`tests/test_authz_invariants.py` (20 passed), `tests/
+test_admin_pages_construction_guard.py` (10 passed), `tests/
+test_app_mode_ui.py` (9 passed) — hepsi `_on_approve()`'un yeni imzasına
+ve `_pending_table` → `_kart_widgetleri`'e göre güncellendi, hepsi yeşil.
+Yeni `tests/test_pending_registrations_view.py` (9 passed) — kart
+içeriği/kırpma, boş-durum görünürlüğü, ve en önemlisi: **GERÇEK düğme
+tıklamasıyla**, iki bekleyen kayıt varken, birinci kartın düğmesine
+basmanın SADECE o kullanıcıyı etkilediğini (`functools.partial`
+bağlamasının GERÇEKTEN doğru hwid'i taşıdığının kanıtı — tek-kartlı bir
+test bunu YAKALAMAZDI), artı denetim kaydı doğrulaması ve iptal-durumu-
+değiştirmiyor testi.
+
+SECURITY.md §4.26'ya (EN+TR) eklendi; §4.24/§4.25'in artık AYNI dosyaya
+(`_make_pending_table`, `_on_approve()`) yaptığı BAYAT referanslar da
+güncellendi.
+
+Tam test suite: 3019 passed, 4 skipped (bir önceki turdan +9 — yeni
+`tests/test_pending_registrations_view.py`). Ruff/bandit temiz; mypy
+yalnızca değişiklik-öncesiyle AYNI sayıda pre-existing PySide6-stub
+`attr-defined` hatası gösteriyor (39 hata, `git stash` ile karşılaştırılıp
+doğrulandı).
+
+---

@@ -18,9 +18,11 @@ Cevap: KARIŞIK, ve bu paket bunu ÖLÇEREK buluyor — İKİ AYRI turda,
 İKİ AYRI kusur bulup kapatarak.
 
 Tur 1 — `__init__`: `UsbTokensView`/`PendingRegistrationsView` yalnızca
-BOŞ widget'lar kuruyor (`_make_table`/`_make_pending_table`), veri yükü
-TAMAMEN `.yenile()`'ye ertelenmiş — `__init__` sırasında HİÇBİR DB sorgusu
-ÇALIŞMIYOR. `AdminSettingsView`'in `__init__`'i İSE `_load_settings()`'i
+BOŞ widget'lar kuruyor (`_make_table`/`_make_kart_alani` — B-089'da
+`PendingRegistrationsView` tablodan kart listesine geçti, kurulum
+sırasında hâlâ HİÇBİR kart YOK), veri yükü TAMAMEN `.yenile()`'ye
+ertelenmiş — `__init__` sırasında HİÇBİR DB sorgusu ÇALIŞMIYOR.
+`AdminSettingsView`'in `__init__`'i İSE `_load_settings()`'i
 VE `_tsa_kok_bloku()` üzerinden `_tsa_yukle()`'yi KOŞULSUZ çağırıyordu —
 yönetici olmayan bir oturum için de, rol kapısından ÖNCE. Düzeltildi:
 ikisi de artık YALNIZCA `.yenile()`'de.
@@ -226,19 +228,19 @@ def test_pending_view_ADMIN_OLMAYAN_pencerede_hem_construction_hem_yenile_sorgu_
         sayfa = window._pending_view
         assert isinstance(sayfa, PendingRegistrationsView)
 
-        assert sayfa._pending_table.rowCount() == 0, (
+        assert len(sayfa._kart_widgetleri) == 0, (
             "GUARD REGRESYONU: __init__ sırasında bir sorgu çalışmış — "
-            "tablo dolu"
+            "kart listesi dolu"
         )
 
         sayfa.yenile()
-        assert sayfa._pending_table.rowCount() == 0, (
+        assert len(sayfa._kart_widgetleri) == 0, (
             "GUARD REGRESYONU: yenile() doğrudan çağrıldığında 'Standart' "
             "rol için bile sorgu çalıştı"
         )
 
         sayfa._load_pending()
-        assert sayfa._pending_table.rowCount() == 1, (
+        assert len(sayfa._kart_widgetleri) == 1, (
             "_load_pending() çağrıldığında sorgu HİÇ çalışmadı"
         )
     finally:
@@ -364,12 +366,13 @@ def test_pending_view_STANDART_rolle_dogrudan_onay_REDDEDILIYOR(
         # `.yenile()` DEĞİL, ham `_load_pending()`: `.yenile()` artık
         # kendisi de `is_admin_role()` guard'lı (B-085) — bu test "Standart"
         # rolle YAZMA reddini ölçüyor, "Standart" rolle OKUMA reddini değil
-        # (o, section 1'de ayrıca ölçülüyor). Ham yükleme, seçim yapılabilsin
-        # diye tabloyu dolduruyor.
+        # (o, section 1'de ayrıca ölçülüyor). Ham yükleme kartları kuruyor.
         sayfa._load_pending()
-        sayfa._pending_table.selectRow(0)
 
-        sayfa._on_approve()
+        # B-089: kart listesinde "seçim" yok — bir kartın "Onayla"sına
+        # basmak zaten HANGİ kaydın kastedildiğini taşıyor, o yüzden
+        # doğrudan bilinen hwid/username ile çağrılıyor.
+        sayfa._on_approve(pending_hwid, "bekleyen.standart.test")
 
         row = db.fetchone("SELECT status FROM users WHERE hwid = ?", (pending_hwid,))
         assert row["status"] == "pending", (
@@ -402,10 +405,9 @@ def test_pending_view_guard_kaldirilirsa_STANDART_rol_gercekten_onaylayabiliyor(
     try:
         sayfa = window._pending_view
         sayfa._load_pending()  # bkz. üstteki testin "ham yükleme" notu
-        sayfa._pending_table.selectRow(0)
 
         monkeypatch.setattr(prv.admin_common, "yonetici_hala_yetkili", lambda *a, **k: True)
-        sayfa._on_approve()
+        sayfa._on_approve(pending_hwid, "bekleyen.standart.mutasyon")
 
         row = db.fetchone("SELECT status FROM users WHERE hwid = ?", (pending_hwid,))
         assert row["status"] == "approved", (
@@ -501,7 +503,6 @@ def test_sayfa_guard_rol_dusurulunce_usb_takiliyken_de_reddediyor(db, sahte_usb,
     try:
         sayfa = window._pending_view
         sayfa.yenile()
-        sayfa._pending_table.selectRow(0)
 
         # Başka bir yerden (ör. ikinci bir oturum/yönetici) rol DB'de
         # düşürülüyor. USB HİÇ ÇIKARILMIYOR — sahte_usb hâlâ admin_hwid
@@ -509,7 +510,7 @@ def test_sayfa_guard_rol_dusurulunce_usb_takiliyken_de_reddediyor(db, sahte_usb,
         # DONMUŞ değer) — _poll_usb() bu testte HİÇ çağrılmıyor.
         db.execute("UPDATE users SET role = 'user' WHERE hwid = ?", (admin_hwid,))
 
-        sayfa._on_approve()
+        sayfa._on_approve(pending_hwid, "bekleyen.roldusus")
 
         row = db.fetchone("SELECT status FROM users WHERE hwid = ?", (pending_hwid,))
         assert row["status"] == "pending", (
@@ -542,12 +543,11 @@ def test_sayfa_guard_kaldirilirsa_rol_dususu_gercekten_gecerdi(
     try:
         sayfa = window._pending_view
         sayfa.yenile()
-        sayfa._pending_table.selectRow(0)
 
         db.execute("UPDATE users SET role = 'user' WHERE hwid = ?", (admin_hwid,))
         monkeypatch.setattr(prv.admin_common, "yonetici_hala_yetkili", lambda *a, **k: True)
 
-        sayfa._on_approve()
+        sayfa._on_approve(pending_hwid, "bekleyen.roldusus.2")
 
         row = db.fetchone("SELECT status FROM users WHERE hwid = ?", (pending_hwid,))
         assert row["status"] == "approved", (

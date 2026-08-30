@@ -242,29 +242,49 @@ def test_pending_mod_degisince_dugme_ILERI_GERI_dogru_gorunurluk(
         _pencereyi_kapat(window)
 
 
-def test_bekleyen_tablosu_kullanici_adi_sutunu_ILERI_GERI_dogru_gorunurluk(
+def _kart_isim_metni(kart) -> str:
+    from PySide6.QtWidgets import QLabel
+
+    etiket = kart.findChild(QLabel, "pending_kart_isim")
+    assert etiket is not None, "kart 'pending_kart_isim' etiketini kaybetmiş"
+    return etiket.text()
+
+
+def test_bekleyen_kartlarinin_isim_alani_ILERI_GERI_dogru_gorunurluk(
     qapp, db, isolate_safezone, monkeypatch,
 ):
     """
-    "Kullanıcı Adı" sütunu (_pending_table, sütun 0) Bireysel'de gizli,
-    Kurumsal'da görünür olmalı — düğmenin kendi görünürlüğünden AYRI bir
-    kontrol, aynı `_apply_role_restrictions()` çağrısıyla uygulanıyor.
+    Kullanıcı adı Bireysel'de kartlarda gizli, Kurumsal'da görünür
+    olmalı — düğmenin kendi görünürlüğünden AYRI bir kontrol, aynı
+    `_apply_role_restrictions()` çağrısıyla uygulanıyor.
+
+    B-089: eskiden `_pending_table`'ın 0. sütunu `setColumnHidden` ile
+    gizlenirdi; kart listesine geçince karşılığı `PendingRegistrationsView
+    .set_kullanici_adi_gizli()` — bkz. o dosyanın modül docstring'i.
     """
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, ?, ?, ?)",
+        ("gorunurluk.testi", "x", "user", "pending", "GORUNURLUK-TEST-HWID"),
+    )
+
     window = _pencere(qapp, db, isolate_safezone, monkeypatch, "Yönetici")
     try:
         ayarlar = window._admin_settings_view
-        tablo = window._pending_view._pending_table
-        assert tablo.isColumnHidden(0) is False
+        pending = window._pending_view
+        pending._load_pending()
+        assert len(pending._kart_widgetleri) == 1, "test kurulumu hatalı"
+        assert _kart_isim_metni(pending._kart_widgetleri[0]) == "gorunurluk.testi"
 
         idx = ayarlar._mode_combo.findData(BIREYSEL)
         ayarlar._mode_combo.setCurrentIndex(idx)
         ayarlar._on_save_settings()
-        assert tablo.isColumnHidden(0) is True
+        assert _kart_isim_metni(pending._kart_widgetleri[0]) == "—"
 
         idx = ayarlar._mode_combo.findData(KURUMSAL)
         ayarlar._mode_combo.setCurrentIndex(idx)
         ayarlar._on_save_settings()
-        assert tablo.isColumnHidden(0) is False
+        assert _kart_isim_metni(pending._kart_widgetleri[0]) == "gorunurluk.testi"
     finally:
         _pencereyi_kapat(window)
 
@@ -301,14 +321,14 @@ def test_bekleyen_kayit_BIREYSELDE_kaybolmuyor_KURUMSALDA_yine_gorunur(
         # görünürlüğünden bağımsız çalışıyor (widget silinmedi).
         assert _gizli_mi(window._pending_btn) is True
         pending._load_pending()
-        assert pending._pending_table.rowCount() == 1
+        assert len(pending._kart_widgetleri) == 1
 
         idx = ayarlar._mode_combo.findData(KURUMSAL)
         ayarlar._mode_combo.setCurrentIndex(idx)
         ayarlar._on_save_settings()
         assert _gizli_mi(window._pending_btn) is False
         pending._load_pending()
-        assert pending._pending_table.rowCount() == 1
+        assert len(pending._kart_widgetleri) == 1
     finally:
         _pencereyi_kapat(window)
 

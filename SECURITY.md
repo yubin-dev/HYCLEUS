@@ -2660,7 +2660,7 @@ live inside `centralWidget()`, that reachability gap is gone —
 the redundant timer and banner were deleted rather than tripled across
 three files. What did **not** go away: `centralWidget().setEnabled(False)`
 only blocks mouse/keyboard event delivery, it does nothing to a direct
-Python method call (`page._on_approve()` invoked by a test, a bug, or
+Python method call (`page._on_approve(hwid, username)` invoked by a test, a bug, or
 future code that holds a reference to the page). That was always the
 *actual* guarantee behind the old panel's per-action re-validation, and
 it doesn't depend on modal-vs-embedded — so `UI.admin_common.
@@ -2729,8 +2729,11 @@ question of exactly *where* `is_admin_role()` sits relative to
 `__init__`/first data load isn't rhetorical — it was checked per page by
 reading the actual constructor, not inferred from the pattern.
 `UsbTokensView`/`PendingRegistrationsView` build only empty widgets in
-`__init__` (`_make_table`/`_make_pending_table`) and defer every query to
-`.yenile()`, which production only ever calls from the role-gated
+`__init__` (`_make_table`/`_make_kart_alani` — the latter renamed from
+`_make_pending_table` when B-089 turned the page's rows into cards; the
+empty-widget-in-`__init__`, defer-the-query-to-`.yenile()` contract this
+paragraph is about did not change) and defer every query to `.yenile()`,
+which production only ever calls from the role-gated
 `main_window.py::_on_open_usb_tokens`/`_on_open_pending`. `
 AdminSettingsView` did not follow that pattern: its `__init__` called
 `_load_settings()` (`DBManager.get_setting`/`get_idle_timeout_minutes`/
@@ -2797,8 +2800,12 @@ test_admin_pages_construction_guard.py::
 test_sayfa_guard_rol_dusurulunce_usb_takiliyken_de_reddediyor` proves
 this narrower claim directly: it drops a live admin session's DB role to
 `'user'` with the USB never removed and `_poll_usb()` never invoked at
-all, then calls `PendingRegistrationsView._on_approve()` straight on the
-already-open page — rejected, window locked. Its mutation-contrast
+all, then calls `PendingRegistrationsView._on_approve(hwid, username)`
+straight on the already-open page (B-089 changed this call's signature
+from zero-arg to `(hwid, username)` when the page's rows became cards
+with their own bound buttons instead of a single selected table row;
+the call site here was updated to match, the guard being proved is
+unaffected) — rejected, window locked. Its mutation-contrast
 sibling confirms the same scenario succeeds with
 `yonetici_hala_yetkili` bypassed, showing the assertion measures the
 guard itself and not `_poll_usb()` incidentally catching it first.
@@ -3000,6 +3007,82 @@ dedicated negative test asserts ordinary values are returned identically
 by `csv_hucre_guvenli()`, and the injection tests' own construction
 (only the deliberately dangerous field is exercised per test) keeps the
 positive and negative claims from being conflated.
+
+### 4.26 Pending Registrations went from a table to a card list — cosmetic in scope, but the approve/reject wiring had to change shape
+
+`UI/PendingRegistrationsView.py`'s pending-users screen changed from a
+`QTableWidget` (one row selected, then a shared "Approve"/"Reject" button
+pair acting on whatever was selected) to a scrollable list of cards, each
+carrying its own bound "Onayla"/"Reddet" buttons — matching the mockup,
+requested as explicitly cosmetic ("kozmetik bir değişiklik, veri/mantığa
+dokunma"). The SQL query, the confirm-dialog text, and the audit-log
+`detail=` format are all byte-for-byte unchanged from before this turn.
+
+**What could not stay cosmetic: how a click identifies its target.** A
+table has one selection; a card list has none — each card's own buttons
+must carry their row's identity. `_on_approve`/`_on_reject` changed from
+zero-argument methods reading a `self._selected_pending_hwid()`/
+`_selected_pending_username()` pair to methods that *require*
+`(hwid, username)` as parameters, bound per card at construction time via
+`functools.partial(self._on_approve, hwid, username)` — not a lambda in
+the card-building loop, which would have captured the loop variable by
+reference and left every card's button acting on the *last* row built
+(the classic late-binding closure bug). This is a real API-shape change,
+not a rendering change, and is the one place "don't touch the data/logic"
+had to yield to "the mockup has per-card buttons, not a single shared
+pair" — deliberately, not incidentally.
+
+**Proved with a real button click, not a direct method call.** The
+existing guard/authorization tests (`tests/test_authz_invariants.py`,
+`tests/test_admin_pages_construction_guard.py`) call `_on_approve(hwid,
+username)`/`_on_reject(hwid, username)` directly — appropriate for
+proving a *guard* fires, but insufficient to prove the `functools.partial`
+binding itself is wired correctly, since calling the method directly
+bypasses whatever the button was actually bound to. `tests/
+test_pending_registrations_view.py` closes that gap: with **two** pending
+users on screen at once, it finds one specific card by its `hwid`
+(`QFrame.property("hwid")`, set at construction) and calls
+`QPushButton.click()` on that card's own "Onayla"/"Reddet" button —
+then asserts the *other* card's user is untouched in the database. A
+single-card version of this test would not have caught a swapped or
+constant-bound hwid; the two-card version does.
+
+**A layout-lifecycle bug found and fixed before any test ran against
+it.** The card list's `QVBoxLayout` holds three kinds of children at
+once: an empty-state label (`"Bekleyen kayıt yok."`, shown only when
+there are zero pending rows), the cards themselves (rebuilt on every
+reload), and a trailing stretch. The first draft of the card-rebuild
+routine cleared the layout with a generic "remove everything except the
+last item" loop — which deleted the empty-state label itself the first
+time it ran, since the label sat at index 0, not the trailing position
+the loop assumed. Caught by manual construction + repeated reload before
+the formal test suite ran, not by a failing assertion. Fixed by tracking
+the ephemeral card widgets explicitly in `self._kart_widgetleri` and only
+ever removing/re-adding *those*, leaving the empty-state label and the
+stretch alone.
+
+**The "hide username in Bireysel app-mode" behavior moved from a hidden
+column to a tracked flag, same immediate-effect guarantee.** The old
+table used `setColumnHidden(0, is_bireysel(mode))`, applied instantly
+from `main_window.py::_apply_role_restrictions()` with no reload needed.
+A card list has no column to hide, so this became `PendingRegistrationsView.
+set_kullanici_adi_gizli(bool)` — storing the flag and, if cards are
+already on screen, immediately re-rendering them from the last-fetched
+row set (`self._son_kayitlar`, cached rather than re-queried, keeping
+`_restyle()`/redraw paths DB-free per the existing contract) rather than
+waiting for the next `.yenile()`. `tests/test_app_mode_ui.py`'s
+`test_bekleyen_kartlarinin_isim_alani_ILERI_GERI_dogru_gorunurluk`
+verifies the switch is instant in both directions, not just on the next
+load.
+
+Full suite: 3019 passed, 4 skipped, plus 9 new dedicated tests in `tests/
+test_pending_registrations_view.py` (card content and truncation, empty-
+state visibility, real-button-click approve/reject targeting the correct
+card among several, audit-log detail format, cancel-leaves-state-
+unchanged). Ruff/bandit clean; mypy shows only the same pre-existing
+PySide6-stub `attr-defined` false positives present across the rest of
+the codebase before this turn (confirmed by diffing the error count
+against the pre-change commit).
 
 ---
 
@@ -6008,7 +6091,7 @@ kapsıyor, bu yüzden gereksiz zamanlayıcı ve şerit üç dosyaya
 setEnabled(False)` yalnızca fare/klavye olay iletimini engelliyor,
 doğrudan bir Python metot çağrısına (bir test, bir hata ya da sayfaya
 referans tutan gelecekteki bir kod tarafından çağrılan
-`sayfa._on_approve()`) hiçbir şey yapmıyor. Eski panelin her-eylem-
+`sayfa._on_approve(hwid, username)`) hiçbir şey yapmıyor. Eski panelin her-eylem-
 öncesi yeniden doğrulamasının ASIL garantisi zaten HEP buydu ve
 modal/gömülü ayrımından BAĞIMSIZDI — bu yüzden `UI.admin_common.
 yonetici_hala_yetkili()` her yetkili eylemden (onayla/reddet/kara
@@ -6078,7 +6161,10 @@ yani `is_admin_role()`'un `__init__`/ilk veri yüküne göre TAM OLARAK
 NEREDE durduğu sorusu retorik değildi — gerçek kurucu kod OKUNARAK
 sayfa başına kontrol edildi, desenden çıkarım yapılmadı.
 `UsbTokensView`/`PendingRegistrationsView` `__init__`'te yalnızca BOŞ
-widget'lar kuruyor (`_make_table`/`_make_pending_table`) ve her sorguyu
+widget'lar kuruyor (`_make_table`/`_make_kart_alani` — sonuncusu B-089'da
+sayfa satırları karta dönüşünce `_make_pending_table`'dan yeniden
+adlandırıldı; bu paragrafın konusu olan "`__init__`'te boş widget, sorgu
+`.yenile()`'ye ertelenir" sözleşmesi DEĞİŞMEDİ) ve her sorguyu
 `.yenile()`'ye erteliyor, ki üretim onu YALNIZCA rol-kapılı
 `main_window.py::_on_open_usb_tokens`/`_on_open_pending`'ten çağırıyor.
 `AdminSettingsView` bu deseni İZLEMİYORDU: `__init__`'i
@@ -6148,8 +6234,11 @@ test_sayfa_guard_rol_dusurulunce_usb_takiliyken_de_reddediyor` bu daha
 DAR iddiayı doğrudan kanıtlıyor: canlı bir yönetici oturumunun DB
 rolünü USB HİÇ çıkarılmadan ve `_poll_usb()` HİÇ çağrılmadan `'user'`e
 düşürüyor, sonra ZATEN açık olan sayfada doğrudan
-`PendingRegistrationsView._on_approve()`'u çağırıyor — reddediliyor,
-pencere kilitleniyor. Mutasyon-kontrastlı kardeşi, AYNI senaryonun
+`PendingRegistrationsView._on_approve(hwid, username)`'u çağırıyor (B-089
+sayfa satırları kendi bağlı düğmeleri olan kartlara dönüşünce bu çağrının
+imzası sıfır-argümandan `(hwid, username)`'e değişti; buradaki çağrı yeri
+buna göre güncellendi, kanıtlanan guard'ın kendisi ETKİLENMEDİ) —
+reddediliyor, pencere kilitleniyor. Mutasyon-kontrastlı kardeşi, AYNI senaryonun
 `yonetici_hala_yetkili` atlatıldığında BAŞARILI olduğunu doğrulayarak
 denetimin `_poll_usb()`'nin tesadüfen önce yakalamasını değil, guard'ın
 KENDİSİNİ ölçtüğünü gösteriyor.
@@ -6360,6 +6449,84 @@ YOK: ayrı bir negatif test, sıradan değerlerin `csv_hucre_guvenli()`'den
 AYNEN döndüğünü doğruluyor, ve enjeksiyon testlerinin kendi kurgusu
 (test başına yalnızca kasıtlı olarak tehlikeli alan sınanıyor) pozitif
 ve negatif iddiaların BİRBİRİNE KARIŞMASINI önlüyor.
+
+### 4.26 Bekleyen Kayıtlar tablodan kart listesine döndü — kapsam kozmetikti, ama onayla/reddet bağlanması ŞEKİL DEĞİŞTİRMEK ZORUNDA kaldı
+
+`UI/PendingRegistrationsView.py`'nin bekleyen-kullanıcılar ekranı bir
+`QTableWidget`'tan (tek satır seçilir, sonra paylaşılan bir "Onayla"/
+"Reddet" düğme çifti neyse-seçiliyse ona etki eder) her biri KENDİ bağlı
+"Onayla"/"Reddet" düğmelerini taşıyan kaydırılabilir bir kart listesine
+döndü — mockup'a uygun, açıkça kozmetik istendi ("kozmetik bir değişiklik,
+veri/mantığa dokunma"). SQL sorgusu, onay diyaloğu metni ve denetim kaydı
+`detail=` biçimi bu turdan ÖNCEKİ hâliyle BAYT BAYT AYNI kaldı.
+
+**Kozmetik KALAMAYAN tek şey: bir tıklamanın hedefini nasıl belirlediği.**
+Bir tabloda TEK bir seçim vardır; bir kart listesinde HİÇ yoktur — her
+kartın kendi düğmeleri kendi satırının kimliğini TAŞIMAK zorunda.
+`_on_approve`/`_on_reject`, `self._selected_pending_hwid()`/
+`_selected_pending_username()` çiftini okuyan sıfır-argümanlı metotlardan,
+`(hwid, username)`'i PARAMETRE OLARAK ZORUNLU KILAN metotlara döndü — her
+kart kurulurken `functools.partial(self._on_approve, hwid, username)` ile
+bağlanıyor, kart kurma döngüsü İÇİNDE bir lambda İLE DEĞİL (bu, döngü
+değişkenini REFERANSLA yakalar ve HER kartın düğmesini SON kurulan satıra
+etki eder hâle getirirdi — klasik geç-bağlama closure hatası). Bu GERÇEK
+bir API-şekli değişikliği, bir görüntüleme değişikliği DEĞİL, ve "veri/
+mantığa dokunma"nın "mockup'ta paylaşılan bir çift değil, kart-başına
+düğme var" gerçeğine boyun eğmek ZORUNDA kaldığı TEK yer — kasıtlı, tesadüf
+değil.
+
+**GERÇEK bir düğme tıklamasıyla kanıtlandı, doğrudan metot çağrısıyla
+DEĞİL.** Mevcut guard/yetki testleri (`tests/test_authz_invariants.py`,
+`tests/test_admin_pages_construction_guard.py`) `_on_approve(hwid,
+username)`/`_on_reject(hwid, username)`'ı DOĞRUDAN çağırıyor — bir
+guard'ın ateşlediğini kanıtlamak için YETERLİ, ama `functools.partial`
+bağlamasının KENDİSİNİN doğru kurulduğunu kanıtlamaya YETERSİZ, çünkü
+metodu doğrudan çağırmak düğmenin GERÇEKTE neye bağlandığını ATLAR.
+`tests/test_pending_registrations_view.py` bu boşluğu kapatıyor: ekranda
+AYNI ANDA İKİ bekleyen kullanıcı varken, `hwid`'ine göre (kurulurken
+`QFrame.property("hwid")`'e konan) TEK bir kartı buluyor ve O kartın
+KENDİ "Onayla"/"Reddet" düğmesinde `QPushButton.click()` çağırıyor —
+sonra DİĞER kartın kullanıcısının veritabanında DOKUNULMADIĞINI
+doğruluyor. Tek-kartlı bir test bu şekilde takas edilmiş ya da sabit
+bağlanmış bir hwid'i YAKALAMAZDI; iki-kartlı sürüm YAKALIYOR.
+
+**Herhangi bir test çalışmadan ÖNCE bulunup düzeltilen bir layout-
+yaşam-döngüsü hatası.** Kart listesinin `QVBoxLayout`'u AYNI ANDA üç tür
+çocuk taşıyor: bir boş-durum etiketi (`"Bekleyen kayıt yok."`, yalnızca
+sıfır bekleyen satır varken gösterilir), kartların kendisi (her yeniden
+yüklemede yeniden kurulur), ve sondaki bir stretch. Kart-yeniden-kurma
+rutininin ilk taslağı layout'u "son öğe HARİÇ hepsini kaldır" biçiminde
+GENEL bir döngüyle temizliyordu — bu döngü İLK çalıştığında boş-durum
+etiketinin KENDİSİNİ sildi, çünkü etiket döngünün varsaydığı sondaki
+konumda değil, 0. indekste duruyordu. Biçimsel test takımı çalışmadan
+ÖNCE, elle kurulum + tekrarlı yeniden yükleme sırasında yakalandı,
+başarısız bir assertion'la DEĞİL. Geçici kart widget'larını AÇIKÇA
+`self._kart_widgetleri` içinde izleyip yalnızca ONLARI kaldırıp yeniden
+ekleyerek, boş-durum etiketine ve stretch'e DOKUNMADAN düzeltildi.
+
+**"Bireysel uygulama-modunda kullanıcı adını gizle" davranışı gizli bir
+sütundan izlenen bir bayrağa taşındı, AYNI anında-etki garantisiyle.**
+Eski tablo `setColumnHidden(0, is_bireysel(mode))` kullanıyordu,
+`main_window.py::_apply_role_restrictions()`'tan hiçbir yeniden yükleme
+beklemeden ANINDA uygulanıyordu. Kart listesinde gizlenecek bir sütun
+YOK, bu yüzden bu `PendingRegistrationsView.set_kullanici_adi_gizli(bool)`
+oldu — bayrağı saklıyor, ekranda ZATEN kart varsa (`_restyle()`/yeniden
+çizim yollarının DB'siz kalması gereken mevcut sözleşmeye uyarak yeniden
+SORGULANMADAN) son-alınan satır kümesinden (`self._son_kayitlar`, önbelleğe
+alınmış) ANINDA yeniden çiziyor, bir sonraki `.yenile()`'yi BEKLEMEDEN.
+`tests/test_app_mode_ui.py`'nin
+`test_bekleyen_kartlarinin_isim_alani_ILERI_GERI_dogru_gorunurluk`'ü
+geçişin YALNIZCA bir sonraki yüklemede değil, HER İKİ yönde de ANINDA
+olduğunu doğruluyor.
+
+Tam suite: 3019 passed, 4 skipped, artı `tests/
+test_pending_registrations_view.py`'de 9 yeni özel test (kart içeriği ve
+kırpma, boş-durum görünürlüğü, birden fazla kart arasında DOĞRU hedefi
+vuran gerçek düğme tıklamasıyla onay/red, denetim kaydı `detail=` biçimi,
+iptal-durumu-değiştirmiyor). Ruff/bandit temiz; mypy yalnızca bu turdan
+ÖNCE de kod tabanının GERİ KALANINDA mevcut olan AYNI PySide6-stub
+`attr-defined` yanlış pozitiflerini gösteriyor (değişiklik-öncesi commit'e
+karşı hata sayısı karşılaştırılarak doğrulandı).
 
 ---
 

@@ -172,6 +172,19 @@ def liste_stili(T: dict[str, str]) -> str:
     )
 
 
+def kart_stil(T: dict[str, str]) -> str:
+    """Kart çerçevesi — `UI/GuvenlikView.py::_kart()`'ın `#guvenlik_kart`
+    QSS'iyle (bkz. `UI/main_window_theme.py`) AYNI görsel: `search_bg`
+    zemin, `border` çerçeve, 8px köşe. GuvenlikView B-055 merkezî QSS
+    cascade'ini kullanıyor, bu modül doğrudan `setStyleSheet()`
+    kullanıyor (bkz. modül docstring'i) — ikisi AYNI token'lardan AYNI
+    görünümü üretiyor, yeni bir renk İCAT EDİLMEDİ."""
+    return (
+        f"QFrame{{background:{T['search_bg']};"
+        f"border:1px solid {T['border']};border-radius:8px;}}"
+    )
+
+
 def yonetici_hala_yetkili(widget: QWidget, pencere: Any) -> bool:
     """Her yetkili admin eyleminden ÖNCE canlı doğrulama (B-064/B-066).
 
@@ -253,5 +266,6 @@ __all__ = [
     "ROLES", "ROLE_HWID", "ROLE_BLACKLISTED",
     "stil", "btn_stil", "btn_danger_stil", "btn_success_stil",
     "combo_stili", "bolum_baslik_stili", "ipucu_stili", "liste_stili",
+    "kart_stil",
     "yonetici_hala_yetkili", "sayfa_erisimi_var_mi",
 ]
