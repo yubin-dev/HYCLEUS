@@ -113,6 +113,20 @@ MANIFEST_NAME = "manifest.json"
 METADATA_NAME = "metadata.hcl"
 FILES_DIRNAME = "files"
 
+#: manifest.json boyut üst sınırı (B-097). Tam bir JSON şeması yerine,
+#: riskin çoğunu ucuza kapatan basit bir kapı: gerçekçi bir manifesto
+#: küçüktür (her girdi ~100 bayt JSON — 50.000 dosyalı dev bir yedek
+#: bile ~5 MB tutar). 10 MB gerçek kullanımın ÇOK üzerinde bir tavan
+#: bırakıyor, ama bozuk ya da kötü niyetli devasa bir dosyanın
+#: belleğe TAMAMEN okunup ayrıştırılmasını (JSON bombası, kasıtlı disk/
+#: bellek tüketimi) BAŞLAMADAN engelliyor — `read_manifest()` boyutu
+#: `read_text()`'ten ÖNCE kontrol ediyor.
+_MANIFEST_MAX_BYTES = 10 * 1024 * 1024
+
+#: `girdi.get(anahtar, _EKSIK)` ile "alan hiç yok" ile "alan var ama
+#: değeri None/0/boş" durumlarını ayırt etmek için nöbetçi (sentinel).
+_EKSIK = object()
+
 _CHUNK = 64 * 1024
 
 #: Yedeklenen ve geri yüklenebilen tablolar.
@@ -455,15 +469,68 @@ def _shred_plaintext(path: Path) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _manifest_sekli_gecersiz_mi(manifest: object) -> str | None:
+    """
+    `verify_backup()`/`restore_backup()`'ı KeyError/TypeError/AttributeError
+    ile ÇÖKERTEBİLECEK şekil sorunlarını yakalar (B-097).
+
+    TAM bir JSON şeması DEĞİL — bilerek: `entries[i]["size"]`nin negatif
+    olamayacağı, `sha256`nin 64 hex karakter olması gerektiği gibi ince
+    kurallar burada YOK. Amaç riskin ÇOĞUNU (yanlış TİP → çökme) ucuza
+    kapatmak; ayrıntılı doğrulama zaten `verify_backup()`'ın kendisinde
+    (dosya boyutu/özeti karşılaştırması) var.
+
+    Sorun varsa açıklayan bir metin, şekil temizse `None` döner.
+    """
+    if not isinstance(manifest, dict):
+        return f"üst seviye nesne {type(manifest).__name__}, nesne (obje) bekleniyordu"
+
+    entries = manifest.get("entries", [])
+    if not isinstance(entries, list):
+        return f"'entries' alanı {type(entries).__name__}, liste bekleniyordu"
+    for i, girdi in enumerate(entries):
+        if not isinstance(girdi, dict):
+            return f"entries[{i}] {type(girdi).__name__}, nesne (obje) bekleniyordu"
+        for anahtar, tip in (("name", str), ("size", int), ("sha256", str)):
+            deger = girdi.get(anahtar, _EKSIK)
+            if deger is _EKSIK:
+                return f"entries[{i}] '{anahtar}' alanı eksik"
+            if not isinstance(deger, tip) or isinstance(deger, bool):
+                return (
+                    f"entries[{i}] '{anahtar}' alanı {type(deger).__name__}, "
+                    f"{tip.__name__} bekleniyordu"
+                )
+
+    metadata = manifest.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        return f"'metadata' alanı {type(metadata).__name__}, nesne (obje) bekleniyordu"
+
+    return None
+
+
 def read_manifest(backup_dir: Path | str) -> dict:
     """Manifestoyu okur ve biçimini doğrular."""
     yol = Path(backup_dir) / MANIFEST_NAME
     if not yol.is_file():
         raise BackupError(f"Manifesto bulunamadı: {yol}")
+
+    boyut = yol.stat().st_size
+    if boyut > _MANIFEST_MAX_BYTES:
+        raise BackupError(
+            f"Manifesto çok büyük: {boyut} bayt (üst sınır "
+            f"{_MANIFEST_MAX_BYTES} bayt) — bozuk ya da kötü niyetli bir "
+            "dosya olabilir, okunmadı"
+        )
+
     try:
         manifest = json.loads(yol.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise BackupError(f"Manifesto okunamadı: {exc}") from exc
+
+    sekil_sorunu = _manifest_sekli_gecersiz_mi(manifest)
+    if sekil_sorunu is not None:
+        raise BackupError(f"Manifesto biçimi geçersiz: {sekil_sorunu}")
+
     if manifest.get("format") != FORMAT:
         raise BackupError(
             f"Desteklenmeyen yedek biçimi: {manifest.get('format')!r} "

@@ -7722,3 +7722,108 @@ Etkilenen dosyalar: `tests/test_lock_overlay.py`,
 temiz.
 
 ---
+
+## B-097 — Yedek manifestosuna tam şema yerine basit boyut/tip kapısı: ayrıştırıcı artık bozuk/kötü niyetli dosyaya güvenle çöküyor değil reddediyor
+
+Görev: Yedek manifest dosyası için tam şema doğrulaması yerine önce basit
+bir boyut/tip sınırı kontrolü ekle (riskin çoğunu bu bile kapatıyor).
+Manifest ayrıştırıcının kötü niyetli/bozuk bir dosyaya karşı güvenli
+başarısız olduğunu (crash etmediğini, güvenli bir hata döndürdüğünü)
+doğrula.
+
+**Keşif — çökme GERÇEKTİ, dört farklı şekilde.** Düzeltmeden ÖNCE, ampirik
+olarak dört farklı istisna tipi doğrudan üretildi:
+  1. Üst seviye JSON bir dict değil (liste) → `AttributeError` (`manifest.
+     get(...)` çağrısında).
+  2. `entries` alanı bir liste değil (string) → `TypeError`
+     (`girdi["name"]`'de — string üzerinde integer-olmayan indeksleme).
+  3. `entries` içindeki bir öğe dict değil (sayı) → `TypeError` (`girdi[
+     "name"]`'de — sayı subscriptable değil).
+  4. Bir girdide `size`/`sha256` eksik, AMA referans verdiği dosya
+     GERÇEKTEN var → `KeyError`. (Dosya YOKSA `missing` listesine düşüp
+     döngü erken `continue` ediyor, `girdi["size"]`'a hiç erişmiyor — bu
+     çökme yalnızca dosyanın GERÇEKTEN var olduğu senaryoda tetikleniyor,
+     ilk denemede bu ayrıntı kaçırılıp "eksik-anahtar" senaryosu yanlışlıkla
+     çökmesiz göründü.)
+  Hiçbiri `try/except BackupError` ile yakalanmıyordu — ikisi (`verify_
+  backup()`, `backup_cli.py`) `read_manifest()`'i `except BackupError`
+  içine alıyordu ama `BackupError` hiç fırlamıyordu, ham istisna
+  doğrudan çağırana sızıyordu.
+
+**Karar — tam şema DEĞİL, basit boyut+tip kapısı.** Görevin kendisi bunu
+istiyordu ("riskin çoğunu bu bile kapatıyor") ve doğru: `sha256`'nin 64
+hex karakter olması, `size`'ın negatif olamayacağı gibi ince kurallar
+YOK — yalnızca (a) dosya `read_text()`'e verilmeden ÖNCE bir boyut
+tavanı, (b) `json.loads()`'tan SONRA üst seviyenin dict, `entries`'in
+liste, her girdinin dict olduğu ve `name`/`size`/`sha256`'ın doğru tipte
+VAR olduğu kontrolü. Bu, DÖRT çökmenin DÖRDÜNÜ de kapatıyor — ayrıntılı
+doğrulama zaten `verify_backup()`'ın kendisinde (boyut/özet karşılaştırması,
+GCM tag doğrulaması) var, onunla ÇAKIŞMIYOR.
+
+**Uygulama — `CORE/backup.py`, TEK çağrı noktası.** `read_manifest()`
+hem `verify_backup()` hem `restore_backup()` hem `backup_cli.py`'nin
+TEK ortak giriş noktası — düzeltme SADECE orada, üç çağıranın hiçbiri
+DOKUNULMADI:
+  - `_MANIFEST_MAX_BYTES = 10 * 1024 * 1024` (10 MB) — gerçekçi bir
+    manifesto çok küçük (girdi başına ~100 bayt JSON, 50.000 dosyalı dev
+    bir yedek bile ~5 MB), 10 MB gerçek kullanımın ÇOK üzerinde bir tavan.
+    `read_manifest()` bu boyutu `read_text()`'ten ÖNCE kontrol ediyor —
+    aşırı büyük bir dosya HİÇ belleğe okunmuyor.
+  - `_manifest_sekli_gecersiz_mi(manifest)` — üst seviye/`entries`/her
+    girdinin tipini kontrol eden, sorun varsa açıklayan bir metin,
+    temizse `None` döndüren yardımcı fonksiyon. `json.loads()` SONRASI,
+    `format` alanı kontrolünden ÖNCE çağrılıyor (format kontrolü zaten
+    `manifest.get(...)` kullanıyor, dict OLMASI şart).
+  - İkisi de `BackupError` fırlatıyor — `verify_backup()`'ın MEVCUT
+    `except BackupError: rapor.ok=False` bloğu ek koda gerek KALMADAN
+    yakalıyor.
+
+**Test — `tests/test_backup.py` (7 yeni test).** Dört çökme senaryosunun
+DÖRDÜ de (üst-seviye-liste, entries-string, entry-not-dict,
+entry-eksik-anahtar) artık `rapor.ok=False` ile güvenle reddediliyor;
+beşincisi beklenmeyen TİP (size bir sayı değil, string) için ayrı bir
+test; altıncısı boyut tavanını (`_MANIFEST_MAX_BYTES`'ı testte 100 bayta
+`monkeypatch` ile indirip birkaç yüz baytlık zararsız bir dosyayla aşan
+— GERÇEK 10 MB'lık bir dosya YAZMIYOR, hem hızlı hem güvenli); yedincisi
+sağlıklı bir yedeğin hâlâ geçtiğini doğrulayan regresyon kontrolü.
+
+**Keşif — ilk "boyut" testi taslağı TEHLİKELİYDİ.** İlk taslak, testin
+İÇİNDE `_MANIFEST_MAX_BYTES`'ı doğrudan ithal edip dosya boyutunu ONA
+GÖRE (`_MANIFEST_MAX_BYTES // 2`) hesaplıyordu — bu, sabiti ARTIRAN bir
+mutasyon testinde testin YAZDIĞI dosyanın da ORANTILI BÜYÜDÜĞÜ anlamına
+geliyordu: sabiti 10 GB'a çıkaran bir mutasyon denemesinde test GERÇEKTEN
+~10 GB'lık bir dosya diske yazmaya ÇALIŞTI (14 saniye sürdü, disk dolması
+riskliydi). Düzeltildi: test artık sabiti KÜÇÜK bir değere (100 bayt)
+`monkeypatch` ediyor ve sabit boyutlu (birkaç yüz bayt), tamamen zararsız
+bir dosyayla aşıyor — hem hızlı (0,16sn) hem sabitin GERÇEK DEĞERİNDEN
+bağımsız olarak karşılaştırma mantığını sınıyor.
+
+**Mutasyon kanıtı (üçü de geçici, geri alındı).**
+  (a) Şekil kontrolünü (`_manifest_sekli_gecersiz_mi` çağrısını) devre
+      dışı bırakmak 5 testi kırdı — biri gerçek bir `KeyError` ile test
+      İÇİNDE çöktü (yakalanmamış istisna, tam olarak düzeltmeden önceki
+      canlı davranış), dördü `AssertionError` ile.
+  (b) Boyut karşılaştırmasını (`if boyut > _MANIFEST_MAX_BYTES`) `if
+      False`'a bozmak boyut testini KIRDI — dosya artık boyut kapısından
+      GEÇTİ ama JSON olarak geçersiz olduğu için YİNE reddedildi, farklı
+      (yanlış) bir hata metniyle; test bunu doğru şekilde yakaladı.
+  Üçü de geri alındı, `grep -n "MUTATION"` (temiz) ve `git diff --stat`
+  (yalnızca beklenen 2 dosya) ile doğrulandı.
+
+SECURITY.md §4.11'e (EN+TR) eklendi — §4.12'nin "sertleştirme, açık
+kapatma değil" çerçevesiyle aynı: manifesto zaten güvenilmeyen/
+DEĞİŞTİRİLEBİLİR olarak belgeliydi (bütünlüğü şifreli kopyayla
+karşılaştırma sağlıyor), bu düzeltme bir GİZLİLİK/BÜTÜNLÜK açığını
+KAPATMIYOR — doğrulama ARACININ KENDİSİNİN güvenilmeyen bir dizine karşı
+çökmemesini sağlıyor (kullanılabilirlik). Doc-parity testi (`tests/
+test_belge_dil_paritesi.py`) ilk yazımda EN tarafında `` `tests/
+test_backup.py` `` satır-kaydırmasıyla bölünüp sayılmadığı için
+kırıldı — bu oturumda daha önce de görülen AYNI kalıp; tek satıra alınıp
+düzeltildi.
+
+Etkilenen: `CORE/backup.py`, `tests/test_backup.py`. İlgili suite: 109
+passed (+7). Ruff/mypy temiz. bandit: tek pre-existing bulgu (B608,
+satır ~294, `# noqa: S608` ile zaten işaretli sabit tablo listesi)
+DEĞİŞMEDİ, benim eklediğim kod DEĞİL.
+
+---

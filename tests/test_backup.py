@@ -461,6 +461,123 @@ def test_an_unknown_format_is_refused(tmp_path) -> None:
     assert not sonuc.ok and "Desteklenmeyen yedek biçimi" in (sonuc.error or "")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 1b. B-097 — bozuk/kötü niyetli manifesto GÜVENLE reddediliyor, ÇÖKMÜYOR
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `read_manifest()` yalnızca `json.loads()` + "format" alanı kontrolü
+# yapıyordu — üst seviye nesnenin dict OLDUĞUNU, `entries`'in liste
+# OLDUĞUNU ya da her girdinin gerekli alanları TAŞIDIĞINI hiç
+# doğrulamıyordu. Aşağıdaki her senaryo, düzeltmeden ÖNCE
+# `verify_backup()`'ı gerçek bir istisnayla (KeyError/TypeError/
+# AttributeError) ÇÖKERTİYORDU — bu bölüm o çökmelerin artık temiz bir
+# `BackupError`/`rapor.ok=False`'a döndüğünü kanıtlıyor. TAM bir JSON
+# şeması DEĞİL (bkz. `CORE/backup.py::_manifest_sekli_gecersiz_mi`
+# docstring'i) — riskin çoğunu ucuza kapatan basit bir boyut/tip kapısı.
+
+
+def test_a_json_array_manifest_is_refused_not_crashed(tmp_path) -> None:
+    """Üst seviye nesne dict değil (liste) — eskiden AttributeError'la çöküyordu."""
+    d = tmp_path / "kotu1"
+    d.mkdir()
+    (d / MANIFEST_NAME).write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    sonuc = verify_backup(d)
+    assert not sonuc.ok
+    assert "Manifesto biçimi geçersiz" in (sonuc.error or "")
+
+
+def test_entries_that_is_not_a_list_is_refused_not_crashed(tmp_path) -> None:
+    """`entries` bir liste değil, bir string — eskiden TypeError'la çöküyordu."""
+    d = tmp_path / "kotu2"
+    d.mkdir()
+    (d / MANIFEST_NAME).write_text(
+        json.dumps({"format": FORMAT, "entries": "BEN-BIR-STRINGIM"}), encoding="utf-8")
+    sonuc = verify_backup(d)
+    assert not sonuc.ok
+    assert "Manifesto biçimi geçersiz" in (sonuc.error or "")
+
+
+def test_an_entry_that_is_not_an_object_is_refused_not_crashed(tmp_path) -> None:
+    """`entries` içindeki bir öğe dict değil (sayı) — eskiden TypeError'la çöküyordu."""
+    d = tmp_path / "kotu3"
+    d.mkdir()
+    (d / "files").mkdir()
+    (d / MANIFEST_NAME).write_text(
+        json.dumps({"format": FORMAT, "entries": [12345]}), encoding="utf-8")
+    sonuc = verify_backup(d)
+    assert not sonuc.ok
+    assert "Manifesto biçimi geçersiz" in (sonuc.error or "")
+
+
+def test_an_entry_missing_a_required_field_is_refused_not_crashed(tmp_path) -> None:
+    """
+    `size`/`sha256` eksik — dosya GERÇEKTEN var olduğu için eskiden
+    `girdi["size"]` erişiminde KeyError'la çöküyordu (dosya yoksa
+    `missing` listesine düşüp döngü erkenden `continue` ediyordu, yani
+    bu çökme yalnızca GERÇEKTEN VAR olan bir dosyayla tetikleniyordu).
+    """
+    d = tmp_path / "kotu4"
+    d.mkdir()
+    (d / "files").mkdir()
+    (d / "files" / "x.hcl").write_bytes(b"veri")
+    (d / MANIFEST_NAME).write_text(
+        json.dumps({"format": FORMAT, "entries": [{"name": "x.hcl"}]}), encoding="utf-8")
+    sonuc = verify_backup(d)
+    assert not sonuc.ok
+    assert "Manifesto biçimi geçersiz" in (sonuc.error or "")
+
+
+def test_an_entry_with_an_unexpected_field_type_is_refused_not_crashed(tmp_path) -> None:
+    """`size` bir tam sayı değil, beklenmedik bir tipte (string) — güvenle reddedilmeli."""
+    d = tmp_path / "kotu5"
+    d.mkdir()
+    (d / "files").mkdir()
+    (d / "files" / "x.hcl").write_bytes(b"veri")
+    (d / MANIFEST_NAME).write_text(
+        json.dumps({
+            "format": FORMAT,
+            "entries": [{"name": "x.hcl", "size": "COK-BUYUK-BIR-DEGER", "sha256": "a" * 64}],
+        }), encoding="utf-8")
+    sonuc = verify_backup(d)
+    assert not sonuc.ok
+    assert "Manifesto biçimi geçersiz" in (sonuc.error or "")
+
+
+def test_an_oversized_manifest_file_is_refused_without_being_fully_read(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Aşırı büyük bir manifesto dosyası — bozuk ya da kötü niyetli (JSON
+    bombası) olabilir. Boyut, `json.loads()`'a HİÇ verilmeden reddediliyor.
+
+    Gerçek üretim sınırı (10 MB) kadar bir dosya YAZMIYOR — bunun yerine
+    sınırı küçük bir değere (100 bayt) indirip birkaç KB'lık, tamamen
+    zararsız bir dosyayla aşıyor. Bu hem testi hızlı/güvenli tutuyor hem
+    de sınırın KENDİ DEĞERİNDEN bağımsız olarak KARŞILAŞTIRMA MANTIĞININ
+    (`boyut > _MANIFEST_MAX_BYTES`) çalıştığını kanıtlıyor.
+    """
+    import CORE.backup as bk
+
+    monkeypatch.setattr(bk, "_MANIFEST_MAX_BYTES", 100)
+
+    d = tmp_path / "kotu6"
+    d.mkdir()
+    # Geçerli JSON olması ŞART DEĞİL: boyut kontrolü ayrıştırmadan ÖNCE.
+    (d / MANIFEST_NAME).write_bytes(b"1," * 200)  # 400 bayt > yamalı 100 bayt
+    sonuc = verify_backup(d)
+    assert not sonuc.ok
+    assert "Manifesto çok büyük" in (sonuc.error or "")
+
+
+def test_a_valid_manifest_still_passes_the_shape_check(dolu_db, vault, tmp_path, key) -> None:
+    """Sağlamlaştırma gerçek/sağlıklı bir yedeği YANLIŞLIKLA reddetmiyor."""
+    rapor = _yedek(dolu_db, vault, tmp_path, key)
+    manifest = read_manifest(rapor.path)  # istisna fırlatmamalı
+    assert manifest["format"] == FORMAT
+    sonuc = verify_backup(rapor.path)
+    assert sonuc.ok is True
+
+
 def test_extra_files_are_reported_but_not_an_error(dolu_db, vault, tmp_path, key) -> None:
     rapor = _yedek(dolu_db, vault, tmp_path, key)
     (rapor.path / "files" / "yabanci.hcl").write_bytes(b"x")

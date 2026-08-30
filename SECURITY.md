@@ -1153,6 +1153,29 @@ what it references, `file_tags`/`quarantine` last. A round-trip test
 instance and checks that no `quarantine.file_id` is left pointing at a
 `files` row that was never restored.
 
+**2026-08-30 — `read_manifest()` now rejects a malformed manifest instead
+of crashing on it; this is availability hardening, not an integrity fix.**
+The plaintext `manifest.json` was already documented above as editable
+and not trusted for integrity — a rewritten manifest is caught by
+comparing it against the encrypted copy inside `metadata.hcl`. What was
+missing: `read_manifest()` parsed the JSON and checked only the `format`
+field, with no check that the top-level value was an object, that
+`entries` was a list, or that each entry carried `name`/`size`/`sha256`
+of the expected type. A manifest shaped as a bare JSON array, an
+`entries` field that is a string, an entry that is not an object, or an
+entry missing `size` each drove `verify_backup()` into an unhandled
+`AttributeError`/`TypeError`/`KeyError` — confirmed directly for all
+four before the fix. None of these let an attacker forge a *valid*
+backup or bypass the GCM/HMAC checks; they crash the checking tool
+itself, an availability problem for whoever runs `--verify` against an
+untrusted or corrupted directory. `read_manifest()` now rejects a
+manifest file over 10 MB before parsing it (a real manifest is at most a
+few MB even at tens of thousands of entries) and validates the basic
+shape after parsing — deliberately not a full JSON schema, just enough
+to turn every crash above into a clean `BackupError`.
+`tests/test_backup.py` reproduces each of the four crashes plus the
+oversize case and confirms a healthy manifest still passes.
+
 ---
 
 ### 4.12 Shamir shares are validated at the parser, and this is hardening — not a fix for a hole
@@ -4846,6 +4869,31 @@ OLMAYAN tablolar, sonra referans verdiği şeylerden SONRA `files`, en son
 artık ayrı, boş bir `DBManager` örneğine geri yükleyip hiçbir
 `quarantine.file_id`'nin geri yüklenmemiş bir `files` satırına işaret
 etmediğini doğruluyor.
+
+**2026-08-30 — `read_manifest()` artık bozuk bir manifestoyu ÇÖKMEDEN
+reddediyor; bu bir bütünlük düzeltmesi değil, kullanılabilirlik
+sertleştirmesi.** Düz metin `manifest.json` yukarıda zaten DEĞİŞTİRİLEBİLİR
+ve bütünlük için GÜVENİLMEZ olarak belgelenmişti — yeniden yazılmış bir
+manifesto, `metadata.hcl` içindeki şifreli kopyayla karşılaştırılarak
+yakalanıyor. Eksik olan: `read_manifest()` JSON'ı ayrıştırıp yalnızca
+`format` alanını kontrol ediyordu, üst seviye değerin bir nesne (obje)
+olduğunu, `entries`'in liste olduğunu ya da her girdinin beklenen tipte
+`name`/`size`/`sha256` taşıdığını hiç doğrulamıyordu. Çıplak bir JSON
+dizisi şeklinde bir manifesto, string olan bir `entries` alanı, nesne
+olmayan bir girdi ya da `size`'ı eksik bir girdi — hepsi `verify_backup()`'ı
+yakalanmamış bir `AttributeError`/`TypeError`/`KeyError` ile çökertiyordu
+— düzeltmeden önce dördü de doğrudan doğrulandı. Bunların hiçbiri bir
+saldırganın GEÇERLİ bir yedek sahtekârlığı yapmasına ya da GCM/HMAC
+kontrollerini atlatmasına izin vermiyor; yalnızca doğrulama aracının
+KENDİSİNİ çökertiyorlar — güvenilmeyen ya da bozuk bir dizine karşı
+`--verify` çalıştıran kişi için bir kullanılabilirlik sorunu.
+`read_manifest()` artık 10 MB'ı aşan bir manifesto dosyasını ayrıştırmadan
+ÖNCE reddediyor (gerçek bir manifesto on binlerce girdide bile en fazla
+birkaç MB tutar) ve ayrıştırmadan SONRA temel şekli doğruluyor — bilerek
+TAM bir JSON şeması DEĞİL, yukarıdaki çökmelerin HEPSİNİ temiz bir
+`BackupError`'a çevirmeye yetecek kadar. `tests/test_backup.py` dört
+çökme senaryosunu ve boyut-aşımı durumunu yeniden üretip sağlıklı bir
+manifestonun hâlâ geçtiğini doğruluyor.
 
 ### 4.12 Shamir payları ayrıştırıcıda doğrulanıyor — bu sertleştirme, bir açığın kapatılması değil
 
