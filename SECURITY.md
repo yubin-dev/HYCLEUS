@@ -3084,6 +3084,128 @@ PySide6-stub `attr-defined` false positives present across the rest of
 the codebase before this turn (confirmed by diffing the error count
 against the pre-change commit).
 
+### 4.27 The audit anchor's isolation was half real — an env-var redirect stays on the same disk; the USB token now carries a genuine second copy
+
+§4.6 and this section's own "Anchor" design notes (`CORE/audit_chain.py`)
+always named the anchor's whole point as living *outside the database* —
+an attacker who can rewrite `audit_log` and recompute every hash still
+can't make a stale, out-of-database copy agree with the rewrite. Before
+this turn, the only supported way to move that copy off the local disk
+was `HYCLEUS_AUDIT_ANCHOR`, an environment variable pointing the anchor
+file at a different directory. That redirect was real in the sense that
+the file moved — but a different *directory* is very often still the
+same *disk*, i.e. the same trust boundary the attacker (defined by this
+module's own threat model as "whoever can write to the database") already
+has write access to. Moving the anchor file five folders over gains
+nothing against that attacker; genuine isolation requires a physically
+separate storage device, not just a different path string.
+
+**What changed: the anchor now writes to two places by default, not one
+optionally.** `write_anchor()` still always writes the local copy
+(`anchor_path()`, unchanged) — but now also writes an identical second
+copy to whichever USB token is currently inserted, via the new
+`CORE.usb_manager.get_usb_mount_root(hwid)` (WMI disk→partition→logical-
+disk association chain, matching the hwid to the *same* physical disk
+`get_usb_hwid()` already identified — not just "the first USB drive
+found," since a session with two USB drives inserted could otherwise
+anchor to the wrong one) and `CORE.audit_chain.usb_anchor_path()`
+(`<mount root>/HYCLEUS/audit_anchor.log`). No new infrastructure was
+needed for this: HYCLEUS already requires a USB token to be inserted for
+an authenticated session to exist at all (`main_window.py`'s `_poll_usb()`
+locks the session the moment it's pulled) — the dual write reuses a
+device that's already mandatory rather than asking for a new one.
+
+**Why this is a stronger claim than the env var ever was.** The USB copy
+sits on a device that can be physically removed from the machine — pull
+it out, and the second copy leaves with it, genuinely outside whatever an
+attacker with local disk access can reach. `HYCLEUS_AUDIT_ANCHOR` still
+exists (for callers with a real reason to relocate the local copy, e.g. a
+network share for centralized log collection) but its docstring no longer
+claims to be *the* isolation story — the automatic USB copy carries that
+claim now.
+
+**Best-effort by design, and why that's the right trade-off.** The USB
+copy can fail to write on any given call — the token isn't inserted (a
+CLI tool run outside a session, `DEV_MODE`), the mount root can't be
+resolved, the write itself fails (removed mid-write, read-only). All of
+these are caught and logged, never raised — the local copy's write is
+never blocked by the USB copy's failure, and `write_anchor()`'s caller-
+facing contract (return value, exceptions) is unchanged. This mirrors
+the exact reasoning the old code already used to justify *not* making USB
+the sole anchor location: "a control that sometimes runs is worse than
+one that's known not to." The difference is scope — that reasoning now
+argues for the USB copy staying *additive*, not for skipping it by
+default.
+
+**Detecting divergence between the two copies — `verify_anchor_replicas()`
+— closes a gap `verify_anchor_file()` cannot.** A single anchor file's own
+internal hash chain (`prev_anchor_hash` per line) only proves that file
+wasn't edited *without also being renumbered consistently* — an attacker
+with write access to that one file can tamper with a line and then
+recompute every subsequent line's `prev_anchor_hash` so the file's own
+chain still verifies clean (the exact same weakness the audit chain itself
+has against a full rewrite, see this module's "What this doesn't protect
+against" section — it recurses one level down to the anchor file itself).
+Comparing the local and USB copies closes this: the two are independent
+files, and an attacker would need to tamper with *both*, consistently,
+at the same time — one of them sitting on a device that isn't even
+attached to the machine at the moment of attack in the common case.
+`verify_anchor_replicas()` reads both files' anchor records and compares
+the shared, content-carrying fields (`last_id`, `last_hash`,
+`entry_count`, `chain_start_id`, `reason`, `anchored_at`) position-by-
+position over their *common prefix* — deliberately not their full length,
+since the USB copy can legitimately be shorter (a write where the token
+wasn't inserted skips only that copy, not the local one) and a bare
+length mismatch is not itself evidence of tampering. Each file also keeps
+its *own* `seq`/`prev_anchor_hash` sequence — a design choice, not an
+oversight: forcing both files to share one `seq` counter would make the
+USB copy's own internal-chain check (`verify_anchor_file()`) fail after
+any write it missed, a false alarm for an expected, best-effort gap.
+
+**Wired into startup exactly like the existing anchor check, and no
+further.** `main.py` now also calls `verify_anchor_replicas()` right
+after the existing `verify_against_anchor()` block, using the same
+non-blocking pattern (log + audit entry +
+`QMessageBox.warning` on mismatch, wrapped in its own `try/except` so a
+comparison failure can never stop the app from opening). It deliberately
+was **not** wired into `CORE/audit_report.py`'s `ZincirRaporu` (the
+signed-report/TXT/CSV/PDF export machinery from §4.25) or the "Verify
+Chain" button — that surface was out of scope for this turn's explicit
+ask (write the anchor to USB, prove the two copies can be compared) and
+folding it in would have meant redesigning an already-shipped report
+format without being asked to.
+
+**Tests never touch real hardware.** A new autouse fixture,
+`isolate_usb_anchor` (`tests/conftest.py`), pins `CORE.usb_manager.
+get_usb_mount_root()` to always return `None` for every test in the
+suite by default — without it, `write_anchor()`'s new `write_usb=True`
+default would trigger a real WMI query (and, on a developer machine with
+an actual USB drive inserted, a real file write to it) on every single
+test that calls `write_anchor()`, including the ~15 pre-existing anchor
+tests that predate this turn and know nothing about USB. Tests that
+specifically exercise the USB path override this fixture locally with a
+fake mount root under `tmp_path` — no real hardware, no real WMI, in any
+test in the suite.
+
+**Mutation-proved.** Reverting the dual-write (forcing `write_anchor()`'s
+USB target to always resolve to `None`) was tried and reran the new
+suite: 7 of the new tests failed, confirming they depend on the USB copy
+actually being written. Separately, gutting `verify_anchor_replicas()`'s
+compared-field list to empty was tried: the 3 tests that tamper with one
+copy and expect the mismatch to be caught failed, confirming the field
+comparison — not just file existence — is what those tests measure.
+Both mutations were reverted before landing.
+
+Full suite: 3055 passed, 4 skipped (+25 from this turn: `CORE.usb_manager.
+get_usb_mount_root()`'s own WMI-association-chain logic in the new
+`tests/test_usb_mount_root.py`, and the dual-write/comparison behavior in
+`tests/test_audit_chain.py`'s new "USB second copy" section). Ruff/mypy/
+bandit clean — bandit's count on `CORE/usb_manager.py` rose from 6 to 7
+low-severity `try/except/pass` findings, all the same accepted pattern
+already used throughout that file for best-effort hardware probing (not
+a new class of risk; confirmed by diffing bandit's own output against the
+pre-change commit).
+
 ---
 
 ## 5. Cryptographic details
@@ -6527,6 +6649,131 @@ iptal-durumu-değiştirmiyor). Ruff/bandit temiz; mypy yalnızca bu turdan
 ÖNCE de kod tabanının GERİ KALANINDA mevcut olan AYNI PySide6-stub
 `attr-defined` yanlış pozitiflerini gösteriyor (değişiklik-öncesi commit'e
 karşı hata sayısı karşılaştırılarak doğrulandı).
+
+### 4.27 Denetim çıpasının izolasyonu YARI gerçekti — env var'lı bir yönlendirme AYNI diskte kalıyor; USB token artık GERÇEK bir ikinci kopya taşıyor
+
+§4.6 ve bu bölümün kendi "Anchor" tasarım notları (`CORE/audit_chain.py`)
+çıpanın tüm anlamının veritabanının DIŞINDA durmak olduğunu her zaman
+söyledi — `audit_log`'u yeniden yazıp her hash'i yeniden hesaplayabilen
+bir saldırgan bile, veritabanı DIŞINDAKİ eski bir kopyayı o yeniden
+yazımla TUTARLI hâle getiremez. Bu turdan ÖNCE bu kopyayı yerel diskten
+taşımanın desteklenen TEK yolu `HYCLEUS_AUDIT_ANCHOR`'dı — çıpa dosyasını
+BAŞKA bir dizine yönlendiren bir ortam değişkeni. Bu yönlendirme dosyanın
+GERÇEKTEN taşındığı anlamında gerçekti — ama farklı bir DİZİN çoğu zaman
+hâlâ AYNI DİSK demektir, yani bu modülün kendi tehdit modelinin
+tanımladığı saldırganın (veritabanına yazabilen HERKES) ZATEN yazma
+erişimi olduğu AYNI güven sınırı. Çıpa dosyasını beş klasör öteye taşımak
+o saldırgana karşı HİÇBİR ŞEY kazandırmaz; gerçek izolasyon fiziksel olarak
+AYRI bir depolama cihazı gerektirir, yalnızca farklı bir yol dizesi değil.
+
+**Ne değişti: çıpa artık VARSAYILAN olarak iki yere yazılıyor, isteğe
+bağlı olarak bir yere değil.** `write_anchor()` hâlâ HER ZAMAN yerel
+kopyayı yazıyor (`anchor_path()`, değişmedi) — ama artık o an takılı olan
+USB token'a da AYNI ikinci kopyayı yazıyor, yeni `CORE.usb_manager.
+get_usb_mount_root(hwid)` (WMI disk→bölüm→mantıksal-disk ilişki zinciri,
+hwid'i `get_usb_hwid()`'in ZATEN belirlediği AYNI fiziksel diskle
+eşleştirerek — sadece "bulunan ilk USB sürücüsü" değil, çünkü iki USB
+takılıyken bu YANLIŞ sürücüye çıpalanmaya yol açabilirdi) ve
+`CORE.audit_chain.usb_anchor_path()` (`<bağlama_kökü>/HYCLEUS/
+audit_anchor.log`) üzerinden. Bunun için EK bir altyapı gerekmedi:
+HYCLEUS zaten kimliği doğrulanmış bir oturumun VAR OLABİLMESİ için bir
+USB token'ın takılı olmasını ZORUNLU kılıyor (`main_window.py`'nin
+`_poll_usb()`'si çıkarıldığı ANDA oturumu kilitliyor) — çift yazım YENİ
+bir cihaz istemek yerine ZATEN zorunlu olan bir cihazı yeniden kullanıyor.
+
+**Bunun env var'dan neden DAHA GÜÇLÜ bir iddia olduğu.** USB kopyası
+makineden FİZİKSEL olarak SÖKÜLEBİLEN bir cihaz üzerinde duruyor — çıkar,
+ve ikinci kopya ONUNLA birlikte gider, yerel disk erişimi olan bir
+saldırganın ULAŞABİLECEĞİ her yerin GERÇEKTEN dışında. `HYCLEUS_AUDIT_ANCHOR`
+hâlâ duruyor (yerel kopyayı taşımak için GERÇEK bir gerekçesi olan
+çağıranlar için — ör. merkezi log toplama amaçlı bir ağ paylaşımı) ama
+docstring'i artık İZOLASYON iddiasının KENDİSİ olduğunu söylemiyor — o
+iddiayı artık otomatik USB kopyası taşıyor.
+
+**Tasarım gereği best-effort, ve bunun neden DOĞRU takas olduğu.** USB
+kopyası herhangi bir çağrıda yazılamayabilir — token takılı değil (bir
+oturum DIŞINDA çalışan bir CLI aracı, `DEV_MODE`), bağlama kökü
+çözülemiyor, yazımın kendisi başarısız (yazım sırasında çıkarılmış,
+salt-okunur). Bunların HEPSİ yakalanıp loglanıyor, hiçbiri FIRLATILMIYOR —
+yerel kopyanın yazımı USB kopyasının başarısızlığından asla ENGELLENMİYOR,
+`write_anchor()`'ın çağırana açık sözleşmesi (dönüş değeri, istisnalar)
+DEĞİŞMEDİ. Bu, eski kodun USB'yi TEK çıpa konumu YAPMAMAYI gerekçelendirmek
+için ZATEN kullandığı AYNI akıl yürütmeyi yansıtıyor: "bazen çalışan bir
+kontrol, çalışmadığı BİLİNEN birinden beterdir." Fark KAPSAMDA — o akıl
+yürütme artık USB kopyasının EK (additive) kalmasını savunuyor, onu
+varsayılan olarak ATLAMAYI değil.
+
+**İki kopya arasındaki SAPMAYI yakalamak — `verify_anchor_replicas()` —
+`verify_anchor_file()`'ın YAKALAYAMADIĞI bir boşluğu kapatıyor.** TEK bir
+çıpa dosyasının kendi iç hash zinciri (satır başına `prev_anchor_hash`)
+yalnızca o dosyanın "AYNI ZAMANDA tutarlı biçimde yeniden numaralanmadan
+DÜZENLENMEDİĞİNİ" kanıtlıyor — o TEK dosyaya yazma erişimi olan bir
+saldırgan bir satırı değiştirip SONRAKİ her satırın `prev_anchor_hash`'ini
+yeniden hesaplayarak dosyanın KENDİ zincirini yine TEMİZ doğrulatabilir
+(denetim zincirinin TAM YENIDEN YAZIMA karşı sahip olduğu AYNI zayıflık,
+bkz. bu modülün "Bu neyi korumaz" bölümü — bir seviye aşağı, çıpa
+dosyasının KENDİSİNE özyinelemeli olarak uygulanıyor). Yerel ile USB
+kopyasını KARŞILAŞTIRMAK bunu kapatıyor: ikisi BAĞIMSIZ dosyalar, ve bir
+saldırganın artık İKİSİNİ DE, AYNI ANDA, tutarlı biçimde değiştirmesi
+gerekiyor — biri, olağan durumda saldırı anında makineye TAKILI bile
+olmayan bir cihazda dururken. `verify_anchor_replicas()` iki dosyanın
+çıpa kayıtlarını okuyup İÇERİK taşıyan ortak alanları (`last_id`,
+`last_hash`, `entry_count`, `chain_start_id`, `reason`, `anchored_at`)
+ORTAK ÖNEKLERİ üzerinde SATIR SATIR karşılaştırıyor — bilerek TAM
+UZUNLUKLARI üzerinde DEĞİL, çünkü USB kopyası MEŞRU olarak daha kısa
+olabilir (token takılı değilken yapılan bir yazım yalnızca O kopyayı
+atlar, yereli değil) ve yalın bir uzunluk farkı TEK BAŞINA kurcalama
+KANITI değildir. Her dosya ayrıca KENDİ `seq`/`prev_anchor_hash`
+sırasını koruyor — bir TASARIM tercihi, bir gözden kaçırma değil: iki
+dosyayı TEK bir `seq` sayacını paylaşmaya zorlamak, USB kopyasının KENDİ
+iç-zincir kontrolünü (`verify_anchor_file()`) atladığı HER yazımdan sonra
+BAŞARISIZ hâle getirirdi — beklenen, best-effort bir boşluk için YANLIŞ
+bir alarm.
+
+**Açılışa, mevcut çıpa kontrolüyle TAM OLARAK AYNI biçimde bağlandı, daha
+FAZLASI DEĞİL.** `main.py` artık mevcut `verify_against_anchor()`
+bloğundan HEMEN sonra `verify_anchor_replicas()`'ı da çağırıyor, AYNI
+engellemeyen desenle (uyuşmazlıkta log + denetim kaydı +
+`QMessageBox.warning`, karşılaştırma başarısızlığının uygulamanın
+açılmasını asla DURDURMAMASI için kendi `try/except`'i içinde). BİLEREK
+`CORE/audit_report.py`'nin `ZincirRaporu`'na (§4.25'in imzalı-rapor/TXT/
+CSV/PDF dışa aktarım makinesi) ya da "Zincir Doğrula" düğmesine
+BAĞLANMADI — o yüzey bu turun açık isteğinin (çıpayı USB'ye yaz, iki
+kopyanın karşılaştırılabildiğini kanıtla) KAPSAMI DIŞINDAYDI ve onu içine
+katmak, İSTENMEDEN ZATEN gönderilmiş bir rapor biçimini yeniden
+tasarlamak anlamına gelirdi.
+
+**Testler GERÇEK donanıma HİÇ dokunmuyor.** Yeni bir autouse fixture,
+`isolate_usb_anchor` (`tests/conftest.py`), `CORE.usb_manager.
+get_usb_mount_root()`'u suite'teki HER test için varsayılan olarak
+None'a SABİTLİYOR — bu OLMASAYDI, `write_anchor()`'ın yeni `write_usb=True`
+varsayılanı `write_anchor()`'ı çağıran HER testte (bu turdan ÖNCE var
+olan ve USB hakkında hiçbir şey BİLMEYEN ~15 test DAHİL) GERÇEK bir WMI
+sorgusunu (ve o an gerçek bir USB'si takılı bir geliştirici makinesinde
+GERÇEK bir dosya yazımını) tetikleyebilirdi. USB yolunu ÖZEL OLARAK
+ölçen testler bu fixture'ı KENDİ İÇİNDE, `tmp_path` altında sahte bir
+bağlama köküyle geçersiz kılıyor — suite'teki HİÇBİR testte gerçek
+donanım, gerçek WMI YOK.
+
+**Mutasyonla kanıtlandı.** Çift yazımı geri almak (`write_anchor()`'ın
+USB hedefini HER ZAMAN `None`'a çözecek şekilde zorlamak) denendi ve
+yeni suite yeniden çalıştırıldı: yeni testlerin 7'si BAŞARISIZ oldu,
+bunların GERÇEKTEN USB kopyasının yazılmasına BAĞLI olduğunu kanıtladı.
+Ayrı olarak, `verify_anchor_replicas()`'ın karşılaştırılan-alan listesini
+BOŞALTMAK denendi: bir kopyayı kurcalayıp uyuşmazlığın YAKALANMASINI
+bekleyen 3 test BAŞARISIZ oldu, bu testlerin ölçtüğü şeyin yalnızca dosya
+VARLIĞI değil, alan KARŞILAŞTIRMASININ KENDİSİ olduğunu kanıtladı. Her
+iki mutasyon da işlenmeden ÖNCE geri alındı.
+
+Tam suite: 3055 passed, 4 skipped (bu turdan +25: `CORE.usb_manager.
+get_usb_mount_root()`'un KENDİ WMI-ilişki-zinciri mantığı yeni
+`tests/test_usb_mount_root.py`'de, çift-yazım/karşılaştırma davranışı
+`tests/test_audit_chain.py`'nin yeni "USB ikinci kopya" bölümünde). Ruff/mypy/
+bandit temiz — bandit'in `CORE/usb_manager.py` üzerindeki sayısı 6'dan
+7'ye çıktı, hepsi o dosyada best-effort donanım probu için ZATEN
+kullanılan AYNI kabul edilmiş desen (YENİ bir risk sınıfı değil; bandit'in
+kendi çıktısı değişiklik-öncesi commit'e karşı karşılaştırılarak
+doğrulandı).
 
 ---
 

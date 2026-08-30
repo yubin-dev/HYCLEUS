@@ -151,8 +151,14 @@ CHAIN_START_SETTING = "audit_chain_start_id"
 ANCHOR_VERSION = "HYCLEUS-ANCHOR-V1"
 ANCHOR_FILENAME = "audit_anchor.log"
 
-#: Anchor dosyasının yolunu ezen ortam değişkeni — USB'ye ya da ağ paylaşımına
-#: yönlendirmek için. Bkz. anchor_path().
+#: USB token'ın bağlama kökünde anchor dosyasının konduğu alt klasör.
+#: Bkz. usb_anchor_path().
+USB_ANCHOR_SUBDIR = "HYCLEUS"
+
+#: Yerel disk anchor dosyasının yolunu ezen ortam değişkeni — özel kurulumlar
+#: (ör. bir ağ paylaşımı) için. Bkz. anchor_path(). Genel izolasyon iddiasını
+#: TAŞIMAZ — onu otomatik USB kopyası (usb_anchor_path()) taşır; bkz. bu
+#: modülün "Anchor" başlıklı bölümündeki gerekçe.
 ANCHOR_ENV_VAR = "HYCLEUS_AUDIT_ANCHOR"
 
 _TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -655,28 +661,54 @@ def verify_audit_chain(source: Any) -> ChainVerification:
 # veritabanında saklamak hiçbir şey eklemezdi — aynı saldırı yüzeyi, aynı
 # tek yazma işlemi.
 #
-# Neden ayrı dosya
-# ----------------
-# Seçenekler: (a) ayrı append-only dosya, (b) kullanıcının USB'si,
-# (c) uzak sunucu. (c) bu projede yok — HYCLEUS tamamen çevrimdışı çalışıyor
-# ve ağ bağımlılığı eklemek tehdit modelini büyütürdü. (b) daha güçlü ama
-# USB her zaman takılı değil ve takılı değilken anchor sessizce
-# yazılmamış olurdu — "bazen çalışan" bir kontrol, olmayanından beterdir.
+# Neden ayrı dosya — VE neden TEK dosya yetmez (B-090)
+# -----------------------------------------------------
+# Seçenekler: (a) yerel diskte ayrı bir append-only dosya, (b) kullanıcının
+# USB token'ı, (c) uzak sunucu. (c) bu projede yok — HYCLEUS tamamen
+# çevrimdışı çalışıyor ve ağ bağımlılığı eklemek tehdit modelini büyütürdü.
 #
-# Bu yüzden varsayılan (a): `data/audit_anchor.log`. Kazandırdığı somut şey
-# şu — veritabanını yeniden yazan bir saldırganın artık İKİ ayrı dosyayı
-# tutarlı tutması gerekiyor ve bunlardan biri uygulamanın dışına
-# kopyalanabilir bir düz metin dosyası. Anchor'ı gerçekten ayrı bir güven
-# alanına taşımak isteyen HYCLEUS_AUDIT_ANCHOR ile dosyayı USB'ye ya da
-# salt-okunur bir paylaşıma yönlendirebilir; (b) böylece bir zorunluluk
-# değil, bir seçenek olarak duruyor.
+# Önceki tasarım YALNIZCA (a)'ya varsayılan olarak yazıyordu; (b)'yi
+# HYCLEUS_AUDIT_ANCHOR ortam değişkeniyle bir SEÇENEK olarak sunuyordu. Bu
+# YARIM bir çözümdü: env var başka bir DİZİNE yönlendiriyor olsa bile o
+# dizin genellikle AYNI diskte, AYNI dosya sisteminde duruyor —
+# veritabanına yazabilen saldırgan (bu modülün tüm tehdit modelinin
+# varsaydığı kişi) o dizine de yazabilir. Anchor'ı "veritabanının DIŞINA"
+# taşımanın kazandırdığı şey yalnızca ayrı bir DOSYA değil, ayrı bir GÜVEN
+# ALANIdır — env var'la taşınan bir dosya bunu vermiyordu.
+#
+# Bu yüzden artık (a) VE (b) BİRLİKTE, varsayılan olarak: her `write_anchor()`
+# çağrısı önce yerel diske (`data/audit_anchor.log`) yazar, SONRA o an takılı
+# USB token'ın kendi bağlama kökünde (`usb_anchor_path()`,
+# `CORE/usb_manager.py::get_usb_mount_root()`) AYNI kaydı ikinci bir kopya
+# olarak yazar. USB token HYCLEUS'ta zaten ZORUNLU bir bileşen — oturum
+# açıkken takılı olmak ZORUNDA (main_window'un `_poll_usb()`'si çıkarılınca
+# kilitliyor) — yani "ek altyapı" gerekmiyor, kimlik doğrulaması için ZATEN
+# orada duran cihaz yeniden kullanılıyor. USB kopyası fiziksel bir cihaz
+# üzerinde durduğu için makineden SÖKÜLEBİLİR — env var'lı bir dizinin asla
+# veremediği şey bu.
+#
+# USB kopyası yine de BEST-EFFORT: USB o an takılı değilse (CLI aracı,
+# DEV_MODE, USB çıkarılmışken bir arka plan görevi) yazılamaz ve bu
+# SESSİZCE atlanır — yerel disk kopyası HER ZAMAN yazılır, tek nokta
+# bağımlılığı USB kopyasına TAŞINMAZ. "Bazen çalışan" bir kontrolün hiç
+# olmamasından beter olduğu ilkesi burada da geçerli: USB kopyası yerel
+# kopyanın YERİNE değil, ONA EK bir ikinci kanıt.
+#
+# HYCLEUS_AUDIT_ANCHOR hâlâ duruyor (yerel kopyanın konumunu özel kurulumlar
+# için değiştirmek isteyenler için — ör. bir ağ paylaşımı) ama artık TEK
+# başına "izolasyon" iddiasının karşılığı DEĞİL; o iddiayı taşıyan otomatik
+# USB kopyasıdır.
 #
 # "Append-only" bu kodun disiplinidir, işletim sisteminin garantisi DEĞİL:
 # dosyaya yazabilen onu kesebilir de. Bu yüzden her satır bir öncekinin
 # hash'ini taşır (`prev_anchor_hash`) — anchor dosyasının kendisi de bir
 # zincirdir ve tek satırının değiştirilmesi `verify_anchor_file()` ile
-# yakalanır. Dosyanın kuyruğundan kesilmesini yakalayan tek şey ise dosyanın
-# makine dışına alınmış eski bir kopyasıdır.
+# yakalanır. TEK bir dosyanın kendi iç zinciri, o dosyanın TAMAMEN yeniden
+# yazılmasına karşı korumasız (zincirin kendisiyle AYNI zayıflık — yukarıdaki
+# modül docstring'inin "Bu neyi korumaz" bölümüne bakın). İki BAĞIMSIZ
+# kopyayı (yerel + USB) KARŞILAŞTIRMAK (`verify_anchor_replicas()`) bunu
+# kapatır: saldırganın ikisini de, AYNI ANDA, tutarlı biçimde değiştirmesi
+# gerekir — biri diskte, diğeri makineden SÖKÜLEBİLEN bir cihazda.
 
 
 @dataclass(frozen=True)
@@ -701,15 +733,47 @@ class AnchorCheck:
 
 def anchor_path() -> Path:
     """
-    Anchor dosyasının yolu.
+    YEREL disk anchor dosyasının yolu — iki kopyadan BİRİNCİSİ (B-090).
 
-    HYCLEUS_AUDIT_ANCHOR tanımlıysa o kullanılır (USB'ye ya da ağ
-    paylaşımına yönlendirmek için); değilse `data/audit_anchor.log`.
+    HYCLEUS_AUDIT_ANCHOR tanımlıysa o kullanılır; değilse
+    `data/audit_anchor.log`. Bu yol her hâlükârda AYNI diskte durur —
+    izolasyonu sağlayan bu DEĞİL, `usb_anchor_path()`'in döndürdüğü ikinci,
+    fiziksel olarak ayrı kopyadır.
     """
     override = os.getenv(ANCHOR_ENV_VAR)
     if override:
         return Path(override)
     return data_dir() / ANCHOR_FILENAME
+
+
+def usb_anchor_path(hwid: str | None = None) -> Path | None:
+    """
+    Takılı USB token'ın bağlama kökündeki anchor dosyasının yolu — iki
+    kopyadan İKİNCİSİ, GERÇEK izolasyonu taşıyan (B-090).
+
+    Args:
+        hwid: Hangi USB'nin arandığı. Verilmezse `get_usb_hwid()` ile o an
+              takılı olan bulunur.
+
+    Returns:
+        USB takılıysa ve bağlama kökü okunabiliyorsa
+        `<bağlama_kökü>/HYCLEUS/audit_anchor.log`; USB takılı değilse,
+        hwid okunamıyorsa ya da bağlama kökü bulunamıyorsa None.
+
+        None dönmesi bir HATA değil — çağıranın (write_anchor()) bu
+        çağrıda ikinci kopyayı yazamayacağı, yerel kopyanın yine de
+        yazılacağı anlamına gelir. Bkz. bu modülün üstündeki "Anchor"
+        bölümünün "Neden ayrı dosya" gerekçesi.
+    """
+    from CORE.usb_manager import get_usb_hwid, get_usb_mount_root
+
+    target_hwid = hwid if hwid is not None else get_usb_hwid()
+    if not target_hwid:
+        return None
+    root = get_usb_mount_root(target_hwid)
+    if root is None:
+        return None
+    return root / USB_ANCHOR_SUBDIR / ANCHOR_FILENAME
 
 
 def _utcnow() -> datetime:
@@ -749,22 +813,64 @@ def _raw_anchor_lines(path: Path) -> list[str]:
     return [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
+def _append_anchor_line(target: Path, base: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    `base`'i (DB'den türetilmiş, dosyaya ÖZGÜ olmayan alanlar) hedef
+    dosyanın KENDİ `seq`/`prev_anchor_hash` zincirine ekler.
+
+    Bilerek dosya-başına: yerel ve USB kopyaları farklı satır SAYISINA sahip
+    olabilir (USB her yazımda takılı olmayabilir — bkz. write_anchor()), bu
+    yüzden ikisi AYNI `seq` numarasını PAYLAŞMAZ; her dosya kendi iç
+    zincirinde tutarlı kalır (`verify_anchor_file()` bunu dosya başına
+    doğrular). `last_id`/`last_hash`/`entry_count`/`chain_start_id`/`reason`/
+    `anchored_at` — yani DB'den o anda okunan İÇERİK — ikisinde de AYNIdır;
+    `verify_anchor_replicas()` karşılaştırması bunlara bakar.
+    """
+    lines = _raw_anchor_lines(target)
+    record = dict(base)
+    record["seq"] = len(lines) + 1
+    record["prev_anchor_hash"] = _line_hash(lines[-1]) if lines else GENESIS_HASH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "a", encoding="utf-8", newline="\n") as fh:
+        fh.write(_serialize_anchor(record) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    return record
+
+
 def write_anchor(
     source: Any,
     reason: str,
     *,
     path: Path | None = None,
+    usb_path: Path | None = None,
+    write_usb: bool = True,
 ) -> dict[str, Any] | None:
     """
-    Zincirin o anki son hash'ini anchor dosyasına ekler.
+    Zincirin o anki son hash'ini anchor dosyasına ekler — YEREL diske HER
+    ZAMAN, takılı USB token'a da (varsayılan) İKİNCİ bir kopya olarak
+    (B-090).
 
     Args:
         reason: Neden yazıldığı — "startup" | "shutdown" | "daily" | "manual".
                 Anchor satırında saklanır; sonradan hangi olayın hangi ucu
                 sabitlediğini görebilmek için.
+        path: Yerel kopyanın hedefi. Verilmezse `anchor_path()`.
+        usb_path: USB kopyasının hedefi. Verilmezse `usb_anchor_path()` ile
+                  o an takılı USB'de bulunur; hiçbir USB bulunamazsa (ya da
+                  `write_usb=False` ise) USB kopyası hiç YAZILMAZ.
+        write_usb: USB kopyasının denenip denenmeyeceği. Varsayılan True.
 
     Returns:
-        Yazılan anchor kaydı; zincirde hiç hash'li kayıt yoksa None.
+        YEREL kopya için yazılan anchor kaydı; zincirde hiç hash'li kayıt
+        yoksa None. (USB kopyası yazılmış olsa da olmasa da dönen kayıt
+        HER ZAMAN yerel kopyayı temsil eder — geriye dönük uyumluluk için;
+        `usb_anchor_path()` ile USB kopyasının kendisi ayrıca okunabilir.)
+
+    USB kopyası BEST-EFFORT: takılı değilse ya da yazma herhangi bir
+    nedenle başarısız olursa (çıkarılmış, salt-okunur, vb.) bu SESSİZCE
+    atlanır (uyarı loglanır) — yerel kopyanın yazılması bundan ETKİLENMEZ.
+    Tek nokta bağımlılığı USB'ye TAŞINMAZ.
 
     Anchor YAZILMADAN ÖNCE zincir doğrulanmaz — bilinçli. Kırık bir zincirin
     ucunu da sabitlemek işe yarar: bir sonraki karşılaştırma "kırılma ne
@@ -788,24 +894,34 @@ def write_anchor(
         or 0
     )
 
+    base = {
+        "version": ANCHOR_VERSION,
+        "anchored_at": _utcnow().strftime(_TS_FORMAT),
+        "reason": reason,
+        "chain_start_id": chain_start_id(conn),
+        "last_id": int(row[0]),
+        "last_hash": str(row[1]),
+        "entry_count": entry_count,
+    }
+
     with _ANCHOR_LOCK:
-        lines = _raw_anchor_lines(target)
-        record = {
-            "version": ANCHOR_VERSION,
-            "anchored_at": _utcnow().strftime(_TS_FORMAT),
-            "reason": reason,
-            "seq": len(lines) + 1,
-            "prev_anchor_hash": _line_hash(lines[-1]) if lines else GENESIS_HASH,
-            "chain_start_id": chain_start_id(conn),
-            "last_id": int(row[0]),
-            "last_hash": str(row[1]),
-            "entry_count": entry_count,
-        }
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "a", encoding="utf-8", newline="\n") as fh:
-            fh.write(_serialize_anchor(record) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+        record = _append_anchor_line(target, base)
+
+        usb_target: Path | None = None
+        if write_usb:
+            usb_target = usb_path if usb_path is not None else usb_anchor_path()
+        if usb_target is not None:
+            try:
+                _append_anchor_line(usb_target, base)
+            except Exception:
+                _log.warning(
+                    "USB anchor kopyası yazılamadı — yerel kopya yine de"
+                    " yazıldı  dosya=%s",
+                    usb_target,
+                    exc_info=True,
+                )
+            else:
+                _log.info("USB anchor kopyası yazıldı  dosya=%s", usb_target)
 
     _log.info(
         "Anchor yazıldı  reason=%s  last_id=%d  hash=%.16s…  dosya=%s",
@@ -937,4 +1053,84 @@ def verify_anchor_file(path: Path | None = None) -> AnchorCheck:
 
     return AnchorCheck(
         ok=not problems, anchors_checked=len(lines), problems=problems, latest=latest
+    )
+
+
+#: `verify_anchor_replicas()`'in karşılaştırdığı alanlar — DB'den o anda
+#: okunan İÇERİK. `seq`/`prev_anchor_hash` bilerek DIŞARIDA: bunlar
+#: dosyaya ÖZGÜ (bkz. `_append_anchor_line()`), iki kopya arasında farklı
+#: olmaları BEKLENİR ve tek başına bir tutarsızlık DEĞİLDİR.
+_REPLICA_COMPARED_FIELDS: tuple[str, ...] = (
+    "last_id",
+    "last_hash",
+    "entry_count",
+    "chain_start_id",
+    "reason",
+    "anchored_at",
+)
+
+
+def verify_anchor_replicas(
+    *,
+    local_path: Path | None = None,
+    usb_path: Path | None = None,
+    hwid: str | None = None,
+) -> AnchorCheck:
+    """
+    Yerel disk anchor'ıyla USB'deki ikinci kopyayı KARŞILAŞTIRIR (B-090).
+
+    Yakaladığı şey `verify_anchor_file()`'ın yakalayamadığı bir sınıf: TEK
+    bir dosyanın kendi iç zinciri baştan sona tutarlı olabilir ama İÇERİĞİ
+    bilerek DEĞİŞTİRİLMİŞ olabilir — saldırgan değiştirdiği satırdan
+    SONRAKİ `seq`/`prev_anchor_hash` zincirini de o dosyanın İÇİNDE yeniden
+    tutarlı hâle getirebilir (zincirin kendisiyle AYNI zayıflık, bkz. modül
+    docstring'inin "Bu neyi korumaz" bölümü — TEK dosya için de geçerli).
+    Bunu yakalayan tek şey, BAĞIMSIZ bir İKİNCİ kopyayla karşılaştırmaktır:
+    saldırganın şimdi İKİSİNİ DE, aynı anda, tutarlı biçimde değiştirmesi
+    gerekir — biri diskte, diğeri makineden fiziksel olarak SÖKÜLEBİLEN bir
+    USB'de.
+
+    Karşılaştırma ORTAK ÖNEK üzerinden yapılır: iki dosya farklı SAYIDA
+    kayıt taşıyabilir (USB her `write_anchor()` çağrısında takılı
+    olmayabilir — best-effort ikinci kopya, bkz. o fonksiyonun docstring'i)
+    ve bu FARK TEK BAŞINA sorun DEĞİLDİR. Sorun, HER İKİ dosyada da VAR olan
+    bir sıradaki (satır 1 ile satır 1, satır 2 ile satır 2, ...) kaydın
+    `_REPLICA_COMPARED_FIELDS`'teki alanlarının UYUŞMAMASIDIR — bu, o
+    ortak-önek konumunda iki kopyadan birinin BAĞIMSIZ olarak değiştirildiği
+    anlamına gelir (hangisinin değiştirildiği bu karşılaştırmadan tek başına
+    ÇIKARILAMAZ — `verify_against_anchor()`'ı HER İKİ dosyayla ayrı ayrı
+    çalıştırmak veritabanıyla hangisinin uyuştuğunu gösterir).
+
+    `usb_path` verilmezse `usb_anchor_path(hwid)` ile o an takılı USB'de
+    bulunur. USB kopyası hiç yoksa (dosya yok, ya da USB o an takılı değil)
+    ya da yerel kopya boşsa `anchors_checked=0` ile `ok=True` döner —
+    karşılaştırılacak bir şey yok; bu "tutarlı" değil "ölçülmedi" anlamına
+    gelir (bkz. `AnchorCheck.summary()`'nin aynı ayrımı).
+    """
+    local_target = local_path or anchor_path()
+    local_records = read_anchors(local_target)
+
+    usb_target = usb_path if usb_path is not None else usb_anchor_path(hwid)
+    usb_records = read_anchors(usb_target) if usb_target is not None else []
+
+    if not local_records or not usb_records:
+        return AnchorCheck(ok=True, anchors_checked=0, problems=[], latest=None)
+
+    problems: list[str] = []
+    ortak = min(len(local_records), len(usb_records))
+
+    for index in range(ortak):
+        yerel = local_records[index]
+        usb = usb_records[index]
+        farklar = [
+            f"{alan}: yerel {yerel.get(alan)!r}, USB {usb.get(alan)!r}"
+            for alan in _REPLICA_COMPARED_FIELDS
+            if yerel.get(alan) != usb.get(alan)
+        ]
+        if farklar:
+            problems.append(f"Satır {index + 1} iki kopyada FARKLI — " + "; ".join(farklar))
+
+    latest = local_records[ortak - 1]
+    return AnchorCheck(
+        ok=not problems, anchors_checked=ortak, problems=problems, latest=latest
     )

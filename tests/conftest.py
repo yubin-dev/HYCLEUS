@@ -184,6 +184,28 @@ def isolate_audit_anchor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     return isolated
 
 
+@pytest.fixture(autouse=True)
+def isolate_usb_anchor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Denetim çıpasının USB kopyasını (B-090) varsayılan olarak KAPATIR.
+
+    `CORE.audit_chain.write_anchor()` artık `write_usb=True` varsayılanıyla
+    her çağrıda GERÇEK bir WMI sorgusu (`CORE.usb_manager.
+    get_usb_mount_root()`) tetikleyebiliyor — bu korunmasaydı, testleri
+    çalıştıran geliştiricinin makinesine o an takılı GERÇEK bir USB'ye
+    sessizce `HYCLEUS/audit_anchor.log` yazılabilirdi. `isolate_totp_file`/
+    `isolate_audit_anchor` ile AYNI gerekçe: testler gerçek donanıma
+    DOKUNMAMALI.
+
+    USB çıpa davranışını özel olarak ölçen testler (`tests/
+    test_audit_chain.py`) bunu KENDİ İÇİNDE ayrıca monkeypatch'leyerek
+    (sahte bir bağlama kökü döndürerek) geçersiz kılıyor.
+    """
+    from CORE import usb_manager
+
+    monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: None)
+
+
 @pytest.fixture
 def use_keyring_backend():
     """Test içinde keyring arka ucunu değiştirmek için yardımcı (teardown fake_keyring'de)."""

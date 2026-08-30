@@ -34,7 +34,7 @@ import os
 import re
 import sys
 import uuid
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
 
 _log = logging.getLogger("hycleus.usb")
 
@@ -215,6 +215,56 @@ def get_usb_hwid() -> str | None:
                 hwid = _sanitize_hwid(serial)
                 if hwid:
                     return hwid
+    except Exception:
+        pass
+
+    return None
+
+
+def get_usb_mount_root(hwid: str) -> Path | None:
+    """
+    `hwid`'e sahip takılı USB'nin bağlama kökünü (sürücü harfi, ör.
+    `Path("E:\\\\")`) döndürür; bulunamazsa None.
+
+    Neden var — `CORE/audit_chain.py`'nin denetim çıpasına ikinci, GERÇEKTEN
+    izole bir kopya için (B-090). `get_usb_hwid()` yalnızca donanım
+    KİMLİĞİNİ (depolama serisi, WMI `Win32_DiskDrive.SerialNumber`) okuyor —
+    bu modül bugüne kadar USB'nin kendi dosya sistemine hiç YAZMADI. Bir
+    dosya yazabilmek için ayrı bir WMI sorgusuyla o diskin bağlama kökünü
+    (sürücü harfini) bulmak gerekiyor.
+
+    `hwid` NEDEN parametre, "ilk USB" değil: birden fazla USB takılıyken
+    (`get_usb_hwid()`'in kendi basitleştirmesi — "ilki alınır") kimlik ve
+    bağlama kökü İKİ AYRI WMI sorgusundan geliyor; hwid'i tekrar
+    eşleştirmeden "ilk USB diski" ile "ilk USB'nin bağlama kökü" farklı
+    fiziksel cihazlara denk gelebilirdi. Eşleştirme aynı `_sanitize_hwid()`
+    üzerinden yapılıyor ki `get_usb_hwid()`'in zayıf-bağlama (UUID yedeği)
+    durumuyla da tutarlı kalsın.
+
+    DEV_MODE'da (gerçek donanım yok, `get_usb_hwid()` sabit `_DEV_HWID`
+    döner) eşleşecek gerçek bir disk YOKTUR — None döner. WMI hiç
+    yoksa/başarısız olursa da (Linux CI, wmi paketi kurulu değil, vb.)
+    sessizce None döner; `get_usb_hwid()` ile AYNI "best-effort, hata değil"
+    disiplini (bkz. o fonksiyonun docstring'i).
+    """
+    if DEV_MODE and not hasattr(sys, "frozen"):
+        return None
+
+    try:
+        import wmi  # type: ignore[import]
+        for disk in wmi.WMI().Win32_DiskDrive():
+            if getattr(disk, "InterfaceType", "") != "USB":
+                continue
+            serial = getattr(disk, "SerialNumber", "")
+            if not serial or serial == "?":
+                continue
+            if _sanitize_hwid(str(serial)) != hwid:
+                continue
+            for partition in disk.associators("Win32_DiskDriveToDiskPartition"):
+                for logical_disk in partition.associators("Win32_LogicalDiskToPartition"):
+                    device_id = getattr(logical_disk, "DeviceID", None)
+                    if device_id:
+                        return Path(f"{device_id}\\")
     except Exception:
         pass
 

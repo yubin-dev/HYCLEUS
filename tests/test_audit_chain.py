@@ -37,8 +37,10 @@ from CORE.audit_chain import (
     link_statuses,
     maybe_write_daily_anchor,
     read_anchors,
+    usb_anchor_path,
     verify_against_anchor,
     verify_anchor_file,
+    verify_anchor_replicas,
     verify_audit_chain,
     write_anchor,
 )
@@ -968,3 +970,348 @@ def test_link_status_YENI_hash_hesaplamiyor_SADECE_breaks_i_okuyor(db, monkeypat
     monkeypatch.setattr(modul, "compute_entry_hash", _casus)
     link_statuses(sonuc, ids)
     assert not cagrildi, "link_statuses() kendi hash hesaplamasını yapıyor"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 10. USB ikinci kopyası — çıpanın GERÇEK izolasyonu (B-090)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `isolate_usb_anchor` (tests/conftest.py, autouse) varsayılan olarak
+# `CORE.usb_manager.get_usb_mount_root()`'u None'a SABİTLİYOR — bu dosyanın
+# dışındaki HİÇBİR testin gerçek bir WMI sorgusu tetiklememesi (ve GERÇEK
+# takılı bir USB'ye sessizce dosya yazmaması) için. Bu bölümdeki testler
+# "USB takılı" durumunu SİMÜLE ETMEK üzere `sahte_usb_anchor` fixture'ıyla
+# o fonksiyonu kendi içinde AYRICA monkeypatch'liyor — gerçek donanıma
+# hiçbir testte dokunulmuyor. `get_usb_mount_root()`'un KENDİ WMI ayrıştırma
+# mantığı `tests/test_usb_mount_root.py`'de ayrı ayrı kanıtlanıyor; burada
+# ölçülen şey `CORE/audit_chain.py`'nin o fonksiyonu NASIL KULLANDIĞI.
+
+
+@pytest.fixture
+def sahte_usb_anchor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """
+    "USB takılı" durumunu simüle eder: `get_usb_hwid()` sabit bir hwid,
+    `get_usb_mount_root()` `tmp_path` altında sahte bir bağlama kökü
+    döndürür. Döner değer o sahte bağlama kökü — testler USB anchor
+    dosyasının GERÇEKTEN `<kök>/HYCLEUS/audit_anchor.log`'da durduğunu
+    buradan doğrulayabilir.
+    """
+    from CORE import usb_manager
+
+    kok = tmp_path / "sahte_usb_koku"
+    kok.mkdir()
+    monkeypatch.setattr(usb_manager, "get_usb_hwid", lambda: "SAHTE-USB-HWID")
+    monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: kok)
+    return kok
+
+
+def _usb_capa_yolu(kok: Path) -> Path:
+    return kok / "HYCLEUS" / "audit_anchor.log"
+
+
+def test_usb_anchor_path_none_when_no_usb_present(db) -> None:
+    """Varsayılan (autouse) durumda — USB simüle edilmemiş — None döner."""
+    assert usb_anchor_path() is None
+    assert usb_anchor_path(hwid="HERHANGI-BIR-HWID") is None
+
+
+def test_usb_anchor_path_resolves_under_the_mount_root(sahte_usb_anchor: Path) -> None:
+    assert usb_anchor_path() == _usb_capa_yolu(sahte_usb_anchor)
+
+
+def test_usb_anchor_path_explicit_hwid_skips_get_usb_hwid(
+    monkeypatch: pytest.MonkeyPatch, sahte_usb_anchor: Path
+) -> None:
+    """`hwid=` verilince `get_usb_hwid()`'in HİÇ çağrılmaması gerekiyor —
+    çağrılırsa test patlar."""
+    from CORE import usb_manager
+
+    def _patlar():
+        raise AssertionError("get_usb_hwid() çağrılmamalıydı — hwid zaten verildi")
+
+    monkeypatch.setattr(usb_manager, "get_usb_hwid", _patlar)
+    assert usb_anchor_path(hwid="ELLE-VERILEN-HWID") == _usb_capa_yolu(sahte_usb_anchor)
+
+
+def test_write_anchor_writes_an_identical_second_copy_to_usb(
+    db, tmp_path: Path, sahte_usb_anchor: Path
+) -> None:
+    """
+    B-090'ın çekirdek iddiası: USB takılıyken `write_anchor()` YEREL diske
+    yazdığı kaydın AYNI DB-türetilmiş içeriğini (last_id/last_hash/
+    entry_count/chain_start_id/reason/anchored_at) USB'ye de yazar.
+    """
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 5)
+
+    yerel_kayit = write_anchor(db.conn, "test", path=yerel_capa)
+    assert yerel_kayit is not None
+
+    usb_kayitlari = read_anchors(_usb_capa_yolu(sahte_usb_anchor))
+    assert len(usb_kayitlari) == 1
+    usb_kayit = usb_kayitlari[0]
+
+    for alan in (
+        "last_id", "last_hash", "entry_count", "chain_start_id", "reason", "anchored_at",
+    ):
+        assert usb_kayit[alan] == yerel_kayit[alan], f"{alan} iki kopyada farklı"
+
+    # Her dosya kendi seq/prev_anchor_hash zincirine sahip — ikisi de İLK
+    # satır olduğu için burada seq=1/GENESIS PAYLAŞILIYOR ama bu bir
+    # tesadüf: aşağıdaki test dosyaların BAĞIMSIZ zincirlere sahip
+    # olduğunu (farklı seq'lerle) kanıtlıyor.
+    assert usb_kayit["seq"] == 1
+    assert usb_kayit["prev_anchor_hash"] == GENESIS_HASH
+
+
+def test_write_anchor_usb_and_local_keep_independent_seq_chains(
+    db, tmp_path: Path, sahte_usb_anchor: Path
+) -> None:
+    """
+    USB, İKİNCİ yazımda takılı DEĞİLSE (best-effort — bkz. write_anchor()
+    docstring'i) yerel dosya 2 satıra, USB dosyası 1 satırda kalır; SONRAKİ
+    bir yazımda USB tekrar takılıyken o dosyanın `seq`'i KENDİ satır
+    sayısından devam eder (2 değil, 2 — çünkü 1 satırı vardı), yerelinkinden
+    BAĞIMSIZ.
+    """
+    from CORE import usb_manager
+
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 2)
+    write_anchor(db.conn, "birinci", path=yerel_capa)  # USB takılı
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: None)
+        _log_many(db, 2)
+        write_anchor(db.conn, "ikinci", path=yerel_capa)  # USB TAKILI DEĞİL
+    finally:
+        monkeypatch.undo()
+
+    _log_many(db, 2)
+    write_anchor(db.conn, "ucuncu", path=yerel_capa)  # USB tekrar takılı
+
+    yerel_kayitlar = read_anchors(yerel_capa)
+    usb_kayitlar = read_anchors(_usb_capa_yolu(sahte_usb_anchor))
+
+    assert [k["reason"] for k in yerel_kayitlar] == ["birinci", "ikinci", "ucuncu"]
+    assert [k["seq"] for k in yerel_kayitlar] == [1, 2, 3]
+
+    # USB'de yalnızca "ikinci" atlanmış İKİ kayıt var, ama KENDİ seq'i 1, 2.
+    assert [k["reason"] for k in usb_kayitlar] == ["birinci", "ucuncu"]
+    assert [k["seq"] for k in usb_kayitlar] == [1, 2]
+
+
+def test_write_anchor_usb_absent_does_not_block_local_write(db, tmp_path: Path) -> None:
+    """USB hiç simüle edilmemiş (autouse fixture None'a sabitliyor) —
+    yerel yazım yine de başarılı olmalı, hiçbir USB dosyası oluşmamalı."""
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 3)
+
+    kayit = write_anchor(db.conn, "test", path=yerel_capa)
+    assert kayit is not None
+    assert yerel_capa.exists()
+    # Testin kendi tmp_path'i dışında hiçbir yere yazılmadığını dolaylı
+    # doğrulamanın bir yolu yok — ama en azından "HYCLEUS" adlı bir alt
+    # klasör tmp_path altında OLUŞMAMALI (usb_anchor_path() None döndüğü
+    # için hiç denenmedi).
+    assert not any(tmp_path.rglob("HYCLEUS"))
+
+
+def test_write_anchor_usb_write_failure_does_not_break_local_write(
+    monkeypatch: pytest.MonkeyPatch, db, tmp_path: Path
+) -> None:
+    """
+    USB'ye yazma HERHANGİ bir nedenle patlarsa (burada: bağlama kökü
+    olarak verilen yol aslında bir DOSYA, dizin değil — `mkdir()` bu
+    yüzden `NotADirectoryError`/`OSError` fırlatır) yerel kopya YİNE DE
+    yazılmalı ve `write_anchor()` hiçbir istisna FIRLATMAMALI.
+    """
+    from CORE import usb_manager
+
+    bozuk_kok = tmp_path / "bozuk_usb_koku"
+    bozuk_kok.write_text("ben bir dosyayım, dizin değilim", encoding="utf-8")
+    monkeypatch.setattr(usb_manager, "get_usb_hwid", lambda: "X")
+    monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: bozuk_kok)
+
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 3)
+
+    kayit = write_anchor(db.conn, "test", path=yerel_capa)  # İSTİSNA FIRLATMAMALI
+
+    assert kayit is not None
+    assert len(read_anchors(yerel_capa)) == 1
+
+
+def test_write_usb_false_skips_usb_copy_even_if_available(
+    db, tmp_path: Path, sahte_usb_anchor: Path
+) -> None:
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 2)
+
+    write_anchor(db.conn, "test", path=yerel_capa, write_usb=False)
+
+    assert not _usb_capa_yolu(sahte_usb_anchor).exists()
+
+
+# ── verify_anchor_replicas() — iki kopyayı KARŞILAŞTIRMAK ─────────────────────
+
+
+def test_verify_anchor_replicas_ok_when_both_copies_match(
+    db, tmp_path: Path, sahte_usb_anchor: Path
+) -> None:
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 4)
+    write_anchor(db.conn, "startup", path=yerel_capa)
+    _log_many(db, 2)
+    write_anchor(db.conn, "shutdown", path=yerel_capa)
+
+    sonuc = verify_anchor_replicas(
+        local_path=yerel_capa, usb_path=_usb_capa_yolu(sahte_usb_anchor)
+    )
+    assert sonuc
+    assert sonuc.anchors_checked == 2
+    assert sonuc.problems == []
+
+
+def test_verify_anchor_replicas_neutral_when_usb_copy_missing(db, tmp_path: Path) -> None:
+    """USB kopyası hiç yoksa — 'tutarlı' DEĞİL 'ölçülmedi': ok=True ama
+    anchors_checked=0, `verify_against_anchor()`'ın aynı ayrımıyla TUTARLI."""
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 3)
+    write_anchor(db.conn, "test", path=yerel_capa)
+
+    sonuc = verify_anchor_replicas(
+        local_path=yerel_capa, usb_path=tmp_path / "yok" / "audit_anchor.log"
+    )
+    assert sonuc.anchors_checked == 0
+    assert sonuc.ok is True
+    assert "bulunamadı" in sonuc.summary() or "yok" in sonuc.summary()
+
+
+def test_verify_anchor_replicas_neutral_when_local_copy_missing(
+    db, tmp_path: Path, sahte_usb_anchor: Path
+) -> None:
+    """Simetrik durum: yerel kopya yoksa da aynı şekilde 'ölçülmedi'."""
+    _log_many(db, 3)
+    write_anchor(db.conn, "test", path=tmp_path / "yerel.log", usb_path=_usb_capa_yolu(sahte_usb_anchor))
+
+    sonuc = verify_anchor_replicas(
+        local_path=tmp_path / "hic_yazilmadi.log", usb_path=_usb_capa_yolu(sahte_usb_anchor)
+    )
+    assert sonuc.anchors_checked == 0
+    assert sonuc.ok is True
+
+
+def test_verify_anchor_replicas_different_lengths_still_ok_on_overlap(
+    db, tmp_path: Path, sahte_usb_anchor: Path
+) -> None:
+    """
+    USB, en SON yazımda takılı DEĞİLDİ (best-effort) — yerel dosyada 3,
+    USB dosyasında 2 kayıt var. Bu SAYI farkı TEK BAŞINA bir tutarsızlık
+    DEĞİL: karşılaştırma yalnızca ORTAK ÖNEĞE bakmalı ve orada hiçbir
+    fark bulmamalı.
+    """
+    from CORE import usb_manager
+
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 2)
+    write_anchor(db.conn, "birinci", path=yerel_capa)
+    _log_many(db, 2)
+    write_anchor(db.conn, "ikinci", path=yerel_capa)
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: None)
+        _log_many(db, 2)
+        write_anchor(db.conn, "ucuncu", path=yerel_capa)  # USB TAKILI DEĞİL
+    finally:
+        monkeypatch.undo()
+
+    sonuc = verify_anchor_replicas(
+        local_path=yerel_capa, usb_path=_usb_capa_yolu(sahte_usb_anchor)
+    )
+    assert sonuc
+    assert sonuc.anchors_checked == 2  # yalnızca ortak önek
+    assert sonuc.problems == []
+
+
+def _usb_capa_satirini_degistir(usb_capa: Path, index: int, **degisiklikler) -> None:
+    """USB anchor dosyasının `index`'inci (0-tabanlı) JSON satırını,
+    saldırganın dosyaya doğrudan erişimini simüle ederek değiştirir."""
+    satirlar = usb_capa.read_text(encoding="utf-8").splitlines()
+    kayit = json.loads(satirlar[index])
+    kayit.update(degisiklikler)
+    satirlar[index] = json.dumps(kayit, sort_keys=True, separators=(",", ":"))
+    usb_capa.write_text("\n".join(satirlar) + "\n", encoding="utf-8")
+
+
+def test_verify_anchor_replicas_catches_usb_copy_tampered(
+    db, tmp_path: Path, sahte_usb_anchor: Path
+) -> None:
+    """
+    B-090'ın asıl kanıtı: USB kopyası TEK BAŞINA (yereldeki dosyaya hiç
+    dokunmadan) değiştirilirse, iki dosyanın kendi iç zinciri
+    (`verify_anchor_file()`) hâlâ SAĞLAM görünür — saldırgan yalnızca o
+    TEK dosyanın içeriğini değiştirdi, o dosyanın kendi seq/
+    prev_anchor_hash zinciri bozulmadı. Bunu yakalayan TEK şey yerelle
+    KARŞILAŞTIRMAKTIR.
+    """
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 4)
+    write_anchor(db.conn, "test", path=yerel_capa)
+    usb_capa = _usb_capa_yolu(sahte_usb_anchor)
+
+    # USB'nin kendi iç zinciri hâlâ sağlam — sahte bir last_hash yazıldı.
+    _usb_capa_satirini_degistir(usb_capa, 0, last_hash="0" * 64)
+
+    assert verify_anchor_file(usb_capa), "tamponlama testi hatalı kuruldu — bu SAĞLAM olmalıydı"
+
+    sonuc = verify_anchor_replicas(local_path=yerel_capa, usb_path=usb_capa)
+    assert not sonuc
+    assert sonuc.anchors_checked == 1
+    assert any("last_hash" in p and "Satır 1" in p for p in sonuc.problems)
+
+
+def test_verify_anchor_replicas_catches_local_copy_tampered(
+    db, tmp_path: Path, sahte_usb_anchor: Path
+) -> None:
+    """Simetrik durum: bu sefer YEREL kopya tek başına değiştiriliyor —
+    karşılaştırma hangi tarafın değiştiğine bakmaksızın farkı yakalamalı."""
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 4)
+    write_anchor(db.conn, "test", path=yerel_capa)
+
+    satirlar = yerel_capa.read_text(encoding="utf-8").splitlines()
+    kayit = json.loads(satirlar[0])
+    kayit["entry_count"] = 999
+    satirlar[0] = json.dumps(kayit, sort_keys=True, separators=(",", ":"))
+    yerel_capa.write_text("\n".join(satirlar) + "\n", encoding="utf-8")
+
+    assert verify_anchor_file(yerel_capa), "tamponlama testi hatalı kuruldu — bu SAĞLAM olmalıydı"
+
+    sonuc = verify_anchor_replicas(
+        local_path=yerel_capa, usb_path=_usb_capa_yolu(sahte_usb_anchor)
+    )
+    assert not sonuc
+    assert any("entry_count" in p and "Satır 1" in p for p in sonuc.problems)
+
+
+def test_verify_anchor_replicas_multiple_rows_only_tampered_one_flagged(
+    db, tmp_path: Path, sahte_usb_anchor: Path
+) -> None:
+    """Birden fazla satır varken yalnızca DEĞİŞEN satır raporlanmalı —
+    dokunulmayanlar hakkında YANLIŞ bir şikayet üretilmemeli."""
+    yerel_capa = tmp_path / "yerel.log"
+    for tur in ("birinci", "ikinci", "ucuncu"):
+        _log_many(db, 2)
+        write_anchor(db.conn, tur, path=yerel_capa)
+    usb_capa = _usb_capa_yolu(sahte_usb_anchor)
+
+    _usb_capa_satirini_degistir(usb_capa, 1, last_id=1)  # yalnızca ORTADAKİ satır
+
+    sonuc = verify_anchor_replicas(local_path=yerel_capa, usb_path=usb_capa)
+    assert not sonuc
+    assert sonuc.anchors_checked == 3
+    assert len(sonuc.problems) == 1
+    assert "Satır 2" in sonuc.problems[0]

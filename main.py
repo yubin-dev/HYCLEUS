@@ -88,6 +88,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from CORE.audit_chain import (
     maybe_write_daily_anchor,
     verify_against_anchor,
+    verify_anchor_replicas,
     write_anchor,
 )
 from CORE.console import ensure_utf8_console
@@ -417,6 +418,33 @@ def main() -> None:
         maybe_write_daily_anchor(DBManager())
     except Exception as exc:  # çıpa sorunu açılışı engellemesin
         _log.warning("Denetim çıpası işlenemedi: %s", exc)
+
+    # ── İki çıpa kopyası birbiriyle tutarlı mı — yerel disk + USB (B-090) ───
+    # `verify_against_anchor()` yalnızca YEREL kopyayla veritabanını
+    # karşılaştırıyor; TEK dosyanın kendi içinde tutarlı ama İÇERİĞİ
+    # değiştirilmiş olma ihtimalini (bkz. CORE/audit_chain.py'nin "Bu neyi
+    # korumaz" bölümü) yalnızca BAĞIMSIZ bir ikinci kopyayla karşılaştırmak
+    # yakalar. USB o an takılı değilse (anchors_checked=0) sessizce geçilir —
+    # bu bir hata değil, "ölçülmedi" (bkz. verify_anchor_replicas()).
+    try:
+        replika_kontrolu = verify_anchor_replicas()
+        if replika_kontrolu.anchors_checked and not replika_kontrolu:
+            _log.critical("Çıpa kopyaları uyuşmuyor:\n%s", replika_kontrolu.summary())
+            DBManager().log(
+                "audit_anchor_replica_mismatch",
+                detail=" | ".join(replika_kontrolu.problems),
+            )
+            QMessageBox.warning(
+                None,
+                "Denetim Çıpası Kopyaları Uyuşmuyor",
+                "Yerel diskteki denetim çıpası ile USB token'daki kopyası\n"
+                "birbirinden farklı — biri değiştirilmiş olabilir.\n\n"
+                f"{replika_kontrolu.summary()}\n\n"
+                "Uygulama açılmaya devam ediyor; bu bir erişim engeli değil,\n"
+                "bir kurcalama uyarısıdır.",
+            )
+    except Exception as exc:  # çıpa karşılaştırması açılışı engellemesin
+        _log.warning("Çıpa kopyaları karşılaştırılamadı: %s", exc)
 
     # ── SafeZone artakalan temizliği ─────────────────────────────────────────
     # SafeZone'da dosya bulmak, önceki oturumun DÜZGÜN KAPANMADIĞI anlamına

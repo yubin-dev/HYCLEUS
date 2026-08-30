@@ -6999,3 +6999,80 @@ yalnızca değişiklik-öncesiyle AYNI sayıda pre-existing PySide6-stub
 doğrulandı).
 
 ---
+
+## B-090 — Denetim çıpasının izolasyonunu GERÇEK yaptı: env var'lı yönlendirme yerine USB token'a otomatik ikinci kopya + iki kopyayı karşılaştıran doğrulama
+
+Görev: Denetim zinciri dış çıpasını gerçek bir izolasyona taşı — env var
+ile başka dizine yazmak yarım çözüm (aynı dosya sistemi, aynı saldırgan).
+Çıpayı, zaten takılı olan USB token'a da yaz (ek altyapı gerektirmiyor,
+mevcut USB zaten var). Test: çıpanın hem yerel diskte hem USB'de tutarlı
+olduğunu, biri bozulursa diğeriyle karşılaştırmanın bunu yakaladığını
+doğrula.
+
+**Sorun — kanıtlandı.** `HYCLEUS_AUDIT_ANCHOR` ortam değişkeni çıpa
+dosyasını BAŞKA bir dizine taşıyabiliyordu ama o dizin genellikle AYNI
+diskte duruyor — veritabanına yazabilen saldırganın (bu modülün TANIMLADIĞI
+tehdit modeli) zaten yazma erişimi olduğu AYNI güven sınırı. Gerçek
+izolasyon fiziksel olarak AYRI bir cihaz gerektiriyordu.
+
+**Çözüm — iki yeni yetenek.**
+  1. `CORE/usb_manager.py::get_usb_mount_root(hwid)` — bu modül bugüne
+     kadar USB'nin dosya sistemine HİÇ YAZMAMIŞTI (yalnızca WMI'dan
+     donanım KİMLİĞİ okuyordu). WMI'ın disk→bölüm→mantıksal-disk ilişki
+     zincirini kullanarak `hwid`'e sahip diskin SÜRÜCÜ HARFİNİ buluyor —
+     "ilk USB" değil, `get_usb_hwid()`'in belirlediği AYNI fiziksel diski
+     (birden fazla USB takılıyken yanlış sürücüye yazmamak için).
+  2. `CORE/audit_chain.py::write_anchor()` artık `write_usb=True`
+     varsayılanıyla YEREL kopyayı YAZDIĞI GİBİ, o an takılı USB'ye de
+     (`usb_anchor_path()`, `<bağlama_kökü>/HYCLEUS/audit_anchor.log`)
+     AYNI DB-türetilmiş içerikle bir ikinci kopya yazıyor. USB o an
+     takılı değilse ya da yazım başarısız olursa BEST-EFFORT sessizce
+     atlanıyor — yerel kopyanın yazımı bundan HİÇ etkilenmiyor. HYCLEUS
+     zaten kimlik doğrulanmış bir oturum için USB'yi ZORUNLU kıldığından
+     (çıkarılınca kilitliyor), ek altyapı GEREKMEDİ.
+
+**Yeni doğrulama — `verify_anchor_replicas()`.** Tek bir çıpa dosyasının
+kendi iç zinciri (`verify_anchor_file()`) yalnızca o dosyanın TUTARLI
+biçimde yeniden numaralanmadan değiştirilmediğini kanıtlıyor — o dosyaya
+yazabilen bir saldırgan bir satırı değiştirip SONRAKİ tüm
+`prev_anchor_hash`'i yeniden hesaplayarak dosyanın KENDİ zincirini yine
+temiz doğrulatabilir (zincirin TAM YENİDEN YAZIMA karşı sahip olduğu AYNI
+zayıflık, bir seviye aşağıda). `verify_anchor_replicas()` yerel ve USB
+kopyalarının içerik alanlarını (`last_id`/`last_hash`/`entry_count`/
+`chain_start_id`/`reason`/`anchored_at`) ORTAK ÖNEKLERİ üzerinde
+karşılaştırıyor — uzunluk farkı TEK BAŞINA sorun değil (USB best-effort,
+bazı yazımları KAÇIRABİLİR), ama ORTAK bir konumdaki İÇERİK farkı
+kurcalamanın kanıtı. `main.py` açılışına, mevcut `verify_against_anchor()`
+kontrolüyle AYNI engellemeyen desenle bağlandı; `CORE/audit_report.py`'nin
+imzalı-rapor makinesine ya da "Zincir Doğrula" düğmesine BİLEREK
+bağlanmadı — bu turun kapsamı dışındaydı.
+
+**Testler gerçek donanıma DOKUNMUYOR.** Yeni autouse `isolate_usb_anchor`
+(`tests/conftest.py`) `get_usb_mount_root()`'u TÜM suite için None'a
+sabitliyor — bu olmasaydı `write_anchor()`'ın yeni varsayılanı HER testte
+(bu turdan önceki ~15 test DAHİL) gerçek bir WMI sorgusu tetikleyebilirdi.
+Yeni `tests/test_usb_mount_root.py` (9 test) `get_usb_mount_root()`'un
+WMI ilişki-zinciri mantığını `tests/test_hwid_probe.py`'nin ZATEN kurduğu
+sahte-WMI desenini genişleterek ölçüyor. `tests/test_audit_chain.py`'ye
+eklenen "USB ikinci kopya" bölümü (17 test) çift yazımı, dosya-başına
+BAĞIMSIZ seq zincirlerini, USB yokken/yazım başarısız olduğunda yerel
+kopyanın ETKİLENMEDİĞİNİ, ve — görevin asıl istediği — **iki kopyanın
+tutarlı olduğunu VE birini kurcalamanın diğeriyle karşılaştırılınca
+YAKALANDIĞINI** (hem USB tarafı hem yerel taraf kurcalanarak, simetrik
+olarak) kanıtlıyor.
+
+**Mutasyonla kanıtlandı.** Çift yazımı geri almak (USB hedefini HER ZAMAN
+`None`'a zorlamak) 7 testi kırdı; `verify_anchor_replicas()`'ın
+karşılaştırılan-alan listesini boşaltmak kurcalama-yakalama testlerinin
+3'ünü kırdı. İkisi de geri alındı.
+
+SECURITY.md §4.27'ye (EN+TR) eklendi.
+
+Tam test suite: 3055 passed, 4 skipped (bir önceki turdan +25 — yeni
+`tests/test_usb_mount_root.py` ve `tests/test_audit_chain.py`'ye eklenen
+"USB ikinci kopya" bölümündeki testler). Ruff/mypy temiz; bandit'in
+`CORE/usb_manager.py` üzerindeki bulgu sayısı 6'dan 7'ye çıktı — hepsi
+best-effort donanım probu için ZATEN kabul edilmiş AYNI `try/except/pass`
+deseni (`git stash` ile karşılaştırılıp doğrulandı).
+
+---
