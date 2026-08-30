@@ -33,6 +33,7 @@ except ImportError as _exc:  # pragma: no cover — ortama bağlı
     )
 
 from CORE import vault_manager
+from CORE.pin_policy import PIN_MAX_LEN
 
 
 @pytest.fixture(scope="module")
@@ -143,6 +144,80 @@ def test_clear_tum_kutulari_bosaltiyor(kutu: _PinBoxInput) -> None:
     assert kutu.text() == ""
     for k in kutu._kutular:
         assert k.text() == ""
+
+
+@pytest.mark.parametrize(
+    "pin",
+    [
+        pytest.param("123456", id="tam-6-hane"),
+        pytest.param("1234", id="kisa-4-hane-legacy"),
+        pytest.param("12345", id="5-hane"),
+        pytest.param("12345678901234", id="uzun-14-karakter"),
+        pytest.param("AbC-12!xZ", id="rakam-disi-karakterler"),
+    ],
+)
+def test_setText_text_round_trip_karakter_kaybi_olmadan(kutu: _PinBoxInput, pin: str) -> None:
+    """setText(pin) ile ayarlanan PIN, .text() ile BİREBİR (kayıpsız, sırasız değil) geri okunmalı."""
+    kutu.setText(pin)
+    assert kutu.text() == pin
+
+
+def test_son_kutunun_gercek_bir_maxLength_siniri_var(kutu: _PinBoxInput) -> None:
+    """
+    Son kutucuk SINIRSIZ değil: `PIN_MAX_LEN` (`CORE/pin_policy.py`) ile
+    sınırlı — bkz. `UI/login_dialog.py::_PinBoxInput.__init__`,
+    `kutu.setMaxLength(1 if i < 5 else PIN_MAX_LEN)`. İlk 5 kutu ise
+    gerçekten 1 karakterle sınırlı (dağıtımın çalışması bunu gerektiriyor).
+    """
+    son_kutu = kutu._kutular[-1]
+    assert son_kutu.maxLength() == PIN_MAX_LEN
+    for onceki in kutu._kutular[:-1]:
+        assert onceki.maxLength() == 1
+
+
+def test_uzun_pin_setText_ile_tasan_karakterleri_kesmiyor(kutu: _PinBoxInput) -> None:
+    """
+    15+ karakterlik bir PIN'in son kutuya taşan kısmı (yalnızca ~9-10
+    karakter) `PIN_MAX_LEN`'in (32) ÇOK altında kalır — setText() yolunda
+    hiçbir karakter sessizce kesilmemeli.
+    """
+    uzun_pin = "AB123456789012"  # 14 karakter; tasan kisim (6. kutudan sonrasi) 9 karakter
+    kutu.setText(uzun_pin)
+    assert kutu.text() == uzun_pin
+    assert kutu._kutular[-1].text() == uzun_pin[5:]
+
+
+def test_uzun_pin_yapistirma_ile_tasan_karakterleri_kesmiyor(kutu: _PinBoxInput) -> None:
+    """Aynı doğrulama, paste() yolunda — kullanıcı 15+ karakterlik PIN'i yapıştırırsa."""
+    uzun_pin = "ZZ987654321098"  # 14 karakter
+    QApplication.clipboard().setText(uzun_pin)
+    kutu._kutular[0].setFocus()
+    kutu._kutular[0].paste()
+
+    assert kutu.text() == uzun_pin
+    assert kutu._kutular[-1].text() == uzun_pin[5:]
+
+
+def test_pin_max_len_asilinca_son_kutu_gercekten_kesiyor(kutu: _PinBoxInput) -> None:
+    """
+    Sınırın YALNIZCA `maxLength()` değeriyle değil GERÇEK DAVRANIŞLA var
+    olduğunu kanıtlar: toplam uzunluk 5 + PIN_MAX_LEN'i (37) aşınca, son
+    kutunun kendi `QLineEdit.maxLength()`'i devreye girer ve fazlalığı
+    SESSİZCE keser (Qt, `setText()`'te verilen metni `maxLength` karaktere
+    kısaltır — ilk N karakter tutulur, gerisi atılır; boş `QLineEdit` ile
+    doğrulandı). Bu senaryoda `.text()` ARTIK orijinal PIN'le eşleşmiyor —
+    bu, `PIN_MAX_LEN` (32) GUI'de HİÇ zorlanmadığı için önemli: bu widget
+    içindeki bu sınır politika DEĞİL, yalnızca Qt'nin kendi `QLineEdit`
+    sınırı (gerçek politika sınırı üst katmanda hiç yok).
+    """
+    tasma_miktari = 8
+    cok_uzun_pin = "1" * 5 + "2" * (PIN_MAX_LEN + tasma_miktari)  # toplam 5+40=45 karakter
+    kutu.setText(cok_uzun_pin)
+
+    beklenen = cok_uzun_pin[: 5 + PIN_MAX_LEN]  # ilk 37 karakter hayatta kalıyor
+    assert kutu.text() == beklenen
+    assert kutu.text() != cok_uzun_pin
+    assert len(kutu.text()) == 5 + PIN_MAX_LEN
 
 
 @pytest.fixture

@@ -7559,4 +7559,50 @@ göremediği" kalıbı, gerçek bir tip hatası değil. bandit: tek bulgu (B110,
 satır ~1274) DEĞİŞMEDİ — bu turdan ÖNCE de oradaydı (vault açma hata
 yolu), benim eklediğim kod DEĞİL.
 
+**B-095 (devam, aynı gün) — `setText()`/`text()` round-trip'i ve son
+kutunun sınırı ayrıca doğrulandı.** Talep: `_PinBoxInput.setText()` ile
+ayarlanan bir PIN'in `.text()` ile karakter kaybı OLMADAN geri okunduğunu,
+ve son kutunun (`PIN_MAX_LEN`'e sınırlı) gerçek bir taşma sınırının olup
+olmadığını göster.
+
+**Round-trip — `tests/test_setText_text_round_trip_karakter_kaybi_olmadan`
+(5 parametrize senaryo).** Tam 6 hane, kısa 4 hane (legacy), 5 hane, uzun
+14 karakter, rakam-dışı karakterli bir dize — hepsi `setText(pin)` →
+`.text() == pin` birebir eşleşiyor.
+
+**Son kutunun sınırı — GERÇEK, `PIN_MAX_LEN`'e (32) eşit.** Kod:
+`UI/login_dialog.py::_PinBoxInput.__init__`, `kutu.setMaxLength(1 if i <
+5 else PIN_MAX_LEN)` — ilk 5 kutu 1 karakterle, sonuncusu 32 karakterle
+sınırlı (SINIRSIZ değil, ama pratikteki hiçbir gerçekçi PIN uzunluğu bunu
+zorlamıyor). Üç test bunu doğruluyor:
+  - `test_son_kutunun_gercek_bir_maxLength_siniri_var` — sınırı doğrudan
+    `.maxLength()` ile okuyor.
+  - `test_uzun_pin_setText_ile_/_yapistirma_ile_tasan_karakterleri_
+    kesmiyor` — 14 karakterlik (taşan kısım yalnızca 9 karakter, 32'nin
+    çok altında) bir PIN'in HEM `setText()` HEM `paste()` yolunda hiçbir
+    karakter kaybetmediğini kanıtlıyor.
+  - `test_pin_max_len_asilinca_son_kutu_gercekten_kesiyor` — sınırı
+    BİLEREK aşan (toplam 45 karakter, `5+PIN_MAX_LEN`=37'yi 8 aşıyor) bir
+    PIN ile GERÇEK kesme davranışını gösteriyor: `.text()` ilk 37 karaktere
+    kısalıyor, ORİJİNALLE eşleşmiyor. Bu, Qt'nin `QLineEdit.setText()`nin
+    kendi `maxLength`'i aştığında verilen metni SESSİZCE ilk N karaktere
+    kısalttığı (boş bir `QLineEdit` ile ayrıca doğrulandı) gerçeğinin
+    doğrudan sonucu — `PIN_MAX_LEN` GUI'de asla POLİTİKA olarak
+    zorlanmadığı için bu widget-seviyesi sınır, üst katmanda karşılığı
+    OLMAYAN, yalnızca Qt'nin kendi kısıtı.
+
+**Mutasyon kanıtı (ikisi de geçici, geri alındı).**
+  (a) `_dagit()`'in taşma yazımını `son.setText(metin[5:])`'ten
+      `son.setText(metin[5:6])`'ya (yalnızca 1 taşan karakter) bozmak 6
+      testi kırdı (round-trip'in 14-karakter ve rakam-dışı senaryoları
+      dahil, hem taşma hem sınır-aşımı testleri). Geri alındı.
+  (b) Son kutunun `setMaxLength(PIN_MAX_LEN)` çağrısını yapay olarak
+      `setMaxLength(8)`'e düşürmek 5 testi kırdı (doğrudan `.maxLength()`
+      testi dahil — 32 yerine 8 okundu). Geri alındı.
+  İkisinde de `grep -n "MUTATION"` (temiz) ve `git diff --stat` (yalnızca
+  beklenen dosya) ile dönüş doğrulandı.
+
+Tam test suite: 3105 passed, 4 skipped (+9 — yeni round-trip/sınır
+testleri). Ruff temiz.
+
 ---
