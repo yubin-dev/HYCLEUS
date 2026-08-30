@@ -339,7 +339,18 @@ def test_clamav_zaman_asimi_ayirt_edici_timeout_verdictiyle_doner(kosu):
     assert sonuc.engine == "clamav"
 
 
-def test_defender_zaman_asimi_ayirt_edici_timeout_verdictiyle_doner(kosu, tmp_path):
+def test_defender_zaman_asimi_ayirt_edici_timeout_verdictiyle_doner(kosu, tmp_path, monkeypatch):
+    """
+    CI'da Ubuntu ayağında BAŞARISIZ oldu (`assert None is not None`):
+    `DefenderBackend.scan()` `available()`'ı kontrol ediyor,
+    `available()` `sys.platform != "win32"` ise KOŞULSUZ `False` dönüyor
+    — bu depodaki her diğer Defender testinin (ör.
+    `test_defender_rc2_zararli`) yaptığı gibi `sys.platform`'u `win32`'ye
+    yamalamadan `scan()` Linux'ta hiçbir zaman `run_tool()`'a ulaşmıyordu.
+    Windows'ta `sys.platform` zaten `win32` olduğu için bu eksik yama
+    yerel ölçümde GİZLİ kaldı — yalnızca gerçek Linux CI'ında ortaya çıktı.
+    """
+    monkeypatch.setattr(sb.sys, "platform", "win32")
     kosu(subprocess.TimeoutExpired(cmd="MpCmdRun.exe", timeout=120))
     sonuc = defender(tmp_path).scan(YOL, SHA)
     assert sonuc is not None
