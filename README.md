@@ -447,7 +447,7 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | Kategori | Özellik |
 |----------|---------|
 | **Şifreleme** | AES-256-GCM, dosya başına benzersiz nonce, metadata'ya bağlı AAD |
-| **Anahtar Bölme** | Shamir 2-of-3 SSS — share_1 Argon2id şifreli kasa dosyasında, share_2 OS anahtar kasasında, share_3 tek seferlik kurtarma parçası olarak dışa aktarılabilir (Yönetici Paneli → Ayarlar, ya da komut satırından) — QR + base32, panoda otomatik temizleme ile |
+| **Anahtar Bölme** | Shamir 2-of-3 SSS — share_1 Argon2id şifreli kasa dosyasında, share_2 OS anahtar kasasında, share_3 tek seferlik kurtarma parçası olarak dışa aktarılabilir (Yönetici Paneli → Ayarlar, ya da komut satırından) — QR + base32 + yazdırma; panoya kopyalama YOK (ekran koruması/pano geçmişi uygulama kontrolünde değil) |
 | **Sır Saklama** | `keyring` — Windows DPAPI / macOS Keychain / Linux Secret Service; diskte düz metin sır yok |
 | **TPM Mühürleme** | Windows + TPM 2.0: sırlar anahtar kasasına ulaşmadan önce yongaya mühürlenir; TPM yoksa anahtar kasasına düşer — sessizce değil, sesli biçimde |
 | **Kimlik Doğrulama** | Argon2id PIN hash + TOTP (Google Authenticator / Aegis) |

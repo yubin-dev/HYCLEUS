@@ -37,25 +37,42 @@ DİKKAT kontrolü. Docstring bunu açıkça söylüyor ki biri onu güvenlik
 garantisi sanıp üstüne bir şey inşa etmesin.
 
 
-Pano — buton var, otomatik değil
----------------------------------
-Panoya kopyalama, bu parçayı DİJİTAL ortama taşımanın ta kendisi ve
-`WARNING_TEXT` bunu yapmamayı söylüyor. Yine de düğme var: kullanıcı
-parçayı bir yazıcı kuyruğuna ya da parola yöneticisine elle yazmak yerine
-kopyalayacaksa, bunu bilerek yapması, uygulamanın onu engellemeye
-çalışmasından iyi (engellenen kullanıcı ekran görüntüsü alır — daha kötü).
+Pano KALDIRILDI — neden (B-091)
+--------------------------------
+Bu pencere önceden içeriği panoya kopyalayan bir düğme taşıyordu:
+kopyalamadan ÖNCE uyarı gösteriyor, kopyalanan içeriği otomatik bir
+geri-sayımla siliyordu. O temizleme HİÇBİR ZAMAN bir garanti değildi — pano
+geçmişi tutan araçlar (Windows Win+V, üçüncü taraf pano yöneticileri)
+değeri ZATEN almış olur, HYCLEUS'un sonrasında yaptığı hiçbir şey oraya
+ULAŞAMAZ. Ekran yakalamanın aksine (bu uygulamanın `WDA_EXCLUDEFROMCAPTURE`
+ile GERÇEKTEN kapatabildiği bir şey), pano geçmişi HYCLEUS'un kontrolü
+ALTINDA değil — engelleyecek hiçbir API yok, yalnızca "olmayacağını umarak"
+kopyalamak var. "Bilerek yapılan bir riskin engellenmeye çalışılmasından
+iyi olduğu" gerekçesi, riskin TAMAMEN uygulama dışı iki katmana (işletim
+sistemi pano geçmişi, üçüncü taraf araçlar) bağlı olduğu bu durumda
+YETERSİZ kaldı — düğmenin kendisi "bu güvenli bir yol" izlenimi veriyordu.
 
-Bu yüzden: tıklandığında ÖNCE uyarı, sonra kopyalama. Ve kopyalanan içerik
-`PANO_TEMIZLEME_SN` saniye sonra otomatik siliniyor.
+Bunun yerine ekranda gösterme + QR + YAZDIRMA üçü GÜÇLENDİRİLDİ: pay artık
+uygulamanın hiç dokunmadığı, tamamen kullanıcının OS düzeyinde denetlediği
+iki kanaldan biriyle (kâğıt, ya da ekranda okuyup elle yazmak) fiziksel
+dünyaya çıkıyor — hiçbiri HYCLEUS'un kontrolü dışında bir ARA katman
+(pano) açmıyor.
 
-Otomatik temizlemenin DÜRÜST sınırı:
-  · Pano geçmişi tutan araçlar (Windows Win+V, pano yöneticileri) kopyayı
-    zaten almış olur; oradan silemeyiz.
-  · Başka bir uygulama arada panoyu okuduysa iş işten geçmiştir.
-  · Kullanıcı bu sürede başka bir şey kopyalarsa panoyu TEMİZLEMİYORUZ —
-    onun verisini silmek bizim işimiz değil.
-Yani temizleme bir garanti değil, maruz kalma penceresini daraltan bir
-önlem. Etiket kullanıcıya bunu söylüyor.
+
+Yazdırma — GERÇEK bir yol, yalnızca bir etiket değil
+------------------------------------------------------
+Önceki sürümde onay kutusu "Bu parçayı yazdırdım..." diyordu ama pencerede
+YAZDIRACAK bir düğme YOKTU — kullanıcı ya ekran görüntüsü almak (ki bu
+tam olarak `WARNING_TEXT`'in yasakladığı şey ve ekran yakalama koruması
+zaten ENGELLEMEYE çalışıyor) ya da elle base32 metnini yazıcıya göndermenin
+başka bir yolunu bulmak zorundaydı. Bu tutarsızlık kapatıldı: `_on_yazdir()`
+gerçek bir `QPrinter`/`QPrintDialog` akışı açıyor ve `_yazdirilabilir_belge()`
+QR görselini (aynı `self._export.qr_svg` — İKİNCİ bir üretim yolu YOK,
+yalnızca var olan SVG'yi rasterize ediyor) ve base32 metnini içeren bir
+`QTextDocument` kâğıda basıyor. Paylaşılan/ağ yazıcılarının kendi
+kuyruğunda/belleğinde kopya bırakabileceği YAZDIRMA_UYARISI ile ayrıca
+söyleniyor — panonun "sessiz" riskinin aksine bu risk KULLANICIYA açıkça
+yazılıyor, gizlenmiyor.
 
 
 Ekran yakalama
@@ -75,13 +92,12 @@ import logging
 import sys
 from typing import Any
 
-from PySide6.QtCore import QByteArray, Qt, QTimer
+from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -96,18 +112,16 @@ _log = logging.getLogger(__name__)
 #: Onay kutusunun metni. Rehber ve testler buradan okuyor.
 ONAY_METNI = "Bu parçayı yazdırdım ve güvenli bir yere koydum"
 
-#: Panoya kopyalamadan ÖNCE gösterilen uyarı.
-PANO_UYARISI = (
-    "Pano, bilgisayarınızdaki diğer uygulamalar tarafından okunabilir ve "
-    "şifrelenmez.\n\n"
-    "Panoya geçmiş tutan araçlar (Windows'ta Win+V) kopyayı kalıcı olarak "
-    "saklayabilir — bu durumda otomatik temizleme onu geri alamaz.\n\n"
-    "Kopyaladıktan sonra panoyu temizleyin. HYCLEUS bunu {sn} saniye sonra "
-    "kendisi de deneyecek."
+#: Yazdır düğmesinin yanında HER ZAMAN görünen uyarı — panonun "sessiz"
+#: riskinin aksine bu risk gizlenmiyor, ama YAZDIRMAYI da engellemiyor
+#: (bir onay kutusu değil, yalnızca bir etiket — B-003'ün dersi burada da
+#: geçerli: yazdırmadan önce zorunlu bir diyalog, kullanıcıyı bilgilendirmek
+#: yerine bir düğmeye basmaya iter).
+YAZDIRMA_UYARISI = (
+    "Ağ üzerinde ya da paylaşılan bir yazıcı kullanıyorsanız, kurtarma "
+    "parçası yazıcının kendi kuyruğunda/belleğinde kopya bırakabilir. "
+    "Mümkünse bilgisayara doğrudan (USB) bağlı bir yazıcı kullanın."
 )
-
-#: Kopyalanan içerik kaç saniye sonra panodan silinmeye çalışılır.
-PANO_TEMIZLEME_SN = 30
 
 #: Ekran yakalama koruması durum metinleri — tek yerde.
 KORUMA_ETKIN = "🛡  Ekran yakalama engellendi (bu pencere görüntüde çıkmaz)."
@@ -161,21 +175,14 @@ class RecoveryShareDialog(QDialog):
         disa_aktarim: `CORE.recovery_share.build_export()` çıktısı. Bu
             pencere onu ÜRETMİYOR, yalnızca gösteriyor.
         parent: üst pencere.
-        pano_saniye: otomatik pano temizleme süresi. Testler için
-            kısaltılabilir; varsayılanı değiştirmek için buraya değil
-            `PANO_TEMIZLEME_SN`'e dokunun.
         T: Çağıranın aktif tema token sözlüğü (`HycleusWindow._T`).
             Verilmezse varsayılan "mavi" koyu palete düşer.
     """
 
     def __init__(self, disa_aktarim: RecoveryExport, parent: Any = None, *,
-                 pano_saniye: int = PANO_TEMIZLEME_SN,
                  T: dict[str, str] | None = None) -> None:
         super().__init__(parent)
         self._export = disa_aktarim
-        self._pano_saniye = pano_saniye
-        self._kalan = 0
-        self._pano_zamanlayici: QTimer | None = None
         self._T: dict[str, str] = T if T is not None else _DARK
 
         self.setWindowTitle("HYCLEUS — Kurtarma Parçası")
@@ -205,7 +212,7 @@ class RecoveryShareDialog(QDialog):
         yerlesim.addWidget(self._koruma_satiri())
         yerlesim.addWidget(self._uyari_bloku())
         yerlesim.addLayout(self._govde())
-        yerlesim.addWidget(self._pano_satiri())
+        yerlesim.addWidget(self._yazdir_satiri())
         yerlesim.addWidget(self._onay_satiri())
         yerlesim.addLayout(self._dugmeler())
 
@@ -304,23 +311,34 @@ class RecoveryShareDialog(QDialog):
         lay.addWidget(self._metin)
         return kutu
 
-    def _pano_satiri(self) -> QWidget:
+    def _yazdir_satiri(self) -> QWidget:
         kutu = QWidget()
-        lay = QHBoxLayout(kutu)
+        lay = QVBoxLayout(kutu)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
+        lay.setSpacing(4)
 
-        self._btn_pano = QPushButton("📋  Panoya Kopyala")
-        self._btn_pano.setObjectName("kurtarma_btn_pano")
-        self._btn_pano.setCursor(Qt.PointingHandCursor)
-        self._btn_pano.clicked.connect(self._on_panoya_kopyala)
-        lay.addWidget(self._btn_pano)
+        dugme_satiri = QHBoxLayout()
+        dugme_satiri.setSpacing(10)
 
-        self._pano_durum = QLabel("")
-        self._pano_durum.setObjectName("kurtarma_pano_durum")
-        self._pano_durum.setStyleSheet(f"color:{self._T['yellow']}; font-size:12px;")
-        lay.addWidget(self._pano_durum)
-        lay.addStretch()
+        self._btn_yazdir = QPushButton("🖨  Yazdır")
+        self._btn_yazdir.setObjectName("kurtarma_btn_yazdir")
+        self._btn_yazdir.setCursor(Qt.PointingHandCursor)
+        self._btn_yazdir.clicked.connect(self._on_yazdir)
+        dugme_satiri.addWidget(self._btn_yazdir)
+
+        self._yazdir_durum = QLabel("")
+        self._yazdir_durum.setObjectName("kurtarma_yazdir_durum")
+        self._yazdir_durum.setStyleSheet(f"color:{self._T['yellow']}; font-size:12px;")
+        dugme_satiri.addWidget(self._yazdir_durum)
+        dugme_satiri.addStretch()
+        lay.addLayout(dugme_satiri)
+
+        uyari = QLabel(YAZDIRMA_UYARISI)
+        uyari.setObjectName("kurtarma_yazdir_uyarisi")
+        uyari.setWordWrap(True)
+        uyari.setStyleSheet(f"color:{self._T['subtext']}; font-size:11px;")
+        lay.addWidget(uyari)
+
         return kutu
 
     def _onay_satiri(self) -> QCheckBox:
@@ -349,89 +367,68 @@ class RecoveryShareDialog(QDialog):
     def _on_onay_degisti(self, isaretli: bool) -> None:
         self._btn_tamam.setEnabled(isaretli)
 
-    def _on_panoya_kopyala(self) -> None:
+    def _yazdirilabilir_belge(self) -> Any:
         """
-        ÖNCE uyarı, sonra kopyalama.
+        Yazdırma için bir `QTextDocument` kurar — uyarı metni + QR görseli
+        (varsa) + base32 gövdesi.
 
-        Kullanıcı vazgeçerse pano hiç yazılmıyor — uyarıyı kopyaladıktan
-        sonra göstermek, uyarıyı bilgilendirme olmaktan çıkarıp bildirime
-        çevirirdi.
+        `self._export.qr_svg`'in KENDİSİNİ rasterize ediyor — İKİNCİ bir QR
+        üretim yolu AÇMIYOR (`render_qr_svg`/`encode_share`/`build_export`
+        burada da çağrılmıyor; bkz. modül docstring'indeki "TEK YOL" kuralı
+        ve `tests/test_recovery_share_ui.py::test_modal_QR_uretmiyor_
+        GOSTERIYOR`'un AST denetimi).
         """
-        yanit = QMessageBox.warning(
-            self, "Panoya kopyalanacak",
-            PANO_UYARISI.format(sn=self._pano_saniye),
-            QMessageBox.Ok | QMessageBox.Cancel,
-            QMessageBox.Cancel,
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QImage, QPainter, QTextDocument
+
+        belge = QTextDocument()
+        parcalar = [
+            "<h2>HYCLEUS — Kurtarma Parçası</h2>",
+            "<pre style='white-space:pre-wrap; font-family:sans-serif; "
+            f"font-size:11pt;'>{self._export.warning}</pre>",
+        ]
+
+        if self._export.qr_svg:
+            from PySide6.QtSvg import QSvgRenderer
+
+            olcek = 300
+            gorsel = QImage(olcek, olcek, QImage.Format_ARGB32)
+            gorsel.fill(0xFFFFFFFF)
+            ressam = QPainter(gorsel)
+            QSvgRenderer(QByteArray(self._export.qr_svg.encode("utf-8"))).render(ressam)
+            ressam.end()
+            belge.addResource(
+                QTextDocument.ImageResource, QUrl("kurtarma://qr"), gorsel
+            )
+            parcalar.append(
+                f'<p align="center"><img src="kurtarma://qr" '
+                f'width="{olcek}" height="{olcek}"></p>'
+            )
+
+        parcalar.append(
+            "<pre style='font-family:Consolas,monospace; font-size:13pt; "
+            f"letter-spacing:2px;'>{self._export.base32_text}</pre>"
         )
-        if yanit != QMessageBox.Ok:
+        belge.setHtml("".join(parcalar))
+        return belge
+
+    def _on_yazdir(self) -> None:
+        """
+        Yazıcı seçim diyaloğunu açar; kullanıcı onaylarsa belgeyi basar.
+
+        Onay diyaloğu ZATEN `QPrintDialog`'un kendisi — panonun tersine,
+        yazdırmak KULLANICININ bilinçli bir eylemi (bir yazıcı seçmesi
+        gerekiyor), ayrıca bir "emin misiniz" katmanı EKLEMİYORUZ (B-003'ün
+        aynı dersi: gereksiz bir onay katmanı bilgilendirmiyor, yalnızca
+        bir tıklamaya zorluyor).
+        """
+        from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+
+        yazici = QPrinter(QPrinter.HighResolution)
+        dialog = QPrintDialog(yazici, self)
+        if dialog.exec() != QDialog.Accepted:
+            self._yazdir_durum.setText("Yazdırma iptal edildi.")
             return
 
-        from PySide6.QtGui import QGuiApplication
-
-        pano = QGuiApplication.clipboard()
-        if pano is None:  # pragma: no cover — başsız ortamda olabilir
-            self._pano_durum.setText("Pano kullanılamıyor.")
-            return
-        pano.setText(self._export.base32_text)
-        self._pano_geri_sayimi_baslat()
-
-    def _pano_geri_sayimi_baslat(self) -> None:
-        self._kalan = self._pano_saniye
-        self._pano_durum_yaz()
-        if self._pano_zamanlayici is None:
-            self._pano_zamanlayici = QTimer(self)
-            self._pano_zamanlayici.setInterval(1000)
-            self._pano_zamanlayici.timeout.connect(self._pano_tik)
-        self._pano_zamanlayici.start()
-
-    def _pano_durum_yaz(self) -> None:
-        self._pano_durum.setText(
-            f"Kopyalandı — pano {self._kalan} sn sonra (ya da bu pencere "
-            "kapanınca) temizlenecek.")
-
-    def _pano_tik(self) -> None:
-        self._kalan -= 1
-        if self._kalan > 0:
-            self._pano_durum_yaz()
-            return
-        self._panoyu_temizle()
-
-    def _panoyu_temizle(self) -> None:
-        """
-        Panoyu YALNIZCA hâlâ bizim metnimizi tutuyorsa temizler.
-
-        Kullanıcı bu arada başka bir şey kopyaladıysa onun verisini silmek
-        bizim işimiz değil — ve sildiğimizde bunu fark etmez, veri kaybı
-        gibi görünür.
-        """
-        if self._pano_zamanlayici is not None:
-            self._pano_zamanlayici.stop()
-        from PySide6.QtGui import QGuiApplication
-
-        pano = QGuiApplication.clipboard()
-        if pano is None:  # pragma: no cover
-            return
-        if pano.text() == self._export.base32_text:
-            pano.clear()
-            self._pano_durum.setText("Pano temizlendi.")
-        else:
-            self._pano_durum.setText(
-                "Pano temizlenmedi — içinde artık başka bir şey var.")
-
-    def closeEvent(self, event: Any) -> None:  # noqa: N802 — Qt adı
-        """
-        Kapanışta bekleyen pano temizliği hemen yapılıyor.
-
-        Yapılmasaydı zamanlayıcı pencereyle birlikte ölür ve söz verilen
-        temizlik SESSİZCE gerçekleşmezdi.
-        """
-        if self._pano_zamanlayici is not None and self._pano_zamanlayici.isActive():
-            self._panoyu_temizle()
-        super().closeEvent(event)
-
-    def done(self, sonuc: int) -> None:  # noqa: D102 — Qt adı
-        # `accept()`/`reject()` closeEvent'i her yolda tetiklemiyor;
-        # temizlik burada da çağrılıyor ki Esc ve Tamam aynı davransın.
-        if self._pano_zamanlayici is not None and self._pano_zamanlayici.isActive():
-            self._panoyu_temizle()
-        super().done(sonuc)
+        self._yazdirilabilir_belge().print_(yazici)
+        self._yazdir_durum.setText("Yazdırma isteği gönderildi.")

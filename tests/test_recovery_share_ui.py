@@ -1,5 +1,5 @@
 """
-Kurtarma parçası modalı — QR, onay kutusu, pano.
+Kurtarma parçası modalı — QR, onay kutusu, yazdırma.
 
 Bu pencere sistemin gösterdiği en tehlikeli ekran: içeriği, kalan tek payla
 birlikte kasadaki her dosyanın anahtarını veriyor. Üç şey ölçülüyor:
@@ -7,7 +7,15 @@ birlikte kasadaki her dosyanın anahtarını veriyor. Üç şey ölçülüyor:
   1. QR ile base32 AYNI payı taşıyor mu — gerçek çözümlemeyle.
   2. Onay kutusu işaretlenmeden "Tamam" basılamıyor, ama pencere
      kapanabiliyor (B-003: kullanıcıyı hapsetmek bilgilendirmiyor).
-  3. Panoya kopyalama uyarı gösteriyor ve içerik geri temizleniyor.
+  3. Panoya kopyalama seçeneği TAMAMEN KALDIRILDI (B-091) — ekran koruması
+     Windows'ta HYCLEUS'un kontrolü altında (WDA_EXCLUDEFROMCAPTURE), ama
+     pano geçmişi HİÇBİR platformda değil; "kopyalamadan önce uyar" bir
+     düğme hâlâ "bu güvenli bir yol" izlenimi veriyordu. Yerine gerçek bir
+     yazdırma akışı (QPrinter/QPrintDialog) eklendi — QR + base32 metnini
+     içeren belgeyi doğru kurduğu ve düğmenin/uyarının ekranda olduğu
+     ölçülüyor; gerçek bir yazıcı sürücüsüne basmak (`QTextDocument.
+     print_()`'in kendisi) testte ÇAĞRILMIYOR — `QPrintDialog.exec()`
+     monkeypatch'leniyor.
 
 QR ÇÖZÜMLEMESİ NEDEN ELLE YAZILDI
 ----------------------------------
@@ -43,14 +51,13 @@ from CORE.recovery_share import WARNING_TEXT, RecoveryExport, build_export, enco
 # Qt ve UI TEK korumanın altında (B-047).
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QGuiApplication
-    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+    from PySide6.QtWidgets import QApplication, QDialog
 
     from UI.RecoveryShareDialog import (
         KORUMA_ETKIN,
         KORUMA_YOK,
         ONAY_METNI,
-        PANO_UYARISI,
+        YAZDIRMA_UYARISI,
         RecoveryShareDialog,
         ekran_yakalamayi_engelle,
     )
@@ -225,44 +232,84 @@ def disa_aktarim() -> RecoveryExport:
     return build_export(_ORNEK_PAY)
 
 
+class _SahteYazici:
+    """`QPrinter` yerine — bkz. `_yazici_sahtele()` docstring'i."""
+
+    HighResolution = 0  # `QPrinter(QPrinter.HighResolution)` çağrısının beklediği öznitelik
+
+    def __init__(self, *a, **k):  # type: ignore[no-untyped-def]
+        pass
+
+
+def _sahte_yazici_diyalogu_sinifi(sonuc: int, cagrilar: list[bool]):  # type: ignore[no-untyped-def]
+    """`QPrintDialog` yerine geçecek sınıfı üretir — `exec()` sabit `sonuc`u
+    döner, GERÇEK bir pencere/COM sorgusu AÇMADAN."""
+
+    class _SahteDiyalog:
+        def __init__(self, printer, parent=None):  # type: ignore[no-untyped-def]
+            self.printer = printer
+
+        def exec(self):  # type: ignore[no-untyped-def]
+            cagrilar.append(True)
+            return sonuc
+
+    return _SahteDiyalog
+
+
+def _yazici_sahtele(monkeypatch: pytest.MonkeyPatch, sonuc: int) -> list[bool]:
+    """
+    `PySide6.QtPrintSupport.QPrinter`/`QPrintDialog`'u sahtelerle değiştirir.
+
+    GERÇEK bir `QPrinter` inşa etmek BİLE bu makinede Windows'un yazıcı COM
+    arabirimlerini sorguluyor — ölçüldü: pytest altında (düz bir betikte
+    DEĞİL) `0x80040155` COM istisnası fırlatıyor. `_on_yazdir()`'in
+    `QPrinter`/`QPrintDialog`'u YEREL olarak içe aktardığı (her çağrıda
+    `PySide6.QtPrintSupport` modülünden TAZE okunuyor) gerçeğinden
+    yararlanıp bu modülün KENDİSİNDEKİ adları değiştiriyoruz — gerçek
+    donanıma/COM'a HİÇ dokunmadan.
+    """
+    import PySide6.QtPrintSupport as _qps
+
+    cagrilar: list[bool] = []
+    monkeypatch.setattr(_qps, "QPrinter", _SahteYazici)
+    monkeypatch.setattr(_qps, "QPrintDialog", _sahte_yazici_diyalogu_sinifi(sonuc, cagrilar))
+    return cagrilar
+
+
 @pytest.fixture
-def onaylar(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """`QMessageBox.warning`'i yakalar ve OK döndürür (kullanıcı kabul etti)."""
-    gosterilen: list[str] = []
-
-    def _yakala(*a, **k):  # type: ignore[no-untyped-def]
-        gosterilen.append(a[2] if len(a) > 2 else "")
-        return QMessageBox.Ok
-
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(_yakala))
-    return gosterilen
+def yazdirma_kabul(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Kullanıcı bir yazıcı SEÇMİŞ gibi `QDialog.Accepted` döner."""
+    return _yazici_sahtele(monkeypatch, QDialog.Accepted)
 
 
 @pytest.fixture
-def reddedenler(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Aynısı ama kullanıcı VAZGEÇTİ."""
-    gosterilen: list[str] = []
-
-    def _yakala(*a, **k):  # type: ignore[no-untyped-def]
-        gosterilen.append(a[2] if len(a) > 2 else "")
-        return QMessageBox.Cancel
-
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(_yakala))
-    return gosterilen
+def yazdirma_iptal(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Aynısı ama kullanıcı yazdırma diyaloğunu İPTAL etti."""
+    return _yazici_sahtele(monkeypatch, QDialog.Rejected)
 
 
 @pytest.fixture
-def pano(qapp):  # type: ignore[no-untyped-def]
-    """Pano her testten sonra temizleniyor — sızdırmasın."""
-    c = QGuiApplication.clipboard()
-    c.clear()
-    yield c
-    c.clear()
+def yazdirma_yakala(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """
+    `QTextDocument.print_()`'i yakalar — sahte `QPrinter` nesnesi GERÇEK
+    `print_()`'e verilirse (C++ tarafı gerçek bir `QPrinter` bekliyor) tip
+    hatası fırlardı; bu yüzden `print_()`'in KENDİSİ de sahteleniyor,
+    hangi nesneyle çağrıldığını kaydediyor.
+    """
+    from PySide6.QtGui import QTextDocument
+
+    cagrilar: list[object] = []
+
+    def _yakala(self, yazici):  # type: ignore[no-untyped-def]
+        cagrilar.append(yazici)
+
+    monkeypatch.setattr(QTextDocument, "print_", _yakala)
+    return cagrilar
 
 
 @pytest.fixture
 def modal(qapp, disa_aktarim: RecoveryExport) -> RecoveryShareDialog:
-    d = RecoveryShareDialog(disa_aktarim, pano_saniye=2)
+    d = RecoveryShareDialog(disa_aktarim)
     yield d
     d.deleteLater()
 
@@ -393,92 +440,106 @@ def test_onay_metni_TEK_yerde():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. Pano
+# 3. Pano KALDIRILDI + Yazdırma (B-091)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_panoya_kopyalama_UYARI_gosteriyor(modal: RecoveryShareDialog,
-                                           onaylar: list[str], pano):
-    modal._btn_pano.click()
-    assert len(onaylar) == 1, "pano uyarısı gösterilmedi"
-    metin = onaylar[0]
-    assert "okunabilir" in metin
-    assert "şifrelenmez" in metin
-    assert str(modal._pano_saniye) in metin
-
-
-def test_uyari_ONCE_geliyor_kopyalama_SONRA(modal: RecoveryShareDialog,
-                                            reddedenler: list[str], pano):
+def test_panoya_kopyalama_dugmesi_YOK(modal: RecoveryShareDialog):
     """
-    Kullanıcı vazgeçerse pano HİÇ yazılmamalı.
+    Çekirdek iddia: "Panoya Kopyala" düğmesi ARTIK YOK.
 
-    Uyarıyı kopyaladıktan sonra göstermek onu bilgilendirme olmaktan
-    çıkarıp bildirime çevirirdi — kararı verecek an çoktan geçmiş olurdu.
+    Ekran koruması/pano geçmişi HYCLEUS'un kontrolünde değil — kaldırma
+    kararının kendisi bu. `objectName` üzerinden arıyor (metin/etiket
+    değişse bile eski davranışın izi kalmasın diye).
     """
-    modal._btn_pano.click()
-    assert len(reddedenler) == 1
-    assert pano.text() == ""
+    assert not hasattr(modal, "_btn_pano")
+    assert _nesne(modal, "kurtarma_btn_pano") is None
 
 
-def test_onaylayinca_pano_DOLUYOR(modal: RecoveryShareDialog,
-                                  onaylar: list[str], pano,
-                                  disa_aktarim: RecoveryExport):
-    modal._btn_pano.click()
-    assert pano.text() == disa_aktarim.base32_text
-    assert "temizlenecek" in modal._pano_durum.text()
-
-
-def test_geri_sayim_SURE_soyluyor(modal: RecoveryShareDialog,
-                                  onaylar: list[str], pano):
-    """Söz verilen şey görünür olmalı; sessiz bir zamanlayıcı söz değildir."""
-    modal._btn_pano.click()
-    assert f"{modal._pano_saniye} sn" in modal._pano_durum.text()
-
-
-def test_sure_dolunca_pano_TEMIZLENIYOR(modal: RecoveryShareDialog,
-                                        onaylar: list[str], pano):
-    modal._btn_pano.click()
-    assert pano.text() != ""
-    # Zamanlayıcıyı beklemeden ilerlet — testin süreye bağlı olmaması için.
-    for _ in range(modal._pano_saniye):
-        modal._pano_tik()
-    assert pano.text() == ""
-    assert modal._pano_durum.text() == "Pano temizlendi."
-
-
-def test_BASKA_bir_sey_kopyalandiysa_pano_KORUNUYOR(modal: RecoveryShareDialog,
-                                                    onaylar: list[str], pano):
+def test_pano_ile_ilgili_HICBIR_SEY_kaynakta_yok():
     """
-    Kullanıcının verisini silmek bizim işimiz değil.
-
-    Silseydik kullanıcı bunu fark etmez, veri kaybı gibi görünürdü.
+    Kaynak dosyada panoyla ilgili hiçbir iz kalmamalı — yarım bir kaldırma
+    (düğme silinmiş ama yardımcı metotlar/sabitler unutulmuş) bu testle
+    yakalanır.
     """
-    modal._btn_pano.click()
-    pano.setText("kullanicinin baska bir metni")
-    for _ in range(modal._pano_saniye):
-        modal._pano_tik()
-    assert pano.text() == "kullanicinin baska bir metni"
-    assert "temizlenmedi" in modal._pano_durum.text()
-
-
-def test_KAPANISTA_bekleyen_temizlik_yapiliyor(modal: RecoveryShareDialog,
-                                               onaylar: list[str], pano,
-                                               disa_aktarim: RecoveryExport):
-    """
-    Pencere kapanınca zamanlayıcı ölür; söz verilen temizlik onunla birlikte
-    sessizce kaybolmamalı.
-    """
-    modal._btn_pano.click()
-    assert pano.text() == disa_aktarim.base32_text
-    modal.reject()
-    assert pano.text() == ""
-
-
-def test_pano_uyarisi_MODULDEN_geliyor():
-    """Uyarı metni sabitten okunuyor mu — ikinci bir kopya olmasın."""
-    assert "{sn}" in PANO_UYARISI
     kaynak = (KOK / "UI" / "RecoveryShareDialog.py").read_text(encoding="utf-8")
-    assert "PANO_UYARISI.format(" in kaynak
+    for iz in ("clipboard", "Clipboard", "QGuiApplication", "PANO_", "_pano_", "Panoya"):
+        assert iz not in kaynak, f"pano izi hâlâ kaynakta: {iz!r}"
+
+
+def test_yazdir_dugmesi_VAR(modal: RecoveryShareDialog):
+    assert _nesne(modal, "kurtarma_btn_yazdir") is not None
+
+
+def test_yazdirma_uyarisi_HER_ZAMAN_gorunuyor(modal: RecoveryShareDialog):
+    """Paylaşılan yazıcı riski GİZLENMİYOR — panonun "sessiz" riskinin
+    aksine, buton tıklanmadan ÖNCE bile ekranda."""
+    etiket = _nesne(modal, "kurtarma_yazdir_uyarisi")
+    assert etiket is not None
+    assert etiket.text() == YAZDIRMA_UYARISI
+
+
+def test_yazdirma_uyarisi_MODULDEN_geliyor():
+    """Uyarı metni sabitten okunuyor mu — ikinci bir kopya olmasın."""
+    kaynak = (KOK / "UI" / "RecoveryShareDialog.py").read_text(encoding="utf-8")
+    assert "QLabel(YAZDIRMA_UYARISI)" in kaynak
+
+
+def test_yazdir_tiklaninca_YAZICI_DIYALOGU_aciliyor(
+    modal: RecoveryShareDialog, yazdirma_kabul: list[bool], yazdirma_yakala: list[object],
+):
+    """Uçtan uca: düğme → `QPrintDialog` → kabul → `QTextDocument.print_()`."""
+    modal._btn_yazdir.click()
+    assert len(yazdirma_kabul) == 1, "yazıcı diyaloğu hiç açılmadı"
+    assert len(yazdirma_yakala) == 1, "belge yazdırılmadı"
+    assert "gönderildi" in modal._yazdir_durum.text()
+
+
+def test_yazdirma_IPTAL_edilirse_YAZDIRILMIYOR(
+    modal: RecoveryShareDialog, yazdirma_iptal: list[bool], yazdirma_yakala: list[object],
+):
+    """
+    Kullanıcı yazıcı diyaloğunu kapatırsa belge HİÇ basılmamalı.
+
+    Panonun "önce uyar, sonra yaz" ilkesinin karşılığı: burada onay
+    ZATEN `QPrintDialog`'un kendisi, o reddedilince akış durmalı.
+    """
+    modal._btn_yazdir.click()
+    assert len(yazdirma_iptal) == 1
+    assert len(yazdirma_yakala) == 0, "iptal edilmesine rağmen belge basıldı"
+    assert "iptal" in modal._yazdir_durum.text().lower()
+
+
+def test_yazdirilan_belge_QR_ve_BASE32_ikisini_de_iceriyor(
+    modal: RecoveryShareDialog, disa_aktarim: RecoveryExport,
+):
+    """
+    Kâğıda basılan tek nüsha hem QR'ı hem metni taşımalı — ekrandakiyle
+    AYNI bilgi, ikinci bir üretim yolu OLMADAN (bkz. `_yazdirilabilir_belge()`
+    docstring'i ve aşağıdaki AST testi).
+    """
+    belge = modal._yazdirilabilir_belge()
+    assert disa_aktarim.base32_text in belge.toPlainText()
+    assert "kurtarma://qr" in belge.toHtml(), "QR görseli belgeye hiç eklenmemiş"
+
+
+def test_yazdirilan_belge_UYARI_metnini_de_iceriyor(
+    modal: RecoveryShareDialog, disa_aktarim: RecoveryExport,
+):
+    belge = modal._yazdirilabilir_belge()
+    assert disa_aktarim.warning in belge.toPlainText()
+
+
+def test_QR_yokken_belge_YINE_DE_kuruluyor(qapp):  # type: ignore[no-untyped-def]
+    """`qrcode` paketi yoksa (`qr_svg is None`) yazdırma HİÇ patlamamalı —
+    base32 tek başına yeterli, `_qr_bloku()`'nun aynı kuralı burada da."""
+    d = RecoveryShareDialog(RecoveryExport(base32_text="HYCLEUS-R3-AAAA", qr_svg=None))
+    try:
+        belge = d._yazdirilabilir_belge()
+        assert "HYCLEUS-R3-AAAA" in belge.toPlainText()
+        assert "kurtarma://qr" not in belge.toHtml()
+    finally:
+        d.deleteLater()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -529,7 +590,7 @@ def test_koruma_BASARISIZLIGI_pencereyi_engellemiyor(modal: RecoveryShareDialog)
     KURULAMIYOR — test tam da o yolu geziyor.
     """
     assert modal._metin.toPlainText()
-    assert modal._btn_pano.isEnabled()
+    assert modal._btn_yazdir.isEnabled()
 
 
 def test_koruma_yardimcisi_TEK_karar_noktasi():

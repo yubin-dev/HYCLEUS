@@ -7125,3 +7125,65 @@ temiz (bandit sayısı ÖNCEKİ turdan değişmedi — yeni kod yalnızca CORE/
 audit_chain.py'de, o dosyada bandit bulgusu yok).
 
 ---
+
+## B-091 — Kurtarma parçası ekranından "Panoya Kopyala" tamamen kaldırıldı; ekranda gösterme + QR + yazdırma güçlendirildi
+
+Görev: Kurtarma parçası için panoya kopyalama seçeneğini tamamen kaldır
+(ekran koruması/pano geçmişi uygulama kontrolünde değil, tek doğru hamle
+bu). Yerine ekranda gösterme + QR kod + yazdırma seçeneklerini bırak/
+güçlendir. Test: "panoya kopyala" butonunun artık bulunmadığını, QR ve
+yazdır seçeneklerinin çalıştığını doğrula.
+
+**Kaldırma.** `UI/RecoveryShareDialog.py`'nin "Panoya Kopyala" düğmesi
+(kopyalamadan ÖNCE uyarı, kopyalanan içeriği 30 saniye sonra — YALNIZCA
+pano hâlâ tam olarak yazdığı şeyi tutuyorsa — otomatik temizleme) ve ona
+bağlı TÜM kod (`_on_panoya_kopyala`, geri sayım zamanlayıcısı, `closeEvent`/
+`done()`'daki temizlik çağrıları, `PANO_UYARISI`/`PANO_TEMIZLEME_SN`
+sabitleri, `pano_saniye` kurucu parametresi) SİLİNDİ — devre dışı
+BIRAKILMADI. Gerekçe kullanıcının verdiği: ekran yakalama Windows'ta
+GERÇEKTEN uygulamanın denetiminde (`WDA_EXCLUDEFROMCAPTURE`), ama pano
+geçmişi (Win+V, üçüncü taraf araçlar) HİÇBİR platformda değil — "önce
+uyar" düğmesi yine de "bu güvenli bir yol" izlenimi veriyordu.
+
+**Güçlendirme — yazdırma GERÇEK bir yol oldu.** Onay kutusu HER ZAMAN "Bu
+parçayı yazdırdım..." diyordu ama pencerede yazdıracak bir düğme HİÇ
+YOKTU — bu tutarsızlık, görev vesilesiyle bulundu ve kapatıldı. Yeni
+`_on_yazdir()` gerçek bir `QPrinter`/`QPrintDialog` akışı açıyor;
+`_yazdirilabilir_belge()` ekranın ZATEN gösterdiği AYNI `qr_svg`'i (İKİNCİ
+bir QR üretim yolu AÇMADAN — mevcut "TEK YOL" AST denetimi bunu yazdırma
+için de zorluyor) rasterize edip base32 metniyle birlikte bir
+`QTextDocument`'a koyuyor. Paylaşılan/ağ yazıcılarının kuyruk/bellek
+riskini adlandıran bir uyarı düğmenin yanında HER ZAMAN görünür (panonun
+"sessiz" riskinin aksine).
+
+**Test riski, bulundu ve düzeltildi: GERÇEK `QPrinter` inşa etmek bile
+tehlikeli.** İlk yazılan testler gerçek `QPrinter(...)`/`QPrintDialog(...)`
+kuruyor, yalnızca `.exec()`'i monkeypatch'liyordu. pytest altında (düz bir
+Python betiğinde DEĞİL) bu, Windows'un yazıcı COM arabirimlerini
+sorgularken `0x80040155` COM istisnasına düşüyordu — testi KIRMADI ama
+`faulthandler`'ın "Windows fatal exception" uyarısını bastı; farklı bir
+makinede/CI'da GERÇEKTEN çökebilirdi. Düzeltme: `PySide6.QtPrintSupport.
+QPrinter`/`QPrintDialog`'un KENDİSİ sahtelerle değiştiriliyor (`_on_yazdir()`
+ikisini de YEREL olarak içe aktardığı için bu, gerçek donanıma/COM'a hiç
+dokunmadan çalışıyor); `QTextDocument.print_()` de ayrıca sahteleniyor
+(sahte `QPrinter` gerçek `print_()`'e verilirse tip hatası verirdi).
+
+**Test.** Yeni "3. Pano KALDIRILDI + Yazdırma" bölümü (11 test):
+"Panoya Kopyala" düğmesinin YOKLUĞU (`objectName` üzerinden) + kaynakta
+pano'yla ilgili HİÇBİR izin kalmadığını doğrulayan bir tarama, yazdır
+düğmesinin VARLIĞI, uyarının HER ZAMAN göründüğü, düğme→diyalog→kabul→
+`print_()` uçtan-uca akışı, İPTAL edilince HİÇ yazdırılmadığı, yazdırılan
+belgenin hem QR'ı hem base32'yi (hem de uyarı metnini) taşıdığı, QR
+yokken (`qrcode` paketi kurulu değilken) belgenin YİNE DE çökmeden
+kurulduğu. Section 4'teki (ekran yakalama) bir test `_btn_pano`'ya
+kalıntı bir referans taşıyordu — `_btn_yazdir`'e güncellendi.
+
+SECURITY.md §4.4'e (EN+TR) eklendi — panoyu KALDIRMA gerekçesi ve yazdırma
+eklemesinin neyi kapattığı. README.md'nin "Anahtar Bölme" satırı güncellendi.
+
+Tam test suite: 3066 passed, 4 skipped (bir önceki turdan +2 — 11 yeni test,
+9 pano testi silindi). Ruff/mypy/bandit temiz (mypy'de aynı sayıda —11—
+pre-existing PySide6-stub `attr-defined` yanlış pozitifi, `git stash` ile
+karşılaştırılıp doğrulandı; bandit temiz, önceki turdan fark yok).
+
+---

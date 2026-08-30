@@ -627,7 +627,9 @@ code and base32 text side by side — that `recover_vault.py --export` has
 always produced. There is exactly one production path; the dialog only
 renders it, and a static-analysis test checks that it never calls the QR
 library itself. Showing the share on screen instead of a terminal opens
-two exposure surfaces a CLI export does not have:
+an exposure surface a CLI export does not have, and raises a second
+question — how the user gets the share onto paper — that the dialog now
+answers directly instead of leaving to a screen capture:
 
 - **Screen capture.** On Windows the window sets `WDA_EXCLUDEFROMCAPTURE`
   (falling back to `WDA_MONITOR`, which blacks the window out in a
@@ -638,15 +640,40 @@ two exposure surfaces a CLI export does not have:
   worse than one that was never built, because the document keeps
   claiming it. Linux and macOS have no equivalent API and the dialog says
   so plainly. This gap is **B-049**.
-- **Clipboard.** The "Copy to clipboard" button warns before it copies —
-  a clipboard manager with history (Windows Win+V, third-party tools)
-  can retain the value regardless of anything HYCLEUS does afterwards —
-  and the application clears its own copy 30 seconds later *only if* the
-  clipboard still holds exactly what it wrote. If the user copied
-  something else in the meantime it is left alone; overwriting someone
-  else's clipboard silently would look like data loss, not a safeguard.
-  None of this reaches a clipboard-history tool that already captured
-  the value.
+- **Clipboard — removed entirely (B-091), not mitigated.** An earlier
+  version had a "Copy to clipboard" button that warned before copying and
+  cleared its own copy 30 seconds later, but only if the clipboard still
+  held exactly what it wrote. That mitigation was real but structurally
+  limited in a way screen capture is not: on Windows, `WDA_EXCLUDEFROMCAPTURE`
+  genuinely puts the *application* in control of whether a capture works.
+  Nothing equivalent exists for the clipboard — a history tool (Windows
+  Win+V, third-party managers) reads the system clipboard the instant
+  anything is written to it, before HYCLEUS's own cleanup timer has a
+  chance to run, and there is no API to prevent that read or to reach into
+  a tool that already captured the value. The button's "warn, then let the
+  user decide" framing still read as offering a *safe* path, when the
+  actual guarantee was "the OS layer this depends on is entirely outside
+  what this application can affect." The button was removed rather than
+  hardened further, because there was nothing left to harden — the
+  remaining risk was never HYCLEUS's to control.
+- **Printing — added, and made real rather than assumed.** The dialog's
+  confirmation checkbox has always read "I printed this and put it
+  somewhere safe," but the window had no way to actually print until this
+  turn — the only paths were manually retyping the base32 text or a
+  screen capture, which is exactly what the warning text and the capture
+  protection above both exist to discourage. `_on_yazdir()` now opens a
+  real `QPrinter`/`QPrintDialog` flow, and `_yazdirilabilir_belge()` builds
+  a `QTextDocument` carrying both the base32 text *and* the QR code — the
+  same `RecoveryExport.qr_svg` the screen already shows, rasterized for
+  print, not regenerated through a second production path (the same
+  static-analysis test that checks the screen display enforces this for
+  printing too). A label next to the button — always visible, not a
+  dialog the user has to dismiss — names the one printing risk that *is*
+  worth naming: a shared or networked printer can retain a copy in its own
+  queue or memory, so a directly-connected printer is recommended. Unlike
+  the clipboard risk, this one is stated plainly rather than hidden behind
+  a "we tried to clean up after ourselves" mitigation, because there
+  genuinely isn't a cleanup available to promise.
 
 The confirmation checkbox ("I printed this and put it somewhere safe") is
 **not a security control**, and it is not meant to be: it only enables
@@ -4232,8 +4259,9 @@ istiyor, sonra `recover_vault.py --export`'un hep ürettiği `build_export()`
 çıktısını — QR kodu ve base32 metni yan yana — gösteriyor. Üretim yolu
 tek; diyalog onu yalnızca GÖSTERİYOR ve bir statik analiz testi QR
 kütüphanesini kendi başına hiç çağırmadığını doğruluyor. Payı bir
-terminal yerine ekranda göstermek, CLI dışa aktarımının taşımadığı iki
-maruziyet yüzeyi açıyor:
+terminal yerine ekranda göstermek, CLI dışa aktarımının taşımadığı bir
+maruziyet yüzeyi açıyor, ve payı KAĞIDA nasıl geçireceği sorusunu — bir
+ekran görüntüsüne BIRAKMAK yerine — doğrudan YANITLIYOR:
 
 - **Ekran yakalama.** Windows'ta pencere ilk boyanmadan önce
   `WDA_EXCLUDEFROMCAPTURE` bayrağını kuruyor (Win10 2004 öncesinde
@@ -4245,15 +4273,42 @@ maruziyet yüzeyi açıyor:
   onun varlığını iddia etmeye devam eder. Linux ve macOS'ta karşılık
   gelen bir API yok ve diyalog bunu açıkça söylüyor. Bu boşluk **B-049**
   olarak kayıtlı.
-- **Pano.** "Panoya Kopyala" düğmesi kopyalamadan ÖNCE uyarıyor — geçmiş
-  tutan bir pano yöneticisi (Windows Win+V, üçüncü taraf araçlar)
-  HYCLEUS'un sonrasında yaptığı hiçbir şeye rağmen değeri saklı
-  tutabiliyor — ve uygulama kendi kopyasını 30 saniye sonra, YALNIZCA
-  pano hâlâ tam olarak yazdığı şeyi tutuyorsa temizliyor. Kullanıcı bu
-  arada başka bir şey kopyaladıysa dokunulmuyor; başkasının panosunu
-  sessizce üzerine yazmak bir güvenlik önlemi değil, veri kaybı gibi
-  görünürdü. Hiçbiri, değeri zaten yakalamış bir pano geçmişi aracına
-  ulaşmıyor.
+- **Pano — TAMAMEN KALDIRILDI (B-091), hafifletilmedi.** Önceki bir sürüm
+  kopyalamadan ÖNCE uyaran ve kopyaladığı içeriği 30 saniye sonra —
+  YALNIZCA pano hâlâ tam olarak yazdığı şeyi tutuyorsa — temizleyen bir
+  "Panoya Kopyala" düğmesi taşıyordu. Bu önlem GERÇEKTİ ama ekran
+  yakalamanın SAHİP OLMADIĞI biçimde yapısal olarak sınırlıydı: Windows'ta
+  `WDA_EXCLUDEFROMCAPTURE`, yakalamanın çalışıp çalışmayacağını GERÇEKTEN
+  UYGULAMANIN denetimine veriyor. Pano için buna denk hiçbir şey yok —
+  geçmiş tutan bir araç (Windows Win+V, üçüncü taraf pano yöneticileri)
+  sistem panosunu, oraya HERHANGİ bir şey yazıldığı ANDA, HYCLEUS'un kendi
+  temizleme zamanlayıcısı çalışma fırsatı bulmadan ÖNCE okuyor, ve bu
+  okumayı engelleyecek ya da değeri ZATEN yakalamış bir araca ULAŞACAK
+  hiçbir API yok. Düğmenin "önce uyar, sonra kullanıcı karar versin"
+  çerçevesi, asıl garanti "bu bağlı olduğu OS katmanı TAMAMEN bu
+  uygulamanın etkileyebileceği bir şey DEĞİL" iken hâlâ GÜVENLİ bir yol
+  sunuyormuş gibi okunuyordu. Düğme daha da SERTLEŞTİRİLMEDİ, tamamen
+  KALDIRILDI — çünkü sertleştirilecek bir şey KALMAMIŞTI: kalan risk hiçbir
+  zaman HYCLEUS'un denetleyebileceği bir şey OLMADI.
+- **Yazdırma — eklendi, varsayılmak yerine GERÇEK yapıldı.** Diyaloğun
+  onay kutusu her zaman "Bu parçayı yazdırdım ve güvenli bir yere koydum"
+  diyordu, ama pencerenin bu turdan ÖNCE GERÇEKTEN yazdıracak bir yolu
+  YOKTU — tek seçenekler base32 metnini elle yeniden yazmak ya da bir
+  ekran görüntüsü almaktı, ki bu TAM OLARAK hem uyarı metninin hem
+  yukarıdaki yakalama korumasının ENGELLEMEYE çalıştığı şey. `_on_yazdir()`
+  artık gerçek bir `QPrinter`/`QPrintDialog` akışı açıyor, ve
+  `_yazdirilabilir_belge()` hem base32 metnini HEM QR kodunu taşıyan bir
+  `QTextDocument` kuruyor — ekranın ZATEN gösterdiği AYNI `RecoveryExport.
+  qr_svg`, yazdırma için rasterize edilmiş, İKİNCİ bir üretim yolundan
+  YENİDEN üretilmemiş (ekran gösterimini denetleyen AYNI statik-analiz
+  testi bunu yazdırma için de zorluyor). Düğmenin yanındaki bir etiket —
+  HER ZAMAN görünür, kullanıcının kapatması gereken bir diyalog DEĞİL —
+  adı konması GEREKEN tek yazdırma riskini adlandırıyor: paylaşılan ya da
+  ağ üzerindeki bir yazıcı, kendi kuyruğunda ya da belleğinde bir kopya
+  bırakabilir, bu yüzden doğrudan bağlı bir yazıcı ÖNERİLİYOR. Pano
+  riskinin aksine bu risk "kendi arkamızı temizlemeye çalıştık" gibi bir
+  hafifletmenin ARKASINA gizlenmek yerine AÇIKÇA söyleniyor — çünkü söz
+  verilebilecek GERÇEK bir temizlik yok.
 
 Onay kutusu ("Bu parçayı yazdırdım ve güvenli bir yere koydum") **bir
 güvenlik kontrolü değildir** ve öyle olması da amaçlanmadı: yalnızca
