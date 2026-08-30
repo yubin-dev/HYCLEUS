@@ -14,7 +14,7 @@ import qrcode
 import qrcode.constants
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -57,7 +58,7 @@ from DB.db_manager import DBManager
 
 from CORE.paths import data_dir as _data_dir
 from CORE import rate_limit
-from CORE.pin_policy import LOGIN_MIN_LEN, PIN_MIN_LEN, validate_new_pin
+from CORE.pin_policy import LOGIN_MIN_LEN, PIN_MAX_LEN, PIN_MIN_LEN, validate_new_pin
 from CORE.pin_rotation import yenileme_gerekli
 from CORE.session_user import (
     kullanici_bilgisi,
@@ -322,9 +323,174 @@ def _hsep() -> QFrame:
     return f
 
 
+_QSS_PIN_BOX = (
+    "QLineEdit {"
+    f"  background: {_LT['topbar']};"
+    f"  color: {_LT['text']};"
+    f"  border: 2px solid {_LT['border']};"
+    "  border-radius: 8px;"
+    "  font-size: 20px;"
+    "}"
+    "QLineEdit:focus {"
+    f"  border: 2px solid {_LT['accent']};"
+    "}"
+    "QLineEdit:disabled {"
+    f"  color: {_LT['subtext']};"
+    f"  border: 2px solid {_LT['border']};"
+    "}"
+)
+
+
+class _PinDigitBox(QLineEdit):
+    """
+    Tek bir PIN kutucuğu. Yapıştırma (paste) ile gelen BİRDEN FAZLA
+    karakteri KENDİSİ işlemez — `paste()` (Ctrl+V VE sağ tık bağlam
+    menüsündeki "Yapıştır" için ortak Qt kancası — `QLineEdit`'te
+    `insertFromMimeData` YOKTUR, o yalnızca `QTextEdit` ailesinde
+    vardır) bunu yakalayıp üst widget'a (`_PinBoxInput`) devreder,
+    çünkü `maxLength(1)` olan bir kutuya normal yoldan yapıştırma
+    yapılırsa Qt sessizce ilk karakter DIŞINDAKİ HER ŞEYİ atar — 6
+    haneli bir PIN'in otomatik dağıtılması bu yakalama olmadan mümkün
+    değil.
+    """
+
+    def __init__(self, ust: "_PinBoxInput", index: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._ust = ust
+        self._index = index
+
+    def paste(self) -> None:
+        metin = QApplication.clipboard().text().strip()
+        if len(metin) > 1:
+            self._ust._yapistir(metin)
+            return
+        super().paste()
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if event.key() == Qt.Key_Backspace and not self.text():
+            self._ust._onceki_kutuya_gec(self._index)
+            return
+        super().keyPressEvent(event)
+
+
+class _PinBoxInput(QWidget):
+    """
+    Altı kutucuklu PIN girişi (giriş ekranı, mockup'a uygun).
+
+    KRİTİK UYUMLULUK NOTU: `CORE/pin_policy.py` PIN'in tam olarak 6
+    hane ya da yalnızca rakam olacağını HİÇBİR ZAMAN garanti etmez —
+    `LOGIN_MIN_LEN=4` eski (6 hane politikasından önce kaydolmuş)
+    kullanıcıları kasıtlı olarak kabul eder, `PIN_MAX_LEN` GUI
+    akışlarında hiç zorlanmaz ve rakam-dışı karakterler için hiçbir
+    kısıtlama yoktur (yalnızca Authenticator kodu `isdigit()` ile
+    denetlenir, PIN değil). Bu yüzden kutucuklar:
+      - karakter sınıfını KISITLAMAZ (harf/sembol içeren eski PIN'ler
+        çalışmaya devam eder),
+      - SONUNCU kutucuk taşabilir: 6. karakterden sonrası da oraya
+        yazılır (uzun PIN'ler reddedilmez).
+    Görsel olarak "6 kutu" mockup'ı karşılanır; işlevsel olarak mevcut
+    hiçbir PIN'in giriş yapma yeteneği bozulmaz.
+
+    Yapıştırma davranışı: herhangi bir kutuya birden fazla karakter
+    yapıştırılırsa TÜM kutular temizlenir ve yapıştırılan metin BAŞTAN
+    (1. kutudan) dağıtılır — kullanıcı "6 haneli PIN'i tek seferde
+    yapıştırırsa" tamamının ilk kutudan başlayarak yerleşmesini bekler,
+    hangi kutu o an odaktaysa fark etmez.
+    """
+
+    textChanged = Signal(str)
+    returnPressed = Signal()
+
+    _KUTU_SAYISI = 6
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setStyleSheet("background:transparent;")
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._kutular: list[_PinDigitBox] = []
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+
+        for i in range(self._KUTU_SAYISI):
+            kutu = _PinDigitBox(self, i)
+            # Sonuncu kutucuk taşan karakterleri de kabul eder (bkz. sınıf docstring'i).
+            kutu.setMaxLength(1 if i < self._KUTU_SAYISI - 1 else PIN_MAX_LEN)
+            kutu.setEchoMode(QLineEdit.Password)
+            kutu.setAlignment(Qt.AlignCenter)
+            kutu.setFixedSize(44, 52)
+            kutu.setStyleSheet(_QSS_PIN_BOX)
+            kutu.textChanged.connect(lambda _txt, idx=i: self._kutu_degisti(idx))
+            kutu.returnPressed.connect(self.returnPressed.emit)
+            self._kutular.append(kutu)
+            lay.addWidget(kutu)
+
+    def _kutu_degisti(self, index: int) -> None:
+        kutu = self._kutular[index]
+        if index < self._KUTU_SAYISI - 1 and len(kutu.text()) >= 1:
+            self._kutular[index + 1].setFocus()
+        self.textChanged.emit(self.text())
+
+    def _onceki_kutuya_gec(self, index: int) -> None:
+        if index > 0:
+            onceki = self._kutular[index - 1]
+            onceki.setFocus()
+            onceki.setCursorPosition(len(onceki.text()))
+
+    def _dagit(self, metin: str) -> None:
+        """Bir dizeyi kutulara böler — hem yapıştırma hem `setText()` bunu kullanır."""
+        for kutu in self._kutular:
+            kutu.blockSignals(True)
+            kutu.clear()
+        for i, kutu in enumerate(self._kutular[:-1]):
+            if i < len(metin):
+                kutu.setText(metin[i])
+        son = self._kutular[-1]
+        if len(metin) >= self._KUTU_SAYISI:
+            son.setText(metin[self._KUTU_SAYISI - 1:])
+        for kutu in self._kutular:
+            kutu.blockSignals(False)
+        self.textChanged.emit(self.text())
+
+    def _yapistir(self, metin: str) -> None:
+        self._dagit(metin)
+        odak_index = min(len(metin), self._KUTU_SAYISI - 1)
+        odak_kutu = self._kutular[odak_index]
+        odak_kutu.setFocus()
+        odak_kutu.setCursorPosition(len(odak_kutu.text()))
+
+    def text(self) -> str:
+        return "".join(k.text() for k in self._kutular)
+
+    def setText(self, text: str) -> None:  # type: ignore[override]
+        """
+        Programatik atama (ör. testler, gelecekteki bir otomatik-doldurma).
+        Yapıştırmadan FARKLI olarak odağı DEĞİŞTİRMEZ — `QLineEdit.setText()`nin
+        de yapmadığı gibi.
+        """
+        self._dagit(text)
+
+    def setFocus(self) -> None:  # type: ignore[override]
+        self._kutular[0].setFocus()
+
+    def clear(self) -> None:
+        for kutu in self._kutular:
+            kutu.blockSignals(True)
+            kutu.clear()
+            kutu.blockSignals(False)
+        self.textChanged.emit("")
+
+
 # ── Dialog ─────────────────────────────────────────────────────────────────────
 
 class LoginDialog(QDialog):
+    # `_pin_input`in giriş sayfasında `_PinBoxInput` (bu turda eklendi), kurulum
+    # sihirbazı sayfasında ise düz `QLineEdit` olması gerekiyor — iki sayfa
+    # karşılıklı DIŞLAYICI (bkz. modül docstring'i), ama aynı sınıfın aynı
+    # özniteliği olduğundan mypy'nin ikisini de kabul etmesi için açık Union.
+    _pin_input: QLineEdit | "_PinBoxInput"
+
     def __init__(
         self,
         hwid: str | None = None,
@@ -632,7 +798,7 @@ class LoginDialog(QDialog):
         # PIN field
         # Giriş ekranı: burada uzunluk ipucu verilmez — yeni politika 6 hane
         # ama eski 4-5 haneli PIN'ler hâlâ geçerli, "en az 6" yazmak yanıltıcı olurdu.
-        self._pin_input = _make_input("PIN'inizi girin", password=True)
+        self._pin_input = _PinBoxInput()
         self._pin_input.returnPressed.connect(self._on_login)
         lay.addWidget(_field("PIN", self._pin_input))
         lay.addSpacing(20)

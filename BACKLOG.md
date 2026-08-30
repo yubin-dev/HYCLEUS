@@ -7457,3 +7457,106 @@ denetiminin GÖRMEMESİ — kod tabanının ZATEN 376 örnekle yaşadığı AYNI
 sınır, yeni bir sınıf değil.
 
 ---
+
+## B-095 — Giriş ekranındaki PIN alanı tek kutudan 6 kutucuğa çevrildi: yapıştırma otomatik dağıtıyor, PIN politikasıyla geriye uyumluluk korundu
+
+Görev: Giriş ekranındaki PIN alanını tek bir metin kutusundan mockup'taki
+gibi 6 ayrı rakam kutusuna çevir. Yapıştırma davranışını da düşün —
+kullanıcı 6 haneli PIN'i tek seferde yapıştırırsa otomatik dağıtılsın.
+
+**Uyumluluk riski — önce netleştirildi.** `CORE/pin_policy.py` PIN'in tam
+6 hane ya da yalnızca rakam olacağını HİÇBİR ZAMAN garanti etmez:
+`LOGIN_MIN_LEN=4` (6 hane politikasından önce kaydolmuş kullanıcıları
+kasıtlı kabul eder), `PIN_MAX_LEN=32` GUI akışlarında hiç zorlanmaz, ve
+karakter sınıfı için (rakam-dışı harf/sembol PIN'ler dahil) hiçbir kısıt
+yok — yalnızca Authenticator kodu `isdigit()` ile denetleniyor, PIN
+değil (`CORE/pin_policy.py`, `CORE/pin_rotation.py`, `CORE/setup_usb.py`,
+`UI/RegisterDialog.py`, `UI/ProfileView.py`, `UI/login_dialog.py`
+üzerinde grep ile doğrulandı). Naif bir "6 rakam, digit-only" kutucuk
+tasarımı eski/uzun/rakam-dışı PIN sahiplerini KİLİTLERDİ. Karar: kutular
+KARAKTER SINIFINI KISITLAMIYOR ve SONUNCU kutucuk taşıyor (6. karakterden
+sonrası da oraya yazılıyor) — mockup'ın "6 kutu" görünümü karşılanıyor,
+ama mevcut HİÇBİR PIN'in giriş yapma yeteneği bozulmuyor.
+
+**Uygulama — `UI/login_dialog.py`.**
+  - `_PinDigitBox(QLineEdit)` — tek kutucuk. `paste()`'i override ediyor
+    (Ctrl+V VE sağ-tık "Yapıştır" ikisi de bu ortak Qt kancasından geçiyor
+    — `QLineEdit`'te `insertFromMimeData` YOK, o yalnızca `QTextEdit`
+    ailesinde var; ilk taslak bunu yanlış varsaymıştı, mypy'nin "undefined
+    in superclass" uyarısıyla YAKALANDI ve düzeltildi). `keyPressEvent`'i
+    override ederek BOŞ kutuda Backspace'i önceki kutuya odak olarak ele
+    alıyor.
+  - `_PinBoxInput(QWidget)` — 6 `_PinDigitBox`; ilk 5'i `maxLength(1)`,
+    sonuncusu `maxLength(PIN_MAX_LEN)` (taşma burada). `text()`/`setText()`/
+    `setFocus()`/`clear()` — `LoginDialog._on_login()`'in ve MEVCUT
+    testlerin (`dlg._pin_input.setText(pin)`) beklediği `QLineEdit`
+    arayüzünü taklit ediyor. `setEnabled()` ayrıca override GEREKMEDİ —
+    Qt'de bir üst widget'ı disable etmek çocuklarına otomatik yayılıyor
+    (`_apply_lockout`/`_tick_lockout` bunu zaten kullanıyordu).
+  - Yapıştırma: hangi kutu odaktaysa fark etmeksizin metni BAŞTAN (1.
+    kutudan) dağıtıyor — kullanıcı "PIN'i tek seferde yapıştırınca"
+    tamamının ilk kutudan yerleşmesini bekliyor, odak konumuna göre farklı
+    davranmak kafa karıştırırdı.
+  - `_build_register_page()`/`_build_setup_ui()`'nin KENDİ `_pin_input`
+    alanları (ayrı, karşılıklı dışlayıcı sayfalar) DOKUNULMADAN kaldı —
+    görev yalnızca giriş ekranını kapsıyordu. `LoginDialog._pin_input`ın
+    sayfaya göre `QLineEdit | _PinBoxInput` olabilmesi için sınıf
+    seviyesinde açık bir Union tip belirtimi eklendi (mypy'nin tek
+    öznitelik için iki sayfadaki farklı atamaları reddetmesini önlemek
+    için).
+
+**Keşif — mevcut testler `.setText()` bekliyordu.** `tests/
+test_pin_rotation_ui.py` ve `tests/test_usb_weak_binding_ui.py`
+`dlg._pin_input.setText(pin)` çağırıyordu; `_PinBoxInput` ilk taslakta
+`setText()` UYGULAMIYORDU — TAM test suite çalıştırılınca 9 test
+`AttributeError` ile KIRILDI (yalnızca kendi yeni test dosyamı
+çalıştırırken GÖRÜNMEDİ). `setText()` eklenip (`_yapistir()`yle aynı
+dağıtım mantığını, ama odak DEĞİŞTİRMEDEN paylaşan bir `_dagit()`
+yardımcısına çıkarılarak) düzeltildi; TAM suite tekrar çalıştırılıp 9'u da
+yeşile döndüğü doğrulandı. Ders: bu depoda `_pin_input` gibi paylaşılan
+bir özniteliğe dokunan bir değişikliğin GÜVENLİ olduğunu yalnızca YENİ
+test dosyasını çalıştırarak DEĞİL, TAM suite'i çalıştırarak doğrulamak
+gerekiyor.
+
+**Keşif — `.show()` sonrası `qWaitForWindowExposed()` TAM suite'te
+çöktü.** İlk fixture taslağı `QTest.qWaitForWindowExposed(w)` çağırıyordu;
+tek başına ya da birkaç dosyayla çalıştırılınca sorunsuzdu, ama TÜM
+paket (~3000+ test) art arda çalıştırıldığında offscreen platform'da bir
+access-violation ile ÇÖKTÜ. Bu depoda `qWaitForWindowExposed` kullanan
+BAŞKA hiçbir test dosyası YOK — diğerleri (`test_theme_picker.py` gibi)
+yalnızca `.show()` kullanıyor. O çağrı `qapp.processEvents()` ile
+DEĞİŞTİRİLDİ; TAM suite tekrar çalıştırılıp çökme YENİDEN ÜRETİLEMEDİ.
+
+**Test — `tests/test_pin_giris_kutulari.py` (9 test).** Tek tek yazmanın
+kutuları doldurup odağı ilerlettiğini, boş kutuda Backspace'in önceki
+kutuya döndüğünü, tam-6-haneli yapıştırmanın doğru dağıldığını, odaktaki
+kutudan BAĞIMSIZ baştan dağıtıldığını, 4 haneli (eski) PIN yapıştırmanın
+kalan kutuları boş bıraktığını, 10 haneli (uzun) PIN yapıştırmanın
+sonuncu kutuda taştığını, rakam-dışı karakterlerin reddedilmediğini,
+`clear()`'ın tüm kutuları boşalttığını, ve gerçek `LoginDialog`'un giriş
+sayfasının `_PinBoxInput` kullandığını (tek kutuya GERİ DÖNÜLMEDİĞİni)
+doğruluyor.
+
+**Mutasyon kanıtı (geçici, geri alındı).** `_PinDigitBox.paste()`'in
+yakalamasını devre dışı bırakmak 4 yapıştırma testini kırdı (tümü ilk
+karaktere kısaltılmış PIN'ler görüyordu); `_kutu_degisti()`'nin
+odak-ilerletmesini kaldırmak tek-tek-yazma VE rakam-dışı-karakter
+testlerini kırdı. İkisi de geri alındı, `grep -n "MUTATION"` ve `git
+diff --stat` ile temiz dönüş doğrulandı.
+
+Güvenlik-ilgisi değerlendirmesi: yapıştırma zaten ESKİ tek kutulu alanda
+da native Qt davranışıyla ÇALIŞIYORDU (maxLength yoktu) — bu değişiklik
+YENİ bir yetenek EKLEMİYOR, yalnızca aynı davranışı 6 widget'a
+dağıtıyor. `_on_login()`'in doğrulama mantığı DOKUNULMADI. SECURITY.md
+güncellemesi gerekli GÖRÜLMEDİ.
+
+Tam test suite: 3096 passed, 4 skipped (bir önceki turdan +11 — yeni
+`tests/test_pin_giris_kutulari.py`, `qWaitForWindowExposed` çökmesi
+düzeltildikten sonra tam paket tek çöküşsüz geçti). Ruff temiz. mypy:
+`UI/login_dialog.py`'de +2 hata (`Key_Backspace`, `QSizePolicy.Fixed`) —
+dosyada ZATEN 39+ örnekle yaygın olan "PySide6 enum'ları mypy'nin
+göremediği" kalıbı, gerçek bir tip hatası değil. bandit: tek bulgu (B110,
+satır ~1274) DEĞİŞMEDİ — bu turdan ÖNCE de oradaydı (vault açma hata
+yolu), benim eklediğim kod DEĞİL.
+
+---
