@@ -2722,6 +2722,108 @@ already used for its own manually-painted columns: `UI/
 main_window_theme.py::_refresh_after_theme_change()` now also calls
 each admin page's `_restyle()`.
 
+**A follow-up audit found one page whose `__init__` fired a query before
+the role gate ever ran — measured, not assumed.** "Always constructed"
+means `__init__` runs for a non-admin session's window too, so the
+question of exactly *where* `is_admin_role()` sits relative to
+`__init__`/first data load isn't rhetorical — it was checked per page by
+reading the actual constructor, not inferred from the pattern.
+`UsbTokensView`/`PendingRegistrationsView` build only empty widgets in
+`__init__` (`_make_table`/`_make_pending_table`) and defer every query to
+`.yenile()`, which production only ever calls from the role-gated
+`main_window.py::_on_open_usb_tokens`/`_on_open_pending`. `
+AdminSettingsView` did not follow that pattern: its `__init__` called
+`_load_settings()` (`DBManager.get_setting`/`get_idle_timeout_minutes`/
+`get_app_mode`) and, through `_tsa_kok_bloku()`, `_tsa_yukle()`
+(`CORE.trusted_roots.oku()`) unconditionally — for *every* window,
+admin or not, before `_on_open_admin_settings()`'s role check had a
+chance to run. Nothing here is secret-grade data (global app settings,
+a public trust-anchor list), but it was still the exact defect class
+being asked about: a query genuinely executing before the gate, with
+only the *rendering* withheld. Fixed by removing both calls from
+`__init__`/`_build_ui()` (the list widget and delete button now start
+in their empty/disabled default state, set explicitly rather than by a
+load that no longer runs there) — `.yenile()` already called both, so
+production behavior at the (gated) point of actual display is
+unchanged. Mutation-proved: temporarily reverting the fix and rerunning
+`tests/test_admin_pages_construction_guard.py::
+test_admin_settings_view_ADMIN_OLMAYAN_pencerede_construction_sirasinda_
+sorgu_atmiyor` reproduced the exact failure (`_mode_combo` showing the
+DB's real `BIREYSEL` value immediately after construction, for a
+`"Standart"` — non-admin — window); reverted back and confirmed green.
+
+**`is_admin_role()` is not redundant with the DB write layer's RBAC gate
+— verified, not asserted.** `DBManager.execute()`'s `
+_yazma_yetkisini_dogrula()` (B-074) rejects writes only for
+`can_write(role) is False`, i.e. only `"Salt Okunur"` — and
+`can_write("Standart")` is `True` (already established in
+`tests/test_roles.py`). A `"Standart"` session is therefore a role the
+DB layer's own gate would **not** stop from writing at all; it is not
+an admin role either. `tests/test_admin_pages_construction_guard.py`
+constructs a real `"Standart"`-role `HycleusWindow`, reaches its
+already-built (per the paragraph above) `_usb_tokens_view`/
+`_pending_view`/`_admin_settings_view` directly — never calling
+`_on_open_*()` — and calls a mutating handler on each
+(`_on_toggle_blacklist`, `_on_approve`, `_on_save_settings`) with no UI
+interaction at all. Each is rejected and the window is locked
+(`"revoked"`), which only `UI.admin_common.yonetici_hala_yetkili()`'s
+own `is_admin_role(pencere._role)` check can be responsible for, since
+the DB layer would have allowed the write to proceed. Mutation-proved
+per handler-family: monkeypatching `yonetici_hala_yetkili` to always
+return `True` lets the same `"Standart"`-role call through and the DB
+row actually changes.
+
+**The revoked-role window while a page stays open — measured, not
+assumed.** Removing `AdminPanel`'s own polling loop (above) raised an
+obvious question: if a session's role is downgraded elsewhere (a second
+admin session, no USB ever pulled) while one of the three pages is
+open, does it keep operating on stale authority until something else
+notices? Two things were already true before this turn and remain true:
+(1) `main_window.py`'s own `_poll_usb()` (B-066, unmodified by this
+work) polls `oturum_yetkisi_gecerli_mi()` every 3 seconds regardless of
+which page is showing and locks the whole `centralWidget()` — including
+whichever of the three admin pages is currently visible — on a mismatch;
+(2) every *mutating* handler on all three pages calls `
+yonetici_hala_yetkili()`, which performs its own fresh
+`oturum_yetkisi_gecerli_mi()` call synchronously, immediately before the
+write. The two are independent: `_poll_usb()` bounds how long the UI
+*looks* interactive after a revocation to at most ~3 seconds, but a
+click on an "Approve"/"Reject"/"Blacklist"/"Save" button re-validates
+against the database at the moment of the click, not against
+`pencere._role`'s value from login — so the actual write-time exposure
+window is not "up to 3 seconds," it's the gap between the click and the
+guard's own query, which is effectively zero. `tests/
+test_admin_pages_construction_guard.py::
+test_sayfa_guard_rol_dusurulunce_usb_takiliyken_de_reddediyor` proves
+this narrower claim directly: it drops a live admin session's DB role to
+`'user'` with the USB never removed and `_poll_usb()` never invoked at
+all, then calls `PendingRegistrationsView._on_approve()` straight on the
+already-open page — rejected, window locked. Its mutation-contrast
+sibling confirms the same scenario succeeds with
+`yonetici_hala_yetkili` bypassed, showing the assertion measures the
+guard itself and not `_poll_usb()` incidentally catching it first.
+
+**What is *not* re-checked on every interaction: read-only data
+loading.** `.yenile()` itself — the method that actually runs the
+`SELECT`s — carries no `is_admin_role()` check of its own; only the
+*mutating* handlers do. In the shipped UI this is unreachable without
+bypassing `main_window.py::_on_open_*()` entirely (grep confirms
+`.yenile()` has exactly those three production call sites), so a
+non-admin session's page stays empty in practice. But calling it
+directly — the same class of direct-instantiation access this section
+already exercises — would populate it. This asymmetry is deliberate,
+not an oversight: nothing rendered by `.yenile()` is a secret (USB
+token metadata, pending-registration rows, trust-anchor certificates,
+global TTL/idle settings — all either operational metadata or already
+readable by other paths in the app), and populating a table changes no
+state, so the DB-write backstop (B-074) plus the per-write
+`is_admin_role()` check above remain the actual security boundary. It
+is called out here rather than silently left alone because the
+question that prompted this audit was specifically about the gap
+between "rendering blocked" and "query never ran," and this is exactly
+that gap — just on the read side, where the consequence of the query
+running is display, not a database write.
+
 ---
 
 ## 5. Cryptographic details
@@ -5791,6 +5893,110 @@ bayat renklerde kalırdı. `AuditLogView`'ın kendi elle boyanan sütunları
 için ZATEN kullandığı AYNI mekanizmayla kapatıldı: `UI/
 main_window_theme.py::_refresh_after_theme_change()` artık her admin
 sayfasının `_restyle()`'ını da çağırıyor.
+
+**Bir takip denetimi, rol kapısı hiç çalışmadan bir sorgu atan bir sayfa
+buldu — varsayılmadı, ÖLÇÜLDÜ.** "Koşulsuz kurulma" yönetici olmayan bir
+oturumun penceresi için de `__init__`'in çalıştığı anlamına geliyor,
+yani `is_admin_role()`'un `__init__`/ilk veri yüküne göre TAM OLARAK
+NEREDE durduğu sorusu retorik değildi — gerçek kurucu kod OKUNARAK
+sayfa başına kontrol edildi, desenden çıkarım yapılmadı.
+`UsbTokensView`/`PendingRegistrationsView` `__init__`'te yalnızca BOŞ
+widget'lar kuruyor (`_make_table`/`_make_pending_table`) ve her sorguyu
+`.yenile()`'ye erteliyor, ki üretim onu YALNIZCA rol-kapılı
+`main_window.py::_on_open_usb_tokens`/`_on_open_pending`'ten çağırıyor.
+`AdminSettingsView` bu deseni İZLEMİYORDU: `__init__`'i
+`_load_settings()`'i (`DBManager.get_setting`/`get_idle_timeout_minutes`/
+`get_app_mode`) ve `_tsa_kok_bloku()` üzerinden `_tsa_yukle()`'yi
+(`CORE.trusted_roots.oku()`) KOŞULSUZ çağırıyordu — yönetici olsun
+olmasın HER pencere için, `_on_open_admin_settings()`'in rol kontrolü
+hiç çalışma fırsatı bulmadan ÖNCE. Burada gizli-sınıf bir veri yok
+(genel uygulama ayarları, herkese açık bir güven-çıpası listesi) ama
+yine de sorulan TAM OLARAK o kusur sınıfıydı: bir sorgu kapıdan ÖNCE
+gerçekten çalışıyor, yalnızca GÖRÜNTÜLEME esirgeniyordu. İkisi de
+`__init__`/`_build_ui()`'dan kaldırılarak düzeltildi (liste widget'ı ve
+silme düğmesi artık başlangıç/devre-dışı durumlarına, artık orada
+çalışmayan bir yükten değil, AÇIKÇA kondu) — `.yenile()` ikisini de
+ZATEN çağırıyordu, yani üretimde (kapılı) gerçek görüntülenme anındaki
+davranış DEĞİŞMEDİ. Mutasyonla kanıtlandı: düzeltme geçici olarak geri
+alınıp `tests/test_admin_pages_construction_guard.py::
+test_admin_settings_view_ADMIN_OLMAYAN_pencerede_construction_sirasinda_
+sorgu_atmiyor` yeniden çalıştırıldığında TAM OLARAK aynı başarısızlık
+tekrar üretildi (`_mode_combo`, `"Standart"` — yönetici olmayan — bir
+pencerede construction'dan HEMEN sonra DB'nin gerçek `BIREYSEL`
+değerini gösteriyordu); geri alınıp tekrar yeşile döndüğü teyit edildi.
+
+**`is_admin_role()`, DB yazma katmanının RBAC kapısıyla YEDEKLİ (redundant)
+değil — iddia edilmedi, KANITLANDI.** `DBManager.execute()`'un
+`_yazma_yetkisini_dogrula()`'sı (B-074) yazmayı yalnızca
+`can_write(role) is False` için reddediyor, yani yalnızca `"Salt
+Okunur"` — ve `can_write("Standart")` `True` (`tests/test_roles.py`'de
+ZATEN kurulu bir gerçek). "Standart" bir oturum bu yüzden DB katmanının
+KENDİ kapısının yazmayı hiç DURDURMAYACAĞI bir rol; aynı zamanda
+yönetici de değil. `tests/test_admin_pages_construction_guard.py`
+gerçek bir `"Standart"` rollü `HycleusWindow` kuruyor, (yukarıdaki
+paragrafa göre) ZATEN inşa edilmiş `_usb_tokens_view`/`_pending_view`/
+`_admin_settings_view`'ına DOĞRUDAN ulaşıyor — `_on_open_*()`'i HİÇ
+çağırmadan — ve her birinde bir yetkili eylemi (`_on_toggle_blacklist`,
+`_on_approve`, `_on_save_settings`) hiçbir UI etkileşimi OLMADAN
+çağırıyor. Her biri reddediliyor ve pencere kilitleniyor (`"revoked"`)
+— bundan yalnızca `UI.admin_common.yonetici_hala_yetkili()`'nin KENDİ
+`is_admin_role(pencere._role)` kontrolü sorumlu olabilir, çünkü DB
+katmanı yazmanın devam etmesine İZİN VERİRDİ. Eylem-ailesi başına
+mutasyonla kanıtlandı: `yonetici_hala_yetkili`'yi her zaman `True`
+dönecek şekilde monkeypatch'lemek AYNI `"Standart"`-rollü çağrının
+geçmesine izin veriyor ve DB satırı GERÇEKTEN değişiyor.
+
+**Sayfa açıkken düşürülen rol penceresi — varsayılmadı, ÖLÇÜLDÜ.**
+`AdminPanel`'in kendi yoklama döngüsünü kaldırmak (yukarıda) doğal bir
+soru doğurdu: bir oturumun rolü BAŞKA bir yerden (ikinci bir yönetici
+oturumu, USB HİÇ çekilmeden) düşürülürse, üç sayfadan biri açıkken,
+sayfa başka bir şey fark edene kadar eski yetkiyle çalışmaya devam mı
+ediyor? Bu turdan önce de doğru olan ve DOĞRU KALAN iki şey var: (1)
+`main_window.py`'nin kendi `_poll_usb()`'si (B-066, bu çalışmayla
+DEĞİŞTİRİLMEDİ) hangi sayfa görünürse görünsün `oturum_yetkisi_
+gecerli_mi()`'yi her 3 saniyede bir yokluyor ve bir uyuşmazlıkta TÜM
+`centralWidget()`'ı — o an görünen üç admin sayfasından hangisi olursa
+olsun DAHİL — kilitliyor; (2) üç sayfadaki HER yetkili handler
+`yonetici_hala_yetkili()`'yi çağırıyor, ki bu da YAZMADAN HEMEN ÖNCE
+kendi taze `oturum_yetkisi_gecerli_mi()` çağrısını EŞ ZAMANLI (senkron)
+yapıyor. İkisi BİRBİRİNDEN BAĞIMSIZ: `_poll_usb()` bir düşüşten sonra
+arayüzün en fazla ~3 saniye "etkileşimli GÖRÜNMESİNİ" sınırlıyor, ama
+"Onayla"/"Reddet"/"Kara Listeye Al"/"Kaydet" düğmesine bir tıklama
+girişte `pencere._role`'ün değerine karşı değil, TIKLAMA ANINDA
+veritabanına karşı yeniden doğrulanıyor — yani asıl yazma-anı maruziyet
+penceresi "en fazla 3 saniye" DEĞİL, tıklama ile guard'ın kendi sorgusu
+arasındaki fark, ki bu da FİİLEN sıfır. `tests/
+test_admin_pages_construction_guard.py::
+test_sayfa_guard_rol_dusurulunce_usb_takiliyken_de_reddediyor` bu daha
+DAR iddiayı doğrudan kanıtlıyor: canlı bir yönetici oturumunun DB
+rolünü USB HİÇ çıkarılmadan ve `_poll_usb()` HİÇ çağrılmadan `'user'`e
+düşürüyor, sonra ZATEN açık olan sayfada doğrudan
+`PendingRegistrationsView._on_approve()`'u çağırıyor — reddediliyor,
+pencere kilitleniyor. Mutasyon-kontrastlı kardeşi, AYNI senaryonun
+`yonetici_hala_yetkili` atlatıldığında BAŞARILI olduğunu doğrulayarak
+denetimin `_poll_usb()`'nin tesadüfen önce yakalamasını değil, guard'ın
+KENDİSİNİ ölçtüğünü gösteriyor.
+
+**Her etkileşimde YENİDEN kontrol edilmeyen şey: salt-okuma veri yükü.**
+`.yenile()`'nin kendisi — GERÇEKTEN `SELECT`'leri çalıştıran metot —
+kendi `is_admin_role()` kontrolünü TAŞIMIYOR; yalnızca YETKİLİ
+handler'lar taşıyor. Sevk edilen UI'da bu, `main_window.py::
+_on_open_*()`'i TAMAMEN atlamadan erişilemez (grep, `.yenile()`'nin TAM
+OLARAK bu üç üretim çağrı noktasına sahip olduğunu doğruluyor), yani
+pratikte yönetici olmayan bir oturumun sayfası boş kalıyor. Ama
+doğrudan çağırmak — bu bölümün zaten sınadığı AYNI doğrudan-örnekleme
+erişimi — onu doldururdu. Bu asimetri KASITLI, bir gözden kaçırma
+DEĞİL: `.yenile()`'nin gösterdiği hiçbir şey gizli değil (USB token
+metadata'sı, bekleyen kayıt satırları, güven-çıpası sertifikaları,
+genel TTL/hareketsizlik ayarları — hepsi ya operasyonel metadata ya da
+uygulamadaki başka yollardan ZATEN okunabilir) ve bir tabloyu doldurmak
+hiçbir DURUMU değiştirmiyor, yani DB-yazma yedeği (B-074) artı yukarıdaki
+yazma-başına `is_admin_role()` kontrolü GERÇEK güvenlik sınırı olarak
+kalıyor. Burada sessizce bırakılmak yerine açıkça belirtiliyor çünkü bu
+denetimi tetikleyen soru TAM OLARAK "render engellendi" ile "sorgu hiç
+çalışmadı" arasındaki farktı, ve bu TAM OLARAK o fark — yalnızca okuma
+tarafında, sorgunun çalışmasının sonucu bir veritabanı yazısı değil
+görüntüleme olduğu yerde.
 
 ---
 

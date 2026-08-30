@@ -533,17 +533,29 @@ def _admin_panel_canli_usb(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-
 
 class _SahtePencere:
     """Bu dosyanın panel testleri için minimal sahte `pencere` — `UI.
-    admin_common.yonetici_hala_yetkili`'nin okuduğu `_hwid`/`_role`'dan
-    fazlasına ihtiyaç yok (testler `.yenile()`/tema tazelemesi çağırmıyor)."""
+    admin_common.yonetici_hala_yetkili`'nin okuduğu `_hwid`/`_role`'un
+    yanında `_T` de taşıyor: `_panel()` artık `.yenile()` çağırıyor
+    (`AdminSettingsView.__init__` artık DB'ye gitmiyor — bkz. `tests/
+    test_admin_pages_construction_guard.py`), `.yenile()` de `_restyle()`
+    üzerinden `pencere._T`'yi okuyor."""
 
     def __init__(self, hwid: str = "H", role: str = "Yönetici") -> None:
+        from UI.main_window_palette import _DARK
+
         self._hwid = hwid
         self._role = role
+        self._T = _DARK
 
 
 def _panel(qapp, request):  # type: ignore[no-untyped-def]
+    """`AdminSettingsView.__init__` artık DB'ye HİÇ gitmiyor (bkz. yukarıdaki
+    not) — panelin eskiden `__init__` sırasında aldığı ilk veri yükünü
+    burada `.yenile()` ile açıkça tetikliyoruz, tıpkı gerçek `main_window.
+    py::_on_open_admin_settings()`'in yaptığı gibi."""
     from UI.AdminSettingsView import AdminSettingsView
-    return AdminSettingsView(_SahtePencere())
+    panel = AdminSettingsView(_SahtePencere())
+    panel.yenile()
+    return panel
 
 
 def test_panel_bos_depoyu_ANLASILIR_gosteriyor(qapp, yonetici_db, request) -> None:  # type: ignore[no-untyped-def]

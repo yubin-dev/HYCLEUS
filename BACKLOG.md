@@ -6637,3 +6637,78 @@ SECURITY.md §4.24'e (EN+TR) belgelendi.
 Tam test suite: 2960 passed, 4 skipped. Ruff/mypy/bandit temiz.
 
 ---
+
+## B-085 — B-084'ün guard sırası ve rol-değişikliği koruması yeniden doğrulandı: `AdminSettingsView.__init__`'in kapıdan ÖNCE atan bir sorgusu bulundu ve düzeltildi
+
+Görev: Üç yönetici sayfasının guard sırasını ve rol-değişikliği
+korumasını kanıtla, gerekirse düzelt — `is_admin_role()` tam olarak
+nerede çalışıyor (nesne kurulmadan önce mi, `__init__`/veri çekme
+adımından sonra mı), doğrudan örnekleme testiyle (K1-14 deseni) her üç
+sayfa için ayrı ayrı göster; kaldırılan 3sn'lik zamanlayıcının
+karşıladığı rol-değişikliği tehdidini yeniden değerlendir.
+
+**Guard sırası — VARSAYILMADI, kod okunarak ölçüldü.** `UsbTokensView`/
+`PendingRegistrationsView`: `__init__` yalnızca boş widget kuruyor,
+HİÇBİR sorgu atmıyor — veri yükü tamamen `.yenile()`'ye ertelenmiş,
+`.yenile()`'nin üretimdeki TEK çağrı yeri rol-kapılı `_on_open_*()`.
+`AdminSettingsView`: **BULUNDU** — `__init__` `_load_settings()`'i VE
+(`_tsa_kok_bloku()` üzerinden) `_tsa_yukle()`'yi KOŞULSUZ çağırıyordu,
+yönetici olmayan bir oturum için de, rol kapısından ÖNCE. Düzeltildi:
+ikisi de `__init__`/`_build_ui()`'dan kaldırıldı, yalnızca `.yenile()`'de
+kaldı (zaten oradaydı) — üç sayfa artık TUTARLI.
+
+**Doğrudan örnekleme testi — yeni dosya `tests/
+test_admin_pages_construction_guard.py` (9 test).** UI menüsü/hamburger
+HİÇ kullanılmıyor: gerçek bir `"Standart"` (yönetici olmayan, ama
+`can_write=True`) rollü `HycleusWindow` kuruluyor ve `_make_govde_yigini()`
+tarafından ZATEN inşa edilmiş `window._usb_tokens_view`/`_pending_view`/
+`_admin_settings_view`'a doğrudan erişiliyor.
+
+  1. Üç sayfa için de: DB'de "sorgu çalışsaydı görünürdü" bir satır
+     seedlenip pencere kuruluyor, `__init__`'ten HEMEN sonra ilgili
+     tablo/combo'nun BOŞ/varsayılan kaldığı doğrulanıyor — sonra
+     `.yenile()` çağrılıp GERÇEKTEN dolduğu gösteriliyor (mekanizma
+     bozuk değil, yalnızca ertelenmiş). `AdminSettingsView` testi
+     düzeltmeden ÖNCE KIRMIZIYDI — mutasyonla kanıtlandı: düzeltme
+     `git stash`'le geçici olarak geri alınıp test yeniden koşturuldu,
+     AYNI hata (combo DB'nin Bireysel değerini erkenden gösteriyordu)
+     tekrar üretildi, geri getirilip yeşile dönüldüğü teyit edildi.
+  2. `"Standart"` rolüyle (can_write=True, is_admin_role=False) üç
+     sayfanın birer yetkili eylemi (kara listeye al / onayla / ayar
+     kaydet) doğrudan çağrılıyor — DB'nin KENDİ yazma kapısı (B-074,
+     `can_write`) bu rolü DURDURMAZDI; reddeden `UI.admin_common.
+     yonetici_hala_yetkili()`'nin KENDİ `is_admin_role()` kontrolü.
+     Mutasyon kontrastı: `yonetici_hala_yetkili` atlatılınca AYNI
+     "Standart" çağrı GERÇEKTEN geçiyor.
+  3. **Rol-değişikliği penceresi, `_poll_usb()`'DEN BAĞIMSIZ ölçüldü.**
+     Canlı bir yönetici oturumunun DB rolü `'user'`e düşürülüyor — USB
+     HİÇ çekilmiyor, `_poll_usb()` (main_window'un kendi 3sn'lik
+     zamanlayıcısı, B-066, bu turda DEĞİŞMEDİ) test boyunca HİÇ
+     çağrılmıyor — ve ZATEN AÇIK olan sayfada doğrudan `_on_approve()`
+     çağrılıyor: reddediliyor, pencere kilitleniyor. Sonuç: kaldırılan
+     modal-özgü zamanlayıcının karşıladığı tehdit GERÇEKTEN kapalı
+     kalıyor, ama `_poll_usb()` YÜZÜNDEN değil — her yetkili handler'ın
+     TIKLAMA ANINDA yeniden sorguladığı `yonetici_hala_yetkili()`
+     yüzünden. Yazma-anı maruziyet penceresi "`_poll_usb()`'nin en
+     fazla 3 saniyesi" DEĞİL, tıklama ile guard'ın kendi sorgusu
+     arasındaki fark — fiilen sıfır.
+
+**Bulunan, kasıtlı olarak DEĞİŞTİRİLMEYEN bir asimetri: `.yenile()`'nin
+kendisi guard'sız.** Yetkili (yazan) handler'ların HEPSİ `yonetici_
+hala_yetkili()` çağırıyor; salt-okuma veri yükleyen `.yenile()`
+çağırmıyor. Üretimde bu erişilemez (`.yenile()`'nin TEK üç çağrı yeri
+rol-kapılı `_on_open_*()`), ama doğrudan çağrılsa (aynı doğrudan-
+örnekleme erişimiyle) yönetici olmayan bir oturumun sayfasını
+doldururdu. Düzeltilmedi — kasıtlı: gösterdiği hiçbir şey gizli-sınıf
+değil (USB token metadata'sı, bekleyen kayıt satırları, güven-çıpası
+listesi, genel ayarlar) ve doldurmak hiçbir DURUM değiştirmiyor, asıl
+sınır (B-074 + yazma-başına `is_admin_role()`) bundan etkilenmiyor.
+SECURITY.md §4.24'te açıkça belgelendi, sessizce bırakılmadı.
+
+SECURITY.md §4.24 genişletildi (EN+TR, dört yeni paragraf).
+
+Tam test suite: 2971 passed, 4 skipped (bir önceki turdan +11 — yeni
+`tests/test_admin_pages_construction_guard.py`, 9 test). Ruff/mypy/bandit
+temiz.
+
+---

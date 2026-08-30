@@ -59,11 +59,29 @@ _TTL_OPTIONS = (1, 6, 12, 24, 48)
 
 class AdminSettingsView(QWidget):
     def __init__(self, pencere: Any, parent: QWidget | None = None) -> None:
+        """
+        `_load_settings()` BİLEREK burada ÇAĞRILMIYOR (eskiden çağrılıyordu
+        — düzeltildi, bkz. `tests/test_admin_pages_construction_guard.py`).
+
+        Bu sayfa (Güvenlik/Denetim Günlüğü/Profil ile AYNI desen, bkz. `UI/
+        main_window_layout.py::_make_govde_yigini`) KOŞULSUZ kuruluyor —
+        yönetici OLMAYAN bir oturumun penceresi için de `__init__` çalışır,
+        rol kapısı yalnızca `main_window.py::_on_open_admin_settings()`'te
+        (giriş noktasında). `_load_settings()`'in DB'ye gitmesi (`get_
+        setting`/`get_idle_timeout_minutes`/`get_app_mode`) ve `_tsa_kok_
+        bloku()`'nun DAHA ÖNCE burada zincirlediği `_tsa_yukle()`'nin
+        `trusted_roots` tablosunu okuması, o rol kapısından ÖNCE, HER
+        oturum için gerçekleşiyordu — "render engellendi" ile "sorgu hiç
+        çalışmadı" arasındaki farkın yanlış tarafında. `UsbTokensView`/
+        `PendingRegistrationsView` zaten bu tuzağa düşmüyordu (ikisi de
+        veri yükünü `.yenile()`'ye erteliyor) — bu sayfa artık onlarla
+        TUTARLI: `.yenile()` (yalnızca rol kapısından SONRA çağrılıyor)
+        hem `_load_settings()`'i hem `_tsa_yukle()`'yi tetikliyor.
+        """
         super().__init__(parent)
         self._pencere = pencere
         self.setObjectName("admin_settings_view")
         self._build_ui()
-        self._load_settings()
 
     @property
     def _T(self) -> dict[str, str]:
@@ -312,8 +330,12 @@ class AdminSettingsView(QWidget):
         self._btn_tsa_sil = QPushButton("Kaldır")
         self._btn_tsa_sil.setCursor(Qt.PointingHandCursor)
         self._btn_tsa_sil.setFixedWidth(100)
-        # Başlangıç durumu BURADA verilmiyor: `_tsa_yukle()` her yüklemede
-        # zaten kapatıyor ve blok onunla bitiyor.
+        # Başlangıç durumu BURADA AÇIKÇA veriliyor (`False`) — `_tsa_yukle()`
+        # ARTIK burada ÇAĞRILMIYOR (aşağıya bkz.), bu yüzden onun kapatmasına
+        # güvenilemez: liste boş dolduğu için buton varsayılan olarak
+        # (Qt'nin QPushButton varsayımı `enabled=True`) seçili öğe yokken
+        # bile tıklanabilir kalırdı.
+        self._btn_tsa_sil.setEnabled(False)
         self._btn_tsa_sil.clicked.connect(self._on_tsa_kok_sil)
         satir.addWidget(self._btn_tsa_sil)
         satir.addStretch()
@@ -323,7 +345,10 @@ class AdminSettingsView(QWidget):
             lambda: self._btn_tsa_sil.setEnabled(
                 self._tsa_liste.currentItem() is not None)
         )
-        self._tsa_yukle()
+        # `_tsa_yukle()` BURADA ÇAĞRILMIYOR — bkz. `__init__`'in üstündeki
+        # not: bu sayfa (`UsbTokensView`/`PendingRegistrationsView` ile
+        # TUTARLI olarak) `__init__` sırasında HİÇBİR DB sorgusu
+        # tetiklemiyor, ilk veri yükü yalnızca `.yenile()` ile geliyor.
         return kutu
 
     def _kim(self) -> int | None:
