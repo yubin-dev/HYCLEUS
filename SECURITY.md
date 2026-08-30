@@ -119,7 +119,7 @@ can end up in any of the three hands, and §4.4 is where that is worked out.
 |---|---|---|---|
 | AES-256-GCM over file contents | — | ✅ | ⚠️ as strong as the PIN — or as short as one unlocked session (§1.3) |
 | GCM tag / AAD authentication (tamper detection) | — | ✅ | ⚠️ keyed, so unforgeable — until M3 catches the key in an unlocked session (§1.3) |
-| AAD *confidentiality* (filename, plaintext SHA-256, ids) | — | ❌ readable in the header (§3) | ❌ |
+| AAD *confidentiality* (filename, plaintext SHA-256, ids) | — | ❌ readable in the header — the SHA-256 is a confirmation oracle, not just a leak (§3, B-092) | ❌ |
 | Argon2id PIN → KEK → `share_1` | — | ✅ | ⚠️ offline brute force, no rate limit (§3) |
 | Shamir 2-of-3 | — | ✅ the vault yields one share, and one share is nothing | ❌ `share_2` is already theirs |
 | OS credential store holding `share_2` | — | ⚠️ the blob travels with the disk; the OS account password opens it — unless the record is TPM-sealed | ❌ it answers them |
@@ -139,6 +139,24 @@ can end up in any of the three hands, and §4.4 is where that is worked out.
 Rows tagged M3 also cover the causes that have no attacker at all — bit rot,
 a bad copy, a crash mid-write. The integrity sweep does not distinguish
 them, and does not need to.
+
+**The AAD confidentiality row understates one of its own fields.**
+`filename`, `user_id` and `hwid` being readable is ordinary metadata
+leakage — it says something *about* the file, to whoever already holds a
+copy. `original_sha256` is different in kind, not just in sensitivity:
+because SHA-256 is a public, unkeyed function, anyone holding a *candidate*
+document can hash it themselves and compare the result to the plaintext
+header — no decryption, no brute force, and in practice no false positive.
+That is a confirmation oracle, not a leak: it answers "does the vault hold
+exactly this document" with certainty, for any document the holder can
+independently obtain. A salt does not close this — the salt would have to
+sit in the same plaintext AAD to keep the field readable without a key, so
+the attacker folds it into their own hash at the same zero cost. Closing it
+for real costs the AAD-embedded, keyless RFC 3161 verification path
+(§4.9, `CORE/timestamp_verify.py::verify_timestamp()`, which takes no key
+parameter by design) its entire premise across four modules and a CLI tool.
+That trade-off is tracked as its own architectural decision, **B-092**, not
+folded into this section as if it were already resolved.
 
 ### 1.3 What each model gets, and what is out of scope
 
@@ -3750,7 +3768,7 @@ anahtar malzemesi ve bunun hesabı §4.4'te veriliyor.
 |---|---|---|---|
 | Dosya içeriğinde AES-256-GCM | — | ✅ | ⚠️ PIN kadar güçlü — ya da tek bir kilitsiz oturum kadar kısa (§1.3) |
 | GCM etiketi / AAD doğrulaması (kurcalama tespiti) | — | ✅ | ⚠️ anahtarlı, yani sahtelenemez — ta ki M3 anahtarı kilitsiz bir oturumda yakalayana kadar (§1.3) |
-| AAD *gizliliği* (dosya adı, düz metin SHA-256, kimlikler) | — | ❌ başlıkta okunabilir (§3) | ❌ |
+| AAD *gizliliği* (dosya adı, düz metin SHA-256, kimlikler) | — | ❌ başlıkta okunabilir — SHA-256 yalnızca bir sızıntı değil, bir DOĞRULAMA ORACLE'I (§3, B-092) | ❌ |
 | Argon2id PIN → KEK → `share_1` | — | ✅ | ⚠️ çevrimdışı kaba kuvvet, hız sınırı yok (§3) |
 | Shamir 2-of-3 | — | ✅ kasa tek pay veriyor, tek pay hiçbir şey | ❌ `share_2` zaten onda |
 | `share_2`'yi tutan OS anahtar kasası | — | ⚠️ blob diskle birlikte gidiyor; OS hesap parolası onu açar — kayıt TPM'e mühürlü DEĞİLSE | ❌ ona cevap veriyor |
@@ -3770,6 +3788,24 @@ anahtar malzemesi ve bunun hesabı §4.4'te veriliyor.
 M3 etiketli satırlar, hiç saldırganı olmayan nedenleri de kapsıyor — bit
 çürümesi, bozuk bir kopya, yazma sırasındaki çökme. Bütünlük taraması
 bunları ayırt etmiyor ve etmesi de gerekmiyor.
+
+**AAD gizliliği satırı KENDİ alanlarından birini hafife alıyor.** `filename`,
+`user_id` ve `hwid`'in okunabilir olması SIRADAN bir metadata sızıntısı —
+dosya HAKKINDA bir şey söylüyor, zaten bir kopyasını elinde tutana.
+`original_sha256` TÜR OLARAK farklı, yalnızca hassasiyetçe değil: SHA-256 herkese
+açık, anahtarsız bir fonksiyon olduğu için, elinde bir ADAY belge tutan
+HERKES onu kendisi hash'leyip düz metin başlıkla karşılaştırabilir — şifre
+çözme YOK, kaba kuvvet YOK, ve pratikte yanlış pozitif YOK. Bu bir sızıntı
+değil, bir DOĞRULAMA ORACLE'I: "kasa TAM OLARAK bu belgeyi tutuyor mu"
+sorusunu, elinde tutanın bağımsız olarak elde edebildiği HERHANGİ bir belge
+için, KESİNLİKLE yanıtlıyor. Bir tuz (salt) bunu KAPATMAZ — tuzun da anahtar
+olmadan okunabilir kalması için AYNI düz metin AAD'de durması gerekir, yani
+saldırgan onu kendi hash'ine AYNI sıfır maliyetle katar. Bunu GERÇEKTEN
+kapatmak, AAD-gömülü, anahtarsız RFC 3161 doğrulama yoluna (§4.9,
+`CORE/timestamp_verify.py::verify_timestamp()` — TASARIM GEREĞİ hiçbir
+anahtar parametresi almıyor) dört modül ve bir CLI aracı genelinde TÜM
+öncülünü kaybettiriyor. Bu ödünleşim KENDİ mimari kararı olarak, **B-092**
+altında izleniyor — bu bölüme zaten çözülmüş gibi KATILMIYOR.
 
 ### 1.3 Her model ne elde ediyor, kapsam dışı ne kalıyor
 

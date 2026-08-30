@@ -7187,3 +7187,87 @@ pre-existing PySide6-stub `attr-defined` yanlış pozitifi, `git stash` ile
 karşılaştırılıp doğrulandı; bandit temiz, önceki turdan fark yok).
 
 ---
+
+## B-092 — AAD'deki `original_sha256` anahtarsız bir DOĞRULAMA-ORACLE'I: kaldırmak/HMAC'lemek, ayrı bir mimari karar olarak izleniyor
+
+**K3-2a — "AAD'den düz metin dosya adı hash'ini (SHA-256) kaldır veya
+HMAC'le" — bu haliyle KAPATILMADI, WONTFIX (bu turda).** Talimat görevi
+"bu turda yalnızca hash'i kaldırmak veya anahtarlı HMAC'e çevirmek yeterli"
+diye küçük bir düzeltme varsayıyordu. Analiz (önceki tur, kod
+değiştirmeden) gerçek düzeltmenin RFC 3161'in "anahtarsız doğrulama"
+özelliğini KALICI olarak feda eden, dört CORE modülü + bir CLI aracı +
+~900 satır test kapsayan, kendi başına AYRI bir mimari karar olduğunu
+ortaya çıkardı. Kapsamı buraya, B-092'ye taşındı — sessizce ertelenmiş
+değil, NEDEN ertelendiği aşağıda.
+
+**1. Sorunun tam tanımı.** `CORE/crypto.py::encrypt_file()` her dosyanın
+DÜZ METİN içeriğinin SHA-256'sını (`original_sha256`) AAD'ye (Additional
+Authenticated Data) yazıyor — AAD'nin bütünlüğünü GCM tag'i koruyor ama
+AAD ŞİFRELENMİYOR, dosya başlığında AÇIK duruyor. Sonuç: M2 erişimine
+sahip biri — yalnızca bir `.hcl` dosyasının KOPYASI, DB'ye/kimlik
+bilgisine/çalışan uygulamaya erişim GEREKMEDEN (SECURITY.md §1.1'in M2
+tanımı: "holds a copy of the data, not the machine") — elinde tuttuğu bir
+ADAY belgeyi kendisi hash'leyip başlıktaki değerle karşılaştırarak, kasa
+içeriğini HİÇ çözmeden, o belgenin TAM OLARAK orada olduğunu %100
+kesinlikle doğrulayabiliyor. Bu, `filename`/`user_id`/`hwid` gibi diğer
+AAD alanlarının sağladığı SIRADAN metadata sızıntısından NİTELİKSEL olarak
+farklı: SHA-256 herkesin çalıştırabileceği, anahtarsız bir fonksiyon
+olduğu için pasif sızıntıyı bir DOĞRULAMA ORACLE'INA çeviriyor.
+
+**2. Tuz işe yaramıyor.** Tuz rainbow-table (önceden hesaplanmış, ÇOK
+hedefe karşı paylaşılan tablo) saldırılarına karşı işe yarar; burada
+saldırgan TEK bir adayı TEK bir hedefe karşı DOĞRUDAN karşılaştırıyor.
+Anahtarsız kalması için tuzun da AAD'de AÇIK durması ZORUNLU — saldırgan
+onu aday belgesine ekleyip AYNI sıfır maliyetle kendi hash'ini yeniden
+üretir. Yalnızca gerçek bir SIR (anahtar) bunu kapatır — ki bu da
+"anahtarsız damgalama" tanımıyla DOĞRUDAN ÇELİŞİR: hesaplamak/doğrulamak
+için sır gerekiyorsa, artık anahtarsız değildir.
+
+**3. Gerçek çözümün kapsamı.** `original_sha256`'yı AAD'den kaldırmak/
+HMAC'lemek, RFC 3161'in "anahtar İSTEMEZ, düz metne HİÇ dokunmaz" tasarım
+hedefini (`CORE/timestamp.py` modül docstring'i, satır 53) KALICI olarak
+feda ediyor:
+  - `CORE/timestamp.py::timestamp_file()` — `key` ZORUNLU hâle gelmeli;
+    `verify_file()` akış sırasında düz metnin hash'ini de hesaplayacak
+    şekilde değiştirilmeli (mümkün, ama gerçek bir kod değişikliği).
+  - `CORE/timestamp_verify.py::verify_timestamp()` — bugün `key`
+    parametresi YOK (satır 512-517, TASARIM GEREĞİ); eklenmesi ve 10.
+    doğrulama adımının (AAD'deki `original_sha256` ile TSTInfo özetini
+    karşılaştırma, satır 77) YENİDEN YAZILMASI gerekir.
+  - `CORE/timestamp_report.py`, `CORE/merkle.py` — aynı alanı okuyan
+    raporlama ve toplu-damgalama (Merkle ağacı) yolları.
+  - `CORE/verify_timestamp_cli.py` — `--verify-timestamp`'in "air-gapped,
+    anahtarsız doğrulama" iddiası ANLAMINI KAYBEDER.
+  - Testler: `tests/test_timestamp.py`'deki 20 `timestamp_file()`
+    çağrısının 17'si (%85) anahtarsız; `tests/test_timestamp_batch.py`
+    (25 nokta), `tests/test_timestamp_verify.py` (589 satır),
+    `tests/test_verify_timestamp_cli.py` (277 satır) — büyük kısmı
+    yeniden yazılmalı, toplam ~900 satır.
+  - **Geriye dönük ONARILMIYOR:** GCM AAD'si ciphertext'e bağlı; anahtar
+    olmadan mevcut bir dosyanın AAD'sinden bir alan sessizce
+    çıkarılamaz/değiştirilemez. Yalnızca BUNDAN SONRA şifrelenen dosyalar
+    korunur — mevcut HER `.hcl` dosyası, yeniden şifrelenmedikçe (ayrı bir
+    migrasyon işi) bu saldırıya KALICI olarak açık kalır.
+
+**4. Belgeleme — kod DEĞİL, yalnızca doğru/güncel risk tanımı.**
+SECURITY.md §1.2'nin (EN+TR) AAD gizliliği satırı ve ardından gelen
+paragraf güncellendi: "M2: readable in header" artık yalnızca bir sızıntı
+değil, bir DOĞRULAMA ORACLE'I olarak netleştirildi, tuzun neden işe
+yaramadığı kısaca gerekçelendirildi, ve bu madde (B-092) işaret edildi.
+§3'ün "Metadata confidentiality"/"Metadata gizliliği" paragrafı zaten
+"confirming a suspected file without decrypting it" diyordu — B-092 bunu
+DEĞİŞTİRMEDİ, yalnızca §1.2'ye aynı netliği taşıdı.
+
+**5. Kapsam kararı.** Bu, K3-2a'nın "devamı" DEĞİL — kendi başına AYRI bir
+mimari karar. B-087'nin (RFC 3161 mührü/İmzalı Rapor) izlediği AYNI ilke:
+kapsamı sessizce genişletmek yerine, gerçekten isteniyorsa bilinçli,
+ayrı bir karar olarak buraya işlendi. Ne zaman ele alınacağı — ve
+"anahtarsız RFC 3161 doğrulaması" özelliğinin kalıcı olarak feda edilip
+edilmeyeceği — kullanıcı kararına bağlı.
+
+Ayrıntı: SECURITY.md §1.2 (EN+TR), §1.1 (M2 tanımı), §3 "Metadata
+confidentiality"/"Metadata gizliliği", §4.9 (RFC 3161 sınırları).
+
+Bu turda kod/test değişikliği YOK — yalnızca dokümantasyon.
+
+---
