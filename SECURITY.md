@@ -3196,10 +3196,97 @@ copy and expect the mismatch to be caught failed, confirming the field
 comparison — not just file existence — is what those tests measure.
 Both mutations were reverted before landing.
 
-Full suite: 3055 passed, 4 skipped (+25 from this turn: `CORE.usb_manager.
-get_usb_mount_root()`'s own WMI-association-chain logic in the new
-`tests/test_usb_mount_root.py`, and the dual-write/comparison behavior in
-`tests/test_audit_chain.py`'s new "USB second copy" section). Ruff/mypy/
+**Same-day follow-up: was the multi-USB matching actually proven, and is
+`get_usb_mount_root()` being correct enough on its own?** A direct
+follow-up instruction asked two things: prove `get_usb_mount_root(hwid)`
+picks the *right* device when more than one USB is inserted, and decide
+whether `write_anchor()` needs its own cross-check on top of that rather
+than trusting the match blindly.
+
+**Part one — the matching itself, proven, then mutation-tested.**
+`tests/test_usb_mount_root.py::test_birden_fazla_usb_dogru_olani_seciyor`
+already built two fake USB disks with different serials and different
+drive letters (via a `wmi` module double, `test_hwid_probe.py`'s
+established faking pattern — no real hardware available to plug in two
+USB drives against) and asserted each hwid resolves to its *own* letter,
+not the other's. Revisited under a targeted mutation to confirm it isn't
+vacuous: removing the `_sanitize_hwid(serial) != hwid: continue` guard —
+so the function would accept the first USB disk found regardless of
+whether its serial matches the requested hwid — was tried. Two tests
+failed immediately (that one, and a second asserting a non-matching hwid
+returns `None`), both now returning the wrong drive letter for a
+requested hwid. Reverted after confirming. `get_usb_mount_root()`'s own
+matching is correct *by construction* — the association walk
+(`disk.associators(...)`) runs on the specific WMI disk instance that
+already passed the hwid check, not a global query, so there was never a
+code path that could hand back another disk's partition — and that
+correctness claim is now backed by a test proven to fail on the concrete
+"return whatever's found first" mutation, not merely asserted.
+
+**Part two — that correctness alone wasn't enough, and here's the
+concrete gap.** `get_usb_mount_root(hwid)` correctly answers "which drive
+belongs to *this* hwid." It cannot answer "is this the *right* hwid to be
+asking about" — that question is entirely `write_anchor()`'s, and its
+automatic path answered it by calling `get_usb_hwid()`: the first USB
+disk WMI's `Win32_DiskDrive()` enumeration happens to return with a
+readable serial, with no relationship at all to which hwid the *calling
+session* actually authenticated with. One USB inserted — the session's
+own — and this is harmless, same device either way. But HYCLEUS supports
+multiple registered tokens (multiple admin accounts, each with their
+own), and if a second registered token is physically present when
+`write_anchor()` runs — alongside the session's own, or plugged in after
+the session's own was pulled — `get_usb_hwid()` can return that *other*
+token's hwid. `get_usb_mount_root()` then resolves, correctly and by
+design, *that* token's own drive — and the write lands on a different
+registered user's physical USB. Between the two outcomes the follow-up
+instruction asked to distinguish — a quieter failure (anchor silently
+skipped, best-effort masking it) versus a write succeeding onto the
+wrong device — this was the second, worse one: a real gap, not a
+theoretical one, since nothing in the code before this follow-up ever
+checked which hwid `write_anchor()` was about to trust.
+
+**The fix — `_usb_hwid_dogrulanmis_mi()`, a check the write path never
+had.** Before resolving a mount path from an auto-detected hwid,
+`write_anchor()` now confirms that hwid is *this session's own* first,
+in two layers (the first, when available, is sufficient on its own and
+takes priority over the second):
+
+  1. **The session's own hwid, when known.** Every production call site
+     (`main.py`) passes the `DBManager` singleton itself, not a bare
+     connection — and `DBManager._hwid` holds the value the session
+     actually authenticated with at `connect(hwid=...)`. When
+     `write_anchor()`'s `source` carries that attribute, the check is a
+     direct equality test against the candidate hwid, full stop —
+     deliberately *not* relaxed by `usb_tokens` membership: a hwid
+     genuinely registered to some *other* user is still rejected,
+     because "a valid token" and "this session's token" are different
+     claims and only the second licenses a write.
+  2. **`usb_tokens` table membership**, used only when the session's own
+     hwid isn't known (a bare `sqlite3.Connection` — most of this
+     module's own unit tests, or a hypothetical CLI tool with no live
+     session object). Weaker — it can't distinguish *which* registered
+     user a hwid belongs to — but it still stops a write to a completely
+     unregistered, unrelated USB drive, and excludes anything marked
+     `blacklisted` in that table.
+
+A mismatch at either layer skips the USB copy the same way an absent USB
+already did — logged, never raised, the local write unaffected.
+
+**Mutation-proved.** Forcing `_usb_hwid_dogrulanmis_mi()` to always
+return `True` was tried: 6 tests failed, including the one built
+specifically around the scenario above — the session's own hwid known,
+a *different, validly registered* hwid presented as the one currently
+plugged in, `write_anchor()` called with the `DBManager` itself rather
+than a bare connection. Without the check, the anchor lands on that
+other token's drive; the test asserts it does not, and failed exactly
+there once the check was gutted. Reverted after confirming.
+
+Full suite: 3064 passed, 4 skipped (+9 from this follow-up: direct unit
+tests of `_usb_hwid_dogrulanmis_mi()`'s two layers, and
+`write_anchor()` integration tests proving the USB copy is skipped for
+an unregistered hwid, a blacklisted one, and — the scenario this
+follow-up was about — a validly-registered *other* session's hwid, with
+the local copy unaffected in every case). Ruff/mypy/
 bandit clean — bandit's count on `CORE/usb_manager.py` rose from 6 to 7
 low-severity `try/except/pass` findings, all the same accepted pattern
 already used throughout that file for best-effort hardware probing (not
@@ -6765,10 +6852,101 @@ bekleyen 3 test BAŞARISIZ oldu, bu testlerin ölçtüğü şeyin yalnızca dosy
 VARLIĞI değil, alan KARŞILAŞTIRMASININ KENDİSİ olduğunu kanıtladı. Her
 iki mutasyon da işlenmeden ÖNCE geri alındı.
 
-Tam suite: 3055 passed, 4 skipped (bu turdan +25: `CORE.usb_manager.
-get_usb_mount_root()`'un KENDİ WMI-ilişki-zinciri mantığı yeni
-`tests/test_usb_mount_root.py`'de, çift-yazım/karşılaştırma davranışı
-`tests/test_audit_chain.py`'nin yeni "USB ikinci kopya" bölümünde). Ruff/mypy/
+**Aynı gün takip: çoklu-USB eşleştirmesi GERÇEKTEN kanıtlandı mı, ve
+`get_usb_mount_root()`'un KENDİ doğruluğu TEK BAŞINA yeterli mi?** Doğrudan
+bir takip talimatı iki şey istedi: birden fazla USB takılıyken
+`get_usb_mount_root(hwid)`'in DOĞRU cihazı seçtiğini kanıtla, ve
+`write_anchor()`'ın bu eşleşmeye KÖRÜ KÖRÜNE güvenmek yerine KENDİ
+çapraz-kontrolüne ihtiyacı olup olmadığına karar ver.
+
+**Birinci kısım — eşleştirmenin kendisi, kanıtlandı, sonra mutasyonla
+sınandı.** `tests/test_usb_mount_root.py::
+test_birden_fazla_usb_dogru_olani_seciyor` ZATEN farklı serilere ve farklı
+sürücü harflerine sahip iki sahte USB diski kuruyordu (`wmi` modülü
+sahtesi üzerinden — `test_hwid_probe.py`'nin ZATEN kurduğu desen; gerçek
+donanımda iki USB takıp denemek bu ortamda mümkün DEĞİL) ve her hwid'in
+KENDİ harfine eşleştiğini, ÖTEKİNE değil, doğruluyordu. Bu testin BOŞ bir
+iddia OLMADIĞINI doğrulamak için hedefli bir mutasyonla yeniden gözden
+geçirildi: `_sanitize_hwid(serial) != hwid: continue` korumasını
+KALDIRMAK — yani fonksiyonun, seri numarası istenen hwid'le eşleşip
+eşleşmediğine BAKMAKSIZIN bulduğu İLK USB diskini kabul etmesi — denendi.
+İki test HEMEN başarısız oldu (bu test ve istenen hwid'le eşleşmeyen bir
+serinin `None` döndürmesini doğrulayan ikinci bir test), ikisi de artık
+istenen hwid için YANLIŞ sürücü harfini döndürüyordu. Doğrulandıktan sonra
+geri alındı. `get_usb_mount_root()`'un KENDİ eşleştirme mantığı YAPISI
+GEREĞİ doğru (ilişki zinciri yürüyüşü — `disk.associators(...)` — hwid
+kontrolünü ZATEN geçmiş olan BELİRLİ WMI disk nesnesi üzerinde çalışıyor,
+GENEL bir sorgu değil, yani BAŞKA bir diskin bölümünü geri getirebilecek
+bir kod yolu HİÇ olmadı) — ve bu doğruluk iddiası artık "bulunanı ilk
+kabul et" mutasyonunda GERÇEKTEN başarısız olduğu KANITLANMIŞ bir teste
+dayanıyor, yalnızca İDDİA EDİLMİYOR.
+
+**İkinci kısım — bu doğruluk TEK BAŞINA yeterli DEĞİLDİ, ve işte SOMUT
+boşluk.** `get_usb_mount_root(hwid)` "hangi sürücü BU hwid'e ait" sorusunu
+DOĞRU yanıtlıyor. "Sorulması gereken DOĞRU hwid bu mu" sorusunu
+YANITLAYAMAZ — bu soru TAMAMEN `write_anchor()`'ın sorumluluğunda, ve onun
+otomatik yolu bunu `get_usb_hwid()`'i çağırarak yanıtlıyordu: WMI'ın
+`Win32_DiskDrive()` numaralandırmasının okunabilir bir seriyle döndürdüğü
+İLK USB diski, ÇAĞIRAN OTURUMUN hangi hwid'le authenticate olduğuyla HİÇBİR
+İLİŞKİSİ olmadan. Tek bir USB takılıyken — oturumun KENDİ token'ı — bu
+zararsız, her hâlükârda AYNI cihaz. Ama HYCLEUS birden fazla kayıtlı
+token'ı destekliyor (birden fazla yönetici hesabı, her birinin kendi
+token'ı), ve `write_anchor()` çalıştığında İKİNCİ, kayıtlı bir token
+FİZİKSEL olarak takılıysa — oturumun kendi token'ıyla BİRLİKTE, ya da
+oturumun kendi token'ı ÇIKARILDIKTAN SONRA — `get_usb_hwid()` o BAŞKA
+token'ın hwid'ini döndürebilir. `get_usb_mount_root()` o zaman, DOĞRU ve
+TASARIM GEREĞİ, TAM OLARAK o token'ın KENDİ sürücüsünü çözer — ve yazım
+BAŞKA bir kayıtlı kullanıcının fiziksel USB'sine düşer. Takip talimatının
+ayırt etmemi istediği iki sonuç arasında — daha sessiz bir başarısızlık
+(çıpa sessizce yazılmıyor, best-effort bunu maskeliyor) ile YANLIŞ cihaza
+BAŞARIYLA yazma arasında — bu İKİNCİSİYDİ, daha KÖTÜSÜ: kuramsal değil,
+GERÇEK bir boşluk, çünkü bu takipten ÖNCE kodun hiçbir yerinde
+`write_anchor()`'ın GÜVENMEK ÜZERE olduğu hwid'in doğru olup olmadığı HİÇ
+KONTROL EDİLMİYORDU.
+
+**Düzeltme — `_usb_hwid_dogrulanmis_mi()`, yazma yolunun HİÇ sahip
+olmadığı bir kontrol.** `write_anchor()` artık otomatik-bulunan bir
+hwid'den bağlama yolu çözmeden ÖNCE, o hwid'in GERÇEKTEN BU OTURUMUN
+kendisine ait olduğunu ÖNCE doğruluyor, iki katmanda (İLKİ, biliniyorsa,
+TEK BAŞINA yeterli ve İKİNCİSİNE ÖNCELİKLİ):
+
+  1. **Oturumun kendi hwid'i, biliniyorsa.** Üretimdeki HER çağrı yeri
+     (`main.py`) ham bir bağlantı değil, `DBManager` SINGLETON'ının
+     KENDİSİNİ geçiriyor — ve `DBManager._hwid`, oturumun `connect(hwid=
+     ...)`'te GERÇEKTEN authenticate olduğu değeri taşıyor.
+     `write_anchor()`'ın `source`'u bu özniteliği taşıyorsa, kontrol
+     DOĞRUDAN bir eşitlik testi: aday hwid oturumun kendisiyle EŞİT olmak
+     ZORUNDA, başka hiçbir şey değil — bilerek `usb_tokens` ÜYELİĞİYLE
+     GEVŞETİLMİYOR: BAŞKA bir kullanıcıya GERÇEKTEN kayıtlı bir hwid bile
+     REDDEDİLİYOR, çünkü "geçerli bir token" ile "BU oturumun token'ı"
+     FARKLI iddialar ve yalnızca İKİNCİSİ bir yazmaya İZİN VERİYOR.
+  2. **`usb_tokens` tablo üyeliği**, YALNIZCA oturumun kendi hwid'i
+     bilinmiyorsa (ham bir `sqlite3.Connection` — bu modülün kendi birim
+     testlerinin ÇOĞU, ya da canlı bir oturum nesnesi olmayan varsayımsal
+     bir CLI aracı). Daha ZAYIF — hwid'in HANGİ kayıtlı kullanıcıya ait
+     olduğunu AYIRT EDEMEZ — ama yine de TAMAMEN kayıtsız, ilgisiz bir USB
+     sürücüsüne yazılmasını ENGELLİYOR, ve o tabloda `blacklisted`
+     İŞARETLİ herhangi bir hwid'i DIŞLIYOR.
+
+İki katmandan HERHANGİ birinde uyuşmazlık, USB kopyasını TAKILI OLMAYAN
+bir USB'nin ZATEN yaptığı AYNI şekilde atlıyor — loglanıyor, hiç
+FIRLATILMIYOR, yerel yazım ETKİLENMİYOR.
+
+**Mutasyonla kanıtlandı.** `_usb_hwid_dogrulanmis_mi()`'yi HER ZAMAN
+`True` dönecek şekilde zorlamak denendi: 6 test BAŞARISIZ oldu, bunların
+arasında TAM OLARAK yukarıdaki senaryo etrafında kurulmuş olanı da vardı —
+oturumun kendi hwid'i BİLİNİYOR, o an takılı olan diye FARKLI, GEÇERLİ
+biçimde kayıtlı bir hwid sunuluyor, `write_anchor()` ham bir bağlantı
+DEĞİL `DBManager`'ın KENDİSİYLE çağrılıyor. Kontrol OLMADAN çıpa o BAŞKA
+token'ın sürücüsüne DÜŞÜYOR; test bunun OLMADIĞINI iddia ediyor ve kontrol
+BOŞALTILINCA TAM ORADA başarısız oldu. Doğrulandıktan sonra geri alındı.
+
+Tam suite: 3064 passed, 4 skipped (bu takipten +9: `_usb_hwid_dogrulanmis_mi()`'nin
+iki katmanını ölçen doğrudan birim testleri, ve `write_anchor()` bütünleşim
+testleri — kayıtsız bir hwid, kara listeye alınmış bir hwid, ve — bu
+takibin asıl konusu — GEÇERLİ biçimde kayıtlı ama BAŞKA bir oturuma ait bir
+hwid için USB kopyasının atlandığını, yerel kopyanın HER durumda
+ETKİLENMEDİĞİNİ kanıtlayan testler). Ruff/mypy/
 bandit temiz — bandit'in `CORE/usb_manager.py` üzerindeki sayısı 6'dan
 7'ye çıktı, hepsi o dosyada best-effort donanım probu için ZATEN
 kullanılan AYNI kabul edilmiş desen (YENİ bir risk sınıfı değil; bandit'in

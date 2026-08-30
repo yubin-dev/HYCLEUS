@@ -7075,4 +7075,53 @@ Tam test suite: 3055 passed, 4 skipped (bir önceki turdan +25 — yeni
 best-effort donanım probu için ZATEN kabul edilmiş AYNI `try/except/pass`
 deseni (`git stash` ile karşılaştırılıp doğrulandı).
 
+### B-090 takibi (aynı gün) — çoklu-USB eşleştirmesi kanıtlandı; `write_anchor()`'a hwid çapraz-doğrulaması eklendi
+
+Görev: `get_usb_mount_root(hwid)`'in çoklu-USB senaryosunda doğru cihaza
+eşlendiğini kanıtla, gerekirse `write_anchor()`'a çapraz-doğrulama ekle.
+
+**1. Çoklu-USB eşleştirmesi — zaten vardı, mutasyonla sınandı.**
+`tests/test_usb_mount_root.py::test_birden_fazla_usb_dogru_olani_seciyor`
+(bir önceki turda yazılmıştı) iki farklı seri/sürücü harfine sahip sahte
+USB diskiyle her hwid'in KENDİ harfine eşleştiğini ZATEN doğruluyordu.
+Boş bir iddia olmadığı `_sanitize_hwid(serial) != hwid: continue`
+korumasını kaldıran bir mutasyonla kanıtlandı — 2 test (bu ve eşleşmeyen-
+hwid testi) hemen kırıldı, yanlış sürücü harfi döndü; geri alındı.
+
+**2. Yanlış eşleşme riski — DEĞERLENDİRİLDİ, GERÇEK boşluk (b) bulundu.**
+`get_usb_mount_root()`'un KENDİ eşleştirmesi yapısı gereği doğru (ilişki
+zinciri BELİRLİ disk nesnesi üzerinde yürüyor, genel sorgu değil). Ama
+`write_anchor()`'ın otomatik yolu hwid'i `get_usb_hwid()`'den alıyordu —
+o an takılı USB'lerin WMI sırasındaki İLKİ, OTURUMUN kendi hwid'i olduğu
+GARANTİSİ olmadan. Birden fazla kayıtlı token aynı anda takılıysa (iki
+yönetici token'ı) `get_usb_hwid()` BAŞKA bir kullanıcının hwid'ini
+döndürebilir — sonuç (a) sessiz başarısızlık DEĞİL, (b) BAŞKA BİR
+KULLANICININ USB'sine YAZMA: gerçek, kuramsal olmayan bir boşluk.
+
+**3. Çapraz-doğrulama eklendi — `_usb_hwid_dogrulanmis_mi()`.**
+`write_anchor()` artık otomatik-bulunan hwid'i USB'ye yazmadan ÖNCE İKİ
+katmanda doğruluyor: (1) `source` bir `DBManager`'sa VE `_hwid`'i
+biliniyorsa (üretimdeki HER çağrı yeri — `main.py` — bunu geçiriyor) —
+DOĞRUDAN eşitlik, `usb_tokens`da kayıtlı BAŞKA bir hwid bile bunu
+KURTARMAZ; (2) `source` ham bir bağlantıysa — `usb_tokens`da kayıtlı VE
+kara listeye alınmamış mı diye bakılır. Uyuşmazlıkta USB kopyası
+ATLANIYOR (yerel kopya ETKİLENMİYOR), tıpkı USB takılı değilken olduğu
+gibi.
+
+**4. Test.** (a) çoklu-USB — madde 1. (b) `write_anchor(db, ...)` —
+`db`'nin KENDİSİ, oturumun kendi hwid'i biliniyor — o an takılı USB
+BAŞKA, GEÇERLİ biçimde kayıtlı bir kullanıcınınsa, USB'ye yazılmıyor,
+yerel yazım etkilenmiyor (`test_write_anchor_usb_skipped_cross_user_
+even_if_registered`) — görevin ASIL istediği senaryo. Artı: kayıtsız
+hwid, kara listeli hwid, güçlü katmanın zayıf katmandan ÖNCELİKLİ olduğu
+doğrudan birim testleri. (c) Mutasyon: `_usb_hwid_dogrulanmis_mi()`'yi
+HER ZAMAN `True` dönecek şekilde zorlamak 6 testi kırdı (cross-user
+senaryosu DAHİL); geri alındı.
+
+SECURITY.md §4.27'ye (EN+TR) eklendi.
+
+Tam test suite: 3064 passed, 4 skipped (bu takipten +9). Ruff/mypy/bandit
+temiz (bandit sayısı ÖNCEKİ turdan değişmedi — yeni kod yalnızca CORE/
+audit_chain.py'de, o dosyada bandit bulgusu yok).
+
 ---

@@ -838,6 +838,51 @@ def _append_anchor_line(target: Path, base: Mapping[str, Any]) -> dict[str, Any]
     return record
 
 
+def _usb_hwid_dogrulanmis_mi(conn: sqlite3.Connection, hwid: str, source: Any) -> bool:
+    """
+    `hwid`'in GERÇEKTEN bu oturuma/veritabanına ait olduğunu doğrular —
+    `write_anchor()`'ın otomatik-bulunan USB'ye YAZMADAN ÖNCE çağırdığı
+    çapraz-kontrol (B-090 takibi).
+
+    Neden gerekli — `get_usb_mount_root(hwid)`'in KENDİSİ hwid eşleşmesini
+    zaten doğru yapıyor (`tests/test_usb_mount_root.py`'de kanıtlandı: iki
+    USB takılıyken her hwid KENDİ sürücü harfine eşleşiyor, çapraz eşleşme
+    yok). Ama bu, VERİLEN hwid'in doğru sürücüyü bulacağını kanıtlıyor —
+    write_anchor()'ın VERDİĞİ hwid'in doğru olduğunu DEĞİL. `write_anchor()`
+    otomatik modda hwid'i `get_usb_hwid()`'den alıyor: o an takılı USB'lerin
+    WMI numaralandırma sırasındaki İLKİ. Aynı anda BİRDEN FAZLA kayıtlı USB
+    takılıysa (ör. iki yönetici token'ı, ya da bu oturumun token'ı çıkarılıp
+    BAŞKA bir kayıtlı token takılmışsa) `get_usb_hwid()` bu OTURUMUN kendi
+    token'ı OLMAYAN bir hwid döndürebilir — `get_usb_mount_root()` o zaman
+    "doğru" ama YANLIŞ bir sürücüye, yani BAŞKA BİR KULLANICININ USB'sine,
+    kusursuz biçimde eşleşir. Bu fonksiyon o ikinci, çağıran-seviyesi
+    boşluğu kapatıyor.
+
+    İki katman, İLKİ varsa yeterli:
+      1. `source` bir DBManager'sa VE `_hwid`'i biliniyorsa (oturum GERÇEKTEN
+         bu hwid'le authenticate olmuş — `DBManager.connect(hwid=...)`) —
+         DOĞRUDAN karşılaştırma. EN GÜÇLÜ kontrol: `get_usb_hwid()`'in o an
+         bulduğu USB'nin, oturum AÇILIRKEN doğrulanan hwid'le AYNI fiziksel
+         cihaz olduğunu kanıtlar — birden fazla kayıtlı USB aynı anda
+         takılıyken bile. Üretimdeki HER `write_anchor()` çağrısı
+         (`main.py`) `DBManager()` SINGLETON'ını geçiriyor, yani bu katman
+         üretimde HER ZAMAN devrede.
+      2. `source` ham bir `sqlite3.Connection`'sa (oturumun hwid'i
+         bilinmiyor — ör. bir CLI aracı, ya da testler) — `usb_tokens`
+         tablosunda KAYITLI ve KARA LİSTEYE ALINMAMIŞ bir hwid mi diye
+         bakılır. Daha ZAYIF (HANGİ kullanıcıya ait olduğunu ayırt etmez)
+         ama en azından TAMAMEN yabancı/kayıtsız bir USB'ye yazılmasını
+         engeller.
+    """
+    session_hwid = getattr(source, "_hwid", None)
+    if session_hwid is not None:
+        return hwid == session_hwid
+    row = conn.execute(
+        "SELECT 1 FROM usb_tokens WHERE hwid = ? AND blacklisted = 0", (hwid,)
+    ).fetchone()
+    return row is not None
+
+
 def write_anchor(
     source: Any,
     reason: str,
@@ -856,9 +901,15 @@ def write_anchor(
                 Anchor satırında saklanır; sonradan hangi olayın hangi ucu
                 sabitlediğini görebilmek için.
         path: Yerel kopyanın hedefi. Verilmezse `anchor_path()`.
-        usb_path: USB kopyasının hedefi. Verilmezse `usb_anchor_path()` ile
-                  o an takılı USB'de bulunur; hiçbir USB bulunamazsa (ya da
-                  `write_usb=False` ise) USB kopyası hiç YAZILMAZ.
+        usb_path: USB kopyasının hedefi. Verilmezse, o an takılı USB'nin
+                  hwid'i ÖNCE `_usb_hwid_dogrulanmis_mi()` ile doğrulanır,
+                  SONRA `usb_anchor_path()` ile bulunur; doğrulama
+                  BAŞARISIZ olursa (ya da hiçbir USB bulunamazsa, ya da
+                  `write_usb=False` ise) USB kopyası hiç YAZILMAZ. `usb_path`
+                  AÇIKÇA verildiğinde bu doğrulama ATLANIR — çağıran
+                  hedefi zaten kendisi seçmiştir (testlerin `path=`'i
+                  kullanma biçimiyle AYNI "açık yol her zaman kazanır"
+                  sözleşmesi).
         write_usb: USB kopyasının denenip denenmeyeceği. Varsayılan True.
 
     Returns:
@@ -867,10 +918,10 @@ def write_anchor(
         HER ZAMAN yerel kopyayı temsil eder — geriye dönük uyumluluk için;
         `usb_anchor_path()` ile USB kopyasının kendisi ayrıca okunabilir.)
 
-    USB kopyası BEST-EFFORT: takılı değilse ya da yazma herhangi bir
-    nedenle başarısız olursa (çıkarılmış, salt-okunur, vb.) bu SESSİZCE
-    atlanır (uyarı loglanır) — yerel kopyanın yazılması bundan ETKİLENMEZ.
-    Tek nokta bağımlılığı USB'ye TAŞINMAZ.
+    USB kopyası BEST-EFFORT: takılı değilse, hwid'i DOĞRULANAMAZSA ya da
+    yazma herhangi bir nedenle başarısız olursa (çıkarılmış, salt-okunur,
+    vb.) bu SESSİZCE atlanır (uyarı loglanır) — yerel kopyanın yazılması
+    bundan ETKİLENMEZ. Tek nokta bağımlılığı USB'ye TAŞINMAZ.
 
     Anchor YAZILMADAN ÖNCE zincir doğrulanmaz — bilinçli. Kırık bir zincirin
     ucunu da sabitlemek işe yarar: bir sonraki karşılaştırma "kırılma ne
@@ -909,7 +960,23 @@ def write_anchor(
 
         usb_target: Path | None = None
         if write_usb:
-            usb_target = usb_path if usb_path is not None else usb_anchor_path()
+            if usb_path is not None:
+                usb_target = usb_path
+            else:
+                from CORE.usb_manager import get_usb_hwid
+
+                aday_hwid = get_usb_hwid()
+                if aday_hwid is None:
+                    pass  # USB takılı değil — sessizce atla, mevcut davranış
+                elif not _usb_hwid_dogrulanmis_mi(conn, aday_hwid, source):
+                    _log.warning(
+                        "USB anchor kopyası ATLANDI — takılı USB'nin hwid'i"
+                        " (%.12s…) bu oturumun/tabanın doğruladığı hwid'le"
+                        " uyuşmuyor; BAŞKA bir USB'ye yazılması ENGELLENDİ.",
+                        aday_hwid,
+                    )
+                else:
+                    usb_target = usb_anchor_path(aday_hwid)
         if usb_target is not None:
             try:
                 _append_anchor_line(usb_target, base)

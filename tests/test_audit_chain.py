@@ -987,21 +987,38 @@ def test_link_status_YENI_hash_hesaplamiyor_SADECE_breaks_i_okuyor(db, monkeypat
 # ölçülen şey `CORE/audit_chain.py`'nin o fonksiyonu NASIL KULLANDIĞI.
 
 
+#: `sahte_usb_anchor`'ın simüle ettiği USB'nin hwid'i — hem fixture'da hem
+#: onu kullanan testlerde (session-hwid KARŞILAŞTIRMASI için) tek yerden.
+SAHTE_USB_HWID = "SAHTE-USB-HWID"
+
+
 @pytest.fixture
-def sahte_usb_anchor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+def sahte_usb_anchor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, db) -> Path:
     """
     "USB takılı" durumunu simüle eder: `get_usb_hwid()` sabit bir hwid,
     `get_usb_mount_root()` `tmp_path` altında sahte bir bağlama kökü
     döndürür. Döner değer o sahte bağlama kökü — testler USB anchor
     dosyasının GERÇEKTEN `<kök>/HYCLEUS/audit_anchor.log`'da durduğunu
     buradan doğrulayabilir.
+
+    `usb_tokens` tablosuna da KAYITLI, KARA LİSTEYE ALINMAMIŞ bir satır
+    ekler: `write_anchor()`'ın B-090 takip çapraz-doğrulaması artık
+    (`_usb_hwid_dogrulanmis_mi()`) `source` ham bir `sqlite3.Connection`
+    olduğunda (bu dosyadaki testlerin EZİCİ çoğunluğu `write_anchor(db.conn,
+    ...)` kullanıyor — DBManager'ın KENDİSİNİ değil) tam olarak bu tabloya
+    bakıyor. Bu satır OLMADAN, bu fixture'ı kullanan HER test USB yazımının
+    (haklı olarak) ATLANDIĞINI görürdü — DOĞRULANMAMIŞ bir hwid için.
     """
     from CORE import usb_manager
 
     kok = tmp_path / "sahte_usb_koku"
     kok.mkdir()
-    monkeypatch.setattr(usb_manager, "get_usb_hwid", lambda: "SAHTE-USB-HWID")
+    monkeypatch.setattr(usb_manager, "get_usb_hwid", lambda: SAHTE_USB_HWID)
     monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: kok)
+    db.execute(
+        "INSERT INTO usb_tokens (hwid, share_2) VALUES (?, ?)",
+        (SAHTE_USB_HWID, "sahte-share-2-degeri"),
+    )
     return kok
 
 
@@ -1126,6 +1143,12 @@ def test_write_anchor_usb_write_failure_does_not_break_local_write(
     olarak verilen yol aslında bir DOSYA, dizin değil — `mkdir()` bu
     yüzden `NotADirectoryError`/`OSError` fırlatır) yerel kopya YİNE DE
     yazılmalı ve `write_anchor()` hiçbir istisna FIRLATMAMALI.
+
+    hwid'i BİLEREK `usb_tokens`'a KAYITLI ediyor: kayıtlı OLMASAYDI bu
+    senaryo B-090 takibinin çapraz-doğrulaması (`_usb_hwid_dogrulanmis_mi()`)
+    tarafından dosya yoluna hiç ULAŞMADAN atlanırdı — o zaman bu test asıl
+    ölçmek istediği şeyi (yazma HATASININ yerel kopyayı etkilememesi) değil,
+    doğrulama reddini ölçerdi.
     """
     from CORE import usb_manager
 
@@ -1133,6 +1156,7 @@ def test_write_anchor_usb_write_failure_does_not_break_local_write(
     bozuk_kok.write_text("ben bir dosyayım, dizin değilim", encoding="utf-8")
     monkeypatch.setattr(usb_manager, "get_usb_hwid", lambda: "X")
     monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: bozuk_kok)
+    db.execute("INSERT INTO usb_tokens (hwid, share_2) VALUES ('X', 's')")
 
     yerel_capa = tmp_path / "yerel.log"
     _log_many(db, 3)
@@ -1315,3 +1339,199 @@ def test_verify_anchor_replicas_multiple_rows_only_tampered_one_flagged(
     assert sonuc.anchors_checked == 3
     assert len(sonuc.problems) == 1
     assert "Satır 2" in sonuc.problems[0]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 11. USB hwid çapraz-doğrulaması — çoklu-USB / yanlış-eşleşme koruması
+#     (B-090 takibi)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `get_usb_mount_root(hwid)`'in KENDİSİ — VERİLEN bir hwid'i doğru sürücüye
+# eşleştirmesi — `tests/test_usb_mount_root.py::
+# test_birden_fazla_usb_dogru_olani_seciyor`'da ZATEN kanıtlanmış: iki USB
+# takılıyken her hwid KENDİ sürücü harfine eşleşiyor, çapraz eşleşme yok.
+#
+# Ama bu, `write_anchor()`'ın `get_usb_hwid()`'DEN aldığı hwid'in DOĞRU
+# hwid olduğunu KANITLAMIYOR. `get_usb_hwid()` o an takılı USB'lerin WMI
+# numaralandırma SIRASINDAKİ İLKİNİ döndürüyor — bu OTURUMUN kendi token'ı
+# olduğu GARANTİ değil. Aynı anda BİRDEN FAZLA kayıtlı USB takılıysa (iki
+# yönetici token'ı, ya da bu oturumun token'ı çıkarılıp BAŞKA bir kayıtlı
+# token takılmışsa) `get_usb_hwid()` BAŞKA bir kullanıcının hwid'ini
+# döndürebilir ve `get_usb_mount_root()` o zaman "doğru" ama YANLIŞ bir
+# sürücüye KUSURSUZ biçimde eşleşir — ÇAPRAZ-KONTAMİNASYON: bu oturumun
+# denetim çıpası BAŞKA BİR KULLANICININ USB'sine yazılır. Bu bölüm, o
+# ikinci — çağıran-seviyesi — boşluğu kapatan `_usb_hwid_dogrulanmis_mi()`
+# çapraz-kontrolünü ölçüyor.
+
+
+class _SahteDBManager:
+    """`._hwid` taşıyan asgari bir DBManager sahtesi — `.conn`'u GERÇEK
+    bir bağlantıya (fixture'ın `db.conn`'una) devrediyor, yalnızca
+    `_usb_hwid_dogrulanmis_mi()`'nin `getattr(source, "_hwid", None)`
+    okuduğu GÜÇLÜ katmanı izole test edebilmek için."""
+
+    def __init__(self, conn: sqlite3.Connection, hwid: str | None) -> None:
+        self.conn = conn
+        self._hwid = hwid
+
+
+def test_usb_hwid_dogrulanmis_mi_guclu_katman_eslesirse_true(db) -> None:
+    from CORE.audit_chain import _usb_hwid_dogrulanmis_mi
+
+    kaynak = _SahteDBManager(db.conn, hwid="OTURUM-HWID")
+    assert _usb_hwid_dogrulanmis_mi(db.conn, "OTURUM-HWID", kaynak) is True
+
+
+def test_usb_hwid_dogrulanmis_mi_guclu_katman_BASKA_kayitli_hwid_bile_olsa_false(
+    db,
+) -> None:
+    """
+    ÇEKİRDEK iddia: oturumun KENDİ hwid'i biliniyorsa, `usb_tokens`da
+    KAYITLI olması bile BAŞKA bir hwid'i kurtarmaz. Güçlü katman zayıf
+    katmandan (tablo üyeliği) ÖNCELİKLİ — "kayıtlı bir USB" ile "BU
+    oturumun USB'si" AYNI ŞEY DEĞİL.
+    """
+    from CORE.audit_chain import _usb_hwid_dogrulanmis_mi
+
+    db.execute("INSERT INTO usb_tokens (hwid, share_2) VALUES ('BASKA-HWID', 's')")
+    kaynak = _SahteDBManager(db.conn, hwid="OTURUM-HWID")
+    assert _usb_hwid_dogrulanmis_mi(db.conn, "BASKA-HWID", kaynak) is False
+
+
+def test_usb_hwid_dogrulanmis_mi_zayif_katman_kayitliysa_true(db) -> None:
+    """`source`'un hwid'i bilinmiyorsa (ham `sqlite3.Connection`) —
+    `usb_tokens`da kayıtlı ve kara listede DEĞİLSE doğrulanır."""
+    from CORE.audit_chain import _usb_hwid_dogrulanmis_mi
+
+    db.execute("INSERT INTO usb_tokens (hwid, share_2) VALUES ('KAYITLI-HWID', 's')")
+    assert _usb_hwid_dogrulanmis_mi(db.conn, "KAYITLI-HWID", db.conn) is True
+
+
+def test_usb_hwid_dogrulanmis_mi_zayif_katman_kayitsizsa_false(db) -> None:
+    from CORE.audit_chain import _usb_hwid_dogrulanmis_mi
+
+    assert _usb_hwid_dogrulanmis_mi(db.conn, "HIC-KAYITLI-DEGIL", db.conn) is False
+
+
+def test_usb_hwid_dogrulanmis_mi_zayif_katman_kara_listedeyse_false(db) -> None:
+    from CORE.audit_chain import _usb_hwid_dogrulanmis_mi
+
+    db.execute(
+        "INSERT INTO usb_tokens (hwid, share_2, blacklisted) VALUES ('KARA-LISTE', 's', 1)"
+    )
+    assert _usb_hwid_dogrulanmis_mi(db.conn, "KARA-LISTE", db.conn) is False
+
+
+# ── write_anchor() ile UÇTAN UCA — B-090 takip görevinin 2. ve 4b maddesi ─────
+
+
+def test_write_anchor_usb_skipped_when_hwid_unregistered(
+    monkeypatch: pytest.MonkeyPatch, db, tmp_path: Path
+) -> None:
+    """
+    Zayıf katman (ham bağlantı, hwid tabloda YOK) — USB kopyası ATLANMALI,
+    yerel kopya ETKİLENMEMELİ. Bu, görevin 2. maddesindeki "sessizce
+    başarısız olma" riskinin (a) — çıpanın hiç yazılmaması — GÜVENLİ
+    tarafta kaldığını kanıtlıyor: fark edilmez ama en azından YANLIŞ bir
+    cihaza da yazılmaz.
+    """
+    from CORE import usb_manager
+
+    kok = tmp_path / "kayitsiz_usb"
+    kok.mkdir()
+    monkeypatch.setattr(usb_manager, "get_usb_hwid", lambda: "KAYITSIZ-HWID")
+    monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: kok)
+
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 3)
+    kayit = write_anchor(db.conn, "test", path=yerel_capa)
+
+    assert kayit is not None
+    assert len(read_anchors(yerel_capa)) == 1
+    assert not (kok / "HYCLEUS" / "audit_anchor.log").exists()
+
+
+def test_write_anchor_usb_skipped_when_hwid_blacklisted(
+    monkeypatch: pytest.MonkeyPatch, db, tmp_path: Path
+) -> None:
+    from CORE import usb_manager
+
+    db.execute(
+        "INSERT INTO usb_tokens (hwid, share_2, blacklisted) VALUES ('KARALISTE', 's', 1)"
+    )
+    kok = tmp_path / "karalisteli_usb"
+    kok.mkdir()
+    monkeypatch.setattr(usb_manager, "get_usb_hwid", lambda: "KARALISTE")
+    monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: kok)
+
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 3)
+    kayit = write_anchor(db.conn, "test", path=yerel_capa)
+
+    assert kayit is not None
+    assert not (kok / "HYCLEUS" / "audit_anchor.log").exists()
+
+
+def test_write_anchor_usb_written_when_session_hwid_matches(
+    monkeypatch: pytest.MonkeyPatch, db, tmp_path: Path
+) -> None:
+    """Güçlü katman POZİTİF: `write_anchor(db, ...)` — `db`'nin KENDİSİ
+    (ham `.conn`'u değil) geçirilince, o an takılı USB'nin hwid'i
+    `db._hwid`'le eşleşiyorsa `usb_tokens`da KAYITLI olması bile GEREKMEZ."""
+    from CORE import usb_manager
+
+    kok = tmp_path / "kendi_usbm"
+    kok.mkdir()
+    monkeypatch.setattr(usb_manager, "get_usb_hwid", lambda: db._hwid)
+    monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: kok)
+
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 3)
+    write_anchor(db, "test", path=yerel_capa)
+
+    assert (kok / "HYCLEUS" / "audit_anchor.log").exists()
+
+
+def test_write_anchor_usb_skipped_cross_user_even_if_registered(
+    monkeypatch: pytest.MonkeyPatch, db, tmp_path: Path
+) -> None:
+    """
+    B-090 takibinin ÇEKİRDEK senaryosu — görevin 2. maddesindeki (b) riski:
+    "başka bir kullanıcının/oturumun USB'sine yazma."
+
+    Kurulum: BU oturumun kendi hwid'i `db._hwid`'dir (fixture'da
+    "TEST-HWID-DB" olarak sabit). AYRICA, `usb_tokens`da BAŞKA bir
+    kullanıcının GERÇEKTEN kayıtlı, kara listede OLMAYAN bir hwid'i var —
+    yani zayıf katman TEK BAŞINA bunu geçerdi. O an takılı USB — ne
+    olursa olsun `get_usb_hwid()`'in bulduğu — bu OTURUMUN kendi token'ı
+    DEĞİL, o BAŞKA kullanıcının token'ı (ör. token'lar fiziksel olarak
+    karışmış, ya da iki kayıtlı USB aynı anda takılıyken WMI sırası
+    bunu ilk buldu).
+
+    `write_anchor(db, ...)` — `db`'nin KENDİSİ geçirildiği için güçlü
+    katman devrede — USB yazımını REDDETMELİ, `usb_tokens` kaydı
+    "geçerli" görünse bile. Reddetmezse: bu oturumun denetim çıpası
+    BAŞKA BİR KULLANICININ fiziksel USB'sine yazılırdı.
+    """
+    from CORE import usb_manager
+
+    hwid_baskasi = "BASKA-KULLANICININ-HWIDI"
+    db.execute(
+        "INSERT INTO usb_tokens (hwid, share_2) VALUES (?, 's')", (hwid_baskasi,)
+    )
+
+    baskasinin_usbsi = tmp_path / "baskasinin_usbsi"
+    baskasinin_usbsi.mkdir()
+    monkeypatch.setattr(usb_manager, "get_usb_hwid", lambda: hwid_baskasi)
+    monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: baskasinin_usbsi)
+
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 3)
+
+    kayit = write_anchor(db, "test", path=yerel_capa)  # db KENDİSİ
+
+    assert kayit is not None
+    assert len(read_anchors(yerel_capa)) == 1  # yerel kopya ETKİLENMEDİ
+    assert not (baskasinin_usbsi / "HYCLEUS" / "audit_anchor.log").exists(), (
+        "BAŞKA KULLANICININ USB'sine yazıldı — çapraz-kontaminasyon YAKALANMADI"
+    )
