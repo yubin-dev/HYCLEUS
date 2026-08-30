@@ -176,6 +176,10 @@ class AdminSettingsView(QWidget):
     # ------------------------------------------------------------------
 
     def yenile(self) -> None:
+        # B-085: bkz. `UI/UsbTokensView.py::yenile()`'nin aynı yorumu ve
+        # `UI/admin_common.py::sayfa_erisimi_var_mi` docstring'i.
+        if not admin_common.sayfa_erisimi_var_mi(self._pencere):
+            return
         self._restyle()
         self._load_settings()
         self._tsa_yukle()

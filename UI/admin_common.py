@@ -222,9 +222,36 @@ def yonetici_hala_yetkili(widget: QWidget, pencere: Any) -> bool:
     return False
 
 
+def sayfa_erisimi_var_mi(pencere: Any) -> bool:
+    """`.yenile()`'nin KENDİ guard'ı — B-085 takibinde BULUNDU, eklendi.
+
+    `yonetici_hala_yetkili()`'den KASITLI olarak DAHA HAFİF: bu bir
+    YAZMADAN önceki canlı DB doğrulaması DEĞİL — üç sayfanın da `.yenile()`
+    metodu (asıl `SELECT`'leri çalıştıran yer) kendi içinde HİÇBİR rol
+    kontrolü taşımıyordu; TEK koruması `main_window.py::_on_open_usb_
+    tokens`/`_on_open_pending`/`_on_open_admin_settings`'in `.yenile()`'yi
+    çağırmadan ÖNCE yaptığı `is_admin_role(self._role)` kontrolüydü.
+    Üretimde bu üç giriş noktası `.yenile()`'nin TEK çağrı yeri
+    (`tests/test_admin_pages_construction_guard.py`'nin AST/grep denetimi)
+    — ama `.yenile()`'nin KENDİSİ, doğrudan (giriş noktası atlanarak)
+    çağrılsa, veriyi SORGULARDI: aynı doğrudan-örnekleme testi bunu
+    ÖLÇEREK gösterdi (düzeltmeden önce kırmızıydı, aşağıdaki fonksiyon
+    eklenip yeşile döndü).
+
+    `pencere._role`'ü (oturumun GİRİŞTEKİ/önbelleklenmiş rolü) kontrol
+    ediyor — `_on_open_*()`'in ZATEN yaptığı kontrolün AYNISI, ikinci bir
+    DB gidiş-dönüşü OLMADAN (bu bir YAZMA değil, salt-okuma veri
+    yüklemesi — `yonetici_hala_yetkili()`'nin canlı `oturum_yetkisi_
+    gecerli_mi()` doğrulaması burada GEREKSİZ ağırlık olurdu). Canlı rol
+    DÜŞÜŞÜ bu fonksiyonun işi DEĞİL — o zaten `yonetici_hala_yetkili()`
+    (her yazma eyleminden önce) ve `_poll_usb()`'nin (B-066) işi.
+    """
+    return is_admin_role(getattr(pencere, "_role", None))
+
+
 __all__ = [
     "ROLES", "ROLE_HWID", "ROLE_BLACKLISTED",
     "stil", "btn_stil", "btn_danger_stil", "btn_success_stil",
     "combo_stili", "bolum_baslik_stili", "ipucu_stili", "liste_stili",
-    "yonetici_hala_yetkili",
+    "yonetici_hala_yetkili", "sayfa_erisimi_var_mi",
 ]

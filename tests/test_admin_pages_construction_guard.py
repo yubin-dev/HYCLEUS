@@ -12,24 +12,31 @@ tetiklenmiyor), yoksa `__init__` çalışıp bir DB sorgusu ATILDIKTAN sonra mı
 (nesne var, sorgu koştu, yalnızca EKRANA basılmadı)?
 
 
-1 — İnşa-zamanı sorgu denetimi (bölüm "Construction")
-------------------------------------------------------
-Cevap: KARIŞIK, ve bu paket bunu ÖLÇEREK buluyor.
+1 — İnşa-zamanı VE `.yenile()`'nin KENDİ sorgu denetimi (bölüm "Construction")
+-------------------------------------------------------------------------------
+Cevap: KARIŞIK, ve bu paket bunu ÖLÇEREK buluyor — İKİ AYRI turda,
+İKİ AYRI kusur bulup kapatarak.
 
-`UsbTokensView`/`PendingRegistrationsView`: `__init__` yalnızca BOŞ
-widget'lar kuruyor (`_make_table`/`_make_pending_table`), veri yükü TAMAMEN
-`.yenile()`'ye ertelenmiş — `__init__` sırasında HİÇBİR DB sorgusu
-ÇALIŞMIYOR. Rol kapısı (`main_window.py::_on_open_usb_tokens`/
-`_on_open_pending`) bu yüzden `__init__`'ten SONRA ama İLK sorgudan ÖNCE
-oturuyor (sorgu zaten `.yenile()` çağrılmadan hiç yok).
+Tur 1 — `__init__`: `UsbTokensView`/`PendingRegistrationsView` yalnızca
+BOŞ widget'lar kuruyor (`_make_table`/`_make_pending_table`), veri yükü
+TAMAMEN `.yenile()`'ye ertelenmiş — `__init__` sırasında HİÇBİR DB sorgusu
+ÇALIŞMIYOR. `AdminSettingsView`'in `__init__`'i İSE `_load_settings()`'i
+VE `_tsa_kok_bloku()` üzerinden `_tsa_yukle()`'yi KOŞULSUZ çağırıyordu —
+yönetici olmayan bir oturum için de, rol kapısından ÖNCE. Düzeltildi:
+ikisi de artık YALNIZCA `.yenile()`'de.
 
-`AdminSettingsView`: BU PAKETİ YAZARKEN `__init__` `_load_settings()`'i
-(DB: `get_setting`/`get_idle_timeout_minutes`/`get_app_mode`) VE
-`_tsa_kok_bloku()` üzerinden `_tsa_yukle()`'yi (DB: `trusted_roots` tablosu)
-KOŞULSUZ çağırıyordu — yönetici olmayan bir oturum için de. Yani sorgu
-`is_admin_role()` kapısından ÖNCE, HER pencerede çalışıyordu; yalnızca
-SAYFA GÖRÜNMÜYORDU. Düzeltildi: `_load_settings()`/`_tsa_yukle()` artık
-YALNIZCA `.yenile()`'de — üç sayfa şimdi TUTARLI.
+Tur 2 — `.yenile()`'nin KENDİSİ: `main_window.py::_on_open_usb_tokens`/
+`_on_open_pending`/`_on_open_admin_settings`'in `is_admin_role()` kontrolü
+`.yenile()`'yi çağırmadan HEMEN ÖNCE oturuyor — ama bu üçü `.yenile()`'nin
+ÜRETİMDEKİ TEK çağrı yeri olsa da (bkz. bölüm 1'in grep/AST denetimi),
+`.yenile()`'nin KENDİSİ hiçbir rol kontrolü TAŞIMIYORDU: doğrudan
+(bu giriş noktaları atlanarak) çağrılsa veriyi SORGULARDI. Bu paketin
+"Faz B" adımları bunu ÖLÇEREK buldu (düzeltmeden önce kırmızıydı);
+düzeltme `UI/admin_common.py::sayfa_erisimi_var_mi()` — `.yenile()`'nin
+şimdi kendi başına taşıdığı, savunma-derinliği bir `is_admin_role()`
+kontrolü, `yonetici_hala_yetkili()`'den KASITLI olarak daha hafif (canlı
+DB doğrulaması YOK — bu bir YAZMA değil, salt-okuma; canlı rol düşüşü
+zaten `yonetici_hala_yetkili()`'nin ve `_poll_usb()`'nin işi, bkz. bölüm 3).
 
 
 2 — Doğrudan örnekleme (K1-14 deseni)
@@ -139,8 +146,10 @@ def _token_ekle(db, hwid: str, token_id: str = "TOKEN-X") -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1 — İnşa-zamanı sorgu denetimi: is_admin_role() rol kapısından ÖNCE,
-#     YÖNETİCİ OLMAYAN bir oturum için, __init__ sırasında sorgu ATILMIYOR mu.
+# 1 — İnşa-zamanı VE .yenile()'nin KENDİ sorgu denetimi: is_admin_role()
+#     rol kapısı, YÖNETİCİ OLMAYAN bir oturum için, hem __init__ SIRASINDA
+#     hem de .yenile() DOĞRUDAN (giriş noktası atlanarak) çağrıldığında
+#     sorguyu GERÇEKTEN durduruyor mu.
 # ══════════════════════════════════════════════════════════════════════════════
 #
 # Rol KASITLI OLARAK "Standart": `can_write("Standart") is True` (bkz.
@@ -148,9 +157,23 @@ def _token_ekle(db, hwid: str, token_id: str = "TOKEN-X") -> None:
 # reddetmez. Eğer buradaki denetimler yalnızca "Salt Okunur" ile
 # geçiyor olsaydı, asıl kanıtladıkları şey DB'nin salt-okunur engeli
 # olurdu, sayfa seviyesindeki `is_admin_role()` kapısı DEĞİL.
+#
+# Üç fazlı yapı, ÜÇÜNÜN DE aynı testte:
+#   Faz A — construction: tablo/combo BOŞ/varsayılan mı (__init__'te
+#           sorgu yok).
+#   Faz B — `.yenile()` DOĞRUDAN çağrılıyor (main_window.py::_on_open_*()
+#           HİÇ çağrılmadan) — hâlâ BOŞ/varsayılan mı (`.yenile()`'nin
+#           KENDİ `sayfa_erisimi_var_mi()` guard'ı, B-085 takibinde
+#           bulunup eklendi).
+#   Faz C — ham yükleme metodunu (`_load()`/`_load_pending()`/
+#           `_load_settings()`+`_tsa_yukle()`) DOĞRUDAN çağırarak sorgu
+#           mekanizmasının KENDİSİNİN bozuk olmadığı kanıtlanıyor — aksi
+#           hâlde Faz A/B'deki "boş" iddiaları "hiçbir zaman dolmuyor"
+#           anlamına da gelebilirdi, "guard'lı yoldan doldurulmuyor"
+#           değil.
 
 
-def test_usb_tokens_view_ADMIN_OLMAYAN_pencerede_construction_sirasinda_sorgu_atmiyor(
+def test_usb_tokens_view_ADMIN_OLMAYAN_pencerede_hem_construction_hem_yenile_sorgu_atmiyor(
     qapp, db, sahte_usb,
 ):
     assert can_write("Standart") is True and is_admin_role("Standart") is False
@@ -165,24 +188,31 @@ def test_usb_tokens_view_ADMIN_OLMAYAN_pencerede_construction_sirasinda_sorgu_at
         # üretimde yönetici olmayan bir oturumun SAHİP OLDUĞU AYNI nesne.
         sayfa = window._usb_tokens_view
         assert isinstance(sayfa, UsbTokensView)
+
+        # Faz A — construction.
         assert sayfa._table.rowCount() == 0, (
             "GUARD REGRESYONU: __init__ sırasında (rol kapısından önce) "
             "bir sorgu çalışmış — tablo dolu"
         )
 
-        # Sorgu mekanizmasının KENDİSİ BOZUK olmadığını kanıtla — aksi
-        # hâlde yukarıdaki "0 satır" iddiası "hiçbir zaman dolmuyor"
-        # anlamına da gelebilirdi, "henüz dolmadı" değil.
+        # Faz B — .yenile() DOĞRUDAN, _on_open_usb_tokens() HİÇ çağrılmadan.
         sayfa.yenile()
+        assert sayfa._table.rowCount() == 0, (
+            "GUARD REGRESYONU: yenile() doğrudan (giriş noktası atlanarak) "
+            "çağrıldığında 'Standart' rol için bile sorgu çalıştı"
+        )
+
+        # Faz C — ham mekanizma bozuk değil.
+        sayfa._load()
         assert sayfa._table.rowCount() == 1, (
-            "yenile() çağrıldığında sorgu HİÇ çalışmadı — üstteki '0 satır' "
-            "iddiası anlamsızdı"
+            "_load() çağrıldığında sorgu HİÇ çalışmadı — üstteki 'boş' "
+            "iddiaları anlamsızdı"
         )
     finally:
         _pencereyi_kapat(window)
 
 
-def test_pending_view_ADMIN_OLMAYAN_pencerede_construction_sirasinda_sorgu_atmiyor(
+def test_pending_view_ADMIN_OLMAYAN_pencerede_hem_construction_hem_yenile_sorgu_atmiyor(
     qapp, db, sahte_usb,
 ):
     db.execute(
@@ -195,27 +225,39 @@ def test_pending_view_ADMIN_OLMAYAN_pencerede_construction_sirasinda_sorgu_atmiy
     try:
         sayfa = window._pending_view
         assert isinstance(sayfa, PendingRegistrationsView)
+
         assert sayfa._pending_table.rowCount() == 0, (
             "GUARD REGRESYONU: __init__ sırasında bir sorgu çalışmış — "
             "tablo dolu"
         )
 
         sayfa.yenile()
+        assert sayfa._pending_table.rowCount() == 0, (
+            "GUARD REGRESYONU: yenile() doğrudan çağrıldığında 'Standart' "
+            "rol için bile sorgu çalıştı"
+        )
+
+        sayfa._load_pending()
         assert sayfa._pending_table.rowCount() == 1, (
-            "yenile() çağrıldığında sorgu HİÇ çalışmadı"
+            "_load_pending() çağrıldığında sorgu HİÇ çalışmadı"
         )
     finally:
         _pencereyi_kapat(window)
 
 
-def test_admin_settings_view_ADMIN_OLMAYAN_pencerede_construction_sirasinda_sorgu_atmiyor(
+def test_admin_settings_view_ADMIN_OLMAYAN_pencerede_hem_construction_hem_yenile_sorgu_atmiyor(
     qapp, db, sahte_usb,
 ):
     """
-    Bu test YAZILDIĞINDA kırmızıydı: `AdminSettingsView.__init__`
-    `_load_settings()`'i VE `_tsa_yukle()`'yi koşulsuz çağırıyordu.
-    Düzeltme: ikisi de artık YALNIZCA `.yenile()`'de (bkz. `UI/
-    AdminSettingsView.py::__init__`'in docstring'i).
+    `__init__`'in fazı (A) BU TEST YAZILDIĞINDA kırmızıydı:
+    `AdminSettingsView.__init__` `_load_settings()`'i VE `_tsa_yukle()`'yi
+    koşulsuz çağırıyordu. Düzeltme: ikisi de artık YALNIZCA `.yenile()`'de
+    (bkz. `UI/AdminSettingsView.py::__init__`'in docstring'i).
+
+    `.yenile()`'nin fazı (B) DAHA SONRA, AYRI bir turda kırmızıydı:
+    `.yenile()`'nin kendisi hiçbir rol kontrolü taşımıyordu — `UI/
+    admin_common.py::sayfa_erisimi_var_mi()` eklenip `yenile()`'nin
+    başına konana kadar.
     """
     set_app_mode(db, BIREYSEL)
     assert get_app_mode(db) == BIREYSEL
@@ -225,9 +267,9 @@ def test_admin_settings_view_ADMIN_OLMAYAN_pencerede_construction_sirasinda_sorg
         sayfa = window._admin_settings_view
         assert isinstance(sayfa, AdminSettingsView)
 
-        # `_mode_combo`'ya EKLENEN İLK öğe "Kurumsal" — `_load_settings()`
-        # hiç çalışmadıysa combo bu VARSAYILANDA kalır, DB'deki GERÇEK
-        # (Bireysel) değeri YANSITMAZ.
+        # Faz A — construction. `_mode_combo`'ya EKLENEN İLK öğe
+        # "Kurumsal" — `_load_settings()` hiç çalışmadıysa combo bu
+        # VARSAYILANDA kalır, DB'deki GERÇEK (Bireysel) değeri YANSITMAZ.
         assert sayfa._mode_combo.currentData() == KURUMSAL, (
             "GUARD REGRESYONU: _load_settings() construction sırasında "
             "çalışmış — combo DB'deki Bireysel değerini gösteriyor"
@@ -238,12 +280,59 @@ def test_admin_settings_view_ADMIN_OLMAYAN_pencerede_construction_sirasinda_sorg
             "GUARD REGRESYONU: _tsa_yukle() construction sırasında çalışmış"
         )
 
+        # Faz B — .yenile() DOĞRUDAN, _on_open_admin_settings() HİÇ
+        # çağrılmadan.
         sayfa.yenile()
+        assert sayfa._mode_combo.currentData() == KURUMSAL, (
+            "GUARD REGRESYONU: yenile() doğrudan çağrıldığında 'Standart' "
+            "rol için bile _load_settings() çalıştı"
+        )
+        assert sayfa._tsa_liste.count() == 0, (
+            "GUARD REGRESYONU: yenile() doğrudan çağrıldığında 'Standart' "
+            "rol için bile _tsa_yukle() çalıştı"
+        )
+
+        # Faz C — ham mekanizma bozuk değil.
+        sayfa._load_settings()
+        sayfa._tsa_yukle()
         assert sayfa._mode_combo.currentData() == BIREYSEL, (
-            "yenile() çağrıldığında _load_settings() HİÇ çalışmadı"
+            "_load_settings() çağrıldığında sorgu HİÇ çalışmadı"
         )
         assert sayfa._tsa_liste.count() == 1, (
-            "yenile() çağrıldığında _tsa_yukle() HİÇ çalışmadı"
+            "_tsa_yukle() çağrıldığında sorgu HİÇ çalışmadı"
+        )
+    finally:
+        _pencereyi_kapat(window)
+
+
+def test_yenile_guard_kaldirilirsa_ADMIN_OLMAYAN_pencerede_gercekten_sorgu_atiyor(
+    qapp, db, sahte_usb, monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    Mutasyon kontrastı — yukarıdaki üç testin Faz B'sinin gerçekten
+    `sayfa_erisimi_var_mi()`'yi ölçtüğünü kanıtlar (Faz C zaten
+    mekanizmanın bozuk olmadığını gösteriyordu; bu test AYRICA guard'ın
+    KENDİSİNİN yük taşıdığını gösteriyor): `UI.admin_common.
+    sayfa_erisimi_var_mi` her zaman `True` dönecek şekilde
+    monkeypatch'lenirse, `.yenile()`'nin `.yenile()`'nin DOĞRUDAN
+    (`_on_open_usb_tokens()` hiç çağrılmadan) çağrılması, "Standart"
+    rollü bir pencere için bile GERÇEKTEN sorgu atıp tabloyu dolduruyor.
+    """
+    import UI.UsbTokensView as utv
+
+    _kullanici_ekle(db, "MUTASYON-HWID", "mutasyon.baskasi")
+    _token_ekle(db, "MUTASYON-HWID", token_id="MUTASYON-TOKEN")
+
+    window = _pencere(db, sahte_usb, _HWID, "Standart")
+    try:
+        sayfa = window._usb_tokens_view
+        monkeypatch.setattr(utv.admin_common, "sayfa_erisimi_var_mi", lambda *a, **k: True)
+
+        sayfa.yenile()
+
+        assert sayfa._table.rowCount() == 1, (
+            "guard devre dışıyken bile yenile() veri yüklemedi — Faz B "
+            "denetimi sayfa_erisimi_var_mi()'yi gerçekten ölçmüyor olabilir"
         )
     finally:
         _pencereyi_kapat(window)
@@ -272,7 +361,12 @@ def test_pending_view_STANDART_rolle_dogrudan_onay_REDDEDILIYOR(
     window = _pencere(db, sahte_usb, _HWID, "Standart")
     try:
         sayfa = window._pending_view
-        sayfa.yenile()
+        # `.yenile()` DEĞİL, ham `_load_pending()`: `.yenile()` artık
+        # kendisi de `is_admin_role()` guard'lı (B-085) — bu test "Standart"
+        # rolle YAZMA reddini ölçüyor, "Standart" rolle OKUMA reddini değil
+        # (o, section 1'de ayrıca ölçülüyor). Ham yükleme, seçim yapılabilsin
+        # diye tabloyu dolduruyor.
+        sayfa._load_pending()
         sayfa._pending_table.selectRow(0)
 
         sayfa._on_approve()
@@ -307,7 +401,7 @@ def test_pending_view_guard_kaldirilirsa_STANDART_rol_gercekten_onaylayabiliyor(
     window = _pencere(db, sahte_usb, _HWID, "Standart")
     try:
         sayfa = window._pending_view
-        sayfa.yenile()
+        sayfa._load_pending()  # bkz. üstteki testin "ham yükleme" notu
         sayfa._pending_table.selectRow(0)
 
         monkeypatch.setattr(prv.admin_common, "yonetici_hala_yetkili", lambda *a, **k: True)
@@ -332,7 +426,7 @@ def test_usb_tokens_view_STANDART_rolle_dogrudan_kara_listeye_alma_REDDEDILIYOR(
     window = _pencere(db, sahte_usb, _HWID, "Standart")
     try:
         sayfa = window._usb_tokens_view
-        sayfa.yenile()
+        sayfa._load()  # bkz. yukarıdaki bölümdeki "ham yükleme" notu
         # Tek satır var (hedef_hwid) ve pencerenin KENDİ HWID'inden
         # (_HWID) farklı — "kendi USB'si kara listeye alınamaz" kuralına
         # takılmadan seçilebilir.
@@ -362,7 +456,7 @@ def test_admin_settings_view_STANDART_rolle_dogrudan_ayar_kaydi_REDDEDILIYOR(
     window = _pencere(db, sahte_usb, _HWID, "Standart")
     try:
         sayfa = window._admin_settings_view
-        sayfa.yenile()
+        sayfa._load_settings()  # bkz. yukarıdaki bölümdeki "ham yükleme" notu
         idx = sayfa._mode_combo.findData(BIREYSEL)
         sayfa._mode_combo.setCurrentIndex(idx)
 

@@ -151,6 +151,12 @@ class UsbTokensView(QWidget):
     # ------------------------------------------------------------------
 
     def yenile(self) -> None:
+        # B-085: `_on_open_usb_tokens()`'te ZATEN kontrol edilmiş olsa da
+        # (üretimdeki TEK çağrı yeri), bu metot DOĞRUDAN (giriş noktası
+        # atlanarak) çağrılırsa kendi başına da güvenli olsun diye —
+        # bkz. `UI/admin_common.py::sayfa_erisimi_var_mi` docstring'i.
+        if not admin_common.sayfa_erisimi_var_mi(self._pencere):
+            return
         self._restyle()
         self._load()
 

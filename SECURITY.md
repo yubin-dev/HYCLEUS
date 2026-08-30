@@ -2803,26 +2803,47 @@ sibling confirms the same scenario succeeds with
 `yonetici_hala_yetkili` bypassed, showing the assertion measures the
 guard itself and not `_poll_usb()` incidentally catching it first.
 
-**What is *not* re-checked on every interaction: read-only data
-loading.** `.yenile()` itself — the method that actually runs the
-`SELECT`s — carries no `is_admin_role()` check of its own; only the
-*mutating* handlers do. In the shipped UI this is unreachable without
-bypassing `main_window.py::_on_open_*()` entirely (grep confirms
-`.yenile()` has exactly those three production call sites), so a
-non-admin session's page stays empty in practice. But calling it
-directly — the same class of direct-instantiation access this section
-already exercises — would populate it. This asymmetry is deliberate,
-not an oversight: nothing rendered by `.yenile()` is a secret (USB
-token metadata, pending-registration rows, trust-anchor certificates,
-global TTL/idle settings — all either operational metadata or already
-readable by other paths in the app), and populating a table changes no
-state, so the DB-write backstop (B-074) plus the per-write
-`is_admin_role()` check above remain the actual security boundary. It
-is called out here rather than silently left alone because the
-question that prompted this audit was specifically about the gap
-between "rendering blocked" and "query never ran," and this is exactly
-that gap — just on the read side, where the consequence of the query
-running is display, not a database write.
+**Follow-up: is `.yenile()` itself actually safe to call directly — checked,
+not assumed.** The paragraph that stood here previously asserted this
+asymmetry was "deliberate, not an oversight" without having actually
+tried it. A dedicated audit did: every call site of `.yenile()` across
+`UI/`, `CORE/`, `DB/`, and `main.py` was enumerated (`grep -rn
+"\.yenile()"`) and each one traced. The result — `.yenile()` HAS three
+call sites, all in `main_window.py`, one per page
+(`_on_open_usb_tokens:430`, `_on_open_pending:442`,
+`_on_open_admin_settings:454`), each the *last* statement in its
+function, directly after that same function's own `is_admin_role(self.
+_role)` check with an unconditional early `return` on failure — no
+branch, no deferred callback, no gap a role change could land in between
+the check and the call. No `QTimer`, no signal/slot connection, and no
+"Yenile" button reaches `.yenile()` either (the refresh buttons call the
+narrower `_load()`/`_load_pending()` directly, not `.yenile()`, so
+`.yenile()`'s only job is the page-open path). `_refresh_after_theme_
+change()`'s per-page call is to `_restyle()`, a separate, verified
+DB-free method (styling calls only), not `.yenile()`.
+
+**But `.yenile()` had no check of its own — direct instantiation proved
+it, not assumed it.** Tracing the *entry points* is not the same claim
+as ".yenile() is safe if called some other way," and this was tested
+literally: a real `"Standart"`-role (non-admin) `HycleusWindow` was
+built, its already-existing `_usb_tokens_view`/`_pending_view`/
+`_admin_settings_view` were reached directly, and `.yenile()` was called
+on each with `main_window.py::_on_open_*()` never invoked. Before a fix,
+this genuinely queried and populated the table/combo/list on all three
+pages — `.yenile()` carried no `is_admin_role()` check of its own, only
+the *mutating* handlers did. **Fixed:** `UI.admin_common.
+sayfa_erisimi_var_mi()` — an early-return `is_admin_role(pencere._role)`
+check, deliberately lighter than `yonetici_hala_yetkili()` (no live
+`oturum_yetkisi_gecerli_mi()` round-trip; this guards a read, not a
+write, and live role-drift is already `yonetici_hala_yetkili()`'s and
+`_poll_usb()`'s job) — now sits at the top of all three `.yenile()`
+methods. Mutation-proved both directions in
+`tests/test_admin_pages_construction_guard.py`: the same direct-call scenario
+was captured red before the fix (temporarily reverted via `git stash`,
+rerun, reverted back), and a companion test confirms that monkeypatching
+`sayfa_erisimi_var_mi` to always return `True` lets the same
+`"Standart"`-role direct call populate the table again — proving the
+guard itself, not something else, is what blocks it.
 
 ---
 
@@ -5977,26 +5998,50 @@ pencere kilitleniyor. Mutasyon-kontrastlı kardeşi, AYNI senaryonun
 denetimin `_poll_usb()`'nin tesadüfen önce yakalamasını değil, guard'ın
 KENDİSİNİ ölçtüğünü gösteriyor.
 
-**Her etkileşimde YENİDEN kontrol edilmeyen şey: salt-okuma veri yükü.**
-`.yenile()`'nin kendisi — GERÇEKTEN `SELECT`'leri çalıştıran metot —
-kendi `is_admin_role()` kontrolünü TAŞIMIYOR; yalnızca YETKİLİ
-handler'lar taşıyor. Sevk edilen UI'da bu, `main_window.py::
-_on_open_*()`'i TAMAMEN atlamadan erişilemez (grep, `.yenile()`'nin TAM
-OLARAK bu üç üretim çağrı noktasına sahip olduğunu doğruluyor), yani
-pratikte yönetici olmayan bir oturumun sayfası boş kalıyor. Ama
-doğrudan çağırmak — bu bölümün zaten sınadığı AYNI doğrudan-örnekleme
-erişimi — onu doldururdu. Bu asimetri KASITLI, bir gözden kaçırma
-DEĞİL: `.yenile()`'nin gösterdiği hiçbir şey gizli değil (USB token
-metadata'sı, bekleyen kayıt satırları, güven-çıpası sertifikaları,
-genel TTL/hareketsizlik ayarları — hepsi ya operasyonel metadata ya da
-uygulamadaki başka yollardan ZATEN okunabilir) ve bir tabloyu doldurmak
-hiçbir DURUMU değiştirmiyor, yani DB-yazma yedeği (B-074) artı yukarıdaki
-yazma-başına `is_admin_role()` kontrolü GERÇEK güvenlik sınırı olarak
-kalıyor. Burada sessizce bırakılmak yerine açıkça belirtiliyor çünkü bu
-denetimi tetikleyen soru TAM OLARAK "render engellendi" ile "sorgu hiç
-çalışmadı" arasındaki farktı, ve bu TAM OLARAK o fark — yalnızca okuma
-tarafında, sorgunun çalışmasının sonucu bir veritabanı yazısı değil
-görüntüleme olduğu yerde.
+**Takip: `.yenile()`'nin kendisi doğrudan çağrılsa GERÇEKTEN güvenli mi —
+kontrol edildi, VARSAYILMADI.** Burada daha önce duran paragraf bu
+asimetrinin "kasıtlı, bir gözden kaçırma değil" olduğunu, hiç DENEMEDEN
+iddia ediyordu. Ayrılmış bir denetim bunu YAPTI: `.yenile()`'nin
+`UI/`, `CORE/`, `DB/`, `main.py` genelindeki HER çağrı yeri sayıldı
+(`grep -rn "\.yenile()"`) ve her biri izlendi. Sonuç — `.yenile()`'nin
+TAM OLARAK üç çağrı yeri var, hepsi `main_window.py`'de, sayfa başına
+bir tane (`_on_open_usb_tokens:430`, `_on_open_pending:442`,
+`_on_open_admin_settings:454`), her biri kendi fonksiyonunun SON
+ifadesi, o AYNI fonksiyonun kendi `is_admin_role(self._role)`
+kontrolünden HEMEN sonra, başarısızlıkta koşulsuz erken `return` ile —
+kontrol ile çağrı arasına bir rol değişikliğinin sığabileceği hiçbir
+dal, ertelenmiş callback ya da boşluk yok. Hiçbir `QTimer`, sinyal/slot
+bağlantısı YOK, ve hiçbir "Yenile" düğmesi de `.yenile()`'ye
+ULAŞMIYOR (yenile düğmeleri `.yenile()` değil, doğrudan daha DAR
+`_load()`/`_load_pending()`'i çağırıyor — yani `.yenile()`'nin TEK işi
+sayfa-açma yolu). `_refresh_after_theme_change()`'in sayfa başına
+çağrısı `_restyle()`'a — ayrı, DB'siz olduğu doğrulanmış bir metoda
+(yalnızca stil çağrıları) — `.yenile()`'ye DEĞİL.
+
+**Ama `.yenile()`'nin KENDİ kontrolü yoktu — doğrudan örnekleme bunu
+KANITLADI, varsaymadı.** Giriş noktalarını izlemek "'.yenile()' başka
+bir yoldan çağrılsa güvenlidir" iddiasıyla AYNI şey değil, ve bu
+GERÇEKTEN denendi: gerçek bir `"Standart"` rollü (yönetici olmayan)
+`HycleusWindow` kuruldu, ZATEN var olan `_usb_tokens_view`/
+`_pending_view`/`_admin_settings_view`'ına DOĞRUDAN ulaşıldı ve
+`main_window.py::_on_open_*()` HİÇ çağrılmadan her birinde `.yenile()`
+çağrıldı. Düzeltmeden ÖNCE, bu üç sayfanın da tablosunu/combo'sunu/
+listesini GERÇEKTEN sorgulayıp dolduruyordu — `.yenile()`'nin kendi
+`is_admin_role()` kontrolü YOKTU, yalnızca YETKİLİ (yazan) handler'lar
+taşıyordu. **Düzeltildi:** `UI.admin_common.sayfa_erisimi_var_mi()` —
+erken-dönüşlü bir `is_admin_role(pencere._role)` kontrolü,
+`yonetici_hala_yetkili()`'den KASITLI olarak daha hafif (canlı
+`oturum_yetkisi_gecerli_mi()` gidiş-dönüşü YOK; bu bir OKUMAYI koruyor,
+YAZMAYI değil, canlı rol düşüşü zaten `yonetici_hala_yetkili()`'nin ve
+`_poll_usb()`'nin işi) — artık üç `.yenile()` metodunun da BAŞINDA.
+`tests/test_admin_pages_construction_guard.py`'de İKİ YÖNDE de
+mutasyonla kanıtlandı: AYNI doğrudan-çağrı senaryosu düzeltmeden ÖNCE
+kırmızı yakalandı (`git stash`'le geçici olarak geri alınıp yeniden
+koşturuldu, geri getirildi), ve bir eşlik eden test,
+`sayfa_erisimi_var_mi`'yi her zaman `True` dönecek şekilde
+monkeypatch'lemenin AYNI `"Standart"`-rollü doğrudan çağrının tabloyu
+YENİDEN doldurmasına izin verdiğini doğrulayarak, engelleyenin
+BAŞKA bir şey değil, guard'ın KENDİSİ olduğunu kanıtlıyor.
 
 ---
 

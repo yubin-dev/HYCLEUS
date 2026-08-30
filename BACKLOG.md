@@ -6693,22 +6693,54 @@ tarafından ZATEN inşa edilmiş `window._usb_tokens_view`/`_pending_view`/
      fazla 3 saniyesi" DEĞİL, tıklama ile guard'ın kendi sorgusu
      arasındaki fark — fiilen sıfır.
 
-**Bulunan, kasıtlı olarak DEĞİŞTİRİLMEYEN bir asimetri: `.yenile()`'nin
-kendisi guard'sız.** Yetkili (yazan) handler'ların HEPSİ `yonetici_
-hala_yetkili()` çağırıyor; salt-okuma veri yükleyen `.yenile()`
-çağırmıyor. Üretimde bu erişilemez (`.yenile()`'nin TEK üç çağrı yeri
-rol-kapılı `_on_open_*()`), ama doğrudan çağrılsa (aynı doğrudan-
-örnekleme erişimiyle) yönetici olmayan bir oturumun sayfasını
-doldururdu. Düzeltilmedi — kasıtlı: gösterdiği hiçbir şey gizli-sınıf
-değil (USB token metadata'sı, bekleyen kayıt satırları, güven-çıpası
-listesi, genel ayarlar) ve doldurmak hiçbir DURUM değiştirmiyor, asıl
-sınır (B-074 + yazma-başına `is_admin_role()`) bundan etkilenmiyor.
-SECURITY.md §4.24'te açıkça belgelendi, sessizce bırakılmadı.
+**O zaman "kasıtlı olarak değiştirilmedi" denen asimetri, HİÇ DENENMEDEN
+verilmiş bir iddiaydı — takip turunda GERÇEKTEN denendi ve düzeltildi.**
+Bu maddenin ilk yazımı `.yenile()`'nin kendi `is_admin_role()` kontrolü
+taşımadığını (yalnızca yetkili/yazan handler'ların taşıdığını) doğru
+tespit etmiş, ama "üretimde erişilemez, o yüzden kasıtlı" diyerek
+kapatmıştı — KANITSIZ bir ifade. Takip görevi ("`.yenile()`'ye yapılan
+tüm çağrı yerlerini kanıtla, gerekirse savunma-derinliği guard'ı ekle")
+bunu gerçekten sınadı:
 
-SECURITY.md §4.24 genişletildi (EN+TR, dört yeni paragraf).
+  1. **Çağrı yeri denetimi, tam kapsam.** `.yenile()`'nin `UI/`, `CORE/`,
+     `DB/`, `main.py` genelindeki TÜM çağrıları grep'lendi: TAM OLARAK
+     üç yer var, hepsi `main_window.py`'de (`_on_open_usb_tokens:430`,
+     `_on_open_pending:442`, `_on_open_admin_settings:454`), her biri
+     kendi fonksiyonunun kendi `is_admin_role()` kontrolünden HEMEN
+     sonraki SON ifade. Zamanlayıcı, sinyal/slot bağlantısı ya da
+     "Yenile" düğmesi ÜZERİNDEN çağrılan bir yol YOK ("Yenile" düğmeleri
+     `_load()`/`_load_pending()`'e bağlı, `.yenile()`'ye değil).
+     `_refresh_after_theme_change()`'in çağrısı `_restyle()`'a (DB'siz
+     olduğu doğrulandı), `.yenile()`'ye DEĞİL.
+  2. **Doğrudan atlatma testi.** Gerçek bir `"Standart"` rollü
+     `HycleusWindow` kurulup `_on_open_*()` HİÇ çağrılmadan
+     `.yenile()` doğrudan çağrıldı: ÜÇÜ DE sorguyu GERÇEKTEN çalıştırıp
+     tabloyu/combo'yu/listeyi doldurdu — "erişilemez" öncülü giriş
+     noktalarının VARLIĞINA dayanıyordu, `.yenile()`'nin KENDİSİNİN
+     güvenliğine değil.
+  3. **Düzeltildi.** `UI.admin_common.sayfa_erisimi_var_mi()` — erken-
+     dönüşlü bir `is_admin_role(pencere._role)` kontrolü,
+     `yonetici_hala_yetkili()`'den KASITLI daha hafif (bu bir YAZMA
+     değil, salt-okuma; canlı DB gidiş-dönüşü GEREKSİZ ağırlık olurdu) —
+     artık üç `.yenile()` metodunun da BAŞINDA. İKİ YÖNDE mutasyonla
+     kanıtlandı: düzeltme `git stash`'le geri alınıp aynı doğrudan-çağrı
+     testi kırmızı yakalandı, geri getirilip yeşile döndü; AYRICA
+     `sayfa_erisimi_var_mi`'yi her zaman `True` dönecek şekilde
+     monkeypatch'lemek AYNI "Standart" çağrının tabloyu YENİDEN
+     doldurduğunu gösterdi.
+  4. Bu düzeltme, section 2/3'teki (bir önceki turdan kalma) YAZMA-reddi
+     testlerinin `.yenile()` ÇAĞIRAN hazırlık adımlarını da etkiledi —
+     `.yenile()` artık "Standart" rol için veri YÜKLEMEDİĞİNDEN, o dört
+     test ham `_load()`/`_load_pending()`/`_load_settings()`'e
+     güncellendi (seçilecek satırı doldurmak için) — asıl ölçtükleri
+     şey (YAZMA reddi) değişmedi.
 
-Tam test suite: 2971 passed, 4 skipped (bir önceki turdan +11 — yeni
-`tests/test_admin_pages_construction_guard.py`, 9 test). Ruff/mypy/bandit
-temiz.
+SECURITY.md §4.24'teki KANITSIZ "kasıtlı, gözden kaçırma değil" cümlesi
+kaldırıldı; yerine yukarıdaki denetim + düzeltim + mutasyon kanıtını
+anlatan yeni paragraflar geldi (EN+TR).
+
+Tam test suite: 2972 passed, 4 skipped. `tests/
+test_admin_pages_construction_guard.py` 9'dan 10 teste çıktı (yeni
+mutasyon-kontrastlı test). Ruff/mypy/bandit temiz.
 
 ---
