@@ -205,10 +205,14 @@ def test_pin_max_len_asilinca_son_kutu_gercekten_kesiyor(kutu: _PinBoxInput) -> 
     kutunun kendi `QLineEdit.maxLength()`'i devreye girer ve fazlalığı
     SESSİZCE keser (Qt, `setText()`'te verilen metni `maxLength` karaktere
     kısaltır — ilk N karakter tutulur, gerisi atılır; boş `QLineEdit` ile
-    doğrulandı). Bu senaryoda `.text()` ARTIK orijinal PIN'le eşleşmiyor —
-    bu, `PIN_MAX_LEN` (32) GUI'de HİÇ zorlanmadığı için önemli: bu widget
-    içindeki bu sınır politika DEĞİL, yalnızca Qt'nin kendi `QLineEdit`
-    sınırı (gerçek politika sınırı üst katmanda hiç yok).
+    doğrulandı). Bu senaryoda `.text()` ARTIK orijinal PIN'le eşleşmiyor.
+
+    DÜZELTME (B-095 devam): bu sınır "Qt'nin kendi keyfi sınırı, politikayla
+    ilgisi yok" DEĞİLDİR — `UI/login_dialog.py::_PinBoxInput.__init__`
+    `CORE.pin_policy.PIN_MAX_LEN`i DOĞRUDAN ithal edip kullanıyor (bkz.
+    `test_son_kutunun_pin_max_len_ile_CANLI_baglantisi`, aşağıda). Önceki
+    bir turda burada yanlışlıkla "politika sınırı üst katmanda hiç yok"
+    yazılmıştı — YANLIŞTI, düzeltildi.
     """
     tasma_miktari = 8
     cok_uzun_pin = "1" * 5 + "2" * (PIN_MAX_LEN + tasma_miktari)  # toplam 5+40=45 karakter
@@ -218,6 +222,45 @@ def test_pin_max_len_asilinca_son_kutu_gercekten_kesiyor(kutu: _PinBoxInput) -> 
     assert kutu.text() == beklenen
     assert kutu.text() != cok_uzun_pin
     assert len(kutu.text()) == 5 + PIN_MAX_LEN
+
+
+def test_son_kutunun_pin_max_len_ile_CANLI_baglantisi(qapp) -> None:
+    """
+    Son kutunun `setMaxLength()`'inin AYRI, elle yazılmış bir `32` sabiti
+    DEĞİL, `CORE.pin_policy.PIN_MAX_LEN`in KENDİSİ olduğunu KANITLAR —
+    statik bir `== PIN_MAX_LEN` eşitliği (bkz.
+    `test_son_kutunun_gercek_bir_maxLength_siniri_var`) yalnızca BUGÜNKÜ
+    değerlerin TESADÜFEN aynı olduğunu gösterir; bu test `PIN_MAX_LEN`i
+    FARKLI bir değere değiştirip widget'ın YENİ değeri yansıttığını
+    göstererek gerçek (canlı) tekil-kaynaklılığı doğruluyor.
+
+    NEDEN `CORE.pin_policy.PIN_MAX_LEN` DEĞİL `UI.login_dialog.PIN_MAX_LEN`
+    yamanıyor: `UI/login_dialog.py`'deki `from CORE.pin_policy import
+    PIN_MAX_LEN` satırı, ithal ANINDA `login_dialog` modülünün KENDİ
+    ad alanına o değerin bir KOPYASINI bağlıyor (Python'un `from X import
+    Y` semantiği) — `CORE.pin_policy.PIN_MAX_LEN`i sonradan değiştirmek bu
+    kopyayı GÜNCELLEMEZ (ampirik olarak doğrulandı: `pp.PIN_MAX_LEN = 999`
+    sonrası `ld.PIN_MAX_LEN` hâlâ 32 kaldı). Widget'ın GERÇEKTE okuduğu
+    isim `UI.login_dialog.PIN_MAX_LEN` olduğu için doğru yama hedefi de
+    odur — `_PinBoxInput.__init__` her çağrıldığında bu ismi KENDİ modül
+    ad alanından tazeleyerek okuyor, bu yüzden yama SONRASI construct
+    edilen bir widget yeni değeri GERÇEKTEN yansıtıyor.
+    """
+    import UI.login_dialog as ld
+
+    orijinal = ld.PIN_MAX_LEN
+    try:
+        ld.PIN_MAX_LEN = 20
+        w = ld._PinBoxInput()
+        try:
+            assert w._kutular[-1].maxLength() == 20, (
+                "son kutu PIN_MAX_LEN değişikliğini yansıtmadı — ayrı, "
+                "senkron-dışı bir sabitten okunuyor olabilir"
+            )
+        finally:
+            w.deleteLater()
+    finally:
+        ld.PIN_MAX_LEN = orijinal
 
 
 @pytest.fixture

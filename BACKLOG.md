@@ -7475,8 +7475,15 @@ değil (`CORE/pin_policy.py`, `CORE/pin_rotation.py`, `CORE/setup_usb.py`,
 üzerinde grep ile doğrulandı). Naif bir "6 rakam, digit-only" kutucuk
 tasarımı eski/uzun/rakam-dışı PIN sahiplerini KİLİTLERDİ. Karar: kutular
 KARAKTER SINIFINI KISITLAMIYOR ve SONUNCU kutucuk taşıyor (6. karakterden
-sonrası da oraya yazılıyor) — mockup'ın "6 kutu" görünümü karşılanıyor,
-ama mevcut HİÇBİR PIN'in giriş yapma yeteneği bozulmuyor.
+sonrası da oraya yazılıyor) — mockup'ın "6 kutu" görünümü karşılanıyor.
+
+DÜZELTME (aşağıdaki "devam" bölümüne bkz.): "mevcut HİÇBİR PIN'in giriş
+yapma yeteneği bozulmuyor" ifadesi TAM doğru değildi — sonuncu kutu
+`CORE.pin_policy.PIN_MAX_LEN`e (32) sınırlı olarak uygulandı, yani toplam
+`5 + PIN_MAX_LEN` (37) karakterden UZUN bir PIN varsa (aşırı olası
+değil, ama teorik olarak mümkün — üst sınır hiçbir yerde ayrıca
+doğrulanmıyor) bu widget'a TAM giremez. Kabul edilen dar bir ödünleşim,
+"asla bozulmaz" değil.
 
 **Uygulama — `UI/login_dialog.py`.**
   - `_PinDigitBox(QLineEdit)` — tek kutucuk. `paste()`'i override ediyor
@@ -7587,9 +7594,69 @@ zorlamıyor). Üç test bunu doğruluyor:
     kısalıyor, ORİJİNALLE eşleşmiyor. Bu, Qt'nin `QLineEdit.setText()`nin
     kendi `maxLength`'i aştığında verilen metni SESSİZCE ilk N karaktere
     kısalttığı (boş bir `QLineEdit` ile ayrıca doğrulandı) gerçeğinin
-    doğrudan sonucu — `PIN_MAX_LEN` GUI'de asla POLİTİKA olarak
-    zorlanmadığı için bu widget-seviyesi sınır, üst katmanda karşılığı
-    OLMAYAN, yalnızca Qt'nin kendi kısıtı.
+    doğrudan sonucu.
+
+**DÜZELTME (B-095, aynı gün, ikinci geçiş) — bu sınırın kaynağı, bir
+ÖNCEKİ paragrafta VE test yorumlarında YANLIŞ belgelenmişti.** İlk
+yazımda "`PIN_MAX_LEN` GUI'de asla POLİTİKA olarak zorlanmadığı için bu
+widget-seviyesi sınır, üst katmanda karşılığı OLMAYAN, yalnızca Qt'nin
+kendi kısıtı" deniyordu — bu YANLIŞ ve kendi içinde ÇELİŞKİLİYDİ: aynı
+turda "son kutu `PIN_MAX_LEN`'e sınırlı" da yazılmıştı, ikisi birlikte
+doğru olamazdı. Kod incelemesiyle netleştirildi:
+  - `UI/login_dialog.py:61` — `from CORE.pin_policy import LOGIN_MIN_LEN,
+    PIN_MAX_LEN, PIN_MIN_LEN, validate_new_pin` — `PIN_MAX_LEN` GERÇEKTEN
+    `CORE/pin_policy.py`'den ithal ediliyor.
+  - `UI/login_dialog.py:419` — `kutu.setMaxLength(1 if i < self.
+    _KUTU_SAYISI - 1 else PIN_MAX_LEN)` — bu İTHAL EDİLEN isim, AYRI/elle
+    yazılmış bir `32` sabiti YOK.
+  Doğru ifade: `CORE/pin_policy.py`'nin GENEL "PIN_MAX_LEN hiçbir GUI
+  akışında zorlanmaz" gerçeği hâlâ kayıt/ilk-kurulum sihirbazı ve kayıt
+  ekranı için GEÇERLİ (o sayfaların `_pin_input`'ları hâlâ sınırsız
+  `QLineEdit`) — ama GİRİŞ EKRANININ bu YENİ kutucuklu widget'ı için
+  ARTIK GEÇERSİZ: bu widget `PIN_MAX_LEN`i GERÇEKTEN okuyor ve son
+  kutuyu onunla sınırlıyor, toplam `5 + PIN_MAX_LEN` (bugün 37) karakter
+  üst sınırı GETİRİYOR. Teorik (aşırı olası olmayan) bir ödünleşim: bu
+  sınırdan uzun bir PIN'i olan bir kullanıcı (varsa) artık giriş
+  ekranından PIN'ini TAM giremez — eski/kısa PIN'leri koruyan
+  `LOGIN_MIN_LEN` mantığının TERSİNE, üst sınırda hiçbir koruma
+  eklenmedi. `UI/login_dialog.py::_PinBoxInput` docstring'i ve
+  `tests/test_pin_giris_kutulari.py::
+  test_pin_max_len_asilinca_son_kutu_gercekten_kesiyor`'un yorumu buna
+  göre düzeltildi.
+
+**Yeni kalıcı test — `test_son_kutunun_pin_max_len_ile_CANLI_baglantisi`.**
+Statik `== PIN_MAX_LEN` eşitliği (yukarıdaki ilk test) yalnızca BUGÜNKÜ
+değerlerin TESADÜFEN aynı olduğunu kanıtlar — AYRI bir `32` sabitiyle de
+geçerdi. Bu yeni test `UI.login_dialog.PIN_MAX_LEN`i (dikkat: `CORE.
+pin_policy.PIN_MAX_LEN` DEĞİL) çalışan süreç İÇİNDE 20'ye monkeypatch'liyor
+ve YENİ construct edilen bir `_PinBoxInput`'un son kutusunun bunu
+GERÇEKTEN yansıttığını (`maxLength() == 20`) doğruluyor — canlı, aktif
+tekil-kaynaklılık kanıtı. `UI.login_dialog.PIN_MAX_LEN` özellikle
+yamalanıyor çünkü `from CORE.pin_policy import PIN_MAX_LEN` ithal ANINDA
+bir DEĞER KOPYASI bağlıyor (Python'un `from X import Y` semantiği) —
+ampirik olarak doğrulandı: `CORE.pin_policy.PIN_MAX_LEN`i ÇALIŞAN bir
+süreçte SONRADAN değiştirmek `UI.login_dialog.PIN_MAX_LEN`i GÜNCELLEMEZ
+(`pp.PIN_MAX_LEN = 999` sonrası `ld.PIN_MAX_LEN` 32 kaldı, ayrıca
+doğrulandı).
+
+**Ek doğrulama — GERÇEK kaynak dosyası değiştirilerek (taze süreç).**
+`CORE/pin_policy.py`'deki `PIN_MAX_LEN = 32` GEÇİCİ olarak `20`'ye
+değiştirildi, TAZE bir Python süreci başlatılıp hem `CORE.pin_policy.
+PIN_MAX_LEN` hem `UI.login_dialog.PIN_MAX_LEN` hem YENİ construct edilen
+bir `_PinBoxInput`'un son kutusunun `maxLength()`'i okundu — üçü de 20
+verdi (taze süreçte İKİ modül de AYNI değeri sıfırdan ithal ettiği için
+tutarlı — çalışan-süreçte-sonradan-yama senaryosundan FARKLI). Tam test
+dosyası bu değişiklikle de 19/19 yeşil kaldı (testler `PIN_MAX_LEN`i
+kendileri de dinamik ithal ettiği için). Sonra `CORE/pin_policy.py`
+orijinaline geri alındı, `grep -n "MUTATION"` ve `git diff --stat` ile
+temiz dönüş doğrulandı.
+
+**Mutasyon kanıtı — yeni test gerçekten yakalıyor mu.** Son kutunun
+`setMaxLength(... PIN_MAX_LEN)` çağrısı geçici olarak `setMaxLength(...
+32)` (AYRI, elle yazılmış bir kopya) ile DEĞİŞTİRİLDİ —
+`test_son_kutunun_pin_max_len_ile_CANLI_baglantisi` beklendiği gibi
+`assert 32 == 20` ile KIRILDI (doğru teşhis mesajıyla: "ayrı, senkron-dışı
+bir sabitten okunuyor olabilir"). Geri alındı, temiz dönüş doğrulandı.
 
 **Mutasyon kanıtı (ikisi de geçici, geri alındı).**
   (a) `_dagit()`'in taşma yazımını `son.setText(metin[5:])`'ten

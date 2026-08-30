@@ -380,16 +380,28 @@ class _PinBoxInput(QWidget):
     KRİTİK UYUMLULUK NOTU: `CORE/pin_policy.py` PIN'in tam olarak 6
     hane ya da yalnızca rakam olacağını HİÇBİR ZAMAN garanti etmez —
     `LOGIN_MIN_LEN=4` eski (6 hane politikasından önce kaydolmuş)
-    kullanıcıları kasıtlı olarak kabul eder, `PIN_MAX_LEN` GUI
-    akışlarında hiç zorlanmaz ve rakam-dışı karakterler için hiçbir
-    kısıtlama yoktur (yalnızca Authenticator kodu `isdigit()` ile
-    denetlenir, PIN değil). Bu yüzden kutucuklar:
-      - karakter sınıfını KISITLAMAZ (harf/sembol içeren eski PIN'ler
-        çalışmaya devam eder),
-      - SONUNCU kutucuk taşabilir: 6. karakterden sonrası da oraya
-        yazılır (uzun PIN'ler reddedilmez).
-    Görsel olarak "6 kutu" mockup'ı karşılanır; işlevsel olarak mevcut
-    hiçbir PIN'in giriş yapma yeteneği bozulmaz.
+    kullanıcıları kasıtlı olarak kabul eder ve rakam-dışı karakterler
+    için hiçbir kısıtlama yoktur (yalnızca Authenticator kodu
+    `isdigit()` ile denetlenir, PIN değil). Bu yüzden kutucuklar
+    karakter sınıfını KISITLAMAZ (harf/sembol içeren eski PIN'ler
+    çalışmaya devam eder) ve SONUNCU kutucuk taşabilir: 6. karakterden
+    sonrası da oraya yazılır.
+
+    DÜZELTME (B-095 devam): `PIN_MAX_LEN`in "GUI akışlarında hiç
+    zorlanmadığı" iddiası bu widget için YANLIŞTIR ve önceki bir turda
+    yanlışlıkla belgelenmişti — aşağıdaki satır `CORE.pin_policy.
+    PIN_MAX_LEN`i DOĞRUDAN ithal edip son kutunun `setMaxLength()`'ine
+    veriyor (ayrı, elle yazılmış bir `32` sabiti YOK — `tests/
+    test_pin_giris_kutulari.py::test_son_kutunun_pin_max_len_ile_
+    CANLI_baglantisi` bunu monkeypatch ile KANITLIYOR). Sonuç: bu
+    widget toplam `5 + PIN_MAX_LEN` (bugün 37) karakterden UZUN bir
+    PIN'i FİZİKSEL OLARAK TUTAMAZ — `validate_new_pin()` hâlâ üst sınır
+    KONTROL ETMEDİĞİ için, teorik olarak bu sınırdan uzun bir PIN'i
+    olan (varsa) bir kullanıcı bu ekrandan giriş YAPAMAZ. Kabul edilen,
+    dar bir ödünleşim: `PIN_MIN_LEN=4`ün koruduğu KISA/eski PIN'lerin
+    aksine, bu ölçüde UZUN bir PIN'in gerçekte var olması aşırı
+    olası değil, ve sınırsız bir metin kutusu tutmak mockup'ın "6 kutu"
+    tasarımıyla ZATEN uyumsuz olurdu.
 
     Yapıştırma davranışı: herhangi bir kutuya birden fazla karakter
     yapıştırılırsa TÜM kutular temizlenir ve yapıştırılan metin BAŞTAN
