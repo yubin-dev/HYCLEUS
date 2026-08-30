@@ -6552,3 +6552,88 @@ Tam test suite: 2955 passed, 4 skipped (bir önceki turdan +10 — bir yeni
 test dosyası, `tests/test_profile_view.py`). Ruff/mypy/bandit temiz.
 
 ---
+
+## B-084 — USB Yönetim Paneli modal'dan tam sayfaya taşındı; "Bekleyen Kayıtlar" ve "Ayarlar" ayrı kenar çubuğu girişlerine bölündü
+
+Görev: USB Yönetim Panelini modal'dan tam sayfaya taşı, "Bekleyen
+Kayıtlar" ve "Ayarlar" sekmelerini mockup'taki gibi ayrı sidebar menü
+öğelerine böl (Tokenlar sayfası kendi başına kalsın). Veri modeline
+dokunma, yalnızca navigasyon/layout değişikliği. Test: mevcut USB
+token/onay/reddet akışlarının hepsinin yeni yerleşimde çalıştığını
+doğrula (regresyon testi).
+
+**Modal → üç tam sayfa.** `UI/AdminPanel.py` (tek bir application-modal
+`QDialog`, üç `QTabWidget` sekmesi) kaldırıldı; yerine `_govde_yigini`nde
+(`GuvenlikView`/`AuditLogView`/`ProfileView` ile AYNI `QStackedWidget`
+deseni) üç ayrı sayfa geldi: `UI/UsbTokensView.py` (kendi başına kaldı,
+davranış/veri değişmedi), `UI/PendingRegistrationsView.py`,
+`UI/AdminSettingsView.py`. Kenar çubuğunda tek "🔌 USB Yönetimi"
+düğmesinin yerini üç düğme aldı; hamburger menüsündeki "USB Yönetimi"
+öğesi USB Tokenlar sayfasına açılıyor (üçünü tekrar etmiyor). Paylaşılan
+stil yardımcıları ve canlı yetki denetimi yeni `UI/admin_common.py`'de.
+
+**Mimari sadeleştirme: kendi zamanlayıcısı silindi, ama esas garanti
+GÜÇLENDİRİLEREK korundu.** Eski `AdminPanel` application-modal olduğu
+için ana pencerenin `_lock()`/`_poll_usb()`'sinden (B-064/B-066) habersizdi
+ve kendi 3 sn'lik `_yetki_timer` + uyarı şeridini taşıyordu. Sayfalar artık
+`centralWidget()`'ın içinde olduğundan bu zamanlayıcı GEREKSİZLEŞTİ ve
+silindi (`_lock()` zaten tüm sayfaları kapsıyor). Ama `centralWidget().
+setEnabled(False)` yalnızca fare/klavye olaylarını engelliyor, doğrudan
+bir Python metot çağrısını (`sayfa._on_approve()`) ENGELLEMİYOR — eski
+panelin asıl garantisi buydu ve modal/gömülü ayrımından bağımsızdı, bu
+yüzden `UI.admin_common.yonetici_hala_yetkili()` her yetkili eylemden
+önce aynı canlı DB doğrulamasını (`oturum_yetkisi_gecerli_mi`) yapmaya
+devam ediyor. ÜSTELİK sıkılaştırıldı: üç sayfa artık (Güvenlik/Denetim
+Günlüğü/Profil gibi) KOŞULSUZ kuruluyor, yani yönetici olmayan bir
+oturumun penceresi de `window._pending_view` gibi canlı bir referans
+tutuyor — eskiden panel yalnızca bir yönetici onu AÇTIĞINDA var oluyordu.
+`oturum_yetkisi_gecerli_mi()` tek başına bunu kapatmıyor (yalnızca rol
+DRIFT'ini yakalıyor, başından beri yönetici olmayan bir oturumu değil) —
+`yonetici_hala_yetkili()` bu yüzden ÖNCE `is_admin_role(pencere._role)`'u
+kontrol edip kapalı başarısız oluyor. Ayrıntı: SECURITY.md §4.24.
+
+**Bireysel/Kurumsal görünürlük — panelin kendi sekme-gizlemesinden
+pencerenin `_apply_role_restrictions()`'ına taşındı.** Eskiden Bireysel
+modda "Bekleyen Kayıtlar" panelin İÇİNDE bir sekme olarak gizlenirdi
+(`_apply_mode_visibility`, panelin kendi `_load_settings()`'i her
+açılışta çağırırdı). Artık bu ayrı bir sayfa/düğme olduğu için karar
+`main_window.py::_apply_role_restrictions()`'a taşındı — "gizlemek silmek
+değil" ilkesi AYNEN korunuyor: `_pending_view` ve verisi hiçbir zaman
+silinmiyor, yalnızca kenar çubuğu düğmesi ve tablo sütunu gizleniyor.
+
+**Tema tazeleme — modal olmanın örtük bir avantajı kayboluyordu, elle
+kapatıldı.** Eski panel her açılışta O ANKİ temayla taze kuruluyordu
+(kendi `T=` parametresi); kalıcı bir sayfa için bu geçerli değil ve tema
+seçici artık her sayfadan (hamburger menüsü) erişilebilir. `UI/
+main_window_theme.py::_refresh_after_theme_change()` `AuditLogView`'ın
+kendi elle boyanan sütunları için zaten kullandığı mekanizmayla üç admin
+sayfasının `_restyle()`'ını da çağıracak şekilde genişletildi.
+
+**Test — mevcut akışların regresyonu.** Yeni davranışlı hiçbir test
+yazılmadı; MEVCUT testler yeni yerleşime taşındı ve hepsi geçiyor:
+`tests/test_app_mode_ui.py` (Bireysel/Kurumsal görünürlük, artık
+`window._pending_btn`/`window._admin_settings_view` üzerinden),
+`tests/test_authz_invariants.py` (B-064 — USB çekilince onayın
+reddedilmesi, artık panel kapatma yerine `pencere._lock("revoked")`
+doğrulanıyor), `tests/test_trusted_roots.py` (TSA kök ekleme/kaldırma,
+`AdminSettingsView` üzerinden), `tests/test_tema_kontrasti.py`,
+`tests/test_recovery_share_ui.py`, `tests/test_guvenlik_view.py`,
+`tests/test_role_decision_point.py`, `tests/test_slide_over.py`,
+`tests/test_kurtarma_usb_kapisi.py`, `tests/test_main_window_smoke.py`
+(baseline metot envanteri — `_on_open_admin_panel` üç yeni adla
+değiştirildi), `tests/test_audit_report.py`, `tests/test_first_run_
+isolation.py`, `tests/test_profile_view.py` (iki test hâlâ `AdminPanel`
+kuruyordu — ithal edilemediği için SESSİZCE atlanıyordu, `UsbTokensView`
+kullanacak şekilde düzeltildi; B-024 dersinin bir tekrarı: bir denetimin
+KENDİSİNİN çalıştığından emin olunmadan yeşil sayılmamalı).
+
+**Ayrıca düzeltildi (yol boyunca bulundu):** `tests/conftest.py::
+SahteUSB._HEDEF_MODULLER`'den `UI.AdminPanel` çıkarıldı, yerine
+`UI.UsbTokensView`/`UI.PendingRegistrationsView`/`UI.AdminSettingsView`/
+`UI.admin_common` eklendi.
+
+SECURITY.md §4.24'e (EN+TR) belgelendi.
+
+Tam test suite: 2960 passed, 4 skipped. Ruff/mypy/bandit temiz.
+
+---

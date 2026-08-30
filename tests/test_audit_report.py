@@ -223,11 +223,14 @@ def test_adminpanel_dugmesi_raporu_cagiriyor():
 
     Düğme eklenip sinyali bağlanmasa hiçbir şey patlamazdı — tam olarak
     "mekanizma var, görünürlüğü yok" sınıfının tekrarı olurdu.
+
+    `UI/AdminPanel.py` üçe bölündü (kaldırıldı) — "Zinciri Doğrula"
+    düğmesi "USB Tokenlar" sayfasında kaldı (`UI/UsbTokensView.py`).
     """
     import ast
     from pathlib import Path as _P
 
-    src = (_P(__file__).resolve().parent.parent / "UI" / "AdminPanel.py").read_text(
+    src = (_P(__file__).resolve().parent.parent / "UI" / "UsbTokensView.py").read_text(
         encoding="utf-8"
     )
     agac = ast.parse(src)

@@ -28,11 +28,12 @@ buradaki ön kontrol yalnızca kullanıcıya okunabilir bir hata mesajı
 vermek için var (ham UNIQUE ihlali istisnasından daha iyi bir deneyim).
 
 Meşru yeniden-kayıt senaryosu (ör. bir USB'nin kimliğini sıfırlayıp
-başka birine vermek) TAMAMEN KİLİTLENMİYOR: bir yönetici Admin
-Paneli'ndeki "Sil" (`AdminPanel._on_delete()`, artık `users` satırını da
-temizliyor, bkz. o fonksiyonun docstring'i) ya da "Reddet"
-(`AdminPanel._on_reject()`, pending satırlar için) eylemiyle o HWID'in
-satırını kaldırdıktan SONRA aynı HWID yeniden kayıt olabilir. Bu KASITLI:
+başka birine vermek) TAMAMEN KİLİTLENMİYOR: bir yönetici USB Tokenlar
+sayfasındaki "Sil" (`UsbTokensView._on_delete()`, artık `users` satırını
+da temizliyor, bkz. o fonksiyonun docstring'i) ya da Bekleyen Kayıtlar
+sayfasındaki "Reddet" (`PendingRegistrationsView._on_reject()`, pending
+satırlar için) eylemiyle o HWID'in satırını kaldırdıktan SONRA aynı HWID
+yeniden kayıt olabilir. Bu KASITLI:
 bir HWID'in yeniden kullanılması her zaman bir yöneticinin AÇIK bir
 kararı olmalı, rastgele bir kayıt denemesinin YAN ETKİSİ değil.
 
@@ -106,7 +107,7 @@ def register_new_user(
     döndürür.
 
     Her zaman `status='pending'` yazar — bunun DIŞINDA hiçbir yol
-    status'u değiştiremez, onay `AdminPanel._on_approve()` üzerinden
+    status'u değiştiremez, onay `PendingRegistrationsView._on_approve()` üzerinden
     AYRI, yönetici tarafından tetiklenen bir adım.
 
     Args:

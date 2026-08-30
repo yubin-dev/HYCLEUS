@@ -4,9 +4,9 @@ HYCLEUS — Bireysel/Kurumsal görünüm modu
 Bu modül YALNIZCA bir görünürlük filtresi taşır — yetki DEĞİL. RBAC
 (CORE/roles.py, can_write/rol_yazabilir, CORE/vault_manager.py) bu
 moddan hiç haberdar değil ve olmamalı: mod "hangi ekranlar gösterilsin"
-sorusuna cevap veriyor, "kim ne yapabilir" sorusuna değil. AdminPanel'e
-giriş zaten `is_admin_role()` ile ayrı, mod'dan bağımsız bir kapıdan
-geçiyor (bkz. main_window.py::_on_open_admin_panel, AdminPanel.py).
+sorusuna cevap veriyor, "kim ne yapabilir" sorusuna değil. USB Yönetim
+Paneli'ne giriş zaten `is_admin_role()` ile ayrı, mod'dan bağımsız bir
+kapıdan geçiyor (bkz. main_window.py::_on_open_usb_tokens, UsbTokensView.py).
 
 Neden `settings` tablosu, oturum içi değil
 -------------------------------------------

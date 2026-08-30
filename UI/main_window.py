@@ -44,12 +44,15 @@ from CORE.rehber import MENU_ETIKETI as _REHBER_ETIKETI
 from CORE.rehber import erisim_yolu as _rehber_erisim_yolu
 from CORE.tpm_sealing import durum as tpm_durum
 from CORE.usb_manager import get_usb_hwid
+from UI.AdminSettingsView import SAYFA_ADI as _ADMIN_SETTINGS_SAYFA_ADI
 from UI.AuditLogView import SAYFA_ADI as _AUDIT_SAYFA_ADI
 from UI.GuvenlikView import (
     GUVENLIK_SALT_OKUNURA_ACIK,
     SAYFA_ADI as _GUVENLIK_SAYFA_ADI,
 )
+from UI.PendingRegistrationsView import SAYFA_ADI as _PENDING_SAYFA_ADI
 from UI.ProfileView import SAYFA_ADI as _PROFIL_SAYFA_ADI
+from UI.UsbTokensView import SAYFA_ADI as _USB_TOKENS_SAYFA_ADI
 from CORE.version import surum_etiketi
 from CORE.vault_manager import (
     blacklist_usb,
@@ -64,7 +67,6 @@ from UI.main_window_palette import _DARK, _SIDEBAR_NAV
 from UI.main_window_table import TableMixin, _ProcessSignals
 from UI.main_window_theme import ThemeMixin
 from UI.main_window_tree import TreeMixin
-from UI.AdminPanel import AdminPanel
 
 
 
@@ -234,21 +236,42 @@ class HycleusWindow(
 
         # ── Yönetici bölümü: sadece Yönetici görür ───────────────────────
         for _w in (self._admin_sep, self._admin_label, self._blacklist_btn,
-                   self._audit_log_btn, self._admin_panel_btn, self._support_btn):
+                   self._audit_log_btn, self._usb_tokens_btn, self._pending_btn,
+                   self._admin_settings_btn, self._support_btn):
             _w.setVisible(is_admin)
             _w.setEnabled(is_admin)
 
-        # ── Bireysel mod: yalnızca "YÖNETİCİ" başlığı gizlenir ───────────
+        # ── Bireysel mod: "YÖNETİCİ" başlığı VE "Bekleyen Kayıtlar" gizlenir ──
         #
-        # Tek kullanıcı zaten admin — başlık altındaki düğmeler (USB
-        # Yönetimi dahil) KALIR, yalnızca başlık metni anlamsız. Bu bir
-        # RBAC kararı DEĞİL (CORE/app_mode.py hiçbir rolü değiştirmiyor):
-        # is_admin yukarıda zaten karar verdi, burada yalnızca is_admin
-        # zaten True olan bir görünürlüğü DAHA DA daraltıyoruz — asla
-        # genişletmiyoruz (salt okunur/standart rolde bu satır hiç
-        # çalışmaz, çünkü is_admin zaten False).
+        # Tek kullanıcı zaten admin — USB Tokenlar/Ayarlar düğmeleri KALIR,
+        # yalnızca başlık metni anlamsız. Bu bir RBAC kararı DEĞİL
+        # (CORE/app_mode.py hiçbir rolü değiştirmiyor): is_admin yukarıda
+        # zaten karar verdi, burada yalnızca is_admin zaten True olan bir
+        # görünürlüğü DAHA DA daraltıyoruz — asla genişletmiyoruz (salt
+        # okunur/standart rolde bu satır hiç çalışmaz, çünkü is_admin
+        # zaten False).
+        #
+        # "Bekleyen Kayıtlar" ayrıca gizleniyor: eskiden (`UI/AdminPanel.py`,
+        # kaldırıldı) bu, panel İÇİNDEKİ bir sekmeydi ve aynı gerekçeyle
+        # (tek kullanıcı, onaylanacak kimse yok) gizlenirdi — üçe
+        # bölünmenin ardından karşılığı, o sayfanın kenar çubuğu giriş
+        # noktasını gizlemek. "Gizlemek silmek değil" AYNEN geçerli:
+        # `_pending_view`in kendisi, verisi ve `_on_approve`/`_on_reject`
+        # hiçbiri silinmiyor — yalnızca düğme.
         if is_admin and is_bireysel(self._app_mode):
             self._admin_label.setVisible(False)
+            self._pending_btn.setVisible(False)
+            self._pending_btn.setEnabled(False)
+
+        # "Kullanıcı Adı" sütunu — sekmenin/düğmenin kendi görünürlüğünden
+        # AYRI bir kontrol, aynı "gizlemek silmek değil" ilkesiyle burada:
+        # düğme zaten gizli olsa da, mod Kurumsal'a dönüp düğme tekrar
+        # görünür olduğunda sütunun da doğru durumda (görünür) olması
+        # gerekiyor — tek yerden, aynı çağrıyla (eski `AdminPanel.
+        # _apply_mode_visibility`'nin aynı gerekçesi).
+        self._pending_view._pending_table.setColumnHidden(
+            0, is_bireysel(self._app_mode)
+        )
 
         # ── Yazma/düzenleme işlemleri: Salt Okunur'da tamamen kapalı ─────
         self.setAcceptDrops(can_write)
@@ -346,6 +369,24 @@ class HycleusWindow(
         except Exception as exc:
             QMessageBox.critical(self, "Hata", str(exc))
 
+    #: Kenar çubuğundaki, "aktif sayfa" vurgusu taşıyan TÜM sayfa-gezinme
+    #: düğmeleri. Beşe çıktığında (Güvenlik/Denetim Günlüğü + USB
+    #: Tokenlar/Bekleyen Kayıtlar/Ayarlar) her `_on_open_*`'ın kendi
+    #: elleriyle "diğer dördünü sıfırla" yazması unutma riski taşırdı —
+    #: tek liste, tek sıfırlama metodu (`_reset_page_nav_styles`).
+    def _page_nav_btns(self) -> tuple[QPushButton, ...]:
+        return (
+            self._guvenlik_btn, self._audit_log_btn, self._usb_tokens_btn,
+            self._pending_btn, self._admin_settings_btn,
+        )
+
+    def _reset_page_nav_styles(self) -> None:
+        if self._active_btn is not None:
+            self._active_btn.setStyleSheet(self._nav_btn_style(active=False))
+            self._active_btn = None
+        for _btn in self._page_nav_btns():
+            _btn.setStyleSheet(self._nav_btn_style(active=False))
+
     def _on_open_audit_log(self) -> None:
         """
         Denetim Günlüğü sayfasına geçer — eskiden (`UI/AuditLogDialog.py`,
@@ -359,27 +400,58 @@ class HycleusWindow(
         çağırıyordu — yani salt okunur/standart bir rol o ikinci yoldan
         denetim kaydını görebiliyordu. Modal bir diyalog için düşük
         önemdeydi; tam sayfaya (kalıcı, kenar çubuğuyla eşdeğer bir görünüm)
-        taşırken aynı boşluğu miras almamak için `_on_open_admin_panel()`
+        taşırken aynı boşluğu miras almamak için `_on_open_usb_tokens()`
         ile AYNI kapı deseni eklendi.
         """
         if not is_admin_role(self._role):
             QMessageBox.warning(self, "Erişim Reddedildi", "Bu alana erişim yetkiniz yok.")
             return
-        if self._active_btn is not None:
-            self._active_btn.setStyleSheet(self._nav_btn_style(active=False))
-            self._active_btn = None
-        self._guvenlik_btn.setStyleSheet(self._nav_btn_style(active=False))
+        self._reset_page_nav_styles()
         self._audit_log_btn.setStyleSheet(self._nav_btn_style(active=True))
         self._govde_yigini.setCurrentWidget(self._audit_log_view)
         self._action_bar.setVisible(False)
         self._page_title.setText(_AUDIT_SAYFA_ADI)
         self._audit_log_view.yenile()
 
-    def _on_open_admin_panel(self) -> None:
+    def _on_open_usb_tokens(self) -> None:
+        """
+        USB Tokenlar sayfasına geçer — eskiden (`UI/AdminPanel.py`,
+        kaldırıldı) tek bir modalin "USB Tokenlar" sekmesiydi. Üçe
+        bölünmenin gerekçesi `UI/admin_common.py`'nin modül docstring'inde.
+        """
         if not is_admin_role(self._role):
             QMessageBox.warning(self, "Erişim Reddedildi", "Bu alana erişim yetkiniz yok.")
             return
-        AdminPanel(current_hwid=self._hwid, role=self._role, parent=self, T=self._T).exec()
+        self._reset_page_nav_styles()
+        self._usb_tokens_btn.setStyleSheet(self._nav_btn_style(active=True))
+        self._govde_yigini.setCurrentWidget(self._usb_tokens_view)
+        self._action_bar.setVisible(False)
+        self._page_title.setText(_USB_TOKENS_SAYFA_ADI)
+        self._usb_tokens_view.yenile()
+
+    def _on_open_pending(self) -> None:
+        """Bekleyen Kayıtlar sayfasına geçer — bkz. `_on_open_usb_tokens()`."""
+        if not is_admin_role(self._role):
+            QMessageBox.warning(self, "Erişim Reddedildi", "Bu alana erişim yetkiniz yok.")
+            return
+        self._reset_page_nav_styles()
+        self._pending_btn.setStyleSheet(self._nav_btn_style(active=True))
+        self._govde_yigini.setCurrentWidget(self._pending_view)
+        self._action_bar.setVisible(False)
+        self._page_title.setText(_PENDING_SAYFA_ADI)
+        self._pending_view.yenile()
+
+    def _on_open_admin_settings(self) -> None:
+        """Ayarlar sayfasına geçer — bkz. `_on_open_usb_tokens()`."""
+        if not is_admin_role(self._role):
+            QMessageBox.warning(self, "Erişim Reddedildi", "Bu alana erişim yetkiniz yok.")
+            return
+        self._reset_page_nav_styles()
+        self._admin_settings_btn.setStyleSheet(self._nav_btn_style(active=True))
+        self._govde_yigini.setCurrentWidget(self._admin_settings_view)
+        self._action_bar.setVisible(False)
+        self._page_title.setText(_ADMIN_SETTINGS_SAYFA_ADI)
+        self._admin_settings_view.yenile()
 
     def _on_open_contact(self) -> None:
         from UI.ContactDialog import ContactDialog
@@ -414,11 +486,7 @@ class HycleusWindow(
         Rol kapısı YOK — Güvenlik/Denetim Günlüğü'nün aksine bu sayfa
         HERKESE açık (kendi profilin, kendi cihazın, kendi işlemlerin).
         """
-        if self._active_btn is not None:
-            self._active_btn.setStyleSheet(self._nav_btn_style(active=False))
-            self._active_btn = None
-        self._guvenlik_btn.setStyleSheet(self._nav_btn_style(active=False))
-        self._audit_log_btn.setStyleSheet(self._nav_btn_style(active=False))
+        self._reset_page_nav_styles()
         self._govde_yigini.setCurrentWidget(self._profil_view)
         self._action_bar.setVisible(False)
         self._page_title.setText(_PROFIL_SAYFA_ADI)
@@ -430,13 +498,19 @@ class HycleusWindow(
         devre dışı bırakılıyor.
 
         Öncesinde ikisi de HERKESE görünürdü — kenar çubuğundaki eşdeğer
-        düğmeler (`_audit_log_btn`/`_admin_panel_btn`) `_apply_role_
+        düğmeler (`_audit_log_btn`/`_usb_tokens_btn`) `_apply_role_
         restrictions()`'ta admin olmayan roller için zaten gizleniyordu,
         ama bu ikinci giriş noktası aynı kararı UYGULAMIYORDU. Admin
         olmayan bir kullanıcı için tek görünen sonuç, tıklayınca çıkan
         "Erişim Reddedildi" uyarısıydı — fonksiyon-içi kontrol (`_on_open_
-        audit_log`/`_on_open_admin_panel`) doğruydu ama görünürlük onunla
+        audit_log`/`_on_open_usb_tokens`) doğruydu ama görünürlük onunla
         TUTARSIZDI.
+
+        "🔌 USB Yönetimi" burada TEK madde olarak kalıyor (eskiden tek
+        modalin girişiydi) — kenar çubuğunda artık üç ayrı düğme (USB
+        Tokenlar/Bekleyen Kayıtlar/Ayarlar) olduğu için hamburger menüsü
+        üçünü de tekrar ETMİYOR, yalnızca en sık kullanılan USB Tokenlar
+        sayfasına açıyor.
 
         İkisi BİRLİKTE duruyor, biri diğerinin yerine geçmiyor: görünürlük
         kontrolü kullanıcı deneyimi için (reddedilen bir tıklama yerine
@@ -482,7 +556,7 @@ class HycleusWindow(
         if action == act_audit:
             self._on_open_audit_log()
         elif action == act_usb:
-            self._on_open_admin_panel()
+            self._on_open_usb_tokens()
         elif action == act_support:
             self._on_open_contact()
         elif action == act_rehber:
@@ -519,11 +593,8 @@ class HycleusWindow(
         karşılığı yok ve görünür bırakmak, tıklandığında dosya görünümüne
         geri dönmeyen düğmeler demek olurdu.
         """
-        if self._active_btn is not None:
-            self._active_btn.setStyleSheet(self._nav_btn_style(active=False))
-            self._active_btn = None
+        self._reset_page_nav_styles()
         self._guvenlik_btn.setStyleSheet(self._nav_btn_style(active=True))
-        self._audit_log_btn.setStyleSheet(self._nav_btn_style(active=False))
         self._govde_yigini.setCurrentWidget(self._guvenlik_view)
         self._action_bar.setVisible(False)
         self._page_title.setText(_GUVENLIK_SAYFA_ADI)
@@ -535,10 +606,10 @@ class HycleusWindow(
             self._active_tag_btn = None
         self._current_tag_id = None
 
-        # Güvenlik/Denetim Günlüğü sayfasından dönüş — yığın ve eylem barı
-        # geri alınıyor.
-        self._guvenlik_btn.setStyleSheet(self._nav_btn_style(active=False))
-        self._audit_log_btn.setStyleSheet(self._nav_btn_style(active=False))
+        # Güvenlik/Denetim Günlüğü/USB Tokenlar/Bekleyen Kayıtlar/Ayarlar
+        # sayfasından dönüş — yığın ve eylem barı geri alınıyor.
+        for _btn in self._page_nav_btns():
+            _btn.setStyleSheet(self._nav_btn_style(active=False))
         self._govde_yigini.setCurrentIndex(0)
         self._action_bar.setVisible(True)
 

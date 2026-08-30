@@ -247,16 +247,19 @@ def test_zincir_gövdesi_AdminPanel_den_CIKARILDI() -> None:
     Zincir doğrulaması Yönetim Paneli'nin metoduydu ve panel yalnızca
     yöneticiye açılıyor. Güvenlik sekmesinden çağrılabilmesi için gövde
     ortak bir yere taşındı; panel de artık oradan çağırıyor.
+
+    Eski `UI/AdminPanel.py` (kaldırıldı) üçe bölündü — "Zinciri Doğrula"
+    düğmesi "USB Tokenlar" sayfasında kaldı (`UI/UsbTokensView.py`).
     """
-    panel = _cagri_adlari(_kaynak("UI/AdminPanel.py"), "_on_verify_chain")
+    panel = _cagri_adlari(_kaynak("UI/UsbTokensView.py"), "_on_verify_chain")
     assert panel == {"zinciri_dogrula"}, (
-        f"AdminPanel zinciri hâlâ kendisi doğruluyor: {panel}"
+        f"UsbTokensView zinciri hâlâ kendisi doğruluyor: {panel}"
     )
     assert "zinciri_dogrula" in _cagri_adlari(
         _kaynak("UI/GuvenlikView.py"), "_zincir_dogrula")
 
     # `zincir_raporu` YALNIZCA ortak gövdede çağrılmalı.
-    for dosya in ("UI/AdminPanel.py", "UI/GuvenlikView.py"):
+    for dosya in ("UI/UsbTokensView.py", "UI/GuvenlikView.py"):
         assert "zincir_raporu" not in _cagri_adlari(_kaynak(dosya)), (
             f"{dosya} ikinci bir zincir doğrulaması kuruyor"
         )
@@ -585,10 +588,18 @@ def test_yigin_UC_sayfali() -> None:
     `ProfileDialog` — modal'dan tam sayfaya taşındı) eklendi; üçten
     dörde güncellendi (bkz. `tests/test_profile_view.py` için
     ProfileView'a ÖZGÜ testler).
+
+    2026-08-30: USB Yönetim Paneli (eskiden `UI/AdminPanel.py`, tek
+    modal bir `QTabWidget` — kaldırıldı) üçe bölünüp tam sayfaya taşındı
+    (`UI/UsbTokensView.py`, `UI/PendingRegistrationsView.py`, `UI/
+    AdminSettingsView.py`); dörtten yediye güncellendi.
     """
     layout = _kaynak("UI/main_window_layout.py")
     cagrilar = _cagri_adlari(layout, "_make_govde_yigini")
-    assert {"QStackedWidget", "GuvenlikView", "AuditLogView", "ProfileView"} <= cagrilar
+    assert {
+        "QStackedWidget", "GuvenlikView", "AuditLogView", "ProfileView",
+        "UsbTokensView", "PendingRegistrationsView", "AdminSettingsView",
+    } <= cagrilar
 
     # Sayfaların GERÇEKTEN eklendiği ölçülüyor. Mutasyonla görüldü:
     # `GuvenlikView` kurulup yığına EKLENMEZSE yukarıdaki çağrı denetimi
@@ -603,8 +614,8 @@ def test_yigin_UC_sayfali() -> None:
         and isinstance(d.func.value, ast.Attribute)
         and d.func.value.attr == "_govde_yigini"
     ]
-    assert len(eklemeler) == 4, (
-        f"yığına {len(eklemeler)} sayfa ekleniyor, 4 bekleniyordu"
+    assert len(eklemeler) == 7, (
+        f"yığına {len(eklemeler)} sayfa ekleniyor, 7 bekleniyordu"
     )
 
 

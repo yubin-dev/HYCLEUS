@@ -27,7 +27,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtWidgets import QApplication, QMessageBox
 
-    from UI.AdminPanel import AdminPanel
     from UI.main_window import HycleusWindow
 except ImportError as _exc:  # pragma: no cover — ortama bağlı
     pytest.skip(
@@ -42,7 +41,7 @@ _HWID = "MODE-TEST-HWID"
 
 _ADMIN_WIDGETS = (
     "_admin_sep", "_blacklist_btn", "_audit_log_btn",
-    "_admin_panel_btn", "_support_btn",
+    "_usb_tokens_btn", "_pending_btn", "_admin_settings_btn", "_support_btn",
 )
 
 
@@ -82,18 +81,18 @@ def _pencereyi_kapat(window: HycleusWindow) -> None:
 @pytest.fixture(autouse=True)
 def _admin_panel_canli_yetki(db, monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    B-064/B-066: `AdminPanel` artık her yetkili işlemden (ör.
-    `_on_save_settings`) önce USB'nin hâlâ takılı olduğunu VE DB'deki
-    yetkinin hâlâ girişteki gibi olduğunu canlı doğruluyor
-    (`UI.AdminPanel._yonetici_hala_yetkili`). Bu dosyadaki testler hep
-    `_HWID` kullanıyor; o USB'nin takılı kaldığını simüle edip ona
-    karşılık gelen onaylı yönetici satırını ekliyoruz — aksi hâlde
-    her `AdminPanel(current_hwid=_HWID, role="Yönetici")` sonrası
-    çağrılan yetkili bir işlem sessizce reddedilir (panel kapanır).
+    B-064/B-066: USB Yönetim Paneli'nin üç sayfası artık her yetkili
+    işlemden (ör. `AdminSettingsView._on_save_settings`) önce USB'nin
+    hâlâ takılı olduğunu VE DB'deki yetkinin hâlâ girişteki gibi
+    olduğunu canlı doğruluyor (`UI.admin_common.yonetici_hala_yetkili`).
+    Bu dosyadaki testler hep `_HWID` kullanıyor; o USB'nin takılı
+    kaldığını simüle edip ona karşılık gelen onaylı yönetici satırını
+    ekliyoruz — aksi hâlde çağrılan yetkili bir işlem sessizce reddedilir
+    (oturum "revoked" nedeniyle kilitlenir).
     """
-    import UI.AdminPanel as _ap
+    import UI.admin_common as _ac
 
-    monkeypatch.setattr(_ap, "get_usb_hwid", lambda: _HWID)
+    monkeypatch.setattr(_ac, "get_usb_hwid", lambda: _HWID)
     db.execute(
         "INSERT INTO users (username, password_hash, role, status, hwid)"
         " VALUES (?, ?, 'admin', 'approved', ?)",
@@ -103,7 +102,7 @@ def _admin_panel_canli_yetki(db, monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _diyalog_engelle(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
-    """AdminPanel'in `QMessageBox.information/...` çağrıları testi bloklamasın."""
+    """Ayarlar sayfasının `QMessageBox.information/...` çağrıları testi bloklamasın."""
     gosterilen: list[tuple[str, str]] = []
 
     def _yakala(tur: str):
@@ -142,7 +141,17 @@ def test_varsayilan_KURUMSALDA_hicbir_sey_gizlenmiyor(qapp, db, isolate_safezone
         _pencereyi_kapat(window)
 
 
-def test_BIREYSELDE_yalnizca_baslik_gizlenir_dugmeler_kalir(qapp, db, isolate_safezone, monkeypatch):
+def test_BIREYSELDE_baslik_ve_bekleyen_kayitlar_gizlenir_digerleri_kalir(
+    qapp, db, isolate_safezone, monkeypatch,
+):
+    """
+    "Bekleyen Kayıtlar" eskiden (`UI/AdminPanel.py`, kaldırıldı) panel
+    İÇİNDEKİ bir sekmeydi ve AYNI gerekçeyle (tek kullanıcı, onaylanacak
+    kimse yok) Bireysel'de gizlenirdi — üçe bölünmenin ardından karşılığı
+    bu kenar çubuğu düğmesinin gizlenmesi (bkz. `UI/main_window.py::
+    _apply_role_restrictions`). Diğer admin düğmeleri (USB Tokenlar,
+    Ayarlar dahil) KALIR.
+    """
     window = _pencere(qapp, db, isolate_safezone, monkeypatch, "Yönetici")
     try:
         set_app_mode(db, BIREYSEL)
@@ -151,9 +160,15 @@ def test_BIREYSELDE_yalnizca_baslik_gizlenir_dugmeler_kalir(qapp, db, isolate_sa
         assert _gizli_mi(window._admin_label) is True, (
             "'Yönetici' başlığı Bireysel modda hâlâ görünüyor"
         )
+        assert _gizli_mi(window._pending_btn) is True, (
+            "'Bekleyen Kayıtlar' düğmesi Bireysel modda hâlâ görünüyor"
+        )
         for ad in _ADMIN_WIDGETS:
+            if ad == "_pending_btn":
+                continue
             assert _gizli_mi(getattr(window, ad)) is False, (
-                f"{ad} Bireysel modda gizlenmemeliydi — yalnızca başlık gizlenir"
+                f"{ad} Bireysel modda gizlenmemeliydi — yalnızca başlık ve "
+                "Bekleyen Kayıtlar gizlenir"
             )
     finally:
         _pencereyi_kapat(window)
@@ -185,71 +200,84 @@ def test_BIREYSELDE_yetkisiz_rol_YONETICI_BOLUMUNU_GOREMEZ(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. AdminPanel — sekme gizleniyor, veri/akış SİLİNMİYOR
+# 3. Bekleyen Kayıtlar — düğme gizleniyor, veri/akış SİLİNMİYOR
 # ══════════════════════════════════════════════════════════════════════════════
+#
+# Eskiden (`UI/AdminPanel.py`, kaldırıldı) bu bir `QTabWidget` sekmesiydi;
+# üçe bölünmenin ardından karşılığı kenar çubuğu düğmesi (bkz. `UI/
+# main_window.py::_apply_role_restrictions`) — testler artık standalone
+# bir panel yerine GERÇEK `HycleusWindow` üzerinden çalışıyor, çünkü
+# görünürlük kararı artık panelin kendisinde değil, pencerede.
 
 
-def test_admin_panel_KURUMSALDA_bekleyen_sekmesi_gorunur(qapp, db):
-    panel = AdminPanel(current_hwid=_HWID, role="Yönetici")
+def test_pending_KURUMSALDA_dugmesi_gorunur(qapp, db, isolate_safezone, monkeypatch):
+    window = _pencere(qapp, db, isolate_safezone, monkeypatch, "Yönetici")
     try:
-        assert panel._tabs.isTabVisible(panel._pending_tab_index) is True
+        assert _gizli_mi(window._pending_btn) is False
     finally:
-        panel._yetki_timer.stop()
-        panel.close()
+        _pencereyi_kapat(window)
 
 
-def test_admin_panel_mod_degisince_sekme_ILERI_GERI_dogru_gorunurluk(qapp, db):
-    panel = AdminPanel(current_hwid=_HWID, role="Yönetici")
+def test_pending_mod_degisince_dugme_ILERI_GERI_dogru_gorunurluk(
+    qapp, db, isolate_safezone, monkeypatch,
+):
+    window = _pencere(qapp, db, isolate_safezone, monkeypatch, "Yönetici")
     try:
+        ayarlar = window._admin_settings_view
+
         # Bireysel'e geç
-        idx = panel._mode_combo.findData(BIREYSEL)
-        panel._mode_combo.setCurrentIndex(idx)
-        panel._on_save_settings()
-        assert panel._tabs.isTabVisible(panel._pending_tab_index) is False
+        idx = ayarlar._mode_combo.findData(BIREYSEL)
+        ayarlar._mode_combo.setCurrentIndex(idx)
+        ayarlar._on_save_settings()
+        assert _gizli_mi(window._pending_btn) is True
         assert get_app_mode(db) == BIREYSEL
 
         # Kurumsal'a geri dön
-        idx = panel._mode_combo.findData(KURUMSAL)
-        panel._mode_combo.setCurrentIndex(idx)
-        panel._on_save_settings()
-        assert panel._tabs.isTabVisible(panel._pending_tab_index) is True
+        idx = ayarlar._mode_combo.findData(KURUMSAL)
+        ayarlar._mode_combo.setCurrentIndex(idx)
+        ayarlar._on_save_settings()
+        assert _gizli_mi(window._pending_btn) is False
         assert get_app_mode(db) == KURUMSAL
     finally:
-        panel._yetki_timer.stop()
-        panel.close()
+        _pencereyi_kapat(window)
 
 
-def test_bekleyen_tablosu_kullanici_adi_sutunu_ILERI_GERI_dogru_gorunurluk(qapp, db):
+def test_bekleyen_tablosu_kullanici_adi_sutunu_ILERI_GERI_dogru_gorunurluk(
+    qapp, db, isolate_safezone, monkeypatch,
+):
     """
     "Kullanıcı Adı" sütunu (_pending_table, sütun 0) Bireysel'de gizli,
-    Kurumsal'da görünür olmalı — sekmenin kendi görünürlüğünden AYRI bir
-    kontrol, aynı `_apply_mode_visibility()` çağrısıyla uygulanıyor.
+    Kurumsal'da görünür olmalı — düğmenin kendi görünürlüğünden AYRI bir
+    kontrol, aynı `_apply_role_restrictions()` çağrısıyla uygulanıyor.
     """
-    panel = AdminPanel(current_hwid=_HWID, role="Yönetici")
+    window = _pencere(qapp, db, isolate_safezone, monkeypatch, "Yönetici")
     try:
-        assert panel._pending_table.isColumnHidden(0) is False
+        ayarlar = window._admin_settings_view
+        tablo = window._pending_view._pending_table
+        assert tablo.isColumnHidden(0) is False
 
-        idx = panel._mode_combo.findData(BIREYSEL)
-        panel._mode_combo.setCurrentIndex(idx)
-        panel._on_save_settings()
-        assert panel._pending_table.isColumnHidden(0) is True
+        idx = ayarlar._mode_combo.findData(BIREYSEL)
+        ayarlar._mode_combo.setCurrentIndex(idx)
+        ayarlar._on_save_settings()
+        assert tablo.isColumnHidden(0) is True
 
-        idx = panel._mode_combo.findData(KURUMSAL)
-        panel._mode_combo.setCurrentIndex(idx)
-        panel._on_save_settings()
-        assert panel._pending_table.isColumnHidden(0) is False
+        idx = ayarlar._mode_combo.findData(KURUMSAL)
+        ayarlar._mode_combo.setCurrentIndex(idx)
+        ayarlar._on_save_settings()
+        assert tablo.isColumnHidden(0) is False
     finally:
-        panel._yetki_timer.stop()
-        panel.close()
+        _pencereyi_kapat(window)
 
 
-def test_bekleyen_kayit_BIREYSELDE_kaybolmuyor_KURUMSALDA_yine_gorunur(qapp, db):
+def test_bekleyen_kayit_BIREYSELDE_kaybolmuyor_KURUMSALDA_yine_gorunur(
+    qapp, db, isolate_safezone, monkeypatch,
+):
     """
     "Gizlemek silmek değil" — gerçek bir bekleyen kayıtla.
 
     Bireysel moddayken eklenmiş bir bekleyen kullanıcı (akış moddan
     habersiz — LoginDialog'dan gelir), Kurumsal'a dönüldüğünde hiçbir
-    veri kaybı olmadan Bekleyen Kayıtlar sekmesinde görünmeli.
+    veri kaybı olmadan Bekleyen Kayıtlar sayfasında görünmeli.
     """
     set_app_mode(db, BIREYSEL)
     db.execute(
@@ -258,23 +286,31 @@ def test_bekleyen_kayit_BIREYSELDE_kaybolmuyor_KURUMSALDA_yine_gorunur(qapp, db)
         ("yeni.kullanici", "x", "user", "pending", "PENDING-HWID-1"),
     )
 
-    panel = AdminPanel(current_hwid=_HWID, role="Yönetici")
+    window = _pencere(qapp, db, isolate_safezone, monkeypatch, "Yönetici")
     try:
-        # Sekme gizli ama veri hâlâ orada — _load_pending() sekme
-        # görünürlüğünden bağımsız çalışıyor (widget silinmedi).
-        assert panel._tabs.isTabVisible(panel._pending_tab_index) is False
-        panel._load_pending()
-        assert panel._pending_table.rowCount() == 1
+        # `HycleusWindow.__init__` başlangıç modunu OKUYOR (`self._app_mode`)
+        # ama UYGULAMIYOR — gerçek uygulamada bunu `main.py`'nin
+        # `QTimer.singleShot(0, win._apply_role_restrictions)` çağrısı
+        # yapar; testte AYNI adımı elle taklit ediyoruz.
+        window._apply_role_restrictions()
 
-        idx = panel._mode_combo.findData(KURUMSAL)
-        panel._mode_combo.setCurrentIndex(idx)
-        panel._on_save_settings()
-        assert panel._tabs.isTabVisible(panel._pending_tab_index) is True
-        panel._load_pending()
-        assert panel._pending_table.rowCount() == 1
+        ayarlar = window._admin_settings_view
+        pending = window._pending_view
+
+        # Düğme gizli ama veri hâlâ orada — _load_pending() düğmenin
+        # görünürlüğünden bağımsız çalışıyor (widget silinmedi).
+        assert _gizli_mi(window._pending_btn) is True
+        pending._load_pending()
+        assert pending._pending_table.rowCount() == 1
+
+        idx = ayarlar._mode_combo.findData(KURUMSAL)
+        ayarlar._mode_combo.setCurrentIndex(idx)
+        ayarlar._on_save_settings()
+        assert _gizli_mi(window._pending_btn) is False
+        pending._load_pending()
+        assert pending._pending_table.rowCount() == 1
     finally:
-        panel._yetki_timer.stop()
-        panel.close()
+        _pencereyi_kapat(window)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

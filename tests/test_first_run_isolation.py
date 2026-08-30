@@ -267,7 +267,7 @@ def test_sahte_usb_birden_fazla_modulu_ayni_anda_ve_dinamik_olarak_kontrol_ediyo
 ) -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     try:
-        import UI.AdminPanel as ap
+        import UI.admin_common as ap
         import UI.main_window_lock as mwl
     except ImportError as exc:  # pragma: no cover — ortama bağlı
         pytest.skip(f"Qt katmanı bu ortamda yüklenemedi ({exc})")
@@ -284,5 +284,5 @@ def test_sahte_usb_birden_fazla_modulu_ayni_anda_ve_dinamik_olarak_kontrol_ediyo
     assert ap.get_usb_hwid() == "SAHTE-HWID-2"
 
     usb.cikar()
-    assert mwl.get_usb_hwid() is None, "USB çıkarma AdminPanel'in gördüğü modüle yansımadı"
+    assert mwl.get_usb_hwid() is None, "USB çıkarma admin_common'ın gördüğü modüle yansımadı"
     assert ap.get_usb_hwid() is None, "USB çıkarma main_window_lock'un gördüğü modüle yansımadı"

@@ -2629,6 +2629,101 @@ way). Mutation-proved: disabling the filter in
 
 ---
 
+### 4.24 The USB Management modal became three persistent pages — the always-constructed sidebar pattern needed a role check it never had to have before
+
+> **Attacker models:** (a) a non-admin session getting a live Python
+> reference to an admin-only page's write actions purely because the
+> page is now unconditionally built at window construction, where the
+> old modal simply didn't exist until an admin opened it; (b) a
+> yönetici's session being demoted or its USB pulled while one of the
+> three pages is the visible page, where the old modal's own bespoke
+> polling loop was the only thing watching for that.
+
+**The split.** `UI/AdminPanel.py` (a single application-modal `QDialog`
+with three `QTabWidget` tabs: USB Tokens, Pending Registrations,
+Settings) was removed and replaced with three separate full pages in
+`_govde_yigini` (the same `QStackedWidget` pattern as `GuvenlikView`/
+`AuditLogView`/`ProfileView`), each with its own sidebar entry point:
+`UI/UsbTokensView.py`, `UI/PendingRegistrationsView.py`,
+`UI/AdminSettingsView.py`. Shared style helpers and the live-authority guard
+live in the new `UI/admin_common.py`. Data model untouched — this was a
+navigation/layout change only, per the scoping instruction that started
+the turn.
+
+**A defense that became redundant, and one that didn't.** The old
+`AdminPanel` ran its own 3-second `QTimer` re-checking DB authority and
+showing a warning banner + disabling its tabs, because it was an
+application-modal top-level window the main window's own `_lock()`/
+`_poll_usb()` (B-064/B-066) had no way to reach. Once the three pages
+live inside `centralWidget()`, that reachability gap is gone —
+`_lock()`'s `centralWidget().setEnabled(False)` already covers them, so
+the redundant timer and banner were deleted rather than tripled across
+three files. What did **not** go away: `centralWidget().setEnabled(False)`
+only blocks mouse/keyboard event delivery, it does nothing to a direct
+Python method call (`page._on_approve()` invoked by a test, a bug, or
+future code that holds a reference to the page). That was always the
+*actual* guarantee behind the old panel's per-action re-validation, and
+it doesn't depend on modal-vs-embedded — so `UI.admin_common.
+yonetici_hala_yetkili()` keeps re-checking `oturum_yetkisi_gecerli_mi()`
+immediately before every mutating action (approve/reject/blacklist/
+role-change/delete/settings-save/trusted-root add-remove/recovery-share
+export), exactly as `AdminPanel._yonetici_hala_yetkili()` did.
+
+**A gap the embedding itself introduced, closed before it shipped.** The
+old `AdminPanel` only ever existed as a live object between
+`is_admin_role(role)` passing and the modal being closed — a
+non-admin session's `HycleusWindow` never had a reference to one at all.
+The three new pages are constructed unconditionally at window build time
+(the same pattern `GuvenlikView`/`AuditLogView`/`ProfileView` already
+use), so a non-admin session's window now genuinely holds
+`window._pending_view`, `window._usb_tokens_view`, `window.
+_admin_settings_view` as live objects — reachable by direct method call
+regardless of the sidebar button or the `_on_open_*` entry-point role
+gate being hidden/blocked. `oturum_yetkisi_gecerli_mi()` alone does
+**not** close this: it only checks whether the DB role has *drifted*
+from the role the session started with, so a session that was validly
+non-admin from the start would pass it. `yonetici_hala_yetkili()` was
+therefore written to check `is_admin_role(pencere._role)` **first**,
+failing closed before the drift check ever runs — restoring, at the
+object/method level, the boundary the old modal got for free simply by
+not existing yet.
+
+**The failure path changed shape, not strength.** A modal that fails its
+guard can `reject()` itself closed. A page embedded in the main window
+cannot meaningfully "close" — so a failed guard now calls `pencere.
+_lock("revoked")`, the exact mechanism `_poll_usb()` already uses for the
+same condition, rather than a bespoke dialog-dismissal path.
+
+**Verified, not asserted.** The B-064 regression tests
+(`tests/test_authz_invariants.py::
+test_b064_bekleyen_kayitlar_usb_cikinca_onayi_reddediyor` and its
+mutation-contrast sibling) were ported from constructing a standalone
+`AdminPanel` to constructing `PendingRegistrationsView` against a
+minimal fake window and asserting `pencere._locked is True` /
+`"revoked" in pencere._lock_reasons` after a guard failure — the
+mutation-contrast test confirms the same scenario succeeds when
+`yonetici_hala_yetkili` is monkeypatched to always return `True`,
+proving the assertion is load-bearing rather than vacuous.
+
+**One more consequence of "always constructed": stale colors.** The
+three pages set their stylesheets directly from `pencere._T` (matching
+`AdminPanel`'s original approach) rather than the object-name QSS
+cascade `GuvenlikView`/`AuditLogView`/`ProfileView` use — deliberately
+kept, not a B-055 violation waived: rewriting three complex, semantically
+state-dependent (danger/success button variants) screens onto the
+central QSS was out of scope for a navigation-only turn. But
+`AdminPanel` being a modal meant it was always freshly constructed with
+the *current* theme at open time; a persistent page is not. Because the
+theme picker is reachable from every page via the hamburger menu (unlike
+before, when the modal blocked it), a theme change while one of these
+three pages was the visible page would leave it showing stale colors
+until the next navigation. Closed via the same mechanism `AuditLogView`
+already used for its own manually-painted columns: `UI/
+main_window_theme.py::_refresh_after_theme_change()` now also calls
+each admin page's `_restyle()`.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -5597,6 +5692,105 @@ her iki durumda da geçerdi). Mutasyonla kanıtlandı:
 `token_kayitlarini_getir()`'deki filtre devre dışı bırakılınca satır
 sayısı denetimi ANINDA kırıldı (1 yerine 2 satır gösterildi); geri
 alınıp tekrar yeşile döndüğü teyit edildi.
+
+---
+
+### 4.24 USB Yönetimi modalı üç kalıcı sayfaya bölündü — koşulsuz kurulan kenar çubuğu deseni, daha önce hiç gerekmemiş bir rol kontrolü gerektirdi
+
+> **Saldırgan modelleri:** (a) yönetici olmayan bir oturumun, sayfa artık
+> pencere kurulumunda KOŞULSUZ inşa edildiği için yalnızca bu yüzden
+> yönetici-yalnız bir sayfanın yazma eylemlerine canlı bir Python
+> referansı elde etmesi — eski modal, bir yönetici onu AÇMADAN önce
+> zaten HİÇ var olmuyordu; (b) üç sayfadan biri görünürken bir
+> yöneticinin oturumunun düşürülmesi ya da USB'sinin çekilmesi — eski
+> modalin kendi özel yoklama döngüsü bunu izleyen TEK şeydi.
+
+**Bölünme.** `UI/AdminPanel.py` (üç `QTabWidget` sekmesi taşıyan tek bir
+application-modal `QDialog`: USB Tokenlar, Bekleyen Kayıtlar, Ayarlar)
+kaldırıldı ve `_govde_yigini`'nde (`GuvenlikView`/`AuditLogView`/
+`ProfileView` ile AYNI `QStackedWidget` deseni) her biri kendi kenar
+çubuğu giriş noktasına sahip üç ayrı tam sayfayla değiştirildi:
+`UI/UsbTokensView.py`, `UI/PendingRegistrationsView.py`,
+`UI/AdminSettingsView.py`. Paylaşılan stil yardımcıları ve canlı yetki
+denetimi yeni `UI/admin_common.py`'de yaşıyor. Veri modeline
+dokunulmadı — turu başlatan kapsam talimatına uygun olarak yalnızca bir
+navigasyon/layout değişikliğiydi.
+
+**Gereksiz hâle gelen bir savunma, ve gelmeyen bir tanesi.** Eski
+`AdminPanel` kendi 3 saniyelik `QTimer`'ını çalıştırıp DB yetkisini
+yeniden kontrol ediyor, bir uyarı şeridi gösterip sekmelerini devre dışı
+bırakıyordu — çünkü application-modal, üst seviye bir pencereydi ve ana
+pencerenin kendi `_lock()`/`_poll_usb()`'si (B-064/B-066) ona hiçbir
+şekilde ulaşamıyordu. Üç sayfa artık `centralWidget()`'ın İÇİNDE
+yaşadığına göre bu erişilemezlik boşluğu ortadan kalktı —
+`_lock()`'un `centralWidget().setEnabled(False)`'ı zaten onları
+kapsıyor, bu yüzden gereksiz zamanlayıcı ve şerit üç dosyaya
+üçlenmek yerine SİLİNDİ. Ortadan KALKMAYAN şey: `centralWidget().
+setEnabled(False)` yalnızca fare/klavye olay iletimini engelliyor,
+doğrudan bir Python metot çağrısına (bir test, bir hata ya da sayfaya
+referans tutan gelecekteki bir kod tarafından çağrılan
+`sayfa._on_approve()`) hiçbir şey yapmıyor. Eski panelin her-eylem-
+öncesi yeniden doğrulamasının ASIL garantisi zaten HEP buydu ve
+modal/gömülü ayrımından BAĞIMSIZDI — bu yüzden `UI.admin_common.
+yonetici_hala_yetkili()` her yetkili eylemden (onayla/reddet/kara
+listeye al/rol değiştir/sil/ayarları kaydet/güvenilir kök ekle-kaldır/
+kurtarma parçası dışa aktar) HEMEN ÖNCE `oturum_yetkisi_gecerli_mi()`'yi
+yeniden kontrol etmeye devam ediyor — `AdminPanel._yonetici_hala_
+yetkili()`'nin yaptığının BİREBİR AYNISI.
+
+**Gömülmenin kendisinin açtığı bir boşluk, sevkiyattan ÖNCE kapatıldı.**
+Eski `AdminPanel`, `is_admin_role(role)` geçtikten modal kapanana kadar
+geçen sürede canlı bir nesne olarak var oluyordu — yönetici olmayan bir
+oturumun `HycleusWindow`'u ona hiçbir zaman bir referans TUTMUYORDU.
+Yeni üç sayfa artık pencere kurulumunda KOŞULSUZ inşa ediliyor
+(`GuvenlikView`/`AuditLogView`/`ProfileView`'ın zaten kullandığı AYNI
+desen), yani yönetici olmayan bir oturumun penceresi artık `window.
+_pending_view`, `window._usb_tokens_view`, `window._admin_settings_view`'ı
+CANLI nesneler olarak tutuyor — kenar çubuğu düğmesi ya da `_on_open_*`
+giriş noktası rol kapısı gizli/engelli olsa bile doğrudan metot
+çağrısıyla erişilebilir. `oturum_yetkisi_gecerli_mi()` TEK BAŞINA bu
+boşluğu KAPATMIYOR: yalnızca DB rolünün oturumun BAŞLADIĞI rolden
+SAPIP SAPMADIĞINA bakıyor, yani başından beri geçerli biçimde yönetici
+olmayan bir oturum bu kontrolden GEÇERDİ. `yonetici_hala_yetkili()` bu
+yüzden ÖNCE `is_admin_role(pencere._role)`'u kontrol edecek şekilde
+yazıldı, sapma kontrolü hiç çalışmadan KAPALI başarısız oluyor — eski
+modalin salt HENÜZ VAR OLMAYARAK bedavaya kazandığı sınırı, nesne/metot
+seviyesinde yeniden kuruyor.
+
+**Başarısızlık yolu ŞEKİL değiştirdi, GÜÇ değil.** Kendi denetimini
+geçemeyen bir modal kendini `reject()` ile kapatabilir. Ana pencereye
+gömülü bir sayfa anlamlı biçimde "kapanamaz" — bu yüzden başarısız bir
+denetim artık `pencere._lock("revoked")` çağırıyor, `_poll_usb()`'nin
+AYNI durum için ZATEN kullandığı mekanizmanın TAM OLARAK aynısı, özel
+bir diyalog-kapatma yolu değil.
+
+**Kanıtlandı, iddia edilmedi.** B-064 regresyon testleri
+(`tests/test_authz_invariants.py::
+test_b064_bekleyen_kayitlar_usb_cikinca_onayi_reddediyor` ve mutasyon-
+kontrastlı kardeşi) standalone bir `AdminPanel` kurmaktan, minimal sahte
+bir pencereye karşı `PendingRegistrationsView` kurup denetim
+başarısızlığından sonra `pencere._locked is True` / `"revoked" in
+pencere._lock_reasons` doğrulamaya taşındı — mutasyon-kontrastlı test,
+`yonetici_hala_yetkili` her zaman `True` dönecek şekilde
+monkeypatch'lendiğinde AYNI senaryonun BAŞARILI olduğunu doğrulayarak
+denetimin gerçekten yük taşıdığını, boş bir iddia olmadığını kanıtlıyor.
+
+**"Koşulsuz kurulmanın" bir sonucu daha: bayat renkler.** Üç sayfa
+kendi stylesheet'ini (`AdminPanel`'in özgün yaklaşımıyla AYNI biçimde)
+doğrudan `pencere._T`'den kuruyor — `GuvenlikView`/`AuditLogView`/
+`ProfileView`'ın kullandığı nesne-adı QSS cascade'inden DEĞİL, kasıtlı
+olarak öyle bırakıldı, bir B-055 ihlali görmezden gelinmedi: üç
+karmaşık, semantik olarak duruma bağlı (danger/success buton
+varyantları) ekranı merkezî QSS'e taşımak, navigasyon-yalnızca bir tur
+için kapsam dışıydı. Ama `AdminPanel`'in modal olması, her açılışta O
+ANKİ temayla TAZE kurulduğu anlamına geliyordu; kalıcı bir sayfa için bu
+geçerli değil. Tema seçici artık (eskiden modalin bunu ENGELLEDİĞİNİN
+aksine) her sayfadan hamburger menüsüyle erişilebilir olduğundan, bu üç
+sayfadan biri görünürken tema değişirse, bir sonraki gezinmeye kadar
+bayat renklerde kalırdı. `AuditLogView`'ın kendi elle boyanan sütunları
+için ZATEN kullandığı AYNI mekanizmayla kapatıldı: `UI/
+main_window_theme.py::_refresh_after_theme_change()` artık her admin
+sayfasının `_restyle()`'ını da çağırıyor.
 
 ---
 

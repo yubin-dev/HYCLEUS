@@ -397,7 +397,7 @@ class LockMixin:
 
     def reload_idle_timeout(self) -> None:
         """
-        Ayar değiştiğinde AdminPanel bunu çağırır — yeniden başlatma gerekmesin.
+        Ayar değiştiğinde AdminSettingsView bunu çağırır — yeniden başlatma gerekmesin.
 
         DEV_MODE'da kilit KAPALI: o modda vault yok (anahtar HWID'den
         türetiliyor, bkz. main.py `_dev_key`), dolayısıyla `read_vault_role`
@@ -451,7 +451,8 @@ class LockMixin:
     def _on_manual_logout(self) -> None:
         """`ProfileView._on_logout()`'un onay diyaloğundan SONRA çağırdığı
         tek giriş noktası — onay BURADA değil, çağıranda (UI eylem
-        yerinde onay almak, AdminPanel'in kendi eylemleriyle AYNI desen)."""
+        yerinde onay almak, USB Yönetim Paneli sayfalarının kendi
+        eylemleriyle AYNI desen)."""
         DBManager().log("session_logged_out", detail=f"hwid={self._hwid}")
         self._lock("manual")
 

@@ -180,8 +180,9 @@ def oturum_yetkisi_gecerli_mi(
 
     Neden gerekli
     -------------
-    `_poll_usb()` (UI/main_window_lock.py) ve `AdminPanel` (USB Yönetimi
-    paneli), USB fiziksel olarak SABİT kaldığı sürece "her şey yolunda"
+    `_poll_usb()` (UI/main_window_lock.py) ve eski `AdminPanel` (USB
+    Yönetimi paneli, kaldırıldı — bkz. UI/admin_common.py), USB fiziksel
+    olarak SABİT kaldığı sürece "her şey yolunda"
     varsayıyordu — DB'deki `status`/`role`/kara liste durumunu bir daha
     HİÇ okumuyordu. Sonuç: bir yönetici bir kullanıcıyı reddedip
     (`_on_reject`), silip (`_on_delete`) ya da kara listeye alıp
@@ -192,9 +193,9 @@ def oturum_yetkisi_gecerli_mi(
     Bu fonksiyon USB'nin fiziksel varlığına BAKMAZ (o, çağıranın işi —
     `get_usb_hwid()` ile karşılaştırılmalı); yalnızca DB tarafını
     kontrol eder. İki çağıran: `LockMixin._poll_usb` (ana pencere) ve
-    `AdminPanel._yonetici_hala_yetkili` (USB Yönetimi paneli — modal
-    olduğu için ana penceredeki döngüden habersiz, kendi kontrolünü
-    kendi yapmak zorunda).
+    `UI.admin_common.yonetici_hala_yetkili` (USB Yönetim Paneli'nin üç
+    sayfası — bir eylem doğrudan/programatik çağrılırsa, `_poll_usb`'nin
+    3 saniyelik aralığını beklemeden anında doğrulamak için).
 
     Args:
         oturum_rolu: oturumun GİRİŞTE sahip olduğu arayüz rolü

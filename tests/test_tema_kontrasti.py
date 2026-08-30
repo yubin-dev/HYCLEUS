@@ -43,7 +43,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from UI.main_window_theme import _THEMES
-    from UI import AdminPanel as _AP
+    from UI import admin_common as _AP
     from UI import dialog_kit as _dk
     from UI.main_window_palette import _DARK, _LIGHT, _GRAPHITE_AMBER
 except ImportError as _exc:  # pragma: no cover — ortama bağlı
@@ -319,10 +319,10 @@ _A, _B = _DARK, _GRAPHITE_AMBER
 
 
 def test_mutasyon_admin_panel_stil_fonksiyonlari_T_ye_bagli():
-    assert _AP._stil(_A) != _AP._stil(_B)
-    assert _AP._btn_stil(_A) != _AP._btn_stil(_B)
-    assert _AP._btn_danger_stil(_A) != _AP._btn_danger_stil(_B)
-    assert _AP._btn_success_stil(_A) != _AP._btn_success_stil(_B)
+    assert _AP.stil(_A) != _AP.stil(_B)
+    assert _AP.btn_stil(_A) != _AP.btn_stil(_B)
+    assert _AP.btn_danger_stil(_A) != _AP.btn_danger_stil(_B)
+    assert _AP.btn_success_stil(_A) != _AP.btn_success_stil(_B)
 
 
 def test_mutasyon_dialog_kit_T_ye_bagli():
@@ -331,21 +331,16 @@ def test_mutasyon_dialog_kit_T_ye_bagli():
 
 
 def test_mutasyon_admin_panel_ornek_metotlari_T_ye_bagli():
-    """Sınıf metotları (`_tab_stili` vb.) yalnızca `self._T` okuyor —
-    doğrudan çağırmak için tam bir dialog kurmaya gerek yok, sahte bir
-    `self` (yalnızca `_T` taşıyan) yeterli."""
-    class _SahteOzben:
-        pass
-
-    ozben_a, ozben_b = _SahteOzben(), _SahteOzben()
-    ozben_a._T, ozben_b._T = _A, _B
-
-    assert _AP.AdminPanel._tab_stili(ozben_a) != _AP.AdminPanel._tab_stili(ozben_b)
-    assert _AP.AdminPanel._combo_stili(ozben_a) != _AP.AdminPanel._combo_stili(ozben_b)
-    assert (_AP.AdminPanel._bolum_baslik_stili(ozben_a)
-            != _AP.AdminPanel._bolum_baslik_stili(ozben_b))
-    assert _AP.AdminPanel._ipucu_stili(ozben_a) != _AP.AdminPanel._ipucu_stili(ozben_b)
-    assert _AP.AdminPanel._liste_stili(ozben_a) != _AP.AdminPanel._liste_stili(ozben_b)
+    """Eskiden (`UI/AdminPanel.py`, kaldırıldı) `_tab_stili` vb. yalnızca
+    `self._T` okuyan sınıf metotlarıydı — üçe bölünmenin ardından
+    `UI/admin_common.py`'de `T` parametresi alan sıradan fonksiyonlara
+    dönüştü (bkz. o modülün docstring'i), sahte bir `self`'e gerek kalmadı.
+    `_tab_stili` YOK: `QTabWidget` kaldırıldı, sekmelerin yerini ayrı
+    sayfalar aldı."""
+    assert _AP.combo_stili(_A) != _AP.combo_stili(_B)
+    assert _AP.bolum_baslik_stili(_A) != _AP.bolum_baslik_stili(_B)
+    assert _AP.ipucu_stili(_A) != _AP.ipucu_stili(_B)
+    assert _AP.liste_stili(_A) != _AP.liste_stili(_B)
 
 
 @pytest.fixture(scope="module")
@@ -367,23 +362,38 @@ def isolate_safezone(tmp_path, monkeypatch: pytest.MonkeyPatch):
     return hedef
 
 
-def test_mutasyon_admin_panel_dialog_gercekten_farkli_boyaniyor(qapp, db):
-    """Uçtan uca: iki AYRI preset'le kurulan gerçek `AdminPanel`
-    penceresinin kendi stylesheet'i farklı olmalı.
+class _SahtePencereT:
+    """`AdminSettingsView`'ın okuduğu `pencere._T`/`_hwid`/`_role` dışında
+    hiçbir şeye ihtiyaç yok — `.yenile()` değil, doğrudan `._restyle()`
+    çağrılıyor."""
 
-    `db` fixture'ı ZORUNLU: onsuz `_load()` DB'ye erişemez, hata
-    `QMessageBox.warning(...)` ile gösterilmeye çalışılır ve bu, başsız
+    def __init__(self, T):
+        self._T = T
+        self._hwid = "X"
+        self._role = "Yönetici"
+
+
+def test_mutasyon_admin_settings_view_gercekten_farkli_boyaniyor(qapp, db):
+    """Uçtan uca: iki AYRI preset'le kurulan gerçek `AdminSettingsView`
+    sayfasının kendi stylesheet'i farklı olmalı.
+
+    Eskiden (`UI/AdminPanel.py`, kaldırıldı) tek bir modal `QDialog`
+    `T=` parametresiyle kuruluyordu; üçe bölünmenin ardından sayfalar
+    `pencere._T`'yi CANLI okuyor (bkz. `UI/admin_common.py` modül
+    docstring'i) — bu yüzden burada `T=` yerine sahte bir `pencere`
+    veriliyor ve stil `._restyle()` ile açıkça uygulanıyor.
+
+    `db` fixture'ı ZORUNLU: onsuz `_load_settings()` DB'ye erişemez, hata
+    `QMessageBox.critical(...)` ile gösterilmeye çalışılır ve bu, başsız
     bir testte tıklayacak kimse olmadığı için SONSUZA KADAR bloklar."""
-    a = _AP.AdminPanel(current_hwid="X", role="Yönetici", T=_A)
-    b = _AP.AdminPanel(current_hwid="X", role="Yönetici", T=_B)
-    try:
-        assert a.styleSheet() != b.styleSheet()
-        assert a._mode_combo.styleSheet() != b._mode_combo.styleSheet()
-    finally:
-        a._yetki_timer.stop()
-        b._yetki_timer.stop()
-        a.close()
-        b.close()
+    from UI.AdminSettingsView import AdminSettingsView
+
+    a = AdminSettingsView(_SahtePencereT(_A))
+    b = AdminSettingsView(_SahtePencereT(_B))
+    a._restyle()
+    b._restyle()
+    assert a.styleSheet() != b.styleSheet()
+    assert a._mode_combo.styleSheet() != b._mode_combo.styleSheet()
 
 
 def test_mutasyon_recovery_share_dialog_gercekten_farkli_boyaniyor(qapp):

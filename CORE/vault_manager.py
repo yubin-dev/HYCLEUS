@@ -524,7 +524,7 @@ def discard_vault(hwid: str) -> None:
          bir HWID, yani vault var ama `users` satırı yok, bırakılırsa
          `sync_session_user()` onu "yeni vault oturumu" sanıp doğrudan
          `status='approved'` üretirdi).
-      2. `UI/AdminPanel.py::_on_delete()` — bir USB kaydını TAMAMEN
+      2. `UI/UsbTokensView.py::_on_delete()` — bir USB kaydını TAMAMEN
          kaldırmak için (yalnızca `usb_tokens` silmek `users` satırını
          yetim bırakır ve aynı HWID'in yeniden kaydını `users.hwid`
          UNIQUE kısıtı yüzünden kalıcı olarak kilitlerdi).

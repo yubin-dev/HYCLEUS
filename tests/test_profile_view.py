@@ -33,8 +33,8 @@ try:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication, QMessageBox
 
-    from UI.AdminPanel import AdminPanel
     from UI.main_window import HycleusWindow
+    from UI.UsbTokensView import UsbTokensView
 except ImportError as _exc:  # pragma: no cover — ortama bağlı
     pytest.skip(
         f"Qt katmanı bu ortamda yüklenemedi ({_exc}) — testler atlanıyor",
@@ -122,10 +122,11 @@ def _token_ekle(db, hwid: str, token_id: str = "TOKEN-ABC", blacklisted: int = 0
 
 def test_cihazlar_bolumu_admin_panelle_AYNI_kaynaktan_besleniyor(qapp, db, sahte_usb):
     """
-    Asıl iddia: `ProfileView`'ın cihaz satırı, `AdminPanel`'in aynı HWID
-    için gösterdiği satırla (token ID, kayıt tarihi, durum) BİREBİR
-    tutarlı — çünkü ikisi de `CORE.usb_tokens.token_kayitlarini_getir()`'i
-    çağırıyor, iki ayrı SQL YAZILMADI.
+    Asıl iddia: `ProfileView`'ın cihaz satırı, USB Yönetim Paneli'nin
+    (eskiden `UI/AdminPanel.py`, kaldırıldı — artık `UI/UsbTokensView.py`)
+    aynı HWID için gösterdiği satırla (token ID, kayıt tarihi, durum)
+    BİREBİR tutarlı — çünkü ikisi de `CORE.usb_tokens.
+    token_kayitlarini_getir()`'i çağırıyor, iki ayrı SQL YAZILMADI.
     """
     user_id = _kullanici_ekle(db, _HWID, "cihaz.test")
     # 12 karakterden kısa: AdminPanel (12'de) ve ProfileView'ın (20'de)
@@ -145,24 +146,22 @@ def test_cihazlar_bolumu_admin_panelle_AYNI_kaynaktan_besleniyor(qapp, db, sahte
         cihaz_tablo = window._profil_view._cihaz_table
         assert cihaz_tablo.rowCount() == 1, "tek kayıtlı token için tek satır bekleniyordu"
 
-        panel = AdminPanel(current_hwid=_HWID, role="Yönetici")
-        try:
-            admin_tablo = panel._table
-            admin_satir = next(
-                r for r in range(admin_tablo.rowCount())
-                if admin_tablo.item(r, 0).data(Qt.UserRole) == _HWID
-            )
-            # AdminPanel sütunları: HWID, Token ID, Rol, Son Giriş, Durum.
-            admin_token_id = admin_tablo.item(admin_satir, 1).text()
-            admin_durum = admin_tablo.item(admin_satir, 4).text()
-        finally:
-            panel.close()
+        sayfa = UsbTokensView(window)
+        sayfa.yenile()
+        admin_tablo = sayfa._table
+        admin_satir = next(
+            r for r in range(admin_tablo.rowCount())
+            if admin_tablo.item(r, 0).data(Qt.UserRole) == _HWID
+        )
+        # UsbTokensView sütunları: HWID, Token ID, Rol, Son Giriş, Durum.
+        admin_token_id = admin_tablo.item(admin_satir, 1).text()
+        admin_durum = admin_tablo.item(admin_satir, 4).text()
 
         # ProfileView sütunları: Token ID, Kayıt Tarihi, Durum, Şu An Takılı.
         profil_token_id = cihaz_tablo.item(0, 0).text()
         profil_durum = cihaz_tablo.item(0, 2).text()
 
-        # AdminPanel token ID'yi 12 karaktere, ProfileView 20'ye kırpıyor —
+        # UsbTokensView token ID'yi 12 karaktere, ProfileView 20'ye kırpıyor —
         # görüntü uzunluğu farklı olabilir ama İÇERİK aynı kaynaktan gelmeli.
         assert profil_token_id == admin_token_id == "TOK-CIHAZ-1"
         assert profil_durum == admin_durum == "Aktif"
@@ -195,11 +194,9 @@ def test_cihazlar_bolumu_kara_liste_durumunu_admin_panelle_TUTARLI_gosteriyor(qa
         cihaz_tablo = window._profil_view._cihaz_table
         assert cihaz_tablo.item(0, 2).text() == "Kara Liste"
 
-        panel = AdminPanel(current_hwid=_HWID, role="Yönetici")
-        try:
-            assert panel._table.item(0, 4).text() == "Kara Liste"
-        finally:
-            panel.close()
+        sayfa = UsbTokensView(window)
+        sayfa.yenile()
+        assert sayfa._table.item(0, 4).text() == "Kara Liste"
     finally:
         _pencereyi_kapat(window)
 

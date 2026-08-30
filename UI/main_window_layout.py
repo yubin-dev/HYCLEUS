@@ -54,8 +54,11 @@ from PySide6.QtWidgets import (
 
 
 
+from UI.AdminSettingsView import SAYFA_ADI as _ADMIN_SETTINGS_SAYFA_ADI
 from UI.AuditLogView import SAYFA_ADI as _AUDIT_SAYFA_ADI
 from UI.GuvenlikView import SAYFA_ADI as _GUVENLIK_SAYFA_ADI
+from UI.PendingRegistrationsView import SAYFA_ADI as _PENDING_SAYFA_ADI
+from UI.UsbTokensView import SAYFA_ADI as _USB_TOKENS_SAYFA_ADI
 from UI.main_window_palette import (
     _SIDEBAR_NAV,
 )
@@ -386,12 +389,26 @@ class LayoutMixin:
         self._audit_log_btn.clicked.connect(self._on_open_audit_log)
         lay.addWidget(self._audit_log_btn)
 
-        self._admin_panel_btn = QPushButton("  🔌  USB Yönetimi")
-        self._admin_panel_btn.setObjectName("admin_btn")
-        self._admin_panel_btn.setFixedHeight(40)
-        self._admin_panel_btn.setCursor(Qt.PointingHandCursor)
-        self._admin_panel_btn.clicked.connect(self._on_open_admin_panel)
-        lay.addWidget(self._admin_panel_btn)
+        self._usb_tokens_btn = QPushButton(f"  🔌  {_USB_TOKENS_SAYFA_ADI}")
+        self._usb_tokens_btn.setObjectName("admin_btn")
+        self._usb_tokens_btn.setFixedHeight(40)
+        self._usb_tokens_btn.setCursor(Qt.PointingHandCursor)
+        self._usb_tokens_btn.clicked.connect(self._on_open_usb_tokens)
+        lay.addWidget(self._usb_tokens_btn)
+
+        self._pending_btn = QPushButton(f"  📥  {_PENDING_SAYFA_ADI}")
+        self._pending_btn.setObjectName("admin_btn")
+        self._pending_btn.setFixedHeight(40)
+        self._pending_btn.setCursor(Qt.PointingHandCursor)
+        self._pending_btn.clicked.connect(self._on_open_pending)
+        lay.addWidget(self._pending_btn)
+
+        self._admin_settings_btn = QPushButton(f"  ⚙  {_ADMIN_SETTINGS_SAYFA_ADI}")
+        self._admin_settings_btn.setObjectName("admin_btn")
+        self._admin_settings_btn.setFixedHeight(40)
+        self._admin_settings_btn.setCursor(Qt.PointingHandCursor)
+        self._admin_settings_btn.clicked.connect(self._on_open_admin_settings)
+        lay.addWidget(self._admin_settings_btn)
 
         self._support_btn = QPushButton("  💬  Destek")
         self._support_btn.setObjectName("admin_btn")
@@ -415,8 +432,9 @@ class LayoutMixin:
 
     def _make_govde_yigini(self) -> QWidget:
         """
-        İçerik alanı artık DÖRT SAYFALI: dosya görünümü + Güvenlik + Denetim
-        Günlüğü + Profil.
+        İçerik alanı artık YEDİ SAYFALI: dosya görünümü + Güvenlik +
+        Denetim Günlüğü + Profil + USB Tokenlar + Bekleyen Kayıtlar +
+        Ayarlar.
 
         `QStackedWidget` seçildi, ikinci bir pencere değil: tablo, arama
         çubuğu ve seçim durumu YERİNDE kalıyor. Güvenlik ya da Denetim
@@ -426,10 +444,21 @@ class LayoutMixin:
         kaldırıldı) modal bir `QDialog`'du — aynı gerekçeyle buraya
         taşındı. Profil de AYNI gerekçeyle: eskiden (`UI/ProfileDialog.py`,
         kaldırıldı) modal bir `QDialog`'du, artık `UI/ProfileView.py`.
+
+        USB Yönetim Paneli (eskiden `UI/AdminPanel.py`, kaldırıldı) AYNI
+        gerekçeyle üçe bölünerek buraya taşındı — tek bir modal
+        `QTabWidget` yerine üç ayrı sayfa/kenar çubuğu girişi (`UI/
+        UsbTokensView.py`, `UI/PendingRegistrationsView.py`, `UI/
+        AdminSettingsView.py`). Paylaşılan stil/yetki kodu ve "neden üç
+        AYRI sayfa" gerekçesi `UI/admin_common.py`'nin modül
+        docstring'inde.
         """
+        from UI.AdminSettingsView import AdminSettingsView
         from UI.AuditLogView import AuditLogView
         from UI.GuvenlikView import GuvenlikView
+        from UI.PendingRegistrationsView import PendingRegistrationsView
         from UI.ProfileView import ProfileView
+        from UI.UsbTokensView import UsbTokensView
 
         self._govde_yigini = QStackedWidget()
         self._govde_yigini.addWidget(self._make_content())      # 0 — dosyalar
@@ -439,6 +468,12 @@ class LayoutMixin:
         self._govde_yigini.addWidget(self._audit_log_view)      # 2 — denetim günlüğü
         self._profil_view = ProfileView(self)
         self._govde_yigini.addWidget(self._profil_view)         # 3 — profil
+        self._usb_tokens_view = UsbTokensView(self)
+        self._govde_yigini.addWidget(self._usb_tokens_view)     # 4 — USB tokenlar
+        self._pending_view = PendingRegistrationsView(self)
+        self._govde_yigini.addWidget(self._pending_view)        # 5 — bekleyen kayıtlar
+        self._admin_settings_view = AdminSettingsView(self)
+        self._govde_yigini.addWidget(self._admin_settings_view)  # 6 — ayarlar
         return self._govde_yigini
 
     def _make_content(self) -> QWidget:
@@ -524,8 +559,11 @@ class LayoutMixin:
     # inline sekme olarak açılır, yeni pencere açmaz." Bu turda YALNIZCA
     # `TimestampDialog` ve `BackupVerifyDialog` buraya taşındı.
     #
-    # AdminPanel BİLEREK dışarıda: üç sekmeli, en karmaşık ekran, kendi
-    # turunu hak ediyor. `RecoveryShareDialog` BİLEREK modal KALIYOR — tek
+    # USB Yönetim Paneli (eskiden AdminPanel, üç sekmeli tek bir modal)
+    # BİLEREK dışarıda kaldı — en karmaşık ekrandı, kendi turunu hak etti
+    # ve sonunda slide-over'a değil tam sayfaya (üç ayrı sayfaya) taşındı
+    # (bkz. `UI/admin_common.py`). `RecoveryShareDialog` BİLEREK modal
+    # KALIYOR — tek
     # gösterimlik, dikkat gerektiren bir akış; slide-over'a taşımak
     # "yanlışlıkla kapatma" riskini artırırdı (tasarım brief'i Karar 4 de
     # onu modal tarif ediyor).

@@ -110,6 +110,16 @@ class ThemeMixin:
         # yeniden yüklenip yeni tema renkleriyle tekrar boyanmalı.
         if getattr(self, "_audit_log_view", None) is not None:
             self._audit_log_view._load()
+        # USB Yönetim Paneli'nin üç sayfası da `self._T`'den QSS'i elle
+        # kuruyor (bkz. `UI/admin_common.py` modül docstring'i — B-055
+        # cascade'i onlar için bilinçli olarak KULLANILMIYOR), yukarıdaki
+        # AuditLogView'la AYNI gerekçeyle burada elle tazeleniyor: aksi
+        # hâlde tema, sayfa arkada değil TAM O AN görünürken değişirse
+        # (hamburger menüsü her sayfadan erişilebilir) bayat renkte kalır.
+        for _ad in ("_usb_tokens_view", "_pending_view", "_admin_settings_view"):
+            _sayfa = getattr(self, _ad, None)
+            if _sayfa is not None:
+                _sayfa._restyle()
         if self._current_tag_id is not None:
             self._load_tag_files(self._current_tag_id)
         else:
@@ -141,7 +151,7 @@ class ThemeMixin:
         (`_THEMES`/`available_themes`) geri içe aktarıyor — döngüsel
         bağımlılığı modül-seviyesinde DEĞİL, çağrı anında çözüyor. Bu aynı
         zamanda testlerin `UI.ThemePickerDialog.ThemePickerDialog`'u
-        monkeypatch edebilmesini sağlıyor (`AdminPanel.py`'nin
+        monkeypatch edebilmesini sağlıyor (`UI/AdminSettingsView.py`'nin
         `RecoveryShareDialog`'u içe aktarma deseniyle AYNI, bkz. o
         dosyadaki `_on_kurtarma_parcasi`).
         """

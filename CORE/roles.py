@@ -76,7 +76,7 @@ GORUNEN_AD: dict[str, str] = {
     ROL_SALT_OKUNUR: "Salt Okunur",
 }
 
-#: Arayüzün rol seçimi sunduğu sıra. `AdminPanel._ROLES` ve
+#: Arayüzün rol seçimi sunduğu sıra. `UI.admin_common.ROLES` ve
 #: `login_dialog._SETUP_ROLES` bu listeyle uyumlu olmalı.
 SECILEBILIR_ROLLER: tuple[str, ...] = (ROL_YONETICI, ROL_STANDART, ROL_SALT_OKUNUR)
 

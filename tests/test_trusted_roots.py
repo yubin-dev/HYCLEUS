@@ -500,6 +500,10 @@ def test_CLI_kok_deposunu_KULLANMIYOR() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. Yönetim Paneli — kullanıcı kökü GERÇEKTEN ekleyebiliyor mu
 # ══════════════════════════════════════════════════════════════════════════════
+#
+# Eskiden (`UI/AdminPanel.py`, kaldırıldı) TSA kök bloğu panelin "Ayarlar"
+# sekmesindeydi; üçe bölünmenin ardından `UI/AdminSettingsView.py`'ye
+# taşındı (bkz. `UI/admin_common.py` modül docstring'i).
 
 
 @pytest.fixture
@@ -515,32 +519,31 @@ def qapp():  # type: ignore[no-untyped-def]
 @pytest.fixture(autouse=True)
 def _admin_panel_canli_usb(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
     """
-    B-064/B-066: `AdminPanel` artık her yetkili işlemden (ör.
+    B-064/B-066: `AdminSettingsView` artık her yetkili işlemden (ör.
     `_on_tsa_kok_ekle`/`_on_tsa_kok_sil`) önce `get_usb_hwid()`'i canlı
-    okuyor. Bu dosyadaki panel testleri hep `_panel()`'in kullandığı
-    "H" HWID'ini varsayıyor (bkz. `yonetici_db` — aynı HWID'e onaylı bir
-    yönetici satırı ekliyor); o USB'nin takılı kaldığını simüle ediyoruz.
+    okuyor (`UI.admin_common.yonetici_hala_yetkili`). Bu dosyadaki panel
+    testleri hep `_panel()`'in kullandığı "H" HWID'ini varsayıyor (bkz.
+    `yonetici_db` — aynı HWID'e onaylı bir yönetici satırı ekliyor); o
+    USB'nin takılı kaldığını simüle ediyoruz.
     """
-    import UI.AdminPanel as _ap
+    import UI.admin_common as _ac
 
-    monkeypatch.setattr(_ap, "get_usb_hwid", lambda: "H")
+    monkeypatch.setattr(_ac, "get_usb_hwid", lambda: "H")
+
+
+class _SahtePencere:
+    """Bu dosyanın panel testleri için minimal sahte `pencere` — `UI.
+    admin_common.yonetici_hala_yetkili`'nin okuduğu `_hwid`/`_role`'dan
+    fazlasına ihtiyaç yok (testler `.yenile()`/tema tazelemesi çağırmıyor)."""
+
+    def __init__(self, hwid: str = "H", role: str = "Yönetici") -> None:
+        self._hwid = hwid
+        self._role = role
 
 
 def _panel(qapp, request):  # type: ignore[no-untyped-def]
-    """
-    B-064/B-066: `AdminPanel` artık kendi `_yetki_timer`'ını (3 sn) her
-    örnekte başlatıyor. Kapatılmadan bırakılırsa (sadece `.close()` yeterli
-    değil — QTimer C++ tarafında canlı kalabiliyor) sonraki bir Qt event
-    loop'unda (ör. başka bir dosyada `.exec()` çağrılınca) art arda birikmiş
-    tüm bu zamanlayıcılar birden tetiklenip GERÇEK `get_usb_hwid()`/DB
-    çağrılarıyla tüm test takımını kilitleyebiliyor — ölçüldü. `request`
-    finalizer'ıyla test SONUCUNDAN bağımsız (assertion patlasa bile) durdurma
-    garanti ediliyor.
-    """
-    from UI.AdminPanel import AdminPanel
-    panel = AdminPanel("H", role="Yönetici")
-    request.addfinalizer(panel._yetki_timer.stop)
-    return panel
+    from UI.AdminSettingsView import AdminSettingsView
+    return AdminSettingsView(_SahtePencere())
 
 
 def test_panel_bos_depoyu_ANLASILIR_gosteriyor(qapp, yonetici_db, request) -> None:  # type: ignore[no-untyped-def]

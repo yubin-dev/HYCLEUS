@@ -161,7 +161,7 @@ def test_denetim_gercekten_dosya_geziyor():
     yollar = _dosyalar()
     assert len(yollar) >= 40
     adlar = {p.name for p in yollar}
-    assert {"main_window.py", "AdminPanel.py", "session_user.py"} <= adlar
+    assert {"main_window.py", "UsbTokensView.py", "session_user.py"} <= adlar
     # Kanonik modül de taranıyor — kuralın istisnası yok.
     assert KANONIK.resolve() in {p.resolve() for p in yollar}
 

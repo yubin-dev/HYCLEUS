@@ -3,8 +3,8 @@ HYCLEUS — kayıtlı USB token'larının OKUMA tarafı: tek sorgu, iki çağır
 
 Neden bu dosya var
 ------------------
-`UI/AdminPanel.py`'nin USB Yönetim Paneli'ndeki "USB Tokenlar" sekmesi ve
-`UI/ProfileView.py`'nin "Cihazlar ve oturum" bölümü AYNI SORUYU soruyor:
+`UI/UsbTokensView.py`'nin (USB Yönetim Paneli'nin "USB Tokenlar" sayfası)
+ve `UI/ProfileView.py`'nin "Cihazlar ve oturum" bölümü AYNI SORUYU soruyor:
 "hangi USB'ler kayıtlı, rolü ne, ne zaman eklendi, son girişi ne zaman" —
 biri TÜM filo için (yönetici), diğeri TEK bir HWID için (kullanıcının kendi
 cihazı). Aynı SQL'i iki dosyada ayrı ayrı yazmak, biri güncellenip
@@ -12,7 +12,8 @@ diğerinin unutulduğu güne kadar sessizce ayrışırdı (bu deponun defalarca
 kapattığı kusur sınıfı — bkz. B-004/B-008, B-007, B-010, B-011). Bu yüzden
 tek fonksiyon, opsiyonel `hwid` filtresiyle.
 
-`AdminPanel._load()`'un SQL'i buraya AYNEN taşındı; davranış DEĞİŞMEDİ.
+Eski `AdminPanel._load()`'un (kaldırıldı) SQL'i buraya AYNEN taşındı;
+davranış DEĞİŞMEDİ.
 
 Çoklu cihaz YOK — kasıtlı, şema seviyesinde
 --------------------------------------------
@@ -33,8 +34,8 @@ from dataclasses import dataclass
 
 from DB.db_manager import DBManager
 
-#: `AdminPanel.py`'nin rol/son-giriş sorgusunun baktığı denetim eylemleri —
-#: DEĞİŞMEDEN taşındı.
+#: Eski `AdminPanel.py`'nin rol/son-giriş sorgusunun baktığı denetim
+#: eylemleri — DEĞİŞMEDEN taşındı.
 _ROL_EYLEMLERI = ("usb_setup_complete", "usb_role_changed")
 _SON_GIRIS_EYLEMI = "usb_auth_success"
 
@@ -97,7 +98,8 @@ def token_kayitlarini_getir(db: DBManager, *, hwid: str | None = None) -> list[T
 def parse_field(detail: str, key: str) -> str:
     """`key=value` çiftini parse eder; değer boşluk içerebilir.
 
-    `AdminPanel._parse_field`'dan DEĞİŞMEDEN taşındı — "hwid=X role=Salt
+    Eski `AdminPanel._parse_field`'dan (kaldırıldı) DEĞİŞMEDEN taşındı —
+    "hwid=X role=Salt
     Okunur old_role=Y" formatında çalışır: sonraki 'kelime=' kalıbı ya da
     satır sonu değerin bitişini belirler.
     """

@@ -210,7 +210,7 @@ class FileActionsMixin:
         from CORE.trusted_roots import der_listesi
         from UI.TimestampDialog import TimestampDialog
 
-        # Kurumsal kök deposu (AdminPanel → Ayarlar). Boşsa `[]` dönüyor ve
+        # Kurumsal kök deposu (Ayarlar sayfası → AdminSettingsView). Boşsa `[]` dönüyor ve
         # `verify_timestamp` eskisi gibi `anchor_trusted=False` veriyor —
         # yani depo kurulmamış bir sistemde davranış DEĞİŞMİYOR.
         try:

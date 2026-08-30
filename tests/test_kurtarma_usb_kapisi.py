@@ -379,7 +379,8 @@ def test_ui_dizini_taranacak_dosya_iceriyor() -> None:
 
 def test_mevcut_UI_dosyalarindaki_mesru_kullanimlar_YANLIS_POZITIF_URETMIYOR() -> None:
     """
-    `UI/AdminPanel.py` (dışa aktarım düğmesi: `export_recovery_share`,
+    `UI/AdminSettingsView.py` (eskiden `UI/AdminPanel.py`'nin bir sekmesi,
+    kaldırıldı — dışa aktarım düğmesi: `export_recovery_share`,
     `build_export`, `RecoveryShareDialog`, yerel değişken `share_3`,
     "Kurtarma Parçasını Göster…"/"Kurtarma Parçası" metinleri) ve `UI/
     RecoveryShareDialog.py`'nin (kendi sınıf adı, kendi başlığı) GERÇEK
@@ -390,7 +391,7 @@ def test_mevcut_UI_dosyalarindaki_mesru_kullanimlar_YANLIS_POZITIF_URETMIYOR() -
     dosyalara karşı da doğru çalıştığını, "yanlışlıkla fazla dar" değil
     "doğru derecede dar" olduğunu kanıtlıyor.
     """
-    for ad in ("AdminPanel.py", "RecoveryShareDialog.py"):
+    for ad in ("AdminSettingsView.py", "RecoveryShareDialog.py"):
         dosya = _UI_DIZINI / ad
         kaynak = dosya.read_text(encoding="utf-8")
         assert _yasakli_cagrilari_bul(kaynak, ad) == [], (

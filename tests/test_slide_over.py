@@ -169,7 +169,7 @@ def test_RecoveryShareDialog_HALA_modal() -> None:
     `.exec()` ile açılıyor — panele TAŞINMADIĞINI sabitliyor.
     """
     assert "class RecoveryShareDialog(QDialog)" in _kaynak("UI/RecoveryShareDialog.py")
-    assert "RecoveryShareDialog" in _cagri_adlari(_kaynak("UI/AdminPanel.py"))
+    assert "RecoveryShareDialog" in _cagri_adlari(_kaynak("UI/AdminSettingsView.py"))
 
 
 def test_eventFilter_olayi_YUTMUYOR() -> None:
