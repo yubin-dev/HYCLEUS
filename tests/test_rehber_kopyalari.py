@@ -41,9 +41,10 @@ KOK = Path(__file__).resolve().parent.parent
 #: Rehberin PDF'ini üretmesine izin verilen TEK dosya.
 _URETICI = KOK / "CORE" / "rehber.py"
 
-#: PDF üreten ama rehberle ilgisi olmayan modül — KVKK envanter raporu.
-#: Denetim onu rehber üreticisi sanmamalı.
-_MUAF = {"inventory.py"}
+#: PDF üreten ama rehberle ilgisi olmayan modüller — KVKK envanter raporu
+#: (`inventory.py`) ve denetim günlüğü "İmzalı Rapor"u (`audit_report.py`,
+#: B-086). Denetim ikisini de rehber üreticisi sanmamalı.
+_MUAF = {"inventory.py", "audit_report.py"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -514,6 +515,8 @@ def test_uretim_denetimi_KOR_degil():
     assert _belge_kuranlar(_URETICI), "CORE/rehber.py'de SimpleDocTemplate yok"
     assert _belge_kuranlar(KOK / "CORE" / "inventory.py"), (
         "inventory.py artık PDF üretmiyor — muafiyet listesi eskimiş")
+    assert _belge_kuranlar(KOK / "CORE" / "audit_report.py"), (
+        "audit_report.py artık PDF üretmiyor — muafiyet listesi eskimiş")
 
 
 def test_hclx_rehberi_URETMIYOR_okuyor():

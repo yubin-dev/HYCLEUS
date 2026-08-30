@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from CORE.disposal import LABEL_IMHA, check_disposal
+from CORE.pdf_utils import escape_for_reportlab as _escape
 from CORE.retention import RetentionError, parse_date
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -484,19 +485,3 @@ def export_inventory_pdf(
 
     doc.build(story)
     return out
-
-
-def _escape(text: str) -> str:
-    """
-    Hücre metnini reportlab Paragraph için güvenli hâle getirir.
-
-    Paragraph içeriği mini-HTML olarak ayrıştırılıyor: dosya adında geçen bir
-    '&' veya '<' belgeyi bozar ya da üretimi düşürür. Dosya adları kullanıcı
-    girdisidir — kaçırılmadan geçirilemez.
-    """
-    return (
-        str(text)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )

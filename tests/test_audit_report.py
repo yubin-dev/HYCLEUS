@@ -16,7 +16,15 @@ from pathlib import Path
 import pytest
 
 from CORE.audit_chain import write_anchor
-from CORE.audit_report import ZincirRaporu, txt_basligi, zincir_raporu
+from CORE.audit_report import (
+    DenetimSatiri,
+    HALKA_METNI,
+    ZincirRaporu,
+    export_csv,
+    export_pdf,
+    txt_basligi,
+    zincir_raporu,
+)
 
 _SIMDI = datetime(2026, 8, 17, 10, 30, 0, tzinfo=timezone.utc)
 
@@ -316,6 +324,58 @@ def test_txt_disa_aktarimi_zincir_basligini_kullaniyor():
     )
 
 
+def test_csv_pdf_disa_aktarimi_da_load_export_ve_denetim_kaydini_cagiriyor():
+    """
+    `test_txt_disa_aktarimi_zincir_basligini_kullaniyor()`'un AYNI denetimi
+    — CSV/PDF dışa aktarımı da (1) `_load()`'u (B-073 tazelik garantisi),
+    (2) kendi CORE fonksiyonunu (`export_csv`/`export_pdf` — ikinci bir
+    veri/render yolu AÇILMADI), (3) `_log_disa_aktarim()`'i (görevin
+    istediği "indirme eylemi denetim kaydına yazılsın") GERÇEKTEN
+    ÇAĞIRIYOR mu — üçü de ÇAĞRI aranarak, metin değil (bkz. üstteki
+    testin B-011/B-004 yanlış-pozitif dersi).
+    """
+    import ast
+    from pathlib import Path as _P
+
+    src = (
+        _P(__file__).resolve().parent.parent / "UI" / "AuditLogView.py"
+    ).read_text(encoding="utf-8")
+    agac = ast.parse(src)
+
+    def _cagrilar(fn: ast.FunctionDef) -> set[str]:
+        return {
+            (d.func.attr if isinstance(d.func, ast.Attribute) else
+             d.func.id if isinstance(d.func, ast.Name) else "")
+            for d in ast.walk(fn) if isinstance(d, ast.Call)
+        }
+
+    for fn_adi, cagrilmasi_gereken in (
+        ("_export_csv", "export_csv"), ("_export_pdf", "export_pdf"),
+    ):
+        fn = next(
+            n for n in ast.walk(agac)
+            if isinstance(n, ast.FunctionDef) and n.name == fn_adi
+        )
+        cagrilar = _cagrilar(fn)
+        assert "_load" in cagrilar, f"{fn_adi} tabloyu/zinciri TAZELEMİYOR"
+        assert cagrilmasi_gereken in cagrilar, (
+            f"{fn_adi} {cagrilmasi_gereken}() ÇAĞIRMIYOR"
+        )
+        assert "_log_disa_aktarim" in cagrilar, (
+            f"{fn_adi} indirme eylemini denetim kaydına YAZMIYOR"
+        )
+
+    # TXT de aynı üçüncü garantiyi (denetim kaydı) taşımalı — eskiden
+    # taşımıyordu, bu turda eklendi.
+    export_txt_fn = next(
+        n for n in ast.walk(agac)
+        if isinstance(n, ast.FunctionDef) and n.name == "_export_txt"
+    )
+    assert "_log_disa_aktarim" in _cagrilar(export_txt_fn), (
+        "_export_txt indirme eylemini denetim kaydına YAZMIYOR"
+    )
+
+
 def test_kullanici_bilgisi_yan_etki_uretmiyor(db):
     """
     "Bu işlemi kim yaptı" sorusu bir satır OLUŞTURMAMALI.
@@ -354,3 +414,241 @@ def test_bos_hwid_none_donuyor(db):
 
 def test_zincir_raporu_dataclass_donuyor(db, cipa):
     assert isinstance(zincir_raporu(db, cipa_yolu=cipa), ZincirRaporu)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Üç format — Tablo (CSV) ve İmzalı Rapor (PDF) dışa aktarımı
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Görev: mockup üç dışa aktarım seçeneği istiyor — Düz Metin (TXT, üstteki
+# testler), Tablo (CSV — Excel/SIEM için ayrık, kırpılmamış sütunlar),
+# İmzalı Rapor (PDF — özet + zincir doğrulama sonucu + dış çıpa, RFC 3161
+# mührü KASITLI OLARAK kapsam dışı, bkz. BACKLOG.md B-087 / SECURITY.md
+# §4.25). Bu testler CORE katmanındaki `export_csv()`/`export_pdf()`'in
+# doğru VERİYİ içerdiğini ölçüyor; UI kablolaması (düğme → sayfa filtresi
+# → bu fonksiyonlar) ve indirme eyleminin denetim kaydına yazıldığı
+# `tests/test_audit_log_view.py`'de.
+
+
+def _satir(**kw: object) -> DenetimSatiri:
+    varsayilan: dict[str, object] = dict(
+        id=1, zaman="2026-08-30T12:00:00Z", islem="test_islem",
+        kullanici="test.kullanici", kullanici_id=1,
+        hwid="HWID-TAM-DEGERI-1234567890",
+        detay="hwid=HWID-TAM-DEGERI-1234567890 role=Standart", halka="intact",
+    )
+    varsayilan.update(kw)
+    return DenetimSatiri(**varsayilan)  # type: ignore[arg-type]
+
+
+# ── CSV ──────────────────────────────────────────────────────────────────────
+
+
+def test_csv_tum_sutunlari_yaziyor(tmp_path: Path):
+    out = export_csv([_satir()], tmp_path / "d.csv")
+    metin = out.read_text(encoding="utf-8-sig")
+    satirlar = metin.splitlines()
+    assert satirlar[0] == ",".join(
+        ["ID", "Zaman (UTC)", "İşlem", "Kullanıcı", "Kullanıcı ID", "HWID",
+         "Detay", "Zincir Halkası"]
+    )
+    assert satirlar[1] == (
+        "1,2026-08-30T12:00:00Z,test_islem,test.kullanici,1,"
+        "HWID-TAM-DEGERI-1234567890,hwid=HWID-TAM-DEGERI-1234567890 "
+        "role=Standart,Sağlam"
+    )
+
+
+def test_csv_hwid_KIRPILMADAN_yaziyor(tmp_path: Path):
+    """
+    Asıl iddia: "Tablo" (CSV) UI tablosunun 16 karakterlik kırpmasını
+    MİRAS ALMIYOR — SIEM/Excel için ayrık, TAM sütun (bkz. `DenetimSatiri`
+    docstring'i).
+    """
+    uzun_hwid = "A" * 40
+    out = export_csv([_satir(hwid=uzun_hwid)], tmp_path / "d.csv")
+    metin = out.read_text(encoding="utf-8-sig")
+    assert uzun_hwid in metin
+    assert "…" not in metin
+
+
+def test_csv_halka_metnini_kullaniyor(tmp_path: Path):
+    out = export_csv(
+        [_satir(id=1, halka="intact"), _satir(id=2, halka="broken"),
+         _satir(id=3, halka="out_of_scope")],
+        tmp_path / "d.csv",
+    )
+    metin = out.read_text(encoding="utf-8-sig")
+    assert HALKA_METNI["intact"] in metin
+    assert HALKA_METNI["broken"] in metin
+    assert HALKA_METNI["out_of_scope"] in metin
+
+
+def test_csv_excelde_dogru_acilmasi_icin_utf8_sig(tmp_path: Path):
+    """`export_inventory_csv()` ile AYNI kodlama kararı — BOM'lu UTF-8."""
+    out = export_csv([_satir(kullanici="Öğüt Çelik")], tmp_path / "d.csv")
+    ham = out.read_bytes()
+    assert ham.startswith(b"\xef\xbb\xbf"), "utf-8-sig BOM'u eksik"
+    assert "Öğüt Çelik" in out.read_text(encoding="utf-8-sig")
+
+
+def test_csv_bos_liste_yine_baslik_satirini_yaziyor(tmp_path: Path):
+    out = export_csv([], tmp_path / "bos.csv")
+    metin = out.read_text(encoding="utf-8-sig")
+    assert metin.splitlines() == [
+        "ID,Zaman (UTC),İşlem,Kullanıcı,Kullanıcı ID,HWID,Detay,Zincir Halkası"
+    ]
+
+
+def test_csv_ozel_karakterli_detay_dosyayi_bozmuyor(tmp_path: Path):
+    """CSV mini-HTML kaçışına İHTİYAÇ duymuyor (PDF'in aksine) — `csv`
+    modülü zaten virgül/tırnak kaçışını kendisi yönetiyor; yine de
+    '&'/'<' içeren bir detay alanı dosyayı BOZMAMALI (çökme yok, satır
+    kayıp değil)."""
+    out = export_csv(
+        [_satir(detay="filename=<script>alert(1)</script> & diger, virgullu")],
+        tmp_path / "d.csv",
+    )
+    metin = out.read_text(encoding="utf-8-sig")
+    assert "<script>alert(1)</script> & diger, virgullu" in metin
+
+
+# ── PDF ──────────────────────────────────────────────────────────────────────
+#
+# `pageCompression=0` (bkz. `CORE/audit_report.py::export_pdf()`'in yorumu)
+# gövde metnini ham baytlarda aranabilir kılıyor — `tests/test_inventory.py::
+# test_baslik_gomulu`'nun AYNI deseni, burada gövdeye de genişletildi. Türkçe
+# özel karakterler (Ğ/İ/Ş/ı) reportlab'ın yazı tipi kodlamasında ham UTF-8
+# baytlarıyla EŞLEŞMİYOR — ölçüldü — bu yüzden aranan alt dizeler BİLEREK
+# ASCII-güvenli (action adları, ID'ler, HWID'ler, "Denetim zinciri", "RFC 3161").
+
+
+@pytest.fixture
+def rapor_saglam(db, cipa) -> ZincirRaporu:
+    _kayitlar(db)
+    return zincir_raporu(db, cipa_yolu=cipa)
+
+
+def test_pdf_gercek_pdf_uretiyor(rapor_saglam, tmp_path: Path):
+    out = export_pdf([_satir()], rapor_saglam, tmp_path / "r.pdf")
+    raw = out.read_bytes()
+    assert raw.startswith(b"%PDF-")
+    assert b"%%EOF" in raw[-1024:]
+
+
+def test_pdf_satir_verisini_iceriyor(rapor_saglam, tmp_path: Path):
+    out = export_pdf(
+        [_satir(id=42, islem="usb_role_changed_TEST", kullanici="ayse.yilmaz",
+                hwid="HWID-PDF-TEST-99999999")],
+        rapor_saglam, tmp_path / "r.pdf",
+    )
+    raw = out.read_bytes()
+    for beklenen in (b"42", b"usb_role_changed_TEST", b"ayse.yilmaz",
+                     b"HWID-PDF-TEST-99999999"):
+        assert beklenen in raw, f"{beklenen!r} PDF gövdesinde bulunamadı"
+
+
+def test_pdf_zincir_durumunu_iceriyor(rapor_saglam, tmp_path: Path):
+    """Görevin istediği "zincir doğrulama sonucu" — `rapor.baslik()`/
+    `rapor.ayrinti()` PDF'e GERÇEKTEN gömülü mü."""
+    out = export_pdf([_satir()], rapor_saglam, tmp_path / "r.pdf")
+    raw = out.read_bytes()
+    assert b"Denetim zinciri" in raw
+
+
+def test_pdf_kirik_zincirde_kirik_diyor(db, cipa, tmp_path: Path):
+    _kayitlar(db)
+    _zinciri_kir(db)
+    rapor = zincir_raporu(db, cipa_yolu=cipa)
+    assert rapor.zincir.ok is False
+
+    out = export_pdf([_satir()], rapor, tmp_path / "r.pdf")
+    raw = out.read_bytes()
+    assert b"KIRIK" in raw, "PDF kırık zinciri SAĞLAM gibi göstermiş olabilir"
+
+
+def test_pdf_dis_cipa_ciktiyi_degistiriyor(db, cipa, tmp_path: Path):
+    """
+    Görevin istediği "dış çıpa dahil" — anchor yazılıp doğrulanınca PDF
+    çıktısı GERÇEKTEN değişiyor mu (`rapor.ayrinti()` → `cipa.summary()`
+    üzerinden). Metin karşılaştırması yerine BAYT karşılaştırması: Türkçe
+    özel karakterler yüzünden tam metni ham baytlarda aramak güvenilmez
+    (bkz. modül notu), ama "aynı zaman damgasıyla üretilen iki PDF'in TEK
+    farkı çıpa durumuysa, çıktıları da FARKLI olmalı" iddiası kodlamadan
+    bağımsız ve daha güçlü.
+    """
+    _kayitlar(db)
+    rapor_cipasiz = zincir_raporu(db, cipa_yolu=cipa)
+    assert rapor_cipasiz.cipa_var is False
+    out1 = export_pdf([_satir()], rapor_cipasiz, tmp_path / "r1.pdf",
+                       generated_at=_SIMDI)
+
+    write_anchor(db, "test", path=cipa)
+    rapor_cipali = zincir_raporu(db, cipa_yolu=cipa)
+    assert rapor_cipali.cipa_var is True
+    out2 = export_pdf([_satir()], rapor_cipali, tmp_path / "r2.pdf",
+                       generated_at=_SIMDI)
+
+    assert out1.read_bytes() != out2.read_bytes(), (
+        "dış çıpa durumu PDF çıktısını hiç etkilemedi"
+    )
+
+
+def test_pdf_rfc3161_muhurlenmedigini_acikca_soyluyor(rapor_saglam, tmp_path: Path):
+    """
+    K4-20 kapsam kararı — kasıtlı, SESSİZ DEĞİL (bkz. BACKLOG.md B-087,
+    SECURITY.md §4.25): PDF kendini RFC 3161 ile mühürlenmiş gibi
+    GÖSTERMİYOR, açıkça YALANLIYOR — `txt_basligi()`'nin "bu dosya imzalı
+    DEĞİLDİR" notuyla AYNI dürüstlük ilkesi.
+    """
+    out = export_pdf([_satir()], rapor_saglam, tmp_path / "r.pdf")
+    assert b"RFC 3161" in out.read_bytes()
+
+
+def test_pdf_bos_satir_listesi_yine_pdf_uretiyor(rapor_saglam, tmp_path: Path):
+    out = export_pdf([], rapor_saglam, tmp_path / "bos.pdf")
+    assert out.read_bytes().startswith(b"%PDF-")
+
+
+def test_pdf_html_karakterleri_bozmuyor(rapor_saglam, tmp_path: Path):
+    """`test_inventory.py::test_html_karakterleri_pdf_i_bozmuyor` ile AYNI
+    denetim — denetim `detail`/`action`/`username` alanları da kullanıcı
+    girdisi taşıyabilir ve reportlab Paragraph mini-HTML ayrıştırıyor."""
+    out = export_pdf(
+        [_satir(kullanici="a&b<script>x</script>", islem="file_added<tag>")],
+        rapor_saglam, tmp_path / "kacis.pdf",
+    )
+    assert out.read_bytes().startswith(b"%PDF-")
+
+
+def test_pdf_filtre_notu_yaziliyor(rapor_saglam, tmp_path: Path):
+    out = export_pdf(
+        [_satir()], rapor_saglam, tmp_path / "f.pdf",
+        filters_note="sekme=Kimlik ISLEM_FILTRE_MARKER",
+    )
+    assert b"ISLEM_FILTRE_MARKER" in out.read_bytes()
+
+
+def test_pdf_olmayan_dizin_olusturuluyor(rapor_saglam, tmp_path: Path):
+    out = export_pdf([_satir()], rapor_saglam, tmp_path / "yeni" / "alt" / "e.pdf")
+    assert out.exists()
+
+
+def test_pdf_reportlab_yoksa_actikca_RuntimeError_veriyor(
+    rapor_saglam, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """`export_inventory_pdf()`'in AYNI deseni: reportlab içe aktarımı
+    fonksiyon İÇİNDE, ki eksikse TXT/CSV dışa aktarımı çalışmaya devam
+    etsin — burada da eksik olduğunda anlaşılır bir hata veriyor mu."""
+    import builtins
+
+    gercek_import = builtins.__import__
+
+    def _sahte_import(name, *a, **kw):
+        if name == "reportlab" or name.startswith("reportlab."):
+            raise ImportError("sahte: reportlab kurulu değil")
+        return gercek_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", _sahte_import)
+    with pytest.raises(RuntimeError, match="reportlab"):
+        export_pdf([_satir()], rapor_saglam, tmp_path / "r.pdf")

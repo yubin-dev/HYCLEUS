@@ -59,11 +59,14 @@ def qapp():
 
 class _Pencere(QWidget):
     """`GuvenlikView`'in test dosyasındaki AYNI asgari pencere deseni —
-    `AuditLogView` yalnızca `self._pencere._T`'ye bakıyor."""
+    `AuditLogView` yalnızca `self._pencere._T`'ye bakıyordu; dışa aktarım
+    eylemini denetim kaydına yazmak için artık `_user_id`'ye de bakıyor
+    (`getattr` ile savunmalı okunuyor — bkz. `_log_disa_aktarim()`)."""
 
-    def __init__(self) -> None:
+    def __init__(self, user_id: int | None = None) -> None:
         super().__init__()
         self._T = _DARK
+        self._user_id = user_id
 
 
 @pytest.fixture
@@ -350,12 +353,18 @@ def test_export_arkaplanda_eklenen_kaydi_HEM_baslikta_HEM_satirlarda_gosterir(
         "test kurulumu hatalı — tablo beklenmedik biçimde kendiliğinden yenilendi"
     )
 
+    # Dışa aktarımdan HEMEN önce sayılıyor: `_export_txt()` artık kendi
+    # eylemini de denetim kaydına yazıyor (bkz. `_log_disa_aktarim()`), yani
+    # `_export_txt()`'ten SONRA sayılsaydı o yeni satır da sayıma girer ve
+    # dosyanın ANLIK durumu YANLIŞLIKLA "eksik" görünürdü — sınanan şey bu
+    # değil, dışa aktarım ANINDAKİ veritabanı durumu.
+    gercek_sayi = db.fetchone("SELECT COUNT(*) AS n FROM audit_log")["n"]
+
     export_path = tmp_path / "export.txt"
     _dosya_sec_sabitle(monkeypatch, export_path)
     gorunum._export_txt()
 
     metin = export_path.read_text(encoding="utf-8")
-    gercek_sayi = db.fetchone("SELECT COUNT(*) AS n FROM audit_log")["n"]
 
     import re
 
@@ -402,6 +411,171 @@ def test_export_iptal_edilirse_tablo_yenilenmiyor(
     gorunum._export_txt()
 
     assert gorunum._table.rowCount() == onceki
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5b. Tablo (CSV) ve İmzalı Rapor (PDF) — B-086
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Görev üç dışa aktarım seçeneği istiyor: Düz Metin (TXT, üstteki bölüm),
+# Tablo (CSV — Excel/SIEM için ayrık, KIRPILMAMIŞ sütunlar), İmzalı Rapor
+# (PDF — özet + zincir doğrulama + dış çıpa). CSV/PDF'in KENDİ veri
+# doğruluğu (`CORE/audit_report.py::export_csv()`/`export_pdf()`)
+# `tests/test_audit_report.py`'de ayrıca ölçülüyor; burada ölçülen UI
+# KABLOLAMASI — düğme → sayfanın GERÇEK filtreli verisi → doğru dosya.
+
+
+def test_export_csv_dosyayi_gercekten_yaziyor(
+    gorunum: AuditLogView, db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db.log("dosya_eklendi_test", detail="hwid=CSV-TEST-HWID")
+    gorunum.yenile()
+
+    export_path = tmp_path / "d.csv"
+    _dosya_sec_sabitle(monkeypatch, export_path)
+    gorunum._export_csv()
+
+    metin = export_path.read_text(encoding="utf-8-sig")
+    assert "dosya_eklendi_test" in metin
+    assert "CSV-TEST-HWID" in metin
+
+
+def test_export_csv_hwid_UI_tablosundan_FARKLI_olarak_kirpilmiyor(
+    gorunum: AuditLogView, db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Asıl iddia: "Tablo" (CSV), UI tablosunun okunabilirlik için yaptığı
+    16 karakterlik HWID kırpmasını MİRAS ALMIYOR."""
+    uzun_hwid = "H" * 30
+    db.log("uzun_hwid_testi", detail=f"hwid={uzun_hwid}")
+    gorunum.yenile()
+
+    assert "…" in gorunum._table.item(0, 3).text(), (
+        "test kurulumu hatalı — UI tablosu bu HWID'i kırpmıyor, testin "
+        "asıl iddiası ölçülemez"
+    )
+
+    export_path = tmp_path / "d.csv"
+    _dosya_sec_sabitle(monkeypatch, export_path)
+    gorunum._export_csv()
+
+    metin = export_path.read_text(encoding="utf-8-sig")
+    assert uzun_hwid in metin
+    assert "…" not in metin
+
+
+def test_export_pdf_dosyayi_gercekten_yaziyor(
+    gorunum: AuditLogView, db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db.log("pdf_test_islemi", detail="x")
+    gorunum.yenile()
+
+    export_path = tmp_path / "r.pdf"
+    _dosya_sec_sabitle(monkeypatch, export_path)
+    gorunum._export_pdf()
+
+    raw = export_path.read_bytes()
+    assert raw.startswith(b"%PDF-")
+    assert b"pdf_test_islemi" in raw
+
+
+def test_export_csv_ve_pdf_de_ARKAPLANDA_eklenen_kaydi_gosteriyor(
+    gorunum: AuditLogView, db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B-073'ün "dışa aktarımdan hemen önce yeniden yükle" garantisi TXT'ye
+    özel değildi — CSV/PDF de AYNI tazeliği veriyor mu."""
+    db.log("baslangic_kaydi", detail="x")
+    gorunum.yenile()
+
+    db.log("arka_planda_olusan_ikinci_format_testi", detail="y")
+    csv_path = tmp_path / "d.csv"
+    _dosya_sec_sabitle(monkeypatch, csv_path)
+    gorunum._export_csv()
+    assert "arka_planda_olusan_ikinci_format_testi" in csv_path.read_text(
+        encoding="utf-8-sig"
+    )
+
+    db.log("arka_planda_olusan_ucuncu_format_testi", detail="z")
+    pdf_path = tmp_path / "r.pdf"
+    _dosya_sec_sabitle(monkeypatch, pdf_path)
+    gorunum._export_pdf()
+    assert b"arka_planda_olusan_ucuncu_format_testi" in pdf_path.read_bytes()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5c. İndirme eyleminin KENDİSİ denetim kaydına yazılıyor mu — üç format da
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize(
+    "bicim,export_metodu,dosya_adi",
+    [("txt", "_export_txt", "d.txt"), ("csv", "_export_csv", "d.csv"),
+     ("pdf", "_export_pdf", "d.pdf")],
+)
+def test_her_uc_format_da_indirme_eylemini_denetim_kaydina_yaziyor(
+    qapp, db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    bicim: str, export_metodu: str, dosya_adi: str,
+) -> None:
+    """
+    Görev: "indirme işleminin kendisinin de denetim kaydına yazıldığını
+    doğrula." `UI/main_window_files.py::db.log("file_downloaded", ...)`
+    ile AYNI kurulu desen — burada TEK action adı (`audit_log_exported`)
+    + `format=` alanı, `usb_role_changed`'in zaten yaptığı gibi.
+    """
+    kullanici_id = db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, ?, ?, ?)",
+        ("indirme.test", "x", "admin", "approved", f"INDIRME-TEST-{bicim}"),
+    ).lastrowid
+
+    pencere_yerel = _Pencere(user_id=kullanici_id)
+    gorunum = AuditLogView(pencere_yerel)
+    db.log("indirilecek_kayit", detail="x")
+    gorunum.yenile()
+
+    onceki_sayim = db.fetchone(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE action = 'audit_log_exported'"
+    )["n"]
+
+    export_path = tmp_path / dosya_adi
+    _dosya_sec_sabitle(monkeypatch, export_path)
+    getattr(gorunum, export_metodu)()
+
+    yeni_sayim = db.fetchone(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE action = 'audit_log_exported'"
+    )["n"]
+    assert yeni_sayim == onceki_sayim + 1, (
+        f"{bicim} dışa aktarımı kendi eylemini denetim kaydına YAZMADI"
+    )
+
+    kayit = db.fetchone(
+        "SELECT user_id, detail FROM audit_log WHERE action = 'audit_log_exported'"
+        " ORDER BY id DESC LIMIT 1"
+    )
+    assert kayit["user_id"] == kullanici_id
+    assert f"format={bicim}" in kayit["detail"]
+
+
+def test_export_iptal_edilirse_denetim_kaydina_YAZILMIYOR(
+    gorunum: AuditLogView, db, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutasyon kontrastı — yukarıdaki testlerin gerçekten "yazıldı" mı
+    diye baktığını, her zaman TRUE dönen kör bir denetim olmadığını
+    kanıtlar: iptal edilen bir dışa aktarım denetim kaydına YAZILMAMALI."""
+    db.log("kayit", detail="x")
+    gorunum.yenile()
+    onceki = db.fetchone(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE action = 'audit_log_exported'"
+    )["n"]
+
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", staticmethod(lambda *a, **kw: ("", ""))
+    )
+    gorunum._export_csv()
+
+    sonraki = db.fetchone(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE action = 'audit_log_exported'"
+    )["n"]
+    assert sonraki == onceki
 
 
 # ══════════════════════════════════════════════════════════════════════════════

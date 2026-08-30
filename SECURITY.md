@@ -2847,6 +2847,100 @@ guard itself, not something else, is what blocks it.
 
 ---
 
+### 4.25 The audit log export grew from one format to three — and the PDF stops short of the RFC 3161 seal on purpose
+
+> **Attacker models:** none — this section documents a scope decision made
+> while building the export options, not a vulnerability.
+
+**The mockup asked for three formats; one already existed.**
+`UI/AuditLogView.py` had a single "Düz Metin (TXT)" export. This turn added
+"Tablo" (CSV) and "İmzalı Rapor" (PDF) alongside it — mockup-driven, not
+a security fix. All three now read from the exact same `_load()`-filtered
+row set (the date range, action, and tab filters currently applied in the
+UI) rather than opening a second, independently-filtered query path: the
+existing TXT export already reads the rendered table, and the new formats
+read a parallel, unrendered `DenetimSatiri` list `_load()` now also builds
+from the identical query — one fetch, three renderers, not three fetches.
+
+**The RFC 3161 question, decided rather than inherited.** The "İmzalı
+Rapor" name and the informal K4-20/F2-2 references already in this file
+(§4.16) both point at the same open question: does "signed" mean the PDF
+carries the audit chain's own cryptographic evidence, or does it mean the
+PDF *file itself* gets timestamped by an external RFC 3161 authority the
+way file contents already can be (`UI/TimestampDialog.py`)? This turn
+built the former and explicitly deferred the latter — tracked as its own
+item, `BACKLOG.md` B-087, not silently folded into "later." The PDF is
+not a placeholder pretending to be sealed: it embeds `zincir_raporu()`'s
+full result (chain integrity, first break if any, and the external anchor
+comparison — the "dış çıpa" the task asked for) directly in the document
+body, so a reader doesn't need to run a separate command to see whether
+the chain the file describes was intact at export time. What it does not
+do is prove the PDF file itself wasn't altered after that point — and it
+says so, in the document, in the same register `txt_basligi()` already
+uses for the same limitation ("bu dosya imzalı DEĞİLDİR"): a bold line
+reading the export was not sealed with an RFC 3161 timestamp, immediately
+under the chain-status paragraph, not buried in a footnote.
+
+**Why CSV, not XLSX.** The task listed "CSV/XLSX" together for the table
+format. CSV was picked and XLSX was not: `CORE/inventory.py::
+export_inventory_csv()` already established `utf-8-sig` (BOM-prefixed
+UTF-8) as this codebase's answer to "Excel must open this file correctly
+without mangling Turkish characters," and CSV is also the format a SIEM
+actually ingests — a real `.xlsx` writer would have meant a new
+dependency (`openpyxl` or equivalent) for a format neither named consumer
+(Excel, SIEM) specifically needs over CSV.
+
+**The table export is deliberately richer than the TXT one, not merely
+reformatted.** The UI table truncates HWIDs to 16 characters and formats
+timestamps for readability — reasonable for a screen, wrong for a file a
+SIEM will parse. `DenetimSatiri` (the shared row type both new exporters
+consume) carries the untruncated HWID, the raw ISO timestamp, the raw
+action string, and the full `detail` field — genuinely separate columns,
+not the UI's five display columns with commas between them. Verified
+directly: a 30-character synthetic HWID is asserted truncated with an
+ellipsis in the UI table and present in full, ellipsis-free, in the CSV.
+
+**The download action logs itself now — for all three formats, including
+the one that didn't before.** The task asked that the download action be
+audited; auditing it meant retrofitting the pre-existing TXT export too,
+which had never logged itself in the ~2 months (§4.16, §4.20) it had
+already been hardened for chain-consistency and role-gating. All three
+export methods now call a shared `_log_disa_aktarim()` after a
+successful write (matching `UI/main_window_files.py`'s established
+"log after the write succeeds, before the confirmation dialog" ordering
+for `file_downloaded`) — one `audit_log_exported` action with a
+`format=` field distinguishing the three, mirroring how `usb_role_
+changed`/`setting_changed` already encode a variant in `detail=` rather
+than minting a new action name per variant. Verified for all three
+formats via a parametrized test that counts matching `audit_log` rows
+before and after each export call and checks the recorded `user_id` and
+`format=` value; a companion test confirms a *cancelled* export (empty
+path from the file picker) writes nothing, so the assertion isn't
+vacuously true for an action that always logs regardless of outcome. An
+AST-based test (matching the existing check that `_export_txt` actually
+calls `_load()`/`txt_basligi()`, not just contains their names as
+strings) confirms all three export methods genuinely call `_load()`,
+their respective `export_csv()`/`export_pdf()`, and
+`_log_disa_aktarim()` — not merely that those names appear somewhere in
+the file.
+
+**A test-verifiability decision surfaced by the PDF path.**
+`export_inventory_pdf()`'s existing tests search the raw PDF bytes for
+expected text (`b"KVKK" in out.read_bytes()`) without a PDF-parsing
+dependency — that works there because the searched string happens to be
+the document `title`, which reportlab stores uncompressed in the PDF's
+Info dictionary regardless of content-stream compression. Body text
+(table cells, the chain-status paragraph) is not similarly guaranteed
+findable — measured directly: an action-name marker embedded only in a
+table cell was *not* found in the raw bytes of a PDF built with
+reportlab's default settings. Passing `pageCompression=0` to
+`SimpleDocTemplate` fixed this (verified the same marker becomes
+searchable) without adding a PDF-parsing dependency for either module,
+at the cost of a larger, uncompressed file — an acceptable trade for an
+export a human occasionally downloads, not a hot path.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -6042,6 +6136,104 @@ koşturuldu, geri getirildi), ve bir eşlik eden test,
 monkeypatch'lemenin AYNI `"Standart"`-rollü doğrudan çağrının tabloyu
 YENİDEN doldurmasına izin verdiğini doğrulayarak, engelleyenin
 BAŞKA bir şey değil, guard'ın KENDİSİ olduğunu kanıtlıyor.
+
+---
+
+### 4.25 Denetim günlüğü dışa aktarımı bir formattan üçe çıktı — ve PDF, RFC 3161 mührünü BİLEREK durdu
+
+> **Saldırgan modelleri:** yok — bu bölüm dışa aktarım seçenekleri
+> kurulurken verilen bir kapsam kararını belgeliyor, bir zafiyeti değil.
+
+**Mockup üç format istedi; biri zaten vardı.** `UI/AuditLogView.py`'de
+tek bir "Düz Metin (TXT)" dışa aktarımı vardı. Bu tur onun yanına "Tablo"
+(CSV) ve "İmzalı Rapor" (PDF) ekledi — mockup güdümlü, bir güvenlik
+düzeltmesi değil. Üçü de artık TAM OLARAK AYNI `_load()`-filtrelenmiş
+satır kümesinden (o an UI'da uygulanan tarih aralığı, işlem ve sekme
+filtreleri) okuyor, ikinci, bağımsız filtrelenmiş bir sorgu yolu AÇMADAN:
+eski TXT dışa aktarımı zaten render edilmiş tabloyu okuyor, yeni
+formatlar ise `_load()`'un ARTIK AYNI sorgudan kurduğu paralel, render
+edilmemiş bir `DenetimSatiri` listesini okuyor — tek getirme, üç
+render'layıcı, üç getirme DEĞİL.
+
+**RFC 3161 sorusu, miras alınmadı, KARARA BAĞLANDI.** "İmzalı Rapor" adı
+ve bu belgede zaten duran resmi olmayan K4-20/F2-2 referansları (§4.16)
+AYNI açık soruya işaret ediyor: "imzalı" PDF'in zincirin KENDİ
+kriptografik kanıtını taşıması mı, yoksa PDF DOSYASININ KENDİSİNİN
+(dosya içeriklerinin zaten sahip olduğu gibi, `UI/TimestampDialog.py`)
+dış bir RFC 3161 otoritesi tarafından zaman damgalanması mı? Bu tur
+İLKİNİ inşa etti ve İKİNCİSİNİ AÇIKÇA ertelendi — kendi maddesi olarak
+izleniyor, `BACKLOG.md` B-087, sessizce "sonraya" içine katlanmadı. PDF,
+mühürlenmiş GİBİ davranan bir yer tutucu DEĞİL: `zincir_raporu()`'nun
+TAM sonucunu (zincir bütünlüğü, varsa ilk kırılma, VE görevin istediği
+dış çıpa karşılaştırması) belge gövdesine DOĞRUDAN gömüyor, yani okuyan
+kişi dosyanın anlattığı zincirin dışa aktarım anında sağlam olup
+olmadığını görmek için ayrı bir komut çalıştırmak ZORUNDA değil. YAPMADIĞI
+şey — PDF dosyasının KENDİSİNİN o andan sonra değiştirilmediğini
+kanıtlamak — ve bunu, `txt_basligi()`'nin AYNI kısıtlama için zaten
+kullandığı AYNI üslupla ("bu dosya imzalı DEĞİLDİR") SÖYLÜYOR: zincir-
+durumu paragrafının HEMEN altında, bir dipnotta gömülü değil, dışa
+aktarımın RFC 3161 zaman damgasıyla mühürlenmediğini söyleyen kalın bir
+satır.
+
+**Neden CSV, XLSX değil.** Görev "CSV/XLSX"i Tablo formatı için BİRLİKTE
+listeledi. CSV seçildi, XLSX seçilmedi: `CORE/inventory.py::
+export_inventory_csv()` zaten `utf-8-sig`i (BOM önekli UTF-8) bu
+kod tabanının "Excel bu dosyayı Türkçe karakterleri bozmadan doğru
+açmalı" sorusuna cevabı olarak kurmuştu, ve CSV aynı zamanda bir SIEM'in
+FİİLEN aldığı format — gerçek bir `.xlsx` yazıcısı, isimlendirilen İKİ
+tüketicinin de (Excel, SIEM) CSV'ye göre ÖZEL OLARAK ihtiyaç duymadığı
+bir format için yeni bir bağımlılık (`openpyxl` ya da eşdeğeri) demek
+olurdu.
+
+**Tablo dışa aktarımı TXT'ninkinin KASITLI OLARAK daha zengini, yalnızca
+yeniden biçimlendirilmiş hâli DEĞİL.** UI tablosu HWID'leri 16 karaktere
+kırpıyor ve zaman damgalarını okunabilirlik için biçimlendiriyor — ekran
+için makul, bir SIEM'in ayrıştıracağı dosya için YANLIŞ. `DenetimSatiri`
+(iki yeni dışa aktarıcının da PAYLAŞTIĞI satır tipi) kırpılmamış HWID'i,
+ham ISO zaman damgasını, ham action dizesini ve TAM `detail` alanını
+taşıyor — GERÇEKTEN ayrık sütunlar, UI'nin beş görüntü sütunu arasına
+virgül koymak DEĞİL. Doğrudan doğrulandı: 30 karakterlik sentetik bir
+HWID'in UI tablosunda üç nokta ile kırpıldığı, CSV'de İSE TAM, üç
+noktasız hâliyle var olduğu doğrulandı.
+
+**İndirme eylemi artık kendini kaydediyor — üç format için de, eskiden
+etmeyen dahil.** Görev indirme eyleminin denetlenmesini istedi; bunu
+denetlemek eski TXT dışa aktarımını da GERİYE DÖNÜK düzeltmek anlamına
+geliyordu — zincir tutarlılığı ve rol kapılaması için ZATEN sertleştirilmiş
+olduğu ~2 aylık sürede (§4.16, §4.20) hiçbir zaman kendini kaydetmemişti.
+Üç dışa aktarım metodu da artık başarılı bir yazımdan SONRA paylaşılan bir
+`_log_disa_aktarim()` çağırıyor (`UI/main_window_files.py`'nin `file_
+downloaded` için zaten kurduğu "yazım başarılı olduktan SONRA, onay
+diyaloğundan ÖNCE kaydet" sırasıyla AYNI) — tek bir `audit_log_exported`
+eylemi, üçünü ayıran bir `format=` alanıyla, `usb_role_changed`/`setting_
+changed`'in her varyant için yeni bir eylem adı basmak yerine zaten
+`detail=`'da bir varyant kodladığı deseni yansıtarak. Üç format için de
+her dışa aktarım çağrısından ÖNCE VE SONRA eşleşen `audit_log` satırları
+sayılıp kaydedilen `user_id` ve `format=` değeri kontrol eden
+parametrize bir testle doğrulandı; bir eşlik eden test, İPTAL edilen bir
+dışa aktarımın (dosya seçiciden boş yol) HİÇBİR ŞEY yazmadığını
+doğruluyor, yani iddia sonuçtan BAĞIMSIZ her zaman kaydeden bir eylem
+için BOŞ bir iddia değil. AST tabanlı bir test (`_export_txt`'in
+GERÇEKTEN `_load()`/`txt_basligi()` çağırdığını, yalnızca adlarının
+dizede geçtiğini DEĞİL doğrulayan mevcut denetimle AYNI desen) üç dışa
+aktarım metodunun da GERÇEKTEN `_load()`'u, kendi `export_csv()`/
+`export_pdf()`'ini VE `_log_disa_aktarim()`'i çağırdığını — o adların
+dosyada bir yerde geçmesinden FAZLASINI — doğruluyor.
+
+**PDF yolunun ortaya çıkardığı bir test-doğrulanabilirlik kararı.**
+`export_inventory_pdf()`'in mevcut testleri, bir PDF-ayrıştırma
+bağımlılığı OLMADAN beklenen metni ham PDF baytlarında arıyor (`b"KVKK"
+in out.read_bytes()`) — bu ORADA çalışıyor çünkü aranan dize TESADÜFEN
+belge `title`'ı, ki reportlab bunu içerik akışı sıkıştırmasından BAĞIMSIZ
+olarak PDF'in Info sözlüğünde sıkıştırılmadan tutuyor. Gövde metni (tablo
+hücreleri, zincir-durumu paragrafı) AYNI GÜVENCEYE sahip DEĞİL — doğrudan
+ölçüldü: yalnızca bir tablo hücresine gömülü bir action-adı işareti,
+reportlab'ın VARSAYILAN ayarlarıyla kurulmuş bir PDF'in ham baytlarında
+BULUNAMADI. `SimpleDocTemplate`'e `pageCompression=0` geçmek bunu
+düzeltti (AYNI işaretin aranabilir hâle geldiği doğrulandı) — HERHANGİ
+bir modüle bir PDF-ayrıştırma bağımlılığı EKLEMEDEN, bedeli daha büyük,
+sıkıştırılmamış bir dosya — bir insanın ara sıra indirdiği bir dışa
+aktarım için kabul edilebilir bir takas, sık çalışan bir yol değil.
 
 ---
 

@@ -72,6 +72,7 @@ from PySide6.QtWidgets import (
 )
 
 from CORE.audit_chain import GENESIS_ACTION, LINK_BROKEN, LINK_INTACT, link_statuses
+from CORE.audit_report import HALKA_METNI
 from CORE.hclx import (
     EYLEM_ACILDI as _HCLX_ACILDI,
     EYLEM_REDDEDILDI as _HCLX_REDDEDILDI,
@@ -192,14 +193,10 @@ def _sekmeye_uyuyor(sekme: str, action: str) -> bool:
     return _kategori(action) == sekme
 
 
-#: HALKA sütunu görüntü metinleri — `CORE.audit_chain`'in İngilizce durum
-#: kodlarından (LINK_INTACT/LINK_BROKEN/LINK_OUT_OF_SCOPE) TÜRETİLİYOR,
-#: elle ikinci bir eşleme tablosu YAZILMIYOR (bkz. `_HALKA_METNI`).
-_HALKA_METNI = {
-    LINK_INTACT: "Sağlam",
-    LINK_BROKEN: "Kopuk",
-    "out_of_scope": "Kapsam Dışı",
-}
+#: HALKA sütunu görüntü metinleri — `CORE/audit_report.py::HALKA_METNI`'den
+#: İTHAL EDİLİYOR (taşındı): CSV/PDF dışa aktarımı AYNI eşlemeyi
+#: kullanıyor, ikinci bir kopya YAZILMADI.
+_HALKA_METNI = HALKA_METNI
 
 
 class AuditLogView(QWidget):
@@ -210,6 +207,7 @@ class AuditLogView(QWidget):
         self._pencere = pencere
         self._sekme_indeksi = 0  # "Tümü"
         self._son_rapor: Any = None
+        self._son_export_satirlari: list[Any] = []
         self.setObjectName("audit_view")
         self._build_ui()
         # BİLEREK burada DB'ye dokunulmuyor: bu sayfa `HycleusWindow.
@@ -315,11 +313,27 @@ class AuditLogView(QWidget):
 
         footer.addStretch()
 
-        btn_export = QPushButton("TXT Dışa Aktar")
+        # Üç format — mockup'ın istediği üçü: Düz metin (TXT, mevcut),
+        # Tablo (CSV — Excel/SIEM için ayrık sütunlu), İmzalı Rapor (PDF —
+        # özet + zincir doğrulama + dış çıpa, bkz. `CORE/audit_report.py::
+        # export_pdf()`'in "İmzalı ne demek" notu).
+        btn_export = QPushButton("Düz Metin (TXT)")
         btn_export.setObjectName("audit_btn_disa_aktar")
         btn_export.setCursor(Qt.PointingHandCursor)
         btn_export.clicked.connect(self._export_txt)
         footer.addWidget(btn_export)
+
+        btn_export_csv = QPushButton("Tablo (CSV)")
+        btn_export_csv.setObjectName("audit_btn_disa_aktar_csv")
+        btn_export_csv.setCursor(Qt.PointingHandCursor)
+        btn_export_csv.clicked.connect(self._export_csv)
+        footer.addWidget(btn_export_csv)
+
+        btn_export_pdf = QPushButton("İmzalı Rapor (PDF)")
+        btn_export_pdf.setObjectName("audit_btn_disa_aktar_pdf")
+        btn_export_pdf.setCursor(Qt.PointingHandCursor)
+        btn_export_pdf.clicked.connect(self._export_pdf)
+        footer.addWidget(btn_export_pdf)
 
         return footer
 
@@ -419,6 +433,16 @@ class AuditLogView(QWidget):
 
         sekme = _SEKMELER[self._sekme_indeksi][1]
 
+        # CSV/PDF dışa aktarımının HAM veri kaynağı — TAM OLARAK tabloda
+        # GÖRÜNEN satırlarla aynı filtre (tarih + işlem + sekme), yalnızca
+        # kırpılmamış hâliyle. İkinci bir sorgu YAZILMADI: `_export_csv()`/
+        # `_export_pdf()` bu listeyi `_load()` SONRASI okuyor — `_export_
+        # txt()`'in `self._table`'ı okuduğu desenle AYNI "dışa aktarımdan
+        # hemen önce yeniden yükle" garantisi (bkz. B-073 takip notu).
+        from CORE.audit_report import DenetimSatiri
+
+        self._son_export_satirlari: list[DenetimSatiri] = []
+
         self._table.setRowCount(0)
         for row in rows:
             action = row["action"] or ""
@@ -437,6 +461,16 @@ class AuditLogView(QWidget):
                 failure=_is_failure(action),
                 halka=halka,
             )
+            self._son_export_satirlari.append(DenetimSatiri(
+                id=row["id"],
+                zaman=row["timestamp"] or "",
+                islem=action,
+                kullanici=username,
+                kullanici_id=row["user_id"],
+                hwid=self._extract_hwid_full(row["detail"] or ""),
+                detay=row["detail"] or "",
+                halka=halka,
+            ))
 
         self._count_label.setText(f"Toplam: {self._table.rowCount()} kayıt")
         if _log_uyari:
@@ -490,14 +524,58 @@ class AuditLogView(QWidget):
             self._table.setItem(row, col, item)
 
     @staticmethod
-    def _extract_hwid(detail: str) -> str:
+    def _extract_hwid_full(detail: str) -> str:
+        """TAM HWID, kırpılmadan — CSV/PDF dışa aktarımı için.
+
+        `_extract_hwid()`'in tabloda gösterdiği 16 karakterlik kırpma
+        UI'nin okunabilirlik kararı; "Tablo" (CSV) dışa aktarımının
+        amacı TAM OLARAK bunun tersi — ayrık, KIRPILMAMIŞ sütunlar
+        (bkz. `CORE/audit_report.py::DenetimSatiri` docstring'i).
+        """
         for part in detail.split():
             if part.startswith("hwid="):
-                val = part[5:]
-                return val[:16] + "…" if len(val) > 16 else val
+                return part[5:]
         return "—"
 
-    # ── TXT dışa aktarım ─────────────────────────────────────────────────────
+    @classmethod
+    def _extract_hwid(cls, detail: str) -> str:
+        val = cls._extract_hwid_full(detail)
+        return val[:16] + "…" if len(val) > 16 else val
+
+    # ── Dışa aktarım — ortak yardımcılar ─────────────────────────────────────
+
+    def _filtre_ozeti(self) -> str:
+        """Şu anki filtrelerin insan-okunur özeti — PDF başlığında VE
+        indirme denetim kaydının `detail` alanında kullanılıyor, iki ayrı
+        biçim YAZILMADI."""
+        baslangic = self._date_start.date().toString("dd.MM.yyyy")
+        bitis = self._date_end.date().toString("dd.MM.yyyy")
+        sekme_adi = _SEKMELER[self._sekme_indeksi][0]
+        secili_islem = self._action_combo.currentData()
+        islem = self._action_combo.currentText() if secili_islem else "Tümü"
+        return f"{baslangic}–{bitis}, sekme={sekme_adi}, işlem={islem}"
+
+    def _log_disa_aktarim(self, bicim: str) -> None:
+        """İndirme eyleminin KENDİSİNİ denetim kaydına yazar.
+
+        `UI/main_window_files.py::db.log("file_downloaded", ...)` ile AYNI
+        "başarılı yazımdan HEMEN sonra, başarı mesajından ÖNCE" sırası —
+        üç dışa aktarım metodu da (`_export_txt`/`_export_csv`/
+        `_export_pdf`) bunu AYNI noktada çağırıyor. TEK action adı
+        (`audit_log_exported`) ve `format=` alanı: üç format `usb_role_
+        changed`/`setting_changed`'in zaten yaptığı gibi AYNI kavramsal
+        eylemin varyasyonu, üç ayrı action adı yerine `detail=`'da ayrışıyor.
+        """
+        DBManager().log(
+            "audit_log_exported",
+            user_id=getattr(self._pencere, "_user_id", None),
+            detail=(
+                f"format={bicim} kayit_sayisi={len(self._son_export_satirlari)} "
+                f"filtre=({self._filtre_ozeti()})"
+            ),
+        )
+
+    # ── Düz metin (TXT) dışa aktarım ─────────────────────────────────────────
 
     def _export_txt(self) -> None:
         default_name = (
@@ -553,13 +631,98 @@ class AuditLogView(QWidget):
 
         try:
             Path(path).write_text("\n".join(lines), encoding="utf-8")
-            QMessageBox.information(
-                self,
-                "Dışa Aktarıldı",
-                f"Denetim günlüğü başarıyla dışa aktarıldı:\n{path}",
-            )
         except Exception as exc:
             QMessageBox.critical(self, "Dışa Aktarma Hatası", str(exc))
+            return
+
+        self._log_disa_aktarim("txt")
+        QMessageBox.information(
+            self,
+            "Dışa Aktarıldı",
+            f"Denetim günlüğü başarıyla dışa aktarıldı:\n{path}",
+        )
+
+    # ── Tablo (CSV) dışa aktarım ─────────────────────────────────────────────
+
+    def _export_csv(self) -> None:
+        default_name = (
+            f"audit_log_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Denetim Günlüğü Dışa Aktar — Tablo (CSV)",
+            str(Path.home() / default_name),
+            "CSV Dosyası (*.csv)",
+        )
+        if not path:
+            return
+
+        # `_export_txt()` ile AYNI garanti: dışa aktarımdan HEMEN önce
+        # yeniden yükleniyor, ki `self._son_export_satirlari` sayfa açık
+        # dururken arka planda oluşmuş yeni kayıtları da kapsasın (B-073
+        # takip maddesi — bkz. `_export_txt()`'in aynı yorumu).
+        self._load()
+
+        try:
+            from CORE.audit_report import export_csv
+
+            export_csv(self._son_export_satirlari, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Dışa Aktarma Hatası", str(exc))
+            return
+
+        self._log_disa_aktarim("csv")
+        QMessageBox.information(
+            self,
+            "Dışa Aktarıldı",
+            f"Denetim günlüğü tablo (CSV) olarak dışa aktarıldı:\n{path}",
+        )
+
+    # ── İmzalı Rapor (PDF) dışa aktarım ──────────────────────────────────────
+
+    def _export_pdf(self) -> None:
+        default_name = (
+            f"audit_log_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.pdf"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Denetim Günlüğü Dışa Aktar — İmzalı Rapor (PDF)",
+            str(Path.home() / default_name),
+            "PDF Dosyası (*.pdf)",
+        )
+        if not path:
+            return
+
+        self._load()  # bkz. _export_csv()'nin aynı yorumu
+
+        if self._son_rapor is None:
+            QMessageBox.critical(
+                self, "Dışa Aktarma Hatası",
+                "Zincir doğrulaması hesaplanamadığı için imzalı rapor "
+                "üretilemiyor — 'Düz Metin' veya 'Tablo' seçeneğini deneyin.",
+            )
+            return
+
+        try:
+            from CORE.audit_report import export_pdf
+
+            export_pdf(
+                self._son_export_satirlari, self._son_rapor, path,
+                filters_note=self._filtre_ozeti(),
+            )
+        except RuntimeError as exc:  # reportlab kurulu değil
+            QMessageBox.critical(self, "Dışa Aktarma Hatası", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Dışa Aktarma Hatası", str(exc))
+            return
+
+        self._log_disa_aktarim("pdf")
+        QMessageBox.information(
+            self,
+            "Dışa Aktarıldı",
+            f"Denetim günlüğü imzalı rapor (PDF) olarak dışa aktarıldı:\n{path}",
+        )
 
 
 __all__ = ["SAYFA_ADI", "AuditLogView"]

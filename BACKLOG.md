@@ -6744,3 +6744,127 @@ test_admin_pages_construction_guard.py` 9'dan 10 teste çıktı (yeni
 mutasyon-kontrastlı test). Ruff/mypy/bandit temiz.
 
 ---
+
+## B-086 — Denetim günlüğü dışa aktarımı bir formattan (TXT) üçe çıktı: Tablo (CSV) ve İmzalı Rapor (PDF)
+
+Görev: Denetim günlüğü indirme seçeneklerini mockup'taki gibi üçe çıkar:
+Düz metin (mevcut TXT), Tablo (Excel/SIEM için ayrık sütunlu CSV/XLSX),
+İmzalı rapor (PDF + özet, zincir doğrulama sonucu ve dış çıpa dahil).
+Karar: İmzalı rapor RFC 3161 mührüyle (K4-20) birlikte mi, yoksa PDF
+şimdilik mühürsüz mü? Test: her üç formatın da doğru veriyi içerdiğini,
+indirme işleminin kendisinin de denetim kaydına yazıldığını doğrula.
+
+**Karar — PDF şimdilik MÜHÜRSÜZ, K4-20 AYRI bir maddeye (B-087)
+ertelendi.** Sessizce "sonraya" bırakılmadı: PDF kendini mühürlenmiş gibi
+GÖSTERMİYOR, belge içinde "RFC 3161 zaman damgasıyla MÜHÜRLENMEMİŞTİR"
+diye AÇIKÇA söylüyor — `txt_basligi()`'nin "bu dosya imzalı DEĞİLDİR"
+notuyla AYNI dürüstlük ilkesi. "İmzalı" burada rapor'un zincirin KENDİ
+kanıtını (hash zinciri + dış çıpa karşılaştırması) GÖMÜLÜ taşıması
+anlamına geliyor — dosyanın kendisinin dış bir otorite tarafından
+damgalanması DEĞİL. Ayrıntı: BACKLOG B-087, SECURITY.md §4.25.
+
+**Tek getirme, üç render'layıcı.** `UI/AuditLogView.py::_load()` ARTIK
+render edilmiş tabloyla BİRLİKTE, aynı sorgudan, kırpılmamış bir
+`CORE/audit_report.py::DenetimSatiri` listesini de (`self._son_export_
+satirlari`) topluyor — ikinci, bağımsız filtrelenmiş bir sorgu YOLU
+AÇILMADI. TXT eski hâliyle tabloyu okumaya devam ediyor (davranış
+DEĞİŞMEDİ); CSV/PDF bu yeni HAM listeyi okuyor.
+
+**Tablo (CSV), UI'nin okunabilirlik kırpmalarını MİRAS ALMIYOR —
+kasıtlı.** UI tablosu HWID'i 16 karaktere kırpıyor, zamanı biçimlendirilmiş
+gösteriyor — SIEM/Excel için YANLIŞ. `DenetimSatiri` TAM HWID, ham ISO
+zaman damgası, ham `action`, TAM `detail` taşıyor. Doğrudan doğrulandı:
+30 karakterlik sentetik bir HWID UI tablosunda "…" ile kırpılıyor, CSV'de
+TAM hâliyle görünüyor.
+
+**CSV, XLSX DEĞİL — bilinçli.** `CORE/inventory.py::
+export_inventory_csv()` zaten `utf-8-sig` (BOM'lu UTF-8) kararını vermişti
+— Excel'de doğru açılıyor VE SIEM'lerin evrensel girdi formatı. Gerçek
+`.xlsx` yeni bir bağımlılık (`openpyxl`) gerektirirdi, iki isimlendirilen
+tüketicinin de (Excel, SIEM) CSV'ye göre özel olarak ihtiyaç duymadığı
+bir format için.
+
+**PDF, `CORE/inventory.py::export_inventory_pdf()`'in AYNI reportlab
+deseniyle.** `CORE/audit_report.py::export_pdf()` — A4 yatay, sayfa
+başına tekrarlayan başlık satırı, reportlab kurulu değilse anlaşılır
+`RuntimeError` (içe aktarım fonksiyon İÇİNDE, TXT/CSV çalışmaya devam
+etsin). Rapor gövdesi: başlık + oluşturulma zamanı + filtre notu +
+`zincir_raporu().baslik()`/`.ayrinti()` (zincir bütünlüğü + dış çıpa) +
+RFC 3161 uyarısı + satır tablosu.
+
+**Kaçış yardımcısı paylaşıldı, ikinci kopya YAZILMADI.** `CORE/
+inventory.py::_escape()` (reportlab Paragraph için mini-HTML kaçışı) yeni
+`CORE/pdf_utils.py::escape_for_reportlab()`'a taşındı; `CORE/inventory.py`
+onu import ediyor. Denetim `detail` alanı da kullanıcı girdisi taşıyabilir
+(dosya adı vb.) — AYNI kaçış ihtiyacı iki modülde.
+
+**İndirme eylemi artık kendini kaydediyor — üçü için de, TXT dahil.**
+Görev "indirme işleminin kendisi de denetim kaydına yazılsın" diyordu;
+mevcut TXT dışa aktarımı bunu HİÇBİR ZAMAN yapmıyordu (bulundu, ölçüldü).
+Üçü de artık `_log_disa_aktarim()`'i (tek action: `audit_log_exported`,
+`format=` alanıyla ayrışan — `usb_role_changed`'in deseni) başarılı
+yazımdan SONRA, onay diyaloğundan ÖNCE çağırıyor (`UI/main_window_files.
+py::file_downloaded`'ın AYNI sırası). Parametrize testle üç format için
+de doğrulandı (önce/sonra sayım + `user_id`/`format=` kontrolü); iptal
+edilen bir dışa aktarımın HİÇBİR ŞEY yazmadığı ayrı bir testle kanıtlandı
+(boş bir iddia olmadığını göstermek için). AST tabanlı bir test üç
+`_export_*` metodunun da GERÇEKTEN `_load()`/kendi `export_*` fonksiyonu/
+`_log_disa_aktarim()` çağırdığını doğruluyor.
+
+**Yol boyunca bulunan bir mevcut test kırılması, DOĞRU yönde düzeltildi.**
+`tests/test_audit_log_view.py::test_export_arkaplanda_eklenen_kaydi_...`
+dışa aktarımdan SONRA `audit_log` satır sayısını okuyordu — yeni
+kendi-kendini-loglama eklendiğinde bu sayım artık dışa aktarımın KENDİ
+denetim kaydını da içeriyordu (5 yerine 6). Test dosyanın gösterdiği
+sayıyla DEĞİL, dışa aktarımdan SONRA değişmiş bir sayımla karşılaştırıyordu
+— sayım artık dışa aktarımdan ÖNCE alınıyor (asıl sınanan şey: dışa
+aktarım ANINDAKİ veritabanı durumu, dışa aktarımın KENDİ yan etkisi
+DAHİL bir durum değil).
+
+**Test-doğrulanabilirlik bulgusu — `pageCompression=0`.**
+`export_inventory_pdf()`'in testleri ham PDF baytlarında metin arıyordu
+(`b"KVKK" in ...`) ama bu SADECE `title=` metadata'sı için tesadüfen
+çalışıyordu (PDF Info sözlüğü sıkıştırılmaz); gövde metni (tablo
+hücreleri) varsayılan ayarlarla ARANAMAZ çıktı — ölçüldü. `SimpleDocTemplate`'e
+`pageCompression=0` geçmek bunu düzeltti — yeni bir PDF-ayrıştırma
+bağımlılığı (pypdf vb.) EKLEMEDEN. Bedel: daha büyük, sıkıştırılmamış
+dosya — nadiren indirilen bir dışa aktarım için kabul edilebilir.
+
+SECURITY.md §4.25'e (EN+TR) belgelendi.
+
+Tam test suite: 3000 passed, 4 skipped (bir önceki turdan +28 — `CORE/
+audit_report.py`'ye CSV/PDF için 22 yeni test, `UI/AuditLogView.py`
+kablolamasına 11 yeni test, `tests/test_rehber_kopyalari.py`'ye 1 yeni
+denetim). Ruff/mypy/bandit temiz.
+
+---
+
+## B-087 — RFC 3161 mührü (K4-20): İmzalı Rapor (PDF) kasıtlı olarak MÜHÜRSÜZ kaldı, ayrı bir mimari karar olarak izleniyor
+
+B-086'nın "İmzalı Rapor" (PDF) seçeneği zincirin KENDİ kanıtını (hash
+zinciri + dış çıpa) gömüyor, ama PDF DOSYASININ KENDİSİNİ bir RFC 3161
+zaman damgası otoritesine imzalatmıyor — dosya sonradan değiştirilirse
+bunu tespit etmenin hiçbir yolu yok, ve PDF bunu KENDİSİ açıkça söylüyor
+("RFC 3161 zaman damgasıyla MÜHÜRLENMEMİŞTİR").
+
+Bu B-082'nin (çok-cihazlı hesap modeli) izlediği AYNI ilke: kapsamı
+sessizce genişletmek yerine, gerçekten isteniyorsa ayrı, bilinçli bir
+karar olarak buraya işlendi.
+
+**Yapılması gerekenler (gerçekten isteniyorsa):**
+- `CORE/timestamp*.py`/`UI/TimestampDialog.py`'nin ZATEN dosya
+  içerikleri için kullandığı RFC 3161 akışının (freetsa.org ya da
+  yapılandırılabilir bir TSA) PDF dosyasının SHA-256'sına uygulanması.
+- Ağ bağımlılığı ve TSA kullanılamazlığı için bir hata yolu — PDF dışa
+  aktarımı bugün TAMAMEN çevrimdışı, bu onu bozar; kullanıcıya "TSA'ya
+  ulaşılamadı, mühürsüz devam et mi?" gibi bir seçenek gerekebilir.
+- Mühürlü PDF'in doğrulanması: `CORE/trusted_roots.py`'nin güven
+  listesine karşı, `UI/TimestampDialog.py`'nin dosya doğrulamasıyla AYNI
+  yol — ikinci bir doğrulama uygulaması YAZILMAMALI.
+- `export_pdf()`'in RFC 3161 uyarı satırının kaldırılması/güncellenmesi
+  (mühürlendiğinde artık doğru değil).
+
+Ayrıntı: SECURITY.md §4.25, §4.16 (K4-20/F2-2'nin daha önceki
+referansları).
+
+---
