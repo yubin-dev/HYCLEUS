@@ -7271,3 +7271,96 @@ confidentiality"/"Metadata gizliliği", §4.9 (RFC 3161 sınırları).
 Bu turda kod/test değişikliği YOK — yalnızca dokümantasyon.
 
 ---
+
+## B-093 — Doğrulama Merkezi: üç doğrulama + Kurtarma Parçası tek sayfada; mimari karar GuvenlikView'ın YERİNE geçmesiydi
+
+Görev: Damga Doğrula, Yedek Doğrula ve Denetim Zincirini Doğrula
+kartlarını mockup'taki gibi tek bir "Doğrulama Merkezi" ekranında
+birleştir, Kurtarma parçası kartını da aynı sayfaya ekle. Önce mimari
+kararı ver: mevcut GüvenlikView'ın yerini mi alacak yoksa ayrı bir
+sidebar öğesi mi olacak.
+
+**Mimari karar — GuvenlikView'ın YERİNE geçti, ayrı bir sidebar öğesi
+AÇILMADI.** `UI/GuvenlikView.py` ZATEN üç doğrulamayı tek sayfada
+topluyordu ("Güvenlik" adıyla) — dördüncü bir kartla GENİŞLETMEK aynı
+fikrin doğal devamıydı. Ayrı bir sayfa açmak, üç kartı (damga/yedek/
+zincir) İKİ yerde göstermek anlamına gelirdi — modülün kendi "iki
+çağıran, tek gövde" kuralının SAYFA seviyesinde ihlali olurdu. Sınıf/
+dosya adı (`GuvenlikView`/`GuvenlikView.py`) ve dahili özellik adları
+(`_guvenlik_view`, `nav_guvenlik`) BİLEREK DEĞİŞTİRİLMEDİ — B-089'un
+"dahili adları değiştirmek kullanıcı görmeyen bir yerde risk almak"
+kararıyla AYNI; yalnızca `SAYFA_ADI` ("Güvenlik" → "Doğrulama Merkezi")
+ve görünen metinler değişti.
+
+**Kurtarma Parçası kartı — gövde AdminSettingsView'den ÇIKARILDI.**
+`AdminSettingsView._on_kurtarma_parcasi()`'nin TÜM gövdesi (PIN sorgusu,
+`export_recovery_share`, `build_export`, `RecoveryShareDialog`, B-064/
+B-066 canlı-yetki kontrolü) `UI/security_actions.py::
+kurtarma_parcasini_goster()`'e taşındı — zincir doğrulamasının B-085/086
+turlarında `UsbTokensView`'den `security_actions.py`'ye taşınmasıyla AYNI
+desen ("iki çağıran, tek gövde"). AdminSettingsView'in düğmesi ve
+Doğrulama Merkezi'nin yeni kartı artık AYNI fonksiyonu çağırıyor;
+`AdminSettingsView.py`'deki `export_recovery_share`/`has_recovery_share`
+importları artık kullanılmadığı için kaldırıldı.
+
+**Kurtarma Parçası kartı KENDİ, ayrı rol kapısını taşıyor.** Diğer üç
+kart salt okuma; sayfa Salt Okunur DIŞINDA her role açık
+(`GUVENLIK_SALT_OKUNURA_ACIK`, B-034 hâlâ açık). Kurtarma parçası
+SECURITY.md §4.4'ün "en hassas ekranı" açıyor — bu yüzden YALNIZCA
+yönetici görüyor. İki katman: (1) `GuvenlikView.kurtarma_karti_goster()`
+kartı yalnızca `is_admin_role` iken gösteriyor, `main_window.py::
+_apply_role_restrictions()`'tan HER rol kontrolünde çağrılarak (rol
+oturum sırasında düşerse kart da geri gizlenir, B-066) — kart varsayılan
+olarak GİZLİ kuruluyor, "açan gelene kadar kapalı" ilkesiyle; (2)
+`kurtarma_parcasini_goster()`'in KENDİSİ `admin_common.
+yonetici_hala_yetkili()` ile AYNI canlı-yetki kontrolünü TAŞIYOR — kart
+gizliyken bile doğrudan çağrılsa reddedilir. UsbTokensView/
+PendingRegistrationsView'in "koşulsuz kurulma" turlarında (B-084/B-085)
+kurulan İKİ KATMANLI desenin AYNISI.
+
+**Test.**
+  1. Dört kart/düğme sayfada (`test_dort_kart_da_sayfada`,
+     `test_dort_dugme_de_var`).
+  2. İKİ ÇAĞIRAN, TEK GÖVDE — yapısal (AST): GuvenlikView/AdminSettingsView
+     hiçbiri kurtarma parçasını kendisi UYGULAMIYOR
+     (`test_kurtarma_govdesi_AdminSettingsView_den_CIKARILDI`,
+     `test_gorunum_dogrulamayi_KENDISI_uygulamiyor`'un genişletilmiş
+     yasak kümesi); paylaşılan gövdenin İÇİNDE zincirin TAMAMI
+     (`test_kurtarma_govdesi_PAYLASILAN_yerde_ZINCIRIN_TAMAMI`,
+     `test_PIN_gercekten_KULLANICIDAN_geliyor`,
+     `test_adminpanel_payi_DISKE_yazmiyor` — üçü de artık
+     `security_actions.py`'yi ölçüyor).
+  3. Rol kapısı: kart varsayılan gizli, `kurtarma_karti_goster()` açıp
+     kapatıyor, diğer üç kartı ETKİLEMİYOR,
+     `_apply_role_restrictions()`'ın onu GERÇEKTEN `is_admin` değeriyle
+     çağırdığı AST ile kanıtlandı.
+  4. **Görevin asıl istediği — bağımsızlık:**
+     `test_bir_kartin_hatasi_DIGER_UCUNU_bozmuyor` yedek kartının
+     çağırdığı işleyicisini BİLEREK patlatıyor (yakalanmamış bir
+     `RuntimeError`), sonra AYNI `gorunum` nesnesinde damga, zincir VE
+     kurtarma kartlarının hâlâ normal çalıştığını doğruluyor — GuvenlikView
+     paylaşılan hiçbir durumu bu hatadan ötürü bozmadı.
+     `test_gorunum_tercihi_hatadan_SONRA_da_ayni_kalir` aynı senaryoda
+     tek paylaşılan durumun (`Gelişmiş`/`Basit` tercihi) da bozulmadığını
+     ayrıca ölçüyor.
+  5. `tests/test_slide_over.py::test_RecoveryShareDialog_HALA_modal`
+     (başka bir turdan) `RecoveryShareDialog`'un çağrı yerini
+     `AdminSettingsView.py`'den `security_actions.py`'ye güncellendi —
+     modal kalma iddiası DEĞİŞMEDİ, yalnızca çağrı yeri.
+
+**Mutasyon kanıtı.** `_apply_role_restrictions()`'taki
+`kurtarma_karti_goster(is_admin)` çağrısını `kurtarma_karti_goster(True)`
+olarak sabitlemek `test_rol_kisitlamasi_kurtarma_kartini_GERCEKTEN_
+cagiriyor`'u kırdı; `_kartlar()`'daki varsayılan-gizli satırını kaldırmak
+`test_kurtarma_karti_VARSAYILAN_gizli`'yi kırdı. İkisi de geri alındı.
+
+SECURITY.md §4.4'e (EN+TR) eklendi — ikinci UI giriş noktasının AYNI
+kod/kapı olduğu, ve neden salt okunura AÇILMADIĞI.
+
+Tam test suite: 3076 passed, 4 skipped (bir önceki turdan +10 — 12 yeni
+test `test_guvenlik_view.py`'de, 4 test yeniden yapılandırıldı
+`test_recovery_share_ui.py`'de, 1 test güncellendi `test_slide_over.py`'de).
+Ruff/bandit temiz; mypy'de değişiklik yok (aynı 768 pre-existing PySide6-
+stub hatası, `git stash` ile karşılaştırılıp doğrulandı).
+
+---

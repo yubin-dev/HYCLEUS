@@ -693,6 +693,22 @@ answers directly instead of leaving to a screen capture:
   a "we tried to clean up after ourselves" mitigation, because there
   genuinely isn't a cleanup available to promise.
 
+**A second UI entry point, same guard, same code — not a second
+implementation (B-093).** The "Verification Center" (`UI/GuvenlikView.py`,
+formerly "Security") now carries a "Recovery Share" card alongside the
+three read-only verifications it already grouped. That card is not a new
+implementation: it calls the exact same
+`UI/security_actions.py::kurtarma_parcasini_goster()` the Admin Panel button calls — PIN prompt,
+`export_recovery_share()`, `build_export()`, this same `RecoveryShareDialog`.
+The card is also hidden from every role but the admin one by
+`GuvenlikView.kurtarma_karti_goster()`, re-applied live on every role
+check, and the shared function re-checks `is_admin_role` *again* itself
+(`admin_common.yonetici_hala_yetkili()`) before doing anything — the same
+two-layer pattern (hide, then re-verify at the point of action) already
+used for the three admin-only pages built in §4.24. Unlike those three
+read-only verifications, this card was deliberately **not** made available
+to the read-only role: it exports key material, not a pass/fail result.
+
 The confirmation checkbox ("I printed this and put it somewhere safe") is
 **not a security control**, and it is not meant to be: it only enables
 the "OK" button, while Esc and the window's own close button work
@@ -4345,6 +4361,22 @@ ekran görüntüsüne BIRAKMAK yerine — doğrudan YANITLIYOR:
   riskinin aksine bu risk "kendi arkamızı temizlemeye çalıştık" gibi bir
   hafifletmenin ARKASINA gizlenmek yerine AÇIKÇA söyleniyor — çünkü söz
   verilebilecek GERÇEK bir temizlik yok.
+
+**İkinci bir UI giriş noktası, AYNI kapı, AYNI kod — ikinci bir uygulama
+DEĞİL (B-093).** "Doğrulama Merkezi" (`UI/GuvenlikView.py`, eskiden
+"Güvenlik") artık zaten topladığı üç salt-okuma doğrulamasının yanına
+"Kurtarma Parçası" kartını da ekledi. Bu kart YENİ bir uygulama DEĞİL:
+Yönetim Paneli düğmesinin çağırdığı TAM OLARAK AYNI
+`UI/security_actions.py::kurtarma_parcasini_goster()`'i çağırıyor — PIN sorgusu,
+`export_recovery_share()`, `build_export()`, AYNI `RecoveryShareDialog`.
+Kart ayrıca `GuvenlikView.kurtarma_karti_goster()` ile yönetici DIŞINDAKİ
+her rolden gizleniyor, her rol kontrolünde CANLI olarak yeniden
+uygulanarak, ve paylaşılan fonksiyon `is_admin_role`'ü KENDİSİ de TEKRAR
+doğruluyor (`admin_common.yonetici_hala_yetkili()`) — herhangi bir şey
+yapmadan ÖNCE — §4.24'te kurulan üç yönetici-only sayfanın AYNI iki
+katmanlı deseni (önce gizle, sonra eylem anında TEKRAR doğrula). Üç
+salt-okuma doğrulamasının aksine bu kart BİLEREK salt okunur role
+AÇILMADI: anahtar malzemesi dışa aktarıyor, bir geçti/kaldı sonucu değil.
 
 Onay kutusu ("Bu parçayı yazdırdım ve güvenli bir yere koydum") **bir
 güvenlik kontrolü değildir** ve öyle olması da amaçlanmadı: yalnızca

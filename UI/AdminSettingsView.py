@@ -26,9 +26,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -45,7 +43,6 @@ from CORE.idle_lock import (
     get_idle_timeout_minutes,
     set_idle_timeout_minutes,
 )
-from CORE.vault_manager import export_recovery_share, has_recovery_share
 from DB.db_manager import DBManager
 from UI import admin_common
 
@@ -244,53 +241,14 @@ class AdminSettingsView(QWidget):
         """
         Kurtarma parçasını üretir ve modalda gösterir.
 
-        Pay bu metotta da, diyalogda da DİSKE YAZILMIYOR; `build_export`
-        yalnızca bellekte yaşayan bir nesne döndürüyor ve blok biterken
-        ikisi de bırakılıyor.
+        Gövde artık `UI/security_actions.py::kurtarma_parcasini_goster()`'da
+        — Doğrulama Merkezi'nin (`UI/GuvenlikView.py`) AYNI eylemi çağırması
+        gerekti, "iki çağıran, tek gövde" kuralı (bkz. security_actions.py
+        modül docstring'i, B-004/B-008/B-007/B-010/B-011 ile aynı gerekçe).
         """
-        if not admin_common.yonetici_hala_yetkili(self, self._pencere):  # B-064/B-066
-            return
-        from CORE.recovery_share import build_export
-        from UI.RecoveryShareDialog import RecoveryShareDialog
+        from UI.security_actions import kurtarma_parcasini_goster
 
-        hwid = self._pencere._hwid
-        if has_recovery_share(hwid):
-            # Aynı pay yeniden üretiliyor — kasa DEĞİŞMİYOR. Kullanıcı
-            # "yeni bir parça mı alıyorum, eskisi geçersiz mi oluyor"
-            # sorusunu sorar; yanıtı sormadan veriyoruz.
-            if QMessageBox.question(
-                self, "Kurtarma Parçası",
-                "Bu cihaz için daha önce kurtarma parçası alınmış.\n\n"
-                "Yeniden göstermek kasayı DEĞİŞTİRMEZ; aynı parça üretilir "
-                "ve eski çıktınız geçerli kalır.\n\nDevam edilsin mi?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-            ) != QMessageBox.Yes:
-                return
-
-        pin, ok = QInputDialog.getText(
-            self, "PIN Doğrulama",
-            "Kurtarma parçasını görmek için vault PIN'inizi girin:",
-            QLineEdit.Password,
-        )
-        if not ok or not pin.strip():
-            return
-
-        try:
-            share_3 = export_recovery_share(hwid, pin.strip())
-        except Exception as exc:  # noqa: BLE001 — vault katmanı çeşitli tip atıyor
-            QMessageBox.critical(
-                self, "Kurtarma Parçası",
-                f"Kurtarma parçası üretilemedi:\n\n{exc}")
-            return
-
-        try:
-            disa_aktarim = build_export(share_3)
-            try:
-                RecoveryShareDialog(disa_aktarim, self, T=self._T).exec()
-            finally:
-                del disa_aktarim
-        finally:
-            del share_3
+        kurtarma_parcasini_goster(self, self._pencere)
 
     # ── Güvenilir zaman damgası kökleri ──────────────────────────────────────
     #

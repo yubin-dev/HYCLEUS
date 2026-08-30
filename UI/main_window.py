@@ -295,6 +295,13 @@ class HycleusWindow(
         self._guvenlik_btn.setVisible(_guvenlik_gorunur)
         self._guvenlik_btn.setEnabled(_guvenlik_gorunur)
 
+        # ── Doğrulama Merkezi'ndeki Kurtarma Parçası kartı: yalnızca
+        # yönetici (B-093). Sayfanın KENDİSİ yukarıdaki karara bağlı ve
+        # Standart role de açık; bu kart o kararın DIŞINDA, kendi
+        # yönetici-only kapısını taşıyor — bkz. `UI/GuvenlikView.py::
+        # kurtarma_karti_goster()`.
+        self._guvenlik_view.kurtarma_karti_goster(is_admin)
+
         # ── Kritik sekmesi: Salt Okunur'da gizli ─────────────────────────
         _kritik = self._nav_btns.get("Kritik")
         if _kritik:

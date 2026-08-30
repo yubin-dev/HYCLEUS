@@ -1,37 +1,93 @@
 """
-HYCLEUS — Güvenlik görünümü: üç doğrulama tek yerde
+HYCLEUS — Doğrulama Merkezi: üç doğrulama + kurtarma parçası tek yerde
+
+Mimari karar — GüvenlikView'ın YERİNE mi geçiyor, ayrı bir sayfa mı (B-093)
+----------------------------------------------------------------------------
+Bu sayfa eskiden "Güvenlik" adıyla ZATEN üç doğrulamayı topluyordu (aşağıya
+bakın). Görev kurtarma parçası kartını da "mockup'taki gibi tek bir
+Doğrulama Merkezi ekranında" istedi ve hangi mimarinin (mevcut sayfanın
+YERİNE mi, ayrı bir kenar çubuğu öğesi mi) seçileceğini kararımıza bıraktı.
+
+**Karar: bu sayfanın YERİNE geçiyor — AYNI dosya, AYNI sınıf, AYNI kenar
+çubuğu yuvası, yalnızca `SAYFA_ADI` ve başlık metni "Doğrulama Merkezi"
+olarak değişti. Ayrı bir sidebar öğesi AÇILMADI.**
+
+Gerekçe:
+  1. Bu sayfa zaten "birden fazla doğrulamayı tek ekranda topla" fikrinin
+     ta kendisiydi — dördüncü bir kartla GENİŞLETMEK, aynı fikrin doğal
+     devamı; YENİDEN İCAT etmek değil.
+  2. Ayrı bir sayfa açmak, üç kartı (damga/yedek/zincir) İKİ yerde
+     göstermek anlamına gelirdi — modülün kendi "iki çağıran, tek gövde"
+     kuralının (aşağıya bakın) tam da ENGELLEMEYE çalıştığı ayrışma, bu
+     sefer GÖVDE seviyesinde değil SAYFA seviyesinde.
+  3. Kenar çubuğunda ikinci bir "doğrulama" girişi, kullanıcıya "hangisini
+     açacağım" sorusunu sorup bu turun kapattığı boşluğu (üç ayrı menü)
+     dördüncü bir yerde yeniden açardı.
+
+Sınıf/dosya adı (`GuvenlikView`/`GuvenlikView.py`), özellik adları
+(`_guvenlik_view`, `nav_guvenlik`, `_on_guvenlik_click`) BİLEREK
+DEĞİŞTİRİLMEDİ — yalnızca KULLANICIYA GÖRÜNEN metin değişti. Aynı karar
+B-089'da (Bekleyen Kayıtlar'ın kart listesine dönüşümü) verildi: dahili
+adları değiştirmek, kullanıcı görmeyen bir yerde risk almak demek.
+
 
 Kapattığı boşluk
 ----------------
-Üç doğrulama vardı ve üçü de FARKLI bir yerde saklıydı:
+Dört iş vardı ve dördü de FARKLI bir yerde saklıydı:
 
-    🕓 Damgayı Doğrula   dosya sağ tık menüsünde
-    🔍 Yedek Doğrula     hamburger menüsünde
-    🔗 Zinciri Doğrula   Yönetim Paneli'nde (yalnızca yönetici)
+    🕓 Damgayı Doğrula      dosya sağ tık menüsünde
+    🔍 Yedek Doğrula        hamburger menüsünde
+    🔗 Zinciri Doğrula      Yönetim Paneli'nde (yalnızca yönetici)
+    🔑 Kurtarma Parçası     Yönetim Paneli → Ayarlar'da (yalnızca yönetici)
 
 Bir denetçinin "bu kurulumu doğrula" işi üç ayrı menüyü bilmeyi
-gerektiriyordu. Bu görünüm onları tek sayfada topluyor.
+gerektiriyordu; kurtarma parçasını almak içinse dördüncü bir menü. Bu
+görünüm hepsini tek sayfada topluyor.
 
 
 Eski giriş noktaları KALDIRILMADI
 ----------------------------------
 Bilinçli. Sağ tık menüsündeki damga doğrulama, seçili dosya üzerinde
 çalıştığı için oradaki bağlam bu sayfada yok; hamburger menüsündeki yedek
-doğrulama da yerinde duruyor. Yani her iş artık İKİ giriş noktasına sahip.
+doğrulama da yerinde duruyor; Yönetim Paneli → Ayarlar'daki kurtarma
+parçası düğmesi de. Yani her iş artık İKİ giriş noktasına sahip.
 
-Kural: **iki çağıran, tek gövde.** Bu sayfa hiçbir doğrulamayı kendisi
-UYGULAMIYOR — ana pencerenin mevcut metotlarını çağırıyor:
+Kural: **iki çağıran, tek gövde.** Bu sayfa hiçbir doğrulamayı/eylemi
+kendisi UYGULAMIYOR — ana pencerenin mevcut metotlarını ya da paylaşılan
+`UI/security_actions.py` gövdesini çağırıyor:
 
-    damga  → `HycleusWindow._on_ctx_verify_timestamp()`
-    yedek  → `HycleusWindow._on_verify_backup()`
-    zincir → `UI/security_actions.zinciri_dogrula()`
+    damga    → `HycleusWindow._on_ctx_verify_timestamp()`
+    yedek    → `HycleusWindow._on_verify_backup()`
+    zincir   → `UI/security_actions.zinciri_dogrula()`
+    kurtarma → `UI/security_actions.kurtarma_parcasini_goster()`
 
-Üçüncüsü Yönetim Paneli'nden çıkarıldı çünkü panel yalnızca yöneticiye
-açılıyor; gövdesi ortak bir yere taşındı ve panel de artık oradan
-çağırıyor.
+Son ikisi Yönetim Paneli'nin/`AdminSettingsView`'in birer metoduydu çünkü
+o sayfalar yalnızca yöneticiye açılıyor; gövdeleri ortak bir yere taşındı
+ve o sayfalar da artık oradan çağırıyor.
 
 İkinci bir uygulama yazmak, bu deponun beş kez ürettiği kusurun altıncısı
 olurdu (B-004/B-008, B-007, B-010, B-011, pay ayrıştırıcı).
+
+
+Kurtarma parçası kartı NEDEN kendi rol kapısını taşıyor
+---------------------------------------------------------
+Diğer üçü SAF OKUMA — hiçbir dosyayı/kasayı değiştirmiyor, bu yüzden bu
+sayfa Salt Okunur DIŞINDA her role açık (aşağıdaki B-034 notuna bakın).
+Kurtarma parçası FARKLI: SECURITY.md §4.4'ün "uygulamanın gösterdiği en
+hassas ekran" dediği `RecoveryShareDialog`'u açıyor ve kasadaki anahtar
+payını GÖSTERİYOR — salt okuma değil, sınıfı gereği yönetici-only.
+
+Bu yüzden kart TÜM roller için sayfada durmuyor: `kurtarma_karti_goster()`
+yalnızca `is_admin_role(pencere._role)` iken görünür kılıyor,
+`main_window.py::_apply_role_restrictions()`'tan çağrılarak — TIPKI
+`UI/PendingRegistrationsView.py::set_kullanici_adi_gizli()` gibi, rol
+oturum SIRASINDA değişirse (ikinci bir yönetici oturumu, B-066) kart da
+GERİ gizlenir. Görünürlük tek bir UX kolaylığı: `kurtarma_parcasini_
+goster()`'in KENDİSİ `admin_common.yonetici_hala_yetkili()` ile AYNI
+canlı-yetki kontrolünü ZATEN taşıyor — kart gizliyken bile doğrudan
+çağrılsa (test, bir hata) reddedilir. "Görünmez ama yine de korumalı" —
+`UI/UsbTokensView.py`/`PendingRegistrationsView.py`'nin "koşulsuz kurulma"
+turlarında (B-084/B-085) kurulan İKİ KATMANLI desenin AYNISI.
 
 
 Basit / Gelişmiş
@@ -91,18 +147,25 @@ _log = logging.getLogger("hycleus.guvenlik_view")
 #:
 #: B-034'ün bu turda düzeltilmemesinin sebebi ORTADAN KALKTI: oradaki
 #: itiraz, sağ tık menüsünü açmanın yıkıcı maddeleri (İndir, İmha, Taşı)
-#: sızdırma riskiydi. Bu sayfada yıkıcı madde YOK — üçü de okuma.
+#: sızdırma riskiydi. Bu sayfadaki ÜÇ DOĞRULAMADA yıkıcı madde YOK — üçü de
+#: okuma. (B-093: dördüncü kart — kurtarma parçası — bu sabitten TAMAMEN
+#: BAĞIMSIZ, KENDİ yönetici-only kapısını taşıyor; bkz. modül docstring'i
+#: ve `kurtarma_karti_goster()`. Bu sabit `True` olsa bile kurtarma
+#: parçası kartı Salt Okunur'a AÇILMAZ.)
 #:
 #: Yine de `True` yapılmadı: karar kullanıcıya bırakıldı. Değiştirmek tek
 #: satır ve `tests/test_guvenlik_view.py` mevcut davranışı sabitliyor.
 GUVENLIK_SALT_OKUNURA_ACIK = False
 
 #: Sayfa başlığı — kenar çubuğu düğmesi ve üst bar aynı metni kullanıyor.
-SAYFA_ADI = "Güvenlik"
+#: B-093: eskiden "Güvenlik" — dördüncü kart (kurtarma parçası) eklenince
+#: mockup'taki adıyla değişti. Sınıf/dosya adı BİLEREK AYNI kaldı (modül
+#: docstring'indeki mimari karar notuna bakın).
+SAYFA_ADI = "Doğrulama Merkezi"
 
 
 class GuvenlikView(QWidget):
-    """Üç doğrulamanın toplandığı üst seviye görünüm."""
+    """Üç doğrulama ve kurtarma parçasının toplandığı üst seviye görünüm."""
 
     def __init__(self, pencere: Any, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -119,14 +182,16 @@ class GuvenlikView(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(14)
 
-        baslik = QLabel("Güvenlik Doğrulamaları")
+        baslik = QLabel(SAYFA_ADI)
         baslik.setObjectName("guvenlik_baslik")
         baslik.setStyleSheet("font-size:15px; font-weight:bold;")
         lay.addWidget(baslik)
 
         aciklama = QLabel(
-            "Bu üç kontrol hiçbir dosyayı değiştirmiyor; üçü de tek ekranda, "
-            "ayrı pencere açmadan doğrulanır ve sonucu denetim kaydına yazar."
+            "Üç doğrulama hiçbir dosyayı/kasayı değiştirmez; hepsi tek "
+            "ekranda, ayrı pencere açmadan çalışır ve sonucu denetim "
+            "kaydına yazar. Kurtarma parçası bir doğrulama değil, kasadaki "
+            "anahtar payının dışa aktarımıdır — yalnızca yöneticiye açık."
         )
         aciklama.setWordWrap(True)
         aciklama.setObjectName("guvenlik_aciklama")
@@ -170,6 +235,12 @@ class GuvenlikView(QWidget):
         return sarici
 
     #: `(simge, başlık, açıklama, düğme metni, işleyici adı)`
+    #:
+    #: Sıra mockup'takiyle AYNI: üç doğrulama, sonra kurtarma parçası.
+    #: Kurtarma parçası kartı `kurtarma_karti_goster()` ile ayrıca
+    #: gizlenebiliyor (yönetici-only, bkz. modül docstring'i) — bu yüzden
+    #: `_kartlar()` onun widget'ını `self._kart_kurtarma`'da AYRICA
+    #: tutuyor, diğer üçü gibi listeye atıp unutmuyor.
     _KARTLAR = (
         ("🕓", "Damgayı Doğrula",
          "Bir `.hcl` dosyasının zaman damgasını çevrimdışı doğrular. "
@@ -180,10 +251,22 @@ class GuvenlikView(QWidget):
         ("🔗", "Denetim Zincirini Doğrula",
          "Denetim kaydının hash zincirini ve dış çıpayı karşılaştırır.",
          "Doğrula", "_zincir_dogrula"),
+        ("🔑", "Kurtarma Parçası",
+         "Kasayı açan üçüncü payı üretir ve gösterir — PIN ister, hiçbir "
+         "yere kaydedilmez. Yalnızca yönetici.",
+         "Göster…", "_kurtarma_parcasi"),
     )
 
     def _kartlar(self) -> list[QWidget]:
-        return [self._kart(*veri) for veri in self._KARTLAR]
+        kartlar = [self._kart(*veri) for veri in self._KARTLAR]
+        self._kart_kurtarma = kartlar[-1]
+        # Varsayılan GİZLİ: `main_window.py::_apply_role_restrictions()`
+        # ilk açılışta HEMEN çağrılıyor (bkz. `kurtarma_karti_goster()`
+        # docstring'i), ama o çağrıya kadar geçen an için bile "görünür
+        # kalsın, kapatan gelene kadar" yerine "kapalı kalsın, açan
+        # gelene kadar" — yönetici-only bir eylem için DOĞRU varsayılan.
+        self._kart_kurtarma.setVisible(False)
+        return kartlar
 
     def _kart(self, simge: str, ad: str, aciklama: str,
               dugme: str, islem: str) -> QWidget:
@@ -236,7 +319,25 @@ class GuvenlikView(QWidget):
         """Diyaloglara geçirilen bayrak. `Gelişmiş` işaretliyse `False`."""
         return not self._gelismis
 
-    # ── Üç doğrulama — GÖVDE BURADA DEĞİL ────────────────────────────────────
+    # ── Rol kapısı — yalnızca kurtarma parçası kartı ─────────────────────────
+
+    def kurtarma_karti_goster(self, goster: bool) -> None:
+        """
+        Kurtarma Parçası kartının görünürlüğü — YALNIZCA yönetici.
+
+        `main_window.py::_apply_role_restrictions()`'tan çağrılıyor,
+        `UI/PendingRegistrationsView.py::set_kullanici_adi_gizli()` ile
+        AYNI desen: rol oturum SIRASINDA düşerse (ikinci bir yönetici
+        oturumu, B-066) kart da GERİ gizlenmeli — yalnızca sayfa AÇILIRKEN
+        karar verip unutmak yetmez.
+
+        Diğer üç kart bu çağrıdan ETKİLENMİYOR: onlar salt okuma, sayfanın
+        KENDİSİ zaten Salt Okunur dışında her role açık (bkz.
+        `GUVENLIK_SALT_OKUNURA_ACIK`, aşağıdaki B-034 notu).
+        """
+        self._kart_kurtarma.setVisible(goster)
+
+    # ── Üç doğrulama + kurtarma parçası — GÖVDE BURADA DEĞİL ─────────────────
 
     def _damga_dogrula(self) -> None:
         """
@@ -264,6 +365,19 @@ class GuvenlikView(QWidget):
         from UI.security_actions import zinciri_dogrula
 
         zinciri_dogrula(self, self._pencere._hwid, sade=self.sade)
+
+    def _kurtarma_parcasi(self) -> None:
+        """
+        Kurtarma parçasını üretir ve modalda gösterir — Yönetim Paneli →
+        Ayarlar'daki "Kurtarma Parçasını Göster" düğmesiyle AYNI gövde.
+
+        `sade` bayrağı BİLEREK geçilmiyor: diğer üç kartın aksine bu bir
+        doğrulama değil, `RecoveryShareDialog`'un basit/gelişmiş kavramı
+        yok — üretilen içerik (QR + base32 + uyarı) HER ZAMAN tam gösterilir.
+        """
+        from UI.security_actions import kurtarma_parcasini_goster
+
+        kurtarma_parcasini_goster(self, self._pencere)
 
     # ── Yardımcılar ──────────────────────────────────────────────────────────
 

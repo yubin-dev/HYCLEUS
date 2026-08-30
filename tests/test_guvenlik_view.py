@@ -194,18 +194,19 @@ def _cagri_adlari(kaynak: str, fonksiyon: str | None = None) -> set[str]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_uc_dogrulama_da_sayfada(gorunum: GuvenlikView) -> None:
+def test_dort_kart_da_sayfada(gorunum: GuvenlikView) -> None:
     metinler = [lbl.text() for lbl in gorunum.findChildren(QLabel)]
-    for ad in ("Damgayı Doğrula", "Yedek Doğrula", "Denetim Zincirini Doğrula"):
+    for ad in ("Damgayı Doğrula", "Yedek Doğrula", "Denetim Zincirini Doğrula",
+               "Kurtarma Parçası"):
         assert ad in metinler, f"{ad} sayfada yok"
 
 
-def test_uc_dugme_de_var(gorunum: GuvenlikView) -> None:
+def test_dort_dugme_de_var(gorunum: GuvenlikView) -> None:
     from PySide6.QtWidgets import QPushButton
 
     adlar = {b.objectName() for b in gorunum.findChildren(QPushButton)}
     assert {"guvenlik_btn_damga_dogrula", "guvenlik_btn_yedek_dogrula",
-            "guvenlik_btn_zincir_dogrula"} <= adlar
+            "guvenlik_btn_zincir_dogrula", "guvenlik_btn_kurtarma_parcasi"} <= adlar
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -215,15 +216,17 @@ def test_uc_dugme_de_var(gorunum: GuvenlikView) -> None:
 
 def test_gorunum_dogrulamayi_KENDISI_uygulamiyor() -> None:
     """
-    En önemli denetim. `GuvenlikView` bir doğrulama çağırırsa, o çağrı
-    eski giriş noktasındakinden ayrı bir yol olurdu ve ikisi zamanla
-    farklı davranırdı.
+    En önemli denetim. `GuvenlikView` bir doğrulama/eylemi çağırırsa, o
+    çağrı eski giriş noktasındakinden ayrı bir yol olurdu ve ikisi
+    zamanla farklı davranırdı.
     """
     cagrilar = _cagri_adlari(_kaynak("UI/GuvenlikView.py"))
     yasak = {"verify_timestamp", "verify_backup", "zincir_raporu",
-             "TimestampDialog", "BackupVerifyDialog"}
+             "TimestampDialog", "BackupVerifyDialog",
+             "has_recovery_share", "export_recovery_share",
+             "build_export", "RecoveryShareDialog"}
     assert not (cagrilar & yasak), (
-        f"GuvenlikView doğrulamayı kendisi uyguluyor: {cagrilar & yasak}"
+        f"GuvenlikView doğrulamayı/eylemi kendisi uyguluyor: {cagrilar & yasak}"
     )
 
 
@@ -264,6 +267,32 @@ def test_zincir_gövdesi_AdminPanel_den_CIKARILDI() -> None:
             f"{dosya} ikinci bir zincir doğrulaması kuruyor"
         )
     assert "zincir_raporu" in _cagri_adlari(_kaynak("UI/security_actions.py"))
+
+
+def test_kurtarma_govdesi_AdminSettingsView_den_CIKARILDI() -> None:
+    """
+    Kurtarma parçası `AdminSettingsView`'in bir metoduydu ve o sayfa
+    yalnızca yöneticiye açılıyor. Doğrulama Merkezi'nden çağrılabilmesi
+    için gövde ortak bir yere (`UI/security_actions.py`) taşındı;
+    AdminSettingsView de artık oradan çağırıyor — `zincir_gövdesi`
+    testiyle AYNI desen (bkz. yukarıdaki test).
+    """
+    admin = _cagri_adlari(_kaynak("UI/AdminSettingsView.py"), "_on_kurtarma_parcasi")
+    assert admin == {"kurtarma_parcasini_goster"}, (
+        f"AdminSettingsView kurtarma parçasını hâlâ kendisi uyguluyor: {admin}"
+    )
+    assert "kurtarma_parcasini_goster" in _cagri_adlari(
+        _kaynak("UI/GuvenlikView.py"), "_kurtarma_parcasi")
+
+    # `export_recovery_share`/`build_export` YALNIZCA ortak gövdede.
+    for dosya in ("UI/AdminSettingsView.py", "UI/GuvenlikView.py"):
+        cagrilar = _cagri_adlari(_kaynak(dosya))
+        for yasak in ("export_recovery_share", "build_export"):
+            assert yasak not in cagrilar, (
+                f"{dosya} ikinci bir kurtarma parçası akışı kuruyor ({yasak})"
+            )
+    govde_cagrilari = _cagri_adlari(_kaynak("UI/security_actions.py"))
+    assert {"export_recovery_share", "build_export"} <= govde_cagrilari
 
 
 def test_denetimler_GERCEKTEN_cagri_buluyor() -> None:
@@ -354,6 +383,18 @@ def test_yedek_dogrulama_pencereye_DEVREDILIYOR(
 ) -> None:
     gorunum._yedek_dogrula()
     assert pencere.yedek_cagrilari == [{"sade": False}]
+
+
+def test_kurtarma_parcasi_paylasilan_govdeye_DEVREDILIYOR(
+    pencere: _Pencere, gorunum: GuvenlikView, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_kurtarma_parcasi()` gerçekten `(gorunum, pencere)` ile çağırıyor mu —
+    yapısal AST denetiminin (yukarıda) davranışsal karşılığı."""
+    cagrilar: list[tuple] = []  # type: ignore[type-arg]
+    monkeypatch.setattr("UI.security_actions.kurtarma_parcasini_goster",
+                        lambda *a: cagrilar.append(a))
+    gorunum._kurtarma_parcasi()
+    assert cagrilar == [(gorunum, pencere)]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -562,6 +603,69 @@ def test_B_034_notu_hala_duruyor() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 5b. Kurtarma parçası kartı — KENDİ, ayrı rol kapısı (B-093)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `GUVENLIK_SALT_OKUNURA_ACIK`'tan TAMAMEN BAĞIMSIZ: sayfa Standart role
+# açık olsa bile bu kart yalnızca yöneticiye görünmeli — gerekçe modül
+# docstring'inde ("Kurtarma parçası kartı NEDEN kendi rol kapısını
+# taşıyor").
+
+
+def test_kurtarma_karti_VARSAYILAN_gizli(gorunum: GuvenlikView) -> None:
+    """
+    Sayfa kurulurken kart henüz GÖRÜNMEMELİ — `main_window.py`'nin
+    `_apply_role_restrictions()`'ı çağırmasını BEKLEMEDEN "yönetici"
+    varsaymak, rolü Standart olan bir oturumda kartı bir an için sızdırırdı.
+    """
+    assert gorunum._kart_kurtarma.isHidden()
+
+
+def test_kurtarma_karti_goster_ACIYOR_KAPATIYOR(gorunum: GuvenlikView) -> None:
+    gorunum.kurtarma_karti_goster(True)
+    assert not gorunum._kart_kurtarma.isHidden()
+    gorunum.kurtarma_karti_goster(False)
+    assert gorunum._kart_kurtarma.isHidden()
+
+
+def test_diger_uc_kart_kurtarma_gorunurlugunden_ETKILENMIYOR(
+    gorunum: GuvenlikView,
+) -> None:
+    """Kartı gizlemek/göstermek diğer üçünü GİZLEMEMELİ/GÖSTERMEMELİ."""
+    for kart in gorunum.findChildren(QWidget, "guvenlik_kart"):
+        if kart is gorunum._kart_kurtarma:
+            continue
+        assert not kart.isHidden(), "kurtarma kartı diğerlerini etkiliyor"
+
+
+def test_rol_kisitlamasi_kurtarma_kartini_GERCEKTEN_cagiriyor() -> None:
+    """
+    `_apply_role_restrictions()`, `kurtarma_karti_goster()`'ı `is_admin`
+    değeriyle çağırıyor mu — AST ile, `test_rol_kapisi_TEK_sabitten_
+    okunuyor()`'daki desenin AYNISI.
+    """
+    kaynak = _kaynak("UI/main_window.py")
+    agac = ast.parse(kaynak)
+    (fn,) = [n for n in ast.walk(agac)
+             if isinstance(n, ast.FunctionDef) and n.name == "_apply_role_restrictions"]
+    cagrilar = [
+        d for d in ast.walk(fn)
+        if isinstance(d, ast.Call)
+        and isinstance(d.func, ast.Attribute)
+        and d.func.attr == "kurtarma_karti_goster"
+    ]
+    assert len(cagrilar) == 1, (
+        f"kurtarma_karti_goster() {len(cagrilar)} kez çağrılıyor, 1 bekleniyordu"
+    )
+    (cagri,) = cagrilar
+    (arg,) = cagri.args
+    assert isinstance(arg, ast.Name) and arg.id == "is_admin", (
+        f"kurtarma_karti_goster() 'is_admin' DIŞINDA bir değerle çağrılıyor: "
+        f"{ast.unparse(arg)}"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 6. Sayfa geçişi
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -571,7 +675,10 @@ def test_sayfa_adi_tek_kaynaktan() -> None:
     layout = _kaynak("UI/main_window_layout.py")
     pencere = _kaynak("UI/main_window.py")
     assert "_GUVENLIK_SAYFA_ADI" in layout and "_GUVENLIK_SAYFA_ADI" in pencere
-    assert SAYFA_ADI == "Güvenlik"
+    assert SAYFA_ADI == "Doğrulama Merkezi", (
+        "B-093: dördüncü kart (kurtarma parçası) eklenince sayfa "
+        "mockup'taki adıyla değişti"
+    )
 
 
 def test_yigin_UC_sayfali() -> None:
@@ -645,3 +752,79 @@ def test_gecis_eylem_barini_gizleyip_geri_getiriyor() -> None:
 
     assert _gizleme_degerleri(guv) == {False}, "Güvenlik'e geçerken bar gizlenmiyor"
     assert _gizleme_degerleri(dosya) == {True}, "dosya görünümünde bar geri gelmiyor"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. Bağımsızlık — biri hata verirse diğerleri BOZULMUYOR
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# GuvenlikView hiçbir kartın gövdesini kendisi UYGULAMIYOR (bölüm 2) —
+# bunun doğal sonucu, kartlar arasında PAYLAŞILAN bir durum da yok (`self.
+# _gelismis`/`self.sade` hariç, ki o salt OKUNUYOR, hiçbir handler onu
+# YAZMIYOR). Bu bölüm bunu YAPISAL akıl yürütmeyle değil, GERÇEKTEN bir
+# kartı patlatıp diğerlerinin hâlâ çalıştığını göstererek kanıtlıyor.
+
+
+def test_bir_kartin_hatasi_DIGER_UCUNU_bozmuyor(
+    pencere: _Pencere, gorunum: GuvenlikView, damgali: Path,
+    acilan: list, monkeypatch: pytest.MonkeyPatch,  # type: ignore[type-arg]
+) -> None:
+    """
+    Yedek kartının çağırdığı işleyici (`pencere._on_verify_backup`)
+    İSTİSNA fırlatıyor — GuvenlikView bunu YUTMUYOR (kendi gövdesi yok,
+    bkz. modül docstring'i "iki çağıran, tek gövde"), istisna ÇAĞIRANA
+    sızıyor; gerçek `_on_verify_backup()` bu senaryoyu KENDİ try/except'i
+    içinde yakalıyor (bkz. `UI/main_window_open.py`), burada BİLEREK
+    yakalanmadan bırakıldı — "en kötü hâliyle bir handler'ın çökmesi"
+    senaryosu.
+
+    Asıl iddia BUNDAN SONRA: aynı `gorunum` nesnesinde damga, zincir ve
+    kurtarma kartlarının HÂLÂ normal çalışması — GuvenlikView paylaşılan
+    hiçbir durumu bu hatadan ötürü BOZMADI.
+    """
+    def _patlayan(*, sade: bool = False) -> None:
+        raise RuntimeError("yedek diski okunamadı")
+
+    pencere._on_verify_backup = _patlayan  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="yedek diski okunamadı"):
+        gorunum._yedek_dogrula()
+
+    # Damga kartı HÂLÂ çalışıyor.
+    monkeypatch.setattr(
+        "UI.GuvenlikView.QFileDialog.getOpenFileName",
+        staticmethod(lambda *a, **k: (str(damgali), "")))
+    gorunum._damga_dogrula()
+    assert acilan, "yedek hatasından SONRA damga kartı çalışmadı"
+
+    # Zincir kartı HÂLÂ çalışıyor.
+    zincir_cagrilari: list[dict] = []
+    monkeypatch.setattr("UI.security_actions.zinciri_dogrula",
+                        lambda *a, **k: zincir_cagrilari.append(k))
+    gorunum._zincir_dogrula()
+    assert zincir_cagrilari, "yedek hatasından SONRA zincir kartı çalışmadı"
+
+    # Kurtarma parçası kartı HÂLÂ çalışıyor.
+    kurtarma_cagrilari: list[tuple] = []  # type: ignore[type-arg]
+    monkeypatch.setattr("UI.security_actions.kurtarma_parcasini_goster",
+                        lambda *a: kurtarma_cagrilari.append(a))
+    gorunum._kurtarma_parcasi()
+    assert kurtarma_cagrilari, "yedek hatasından SONRA kurtarma kartı çalışmadı"
+
+
+def test_gorunum_tercihi_hatadan_SONRA_da_ayni_kalir(
+    pencere: _Pencere, gorunum: GuvenlikView,
+) -> None:
+    """
+    Görünüm tercihi (`Gelişmiş`/`Basit`) — kartlar arasında PAYLAŞILAN TEK
+    durum — bir kartın hatasından ETKİLENMEMELİ.
+    """
+    def _patlayan(*, sade: bool = False) -> None:
+        raise RuntimeError("yedek diski okunamadı")
+
+    pencere._on_verify_backup = _patlayan  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        gorunum._yedek_dogrula()
+
+    assert gorunum._gelismis is True
+    assert gorunum.sade is False

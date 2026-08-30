@@ -167,9 +167,15 @@ def test_RecoveryShareDialog_HALA_modal() -> None:
     Görev bilerek `RecoveryShareDialog`'u dışarıda bıraktı: tek
     gösterimlik, dikkat gerektiren bir akış. Hâlâ `QDialog` ve hâlâ
     `.exec()` ile açılıyor — panele TAŞINMADIĞINI sabitliyor.
+
+    Çağrı yeri B-093'te `UI/AdminSettingsView.py`'den `UI/
+    security_actions.py::kurtarma_parcasini_goster()`'e taşındı (bkz. o
+    modülün "iki çağıran, tek gövde" gerekçesi — Doğrulama Merkezi'nin
+    kurtarma parçası kartı AYNI çağrıyı paylaşıyor); modal olma özelliği
+    DEĞİŞMEDİ, yalnızca çağrının yeri.
     """
     assert "class RecoveryShareDialog(QDialog)" in _kaynak("UI/RecoveryShareDialog.py")
-    assert "RecoveryShareDialog" in _cagri_adlari(_kaynak("UI/AdminSettingsView.py"))
+    assert "RecoveryShareDialog" in _cagri_adlari(_kaynak("UI/security_actions.py"))
 
 
 def test_eventFilter_olayi_YUTMUYOR() -> None:

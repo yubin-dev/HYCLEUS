@@ -667,16 +667,23 @@ def test_modal_paya_DOKUNMUYOR():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6. AdminSettingsView girişi
+# 6. AdminSettingsView girişi + Doğrulama Merkezi girişi — İKİ ÇAĞIRAN, TEK GÖVDE
 # ══════════════════════════════════════════════════════════════════════════════
+#
+# B-093'ten itibaren gövde `UI/security_actions.py::kurtarma_parcasini_
+# goster()`'e taşındı — Doğrulama Merkezi'nin (`UI/GuvenlikView.py`) AYNI
+# eylemi çağırabilmesi için (bkz. o modülün "iki çağıran, tek gövde"
+# gerekçesi). Aşağıdaki testler artık İKİ şeyi ayrı ayrı ölçüyor:
+#   · AdminSettingsView/GuvenlikView'ın KENDİSİ ikinci bir uygulama
+#     KURMADIĞI — ikisi de aynı paylaşılan fonksiyonu çağırıyor.
+#   · Gerçek zincirin (PIN → export → build_export → modal, hiçbir yere
+#     kayıt) paylaşılan gövdenin İÇİNDE, eksiksiz durduğu.
 
 
-def test_adminpanel_dugmesi_MODALI_aciyor():
+def test_adminpanel_dugmesi_PAYLASILAN_govdeyi_CAGIRIYOR():
     """
-    Düğme → PIN → `export_recovery_share` → `build_export` → modal.
-
-    AST ile: zincirin her halkası yerinde mi. Rol kapısı ayrıca yazılmıyor;
-    AdminSettingsView zaten `is_admin_role` kapısının ardında (bkz. `UI/main_window.py::_on_open_admin_settings`).
+    `_on_kurtarma_parcasi` artık ikinci bir uygulama DEĞİL, TEK bir çağrı —
+    zincirin kendisi `security_actions.py`'de (aşağıdaki test).
     """
     kaynak = (KOK / "UI" / "AdminSettingsView.py").read_text(encoding="utf-8")
     agac = ast.parse(kaynak)
@@ -685,11 +692,54 @@ def test_adminpanel_dugmesi_MODALI_aciyor():
          if isinstance(d, ast.FunctionDef) and d.name == "_on_kurtarma_parcasi"),
         None)
     assert govde is not None, "_on_kurtarma_parcasi tanımlı değil"
+    cagrilar = _cagri_adlari(govde)
+    assert cagrilar == {"kurtarma_parcasini_goster"}, (
+        f"AdminSettingsView ikinci bir uygulama kuruyor olabilir: {cagrilar}"
+    )
+    assert "self._btn_kurtarma.clicked.connect(self._on_kurtarma_parcasi)" in kaynak
+
+
+def test_gorunum_dugmesi_de_AYNI_govdeyi_CAGIRIYOR():
+    """Doğrulama Merkezi'nin kartı da AYNI paylaşılan fonksiyonu çağırıyor."""
+    kaynak = (KOK / "UI" / "GuvenlikView.py").read_text(encoding="utf-8")
+    agac = ast.parse(kaynak)
+    govde = next(
+        (d for d in ast.walk(agac)
+         if isinstance(d, ast.FunctionDef) and d.name == "_kurtarma_parcasi"),
+        None)
+    assert govde is not None, "_kurtarma_parcasi tanımlı değil"
+    cagrilar = _cagri_adlari(govde)
+    assert cagrilar == {"kurtarma_parcasini_goster"}, (
+        f"GuvenlikView ikinci bir uygulama kuruyor olabilir: {cagrilar}"
+    )
+
+
+def test_kurtarma_govdesi_PAYLASILAN_yerde_ZINCIRIN_TAMAMI():
+    """
+    Düğme → PIN → `export_recovery_share` → `build_export` → modal —
+    zincirin her halkası `security_actions.py::kurtarma_parcasini_goster()`
+    içinde, İKİ çağıranın da ULAŞTIĞI TEK yerde duruyor mu.
+    """
+    kaynak = (KOK / "UI" / "security_actions.py").read_text(encoding="utf-8")
+    agac = ast.parse(kaynak)
+    govde = next(
+        (d for d in ast.walk(agac)
+         if isinstance(d, ast.FunctionDef) and d.name == "kurtarma_parcasini_goster"),
+        None)
+    assert govde is not None, "kurtarma_parcasini_goster tanımlı değil"
     metin = ast.unparse(govde)
     for beklenen in ("has_recovery_share", "export_recovery_share",
-                     "build_export", "RecoveryShareDialog", "del share_3"):
+                     "build_export", "RecoveryShareDialog", "del share_3",
+                     "yonetici_hala_yetkili"):
         assert beklenen in metin, f"zincirde eksik: {beklenen}"
-    assert "self._btn_kurtarma.clicked.connect(self._on_kurtarma_parcasi)" in kaynak
+
+    # Ve İKİ çağıranın ikisi de AYNI ada gidiyor mu (kör bir tarayıcı
+    # olmasın — biri farklı bir isimle çağırıp yine "geçerdi" diyebilirdi).
+    for dosya in ("UI/AdminSettingsView.py", "UI/GuvenlikView.py"):
+        icerik = (KOK / dosya).read_text(encoding="utf-8")
+        assert "kurtarma_parcasini_goster" in icerik, (
+            f"{dosya} paylaşılan gövdeyi çağırmıyor"
+        )
 
 
 def test_PIN_gercekten_KULLANICIDAN_geliyor():
@@ -700,9 +750,9 @@ def test_PIN_gercekten_KULLANICIDAN_geliyor():
     mutasyonla ölçüldü — `pin, ok = ('0000', True) or QInputDialog.getText(...)`
     o denetimi geçiyordu. Çağrı duruyor ama artık PIN'i o vermiyor.
     """
-    agac = ast.parse((KOK / "UI" / "AdminSettingsView.py").read_text(encoding="utf-8"))
+    agac = ast.parse((KOK / "UI" / "security_actions.py").read_text(encoding="utf-8"))
     govde = next(d for d in ast.walk(agac)
-                 if isinstance(d, ast.FunctionDef) and d.name == "_on_kurtarma_parcasi")
+                 if isinstance(d, ast.FunctionDef) and d.name == "kurtarma_parcasini_goster")
 
     atamalar = [
         d for d in ast.walk(govde)
@@ -748,10 +798,13 @@ def test_adminpanel_payi_DISKE_yazmiyor():
     `RecoveryShareDialog(` içindeki "log(" hecesine takıldı. Bu deponun
     tekrarlayan hatası (son örnek B-024) — metin araması, kuralın kendisini
     anlatan ya da ona benzeyen her şeye takılıyor.
+
+    Paylaşılan gövdenin KENDİSİ ölçülüyor — AdminSettingsView'ınki artık
+    boş bir delegasyon, riskin gerçekten durduğu yer değil.
     """
-    agac = ast.parse((KOK / "UI" / "AdminSettingsView.py").read_text(encoding="utf-8"))
+    agac = ast.parse((KOK / "UI" / "security_actions.py").read_text(encoding="utf-8"))
     govde = next(d for d in ast.walk(agac)
-                 if isinstance(d, ast.FunctionDef) and d.name == "_on_kurtarma_parcasi")
+                 if isinstance(d, ast.FunctionDef) and d.name == "kurtarma_parcasini_goster")
     yazanlar = _cagri_adlari(govde) & _YAZAN_CAGRILAR
     assert not yazanlar, f"pay diske/kayda gidiyor olabilir: {sorted(yazanlar)}"
 
