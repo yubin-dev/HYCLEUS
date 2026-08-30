@@ -239,7 +239,16 @@ class TableMixin:
         is_hcl = filepath.endswith(".hcl")
         self._table.insertRow(row)
 
-        # Sütun 0 — dosya adı
+        # Sütun 0 — dosya adı + çoklu seçim kutucuğu
+        #
+        # Yeni bir sütun AÇILMADI: aynı hücreye `Qt.ItemIsUserCheckable`
+        # bayrağı eklenip `setCheckState()` çağrılınca Qt kutucuğu metnin
+        # SOLUNA otomatik çiziyor. Ayrı bir sütun; `_set_scan_badge()`
+        # dahil sütun indeksine bağlı HER yeri (5'ten 6'ya) değiştirmeyi
+        # gerektirirdi — kozmetik bir eklenti için orantısız bir risk.
+        # `file_id`/`label`/`filepath` zaten BU öğede duruyor (UserRole),
+        # yani kutucuk durumunu okuyan kod aynı öğeden ikisini birden
+        # alabiliyor (bkz. `UI/main_window_bulk.py::_checked_selection`).
         display_name = ("🔒  " + name) if is_hcl else name
         name_item    = QTableWidgetItem(display_name)
         name_item.setData(Qt.UserRole,     file_id)
@@ -247,6 +256,8 @@ class TableMixin:
         name_item.setData(Qt.UserRole + 2, label)
         name_item.setData(Qt.UserRole + 3, filepath)
         name_item.setData(Qt.UserRole + 4, expires_at)
+        name_item.setFlags(name_item.flags() | Qt.ItemIsUserCheckable)
+        name_item.setCheckState(Qt.Unchecked)
         if is_hcl:
             name_item.setForeground(QColor(self._T["accent"]))
         self._table.setItem(row, 0, name_item)

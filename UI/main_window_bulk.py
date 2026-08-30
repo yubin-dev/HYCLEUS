@@ -6,6 +6,48 @@ kelimesi kelimesine taşındı; davranış değişmedi.
 
 `HycleusWindow` bu mixin'i miras alıyor, dolayısıyla `self` hâlâ
 pencerenin kendisi ve çağrı yerleri değişmedi.
+
+
+İkinci giriş noktası: kutucuklar + toplu işlem çubuğu (B-094)
+----------------------------------------------------------------
+Çoklu seçimin TEK giriş noktası sağ tık menüsüydü (`_on_bulk_context_menu`,
+seçili SATIRLAR üzerinden). Artık ikinci bir yol var: `UI/
+main_window_table.py::_insert_row()`'un sütun 0'a eklediği kutucuklar +
+`UI/main_window_layout.py::_make_bulk_toolbar()`'ın kurduğu, 1+ kutucuk
+işaretliyken görünen araç çubuğu.
+
+Kural burada da AYNI — **iki giriş noktası, tek gövde**: `_on_bulk_toolbar_*`
+metotları YENİ bir toplu işlem UYGULAMIYOR, `_checked_selection()` ile
+işaretli satırlardan aynı `(rows, file_ids, labels, filepaths)` şeklini
+üretip mevcut `_on_ctx_bulk_*` gövdelerini ÇAĞIRIYOR. "Karantinadan Çıkar"
+araç çubuğunda BİLİNÇLİ olarak YOK (yalnızca Karantina etiketinde anlamlı,
+görev onu istemedi) — sağ tık menüsü hâlâ sunuyor.
+
+Tekli mi toplu mu — karar
+--------------------------
+Görev her toplu işlemin "mevcut tekli `db_manager.py` fonksiyonlarını
+sırayla mı çağıracağı yoksa toplu bir fonksiyon mu gerekeceği" kararını
+istedi. Karar: SIRAYLA — çünkü `_on_ctx_bulk_*` gövdeleri zaten (bu turdan
+ÖNCE de) `db.execute()`'u dosya başına bir DÖNGÜDE çağırıyordu, TEK bir
+toplu SQL (`UPDATE ... WHERE id IN (...)`) DEĞİL. Bu turda DEĞİŞTİRİLMEDİ:
+
+  1. Dosya başına AYRI bir denetim kaydı (`db.log(...)`, `target_id=fid`)
+     düşüyor — TEK bir toplu UPDATE bunu ya kaybederdi ya da KENDİ döngüsünü
+     GEREKTİRİRDİ (verimlilik kazancı YOK, yalnızca karmaşıklık).
+  2. K1-14'ün DB seviyesi rol denetimi (`DBManager.execute()` →
+     `_yazma_yetkisini_dogrula()`, `DB/db_manager.py`) HER `execute()`
+     çağrısında ÇALIŞIYOR — döngü BU YÜZDEN salt okunur bir rolü İLK
+     yinelemede durduruyor (`YazmaYetkisiYokError`, bir `PermissionError`
+     alt sınıfı), `try/except` sarıcısı `QMessageBox.critical` ile
+     gösterip döngüyü orada BIRAKIYOR. Tek bir toplu SQL de rolü
+     REDDEDERDİ ama farkı GÖRÜNMEZ kılardı: KISMİ bir başarı yerine
+     hepsi-ya-da-hiçbiri — burada zaten rol OTURUM boyunca sabit olduğu
+     için (yinelemeler arasında DEĞİŞMİYOR) bu ayrım pratikte SONUÇSUZ,
+     ama davranışı DEĞİŞTİRMEK bu turun kapsamı DIŞINDAydı.
+
+Bu kararın kanıtı `tests/test_bulk_toolbar_rbac.py`'de: salt okunur bir
+rolün kutucuklarla bile toplu imha/taşıma YAPAMADIĞINI, yetkili bir
+rolün toplu işlemi TÜM seçili dosyalara doğru uyguladığını doğruluyor.
 """
 import logging
 # timedelta modül seviyesinde artık kullanılmıyor: "şimdi + TTL" hesabı
@@ -286,4 +328,79 @@ class BulkActionsMixin:
         if errors:
             msg += f"\n\nAtlanan ({len(errors)}):\n{format_errors(errors)}"
         QMessageBox.information(self, "İndirme Tamamlandı", msg)
+
+    # ── Kutucuklar + araç çubuğu — ikinci giriş noktası (B-094) ──────────────
+
+    def _checked_selection(self) -> tuple[list[int], list[int], list[str], list[str]]:
+        """
+        İşaretli kutucuklara sahip satırlardan `(rows, file_ids, labels,
+        filepaths)` üretir — `_on_bulk_context_menu()`'nun seçili
+        SATIRLARDAN aynı veriyi ürettiği döngüyle AYNI şekil, kaynak
+        farklı: seçili satırlar yerine işaretli kutucuklar.
+        """
+        rows: list[int] = []
+        file_ids: list[int] = []
+        labels: list[str] = []
+        filepaths: list[str] = []
+        for r in range(self._table.rowCount()):
+            item = self._table.item(r, 0)
+            if item is None or item.checkState() != Qt.Checked:
+                continue
+            fid = item.data(Qt.UserRole)
+            if fid is None:
+                continue
+            rows.append(r)
+            file_ids.append(fid)
+            labels.append(item.data(Qt.UserRole + 2) or "")
+            filepaths.append(item.data(Qt.UserRole + 3) or "")
+        return rows, file_ids, labels, filepaths
+
+    def _on_table_item_changed(self, item) -> None:  # noqa: ARG002 — Qt slot imzası
+        """
+        Kutucuk durumu DAHİL herhangi bir hücre değişiminde (satır ekleme,
+        tarama rozeti) ateşleniyor — yalnızca işaretli sayıyı sayıp araç
+        çubuğunu gösterip/gizliyor ve etiketini güncelliyor; ucuz bir
+        işlem, fazladan tetiklenmesi zararsız (bkz. `_make_bulk_toolbar()`
+        yakınındaki bağlama yorumu).
+
+        Toplu işlem düğmelerinin HER birinden SONRA da elle çağrılıyor:
+        Kritik'e Taşı/İmhaya At işaretli satırları `removeRow()` ile
+        kaldırıyor ama bu `itemChanged`'i TETİKLEMİYOR (yapısal bir
+        değişiklik, veri değişimi değil) — elle çağrı olmasaydı araç
+        çubuğu, altındaki dosyalar gittikten SONRA bile görünür kalırdı.
+        """
+        _, file_ids, _, _ = self._checked_selection()
+        n = len(file_ids)
+        self._bulk_toolbar.setVisible(n > 0)
+        if n:
+            # Türkçe sayıdan sonra çoğul eki ALMAZ ("1 dosya"/"5 dosya").
+            self._bulk_toolbar_label.setText(f"{n} dosya seçili")
+
+    def _on_bulk_toolbar_tags(self) -> None:
+        _, file_ids, _, _ = self._checked_selection()
+        if not file_ids:
+            return  # Düğme yalnızca 1+ işaretliyken görünür — savunma amaçlı.
+        self._on_ctx_bulk_assign_tags(file_ids)
+        self._on_table_item_changed(None)
+
+    def _on_bulk_toolbar_kritik(self) -> None:
+        rows, file_ids, labels, _ = self._checked_selection()
+        if not file_ids:
+            return
+        self._on_ctx_bulk_move_to_kritik(rows, file_ids, labels)
+        self._on_table_item_changed(None)
+
+    def _on_bulk_toolbar_download(self) -> None:
+        _, file_ids, _, filepaths = self._checked_selection()
+        if not file_ids:
+            return
+        self._on_ctx_bulk_download(file_ids, filepaths)
+        self._on_table_item_changed(None)
+
+    def _on_bulk_toolbar_imha(self) -> None:
+        rows, file_ids, _, _ = self._checked_selection()
+        if not file_ids:
+            return
+        self._on_ctx_bulk_move_to_imha(rows, file_ids)
+        self._on_table_item_changed(None)
 

@@ -520,6 +520,13 @@ class LayoutMixin:
         self._expiry_banner.setVisible(False)
         lay.addWidget(self._expiry_banner)
 
+        # Toplu işlem çubuğu — 1+ dosya kutucuğu işaretlenince görünür.
+        # Gövdesi burada YOK: dördü de UI/main_window_bulk.py'nin ZATEN
+        # var olan sağ-tık menüsü işleyicilerini çağırıyor (bkz. o
+        # dosyanın modül docstring'i) — kutucuklar ikinci bir uygulama
+        # DEĞİL, aynı gövdeye giden ikinci bir giriş noktası.
+        lay.addWidget(self._make_bulk_toolbar())
+
         # Tablo
         self._table = QTableWidget(0, 5)
         self._table.setHorizontalHeaderLabels(["Dosya Adı", "Etiket", "Boyut", "Tarih", "Tarama"])
@@ -542,6 +549,11 @@ class LayoutMixin:
         self._table.setShowGrid(False)
         self._table.setContextMenuPolicy(Qt.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_context_menu)
+        # `itemChanged` sütun 0'ın kutucuk durumu DAHİL her veri
+        # değişiminde ateşleniyor (satır ekleme/tarama rozeti dahil) —
+        # `_on_table_item_changed()` yalnızca sayıyor, ucuz bir işlem,
+        # bu yüzden fazladan tetiklenmesi zararsız.
+        self._table.itemChanged.connect(self._on_table_item_changed)
         lay.addWidget(self._table, 1)
 
         # Drag-drop alanı
@@ -552,6 +564,60 @@ class LayoutMixin:
         lay.addWidget(self._drop_hint)
 
         return frame
+
+    def _make_bulk_toolbar(self) -> QWidget:
+        """
+        Toplu işlem çubuğu — 1+ dosya kutucuğu işaretliyken görünür.
+
+        Dördü de `UI/main_window_bulk.py`'nin ZATEN var olan sağ-tık
+        menüsü gövdelerini çağırıyor (`_on_ctx_bulk_assign_tags`/
+        `_move_to_kritik`/`_download`/`_move_to_imha`) — burada YENİ bir
+        toplu işlem UYGULANMIYOR, yalnızca aynı gövdeye giden ikinci bir
+        giriş noktası açılıyor (bkz. o dosyanın `_on_bulk_toolbar_*`
+        metotları). "Karantinadan Çıkar" BİLİNÇLİ olarak burada YOK: o
+        yalnızca Karantina etiketindeki dosyalar için anlamlı ve mockup
+        onu istemedi; sağ-tık menüsü hâlâ sunuyor.
+        """
+        cubuk = QWidget()
+        cubuk.setObjectName("bulk_toolbar")
+        cubuk.setFixedHeight(44)
+        cubuk.setVisible(False)
+
+        bh = QHBoxLayout(cubuk)
+        bh.setContentsMargins(16, 0, 16, 0)
+        bh.setSpacing(10)
+
+        self._bulk_toolbar = cubuk
+        self._bulk_toolbar_label = QLabel("")
+        self._bulk_toolbar_label.setObjectName("bulk_toolbar_label")
+        bh.addWidget(self._bulk_toolbar_label)
+        bh.addStretch(1)
+
+        self._btn_bulk_tags = QPushButton("🏷  Etiket Ata")
+        self._btn_bulk_tags.setObjectName("bulk_btn_tags")
+        self._btn_bulk_tags.setCursor(Qt.PointingHandCursor)
+        self._btn_bulk_tags.clicked.connect(self._on_bulk_toolbar_tags)
+        bh.addWidget(self._btn_bulk_tags)
+
+        self._btn_bulk_kritik = QPushButton("🛡  Kritik'e Taşı")
+        self._btn_bulk_kritik.setObjectName("bulk_btn_kritik")
+        self._btn_bulk_kritik.setCursor(Qt.PointingHandCursor)
+        self._btn_bulk_kritik.clicked.connect(self._on_bulk_toolbar_kritik)
+        bh.addWidget(self._btn_bulk_kritik)
+
+        self._btn_bulk_download = QPushButton("⬇  İndir")
+        self._btn_bulk_download.setObjectName("bulk_btn_download")
+        self._btn_bulk_download.setCursor(Qt.PointingHandCursor)
+        self._btn_bulk_download.clicked.connect(self._on_bulk_toolbar_download)
+        bh.addWidget(self._btn_bulk_download)
+
+        self._btn_bulk_imha = QPushButton("🔥  İmhaya At")
+        self._btn_bulk_imha.setObjectName("bulk_btn_imha")
+        self._btn_bulk_imha.setCursor(Qt.PointingHandCursor)
+        self._btn_bulk_imha.clicked.connect(self._on_bulk_toolbar_imha)
+        bh.addWidget(self._btn_bulk_imha)
+
+        return cubuk
 
     # ── Slide-over paneli — doğrulama/ayar ekranlarının ORTAK mekanizması ──────
     #

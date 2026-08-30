@@ -1989,6 +1989,32 @@ already flags a related boundary in the same spot (the DB schema's
 `role` column cannot represent Standart vs. Salt Okunur at all). Noted,
 not fixed here.
 
+**A third entry point reaches this same gate, and stayed sequential
+rather than growing a batched-write shortcut (B-094).** The file grid's
+"Genel" view gained checkboxes and a persistent bulk-action toolbar
+(tag, move to Kritik, download, move to Imha) alongside the pre-existing
+right-click multi-select menu. Both call the exact same
+`UI/main_window_bulk.py::_on_ctx_bulk_*` bodies — the toolbar's
+`_on_bulk_toolbar_*` methods differ only in *how* they collect the
+selection (`_checked_selection()` reads per-row checkbox state instead of
+`QTableWidget.selectedIndexes()`), not in what they do with it. Each
+`_on_ctx_bulk_*` handler still loops a single `db.execute()` per file
+rather than issuing one batched `UPDATE ... WHERE id IN (...)` — a
+deliberate choice, not an oversight: `_yazma_yetkisini_dogrula()` runs on
+every `execute()` call, so the loop already fails closed on the *first*
+iteration for a read-only role (caught by each handler's own
+`try/except`, shown as a dialog, no partial write beyond that first
+rejected attempt), and collapsing it into one statement would only make a
+uniform-role rejection *look* atomic without changing what it protects
+against — the role does not change mid-loop within a single click.
+`tests/test_bulk_toolbar_rbac.py` proves the checkbox path reaches the
+same rejection (a read-only role checking two files and clicking "Move to
+Kritik" leaves both rows and their DB labels untouched, with an
+`rbac_write_rejected` entry logged) and, separately, that an authorized
+role's bulk action lands on *exactly* the checked rows — an unchecked
+control file in the same batch is asserted to remain unmodified, a
+distinct claim from the RBAC rejection tests above it in the same file.
+
 ### 4.18 The lock screen stopped checkout, but not a bulk download already in flight
 
 > **Attacker models:** M2 · M3
@@ -5663,6 +5689,32 @@ bir oturum yakalanır. Bu farklı, daha dar bir eksen (`can_write` değil,
 zaten aynı noktada ilişkili bir sınırı işaretliyor (DB şemasının `role`
 sütunu Standart ile Salt Okunur'u hiç AYIRT EDEMİYOR). Not düşüldü,
 burada düzeltilmedi.
+
+**AYNI kapıya ulaşan üçüncü bir giriş noktası, ve toplu-yazma kısayoluna
+BÜYÜMEDİ, SIRALI kaldı (B-094).** Dosya ızgarasının "Genel" görünümü
+kutucuklar ve kalıcı bir toplu-işlem araç çubuğu (etiket ata, Kritik'e
+taşı, indir, İmha'ya taşı) kazandı — mevcut sağ-tık çoklu-seçim menüsünün
+YANINDA. İkisi de TAM OLARAK AYNI `UI/main_window_bulk.py::
+_on_ctx_bulk_*` gövdelerini çağırıyor — araç çubuğunun `_on_bulk_toolbar_
+*` metotları yalnızca seçimi NASIL topladığında farklı (`_checked_
+selection()` her satırın kutucuk durumunu okuyor, `QTableWidget.
+selectedIndexes()` DEĞİL), onunla NE yapıldığında değil. Her `_on_ctx_
+bulk_*` işleyicisi hâlâ dosya başına TEK bir `db.execute()` döngüsü
+kullanıyor, tek bir toplu `UPDATE ... WHERE id IN (...)` YAYINLAMIYOR —
+bilinçli bir tercih, bir gözden kaçırma DEĞİL: `_yazma_yetkisini_
+dogrula()` HER `execute()` çağrısında çalışıyor, yani döngü salt okunur
+bir rol için zaten İLK yinelemede kapalı hatayla duruyor (her işleyicinin
+KENDİ `try/except`'i yakalıyor, bir diyalog gösteriyor, o ilk reddedilen
+denemenin ÖTESİNDE kısmi bir yazma YOK) — bunu TEK bir ifadeye
+sıkıştırmak, tek-tip bir rol reddini SADECE atomik GÖSTERİRDİ, neyi
+koruduğunu değiştirmezdi — rol tek bir tıklama İÇİNDE döngü boyunca
+DEĞİŞMİYOR. `tests/test_bulk_toolbar_rbac.py` kutucuk yolunun AYNI reddi
+ulaştığını (salt okunur bir rol iki dosyayı işaretleyip "Kritik'e Taşı"ya
+tıklayınca HER İKİ satır ve DB etiketleri de DOKUNULMADAN kalıyor, bir
+`rbac_write_rejected` kaydı düşüyor) ve AYRICA, yetkili bir rolün toplu
+işleminin TAM OLARAK işaretli satırlara indiğini kanıtlıyor — aynı grupta
+işaretlenmeyen bir kontrol dosyasının DEĞİŞMEDEN kaldığı iddia ediliyor,
+aynı dosyadaki yukarıdaki RBAC ret testlerinden AYRI bir iddia.
 
 ### 4.18 Kilit ekranı checkout'u durduruyordu, ama devam eden bir toplu indirmeyi değil
 

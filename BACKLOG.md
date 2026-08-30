@@ -7364,3 +7364,96 @@ Ruff/bandit temiz; mypy'de değişiklik yok (aynı 768 pre-existing PySide6-
 stub hatası, `git stash` ile karşılaştırılıp doğrulandı).
 
 ---
+
+## B-094 — Genel dosya görünümüne çoklu seçim (kutucuk) + toplu işlem çubuğu: mevcut sağ-tık gövdesine ikinci giriş noktası, K1-14 rol denetimi kanıtlandı
+
+Görev: Genel dosya görünümüne çoklu seçim (checkbox) ve toplu işlem
+çubuğu ekle (Etiket ata / Kritik'e taşı / İndir / İmhaya at). Her toplu
+işlemin tekli fonksiyonları mı sırayla çağıracağı yoksa toplu bir
+fonksiyon mu gerekeceğine karar ver — ama en kritik nokta: K1-14'ün DB
+seviyesi rol denetiminin toplu işlemlerde de aynı şekilde çalıştığından
+emin ol.
+
+**Keşif — arka uç ZATEN vardı.** `UI/main_window_bulk.py::
+BulkActionsMixin` çoklu satır seçimini (sağ tık menüsü, `QTableWidget.
+ExtendedSelection`) ZATEN destekliyordu — Toplu Etiket Ata, Seçilenleri
+İndir, Karantinadan Çıkar, Kritik'e Taşı, İmha Odasına At, hepsi çalışan,
+denetim kaydı düşen kod. Görev genuine olarak YENİ bir arka uç DEĞİL,
+YENİ bir GİRİŞ NOKTASI (kutucuk + kalıcı araç çubuğu) istiyordu —
+mockup'ın istediği "Karantinadan Çıkar" hariç dört eylem.
+
+**Tekli mi toplu mu — karar: SIRALI, mevcut `_on_ctx_bulk_*` gövdeleri
+DEĞİŞTİRİLMEDİ.** Zaten dosya başına bir `db.execute()` döngüsü
+kullanıyorlardı, TEK bir toplu `UPDATE ... WHERE id IN (...)` değil.
+Gerekçe (kod değiştirmeden, yalnızca karar): (1) dosya başına AYRI
+denetim kaydı (`target_id=fid`) düşüyor, toplu SQL bunu ya kaybederdi ya
+KENDİ döngüsünü gerektirirdi; (2) K1-14'ün rol denetimi HER `execute()`
+çağrısında çalışıyor, döngü zaten salt okunur bir rolü İLK yinelemede
+kapalı hatayla durduruyor — tek ifadeye sıkıştırmak reddi SADECE atomik
+GÖSTERİRDİ, korumayı değiştirmezdi (rol tek tıklama İÇİNDE değişmiyor).
+
+**Uygulama.**
+  - `UI/main_window_table.py::_insert_row()` — sütun 0'daki dosya adı
+    öğesine `Qt.ItemIsUserCheckable` + `setCheckState(Unchecked)`. YENİ
+    bir sütun AÇILMADI: ayrı sütun `_set_scan_badge()` dahil sütun
+    indeksine bağlı HER yeri değiştirmeyi gerektirirdi, kozmetik bir
+    eklenti için orantısız risk.
+  - `UI/main_window_layout.py::_make_bulk_toolbar()` — 1+ kutucuk
+    işaretliyken görünen araç çubuğu (`_make_content()`'in tablo
+    ÖNCESİNE eklendi, sayfa geçişleriyle otomatik gizlenip gösteriliyor
+    — ayrı bir `setVisible` kablolaması GEREKMEDİ).
+  - `UI/main_window_bulk.py` — `_checked_selection()` (kutucuklardan
+    `(rows, file_ids, labels, filepaths)` üretir, sağ-tık menüsünün
+    seçili SATIRLARDAN aynı şekli üreten döngüsünün kutucuk karşılığı),
+    `_on_table_item_changed()` (araç çubuğunu gösterip/gizler,
+    Kritik'e Taşı/İmhaya At'ın `removeRow()`'undan SONRA elle de
+    çağrılıyor — o çağrı `itemChanged` TETİKLEMİYOR), dört
+    `_on_bulk_toolbar_*` — hiçbiri YENİ bir toplu işlem UYGULAMIYOR,
+    hepsi mevcut `_on_ctx_bulk_*` gövdelerini çağırıyor.
+
+**Test — `tests/test_bulk_toolbar_rbac.py` (7 test).**
+  1. Salt Okunur rol, kutucuklarla iki dosya işaretleyip Kritik'e Taşı/
+     İmhaya At'a tıklayınca İKİSİ de REDDEDİLİYOR — DB etiketleri
+     DEĞİŞMİYOR, satırlar tablodan KALDIRILMIYOR, `rbac_write_rejected`
+     denetim kaydı düşüyor, pencere KİLİTLENMİYOR (RBAC reddi B-064/
+     B-066'nın canlı-yetki kilitlemesiyle KARIŞTIRILMIYOR).
+  2. Yetkili rol (Yönetici VE Standart), üç dosyadan İKİSİNİ işaretleyip
+     toplu işlem çağırınca YALNIZCA işaretli ikisi etkileniyor, İŞARETSİZ
+     üçüncüsü DEĞİŞMEDEN kalıyor — araç çubuğu işlem sonrası otomatik
+     GİZLENİYOR.
+  3. Kutucuk durumu, `QTableWidget`'ın native satır seçiminden (Ctrl/
+     Shift-tık, mavi vurgu) BAĞIMSIZ okunuyor — yalnızca bir satırı
+     TIKLAMAK (kutucuğu işaretlemeden) toplu araç çubuğunu TETİKLEMİYOR.
+
+**Mutasyon kanıtı.** `_checked_selection()`'daki kutucuk filtresini
+kaldırmak "yalnızca işaretliler etkileniyor" ve "native seçim ≠ kutucuk"
+testlerini kırdı; `DB/db_manager.py::_yazma_yetkisini_dogrula()`'daki
+`can_write()` kontrolünü (K1-14) devre dışı bırakmak İKİ RBAC ret testini
+kırdı. Üçü de geri alındı.
+
+**Keşif — test kurulumu sırası.** İlk taslak, dosyaları DB'ye eklemeden
+ÖNCE pencereyi kurup SONRA `_insert_row()`'u elle TEKRAR çağırıyordu —
+`HycleusWindow.__init__()` ZATEN "Genel" etiketli dosyaları otomatik
+yüklediği için bu satırları İKİLİYORDU (rowCount 2 yerine 4). Ayrıca
+`_apply_role_restrictions()`'ın `__init__` İÇİNDE ÇAĞRILMADIĞI (üretimde
+`main.py`'nin `.show()` SONRASI tetiklediği ayrı bir adım, `tests/
+test_app_mode_ui.py`'nin zaten bildiği bir gerçek) gözden kaçmıştı — bu
+olmadan `DBManager()._role` `None` kalıyor ve K1-14 rolü HİÇ KONTROL
+ETMEDEN geçiyordu. İkisi de testler YAZILIRKEN, kod değil test
+düzeltilerek bulundu ve giderildi.
+
+SECURITY.md §4.17'ye (EN+TR) eklendi — üçüncü giriş noktasının AYNI kapıya
+ulaştığı, ve toplu-yazma kısayoluna neden büyümediği.
+
+Tam test suite: 3085 passed, 4 skipped (bir önceki turdan +9 — yeni
+`tests/test_bulk_toolbar_rbac.py`). Ruff/bandit temiz (bandit'in
+`UI/main_window_table.py` üzerindeki 2 bulgusu ÖNCEKİ turdan değişmedi,
+`git stash` ile karşılaştırılıp doğrulandı). mypy: `UI/main_window_
+layout.py`'de +19 hata — hepsi bu depoda ZATEN yaygın olan "mixin
+kendi kardeşinin metodunu göremiyor" kalıbı (`_on_context_menu` gibi
+PRE-EXISTING örnekleri aynı dosyada zaten var); GERÇEK bir tip hatası
+değil, `HycleusWindow`'un çoklu-miras MRO'sunu mypy'nin dosya-başına
+denetiminin GÖRMEMESİ — kod tabanının ZATEN 376 örnekle yaşadığı AYNI
+sınır, yeni bir sınıf değil.
+
+---
