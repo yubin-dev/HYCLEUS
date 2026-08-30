@@ -3038,8 +3038,8 @@ existing guard/authorization tests (`tests/test_authz_invariants.py`,
 username)`/`_on_reject(hwid, username)` directly — appropriate for
 proving a *guard* fires, but insufficient to prove the `functools.partial`
 binding itself is wired correctly, since calling the method directly
-bypasses whatever the button was actually bound to. `tests/
-test_pending_registrations_view.py` closes that gap: with **two** pending
+bypasses whatever the button was actually bound to.
+`tests/test_pending_registrations_view.py` closes that gap: with **two** pending
 users on screen at once, it finds one specific card by its `hwid`
 (`QFrame.property("hwid")`, set at construction) and calls
 `QPushButton.click()` on that card's own "Onayla"/"Reddet" button —
@@ -3075,8 +3075,8 @@ waiting for the next `.yenile()`. `tests/test_app_mode_ui.py`'s
 verifies the switch is instant in both directions, not just on the next
 load.
 
-Full suite: 3019 passed, 4 skipped, plus 9 new dedicated tests in `tests/
-test_pending_registrations_view.py` (card content and truncation, empty-
+Full suite: 3019 passed, 4 skipped, plus 9 new dedicated tests in
+`tests/test_pending_registrations_view.py` (card content and truncation, empty-
 state visibility, real-button-click approve/reject targeting the correct
 card among several, audit-log detail format, cancel-leaves-state-
 unchanged). Ruff/bandit clean; mypy shows only the same pre-existing
@@ -6519,8 +6519,8 @@ alınmış) ANINDA yeniden çiziyor, bir sonraki `.yenile()`'yi BEKLEMEDEN.
 geçişin YALNIZCA bir sonraki yüklemede değil, HER İKİ yönde de ANINDA
 olduğunu doğruluyor.
 
-Tam suite: 3019 passed, 4 skipped, artı `tests/
-test_pending_registrations_view.py`'de 9 yeni özel test (kart içeriği ve
+Tam suite: 3019 passed, 4 skipped, artı
+`tests/test_pending_registrations_view.py`'de 9 yeni özel test (kart içeriği ve
 kırpma, boş-durum görünürlüğü, birden fazla kart arasında DOĞRU hedefi
 vuran gerçek düğme tıklamasıyla onay/red, denetim kaydı `detail=` biçimi,
 iptal-durumu-değiştirmiyor). Ruff/bandit temiz; mypy yalnızca bu turdan
