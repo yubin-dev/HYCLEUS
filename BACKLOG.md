@@ -2327,6 +2327,16 @@ uygulama çevrimdışı) ve kendinden imzalı bir kökün öz-imzasının bir g�
 beyanı OLMADIĞINI yazıyor. Kökün uygunluğu, onu ekleyen yöneticinin
 kararı — araç o kararı taklit etmemeli.
 
+### Güncelleme (B-105): "dış depo" fikri denenmedi, DAR kapsamlı bir başka çözüm eklendi
+
+Yukarıdaki "dış güvenli depo" (`HYCLEUS_AUDIT_ANCHOR` deseni) önerisi
+sonradan değerlendirildi ve fazla karmaşık bulunarak reddedildi — bkz.
+B-105. Onun yerine uygulamanın kendi varsayılan TSA'sının kökü ikili
+dosyaya gömüldü (`CORE/trusted_roots_builtin.py`), ama bu SINIRLI bir
+kazanım: yalnızca K4-20'nin denetim raporu mührü için, genel dosya
+doğrulaması hâlâ yukarıdaki sınırı AYNEN taşıyor. Kurumun kendi/özel bir
+TSA'sı için kök hâlâ buradaki mutable, M3'e açık depodan ekleniyor.
+
 ---
 
 ## B-045 — Görünüm tercihleri için kullanıcı başına ayar altyapısı yok
@@ -8453,5 +8463,92 @@ dosyasının Qt/UI import'larını `try/except ImportError` ile sarması —
 YAKALADI; diğer yedi UI test dosyasındaki desene sarıldı.
 
 Tam suite: 3146 passed, 4 skipped. ruff/mypy/bandit temiz.
+
+---
+
+## B-105 — İkili dosyaya gömülü güven kökü (K4-20 ön koşulu): B-044'ün "dış depo" fikri yerine TLS yığınlarının deseni
+
+**Durum:** Kapalı — dar kapsamlı bir öncül olarak teslim edildi
+**Öncelik:** Yüksek (K4-20'yi bu hafta önden açıyor)
+**Bulundu:** 2026-09-02 — K4-20 (RFC 3161 mührü, B-087) sıraya alınırken
+
+B-044, `CORE/trusted_roots.py`'nin güven kökü listesinin `settings`
+tablosunda (M3'e açık, şifresiz) durduğunu belgelemiş ve çözüm olarak
+`HYCLEUS_AUDIT_ANCHOR`'ın (§4.6) deseni — bir ortam değişkeniyle listeyi
+USB'ye/ağ paylaşımına yönlendiren "dış güvenli depo" — önermişti. Bu tur
+o yön DEĞERLENDİRİLDİ ve reddedildi: ikinci bir ortam değişkeni, ikinci
+bir "hangi kaynak kazanır" kararı, ikinci bir sızıntı yüzeyi — B-044'ün
+kendi metninin de yazdığı gibi, iki kaynağı aynı anda kurmak zaten "tek
+karar noktası" sınırını bulanıklaştırırdı.
+
+### Yapılan: her TLS yığınının yaptığı
+
+`CORE/trusted_roots_builtin.py` (yeni) güven kökünün KENDİSİNİ ikili
+dosyaya, değişmez bir Python sabiti olarak gömüyor — OpenSSL'in
+`ca-certificates` paketinin ya da bir tarayıcının kök mağazasının
+yaptığı gibi. `tests/data/freetsa_response.der` fixture zincirinden
+çıkarılan, freetsa.org'un GERÇEK kendinden imzalı Root CA'sı (parmak izi
+sabit bir değere kilitli: `a6379e7c...d18aabc`). `gomulu_kokler()`
+kasıtlı olarak `db` parametresi ALMIYOR — settings'e ne okuma ne yazma
+var, yani M3'ün erişebileceği bir yüzey değil. Veri dosyası değil sıradan
+bir `.py`: `HYCLEUS.spec`/`HYCLEUS-linux.spec`'e yeni bir `datas` girişi
+gerekmiyor (B-081'in wmi/reportlab'da defalarca yakaladığı "paketlemede
+unutulan bağımlılık" kusur sınıfının kendisi burada yapısal olarak yok).
+
+### Kapsam BİLEREK dar tutuldu: genel doğrulama akışına karıştırılmadı
+
+İlk deneme `gomulu_kokler()`'i sağ tık menüsündeki genel damga
+doğrulamasına (`UI/main_window_files.py::_on_ctx_verify_timestamp`)
+karıştırıyordu — ve bu GERÇEK bir regresyon üretti, testle yakalandı:
+`tsa_url` kurum başına ayarlanabilir bir ayar ve `verify_timestamp
+(trusted_roots=...)` VERİLDİĞİNDE eşleşmeyen kök `anchor_trusted=False`
+değil doğrudan GEÇERSİZ (`failed_check=trust_anchor`) üretiyor.
+`tests/test_timestamp_ui.py`'nin `FakeTSA()` kullanan iki testi
+(`test_diyalog_gercekten_KURULUYOR`, `test_dogrulama_DENETIM_kaydina_
+geçiyor`) gömülü kök karıştırılınca "uyarılı geçerli" beklerken
+"GEÇERSİZ" ürettiğini gösterdi — yani kendi (freetsa OLMAYAN) TSA'sını
+kullanan bir kurumun damgaları, o kurum kendi kökünü Ayarlar'a eklemeden,
+YANLIŞLIKLA geçersiz görünürdü. Bu, TLS istemcilerinin gerçek davranışına
+(eşleşmeyen zincir reddedilir) uysa da HYCLEUS'un § 4.9'da belgelediği
+üç durumlu tasarımı ("kök tanımlı değilse uyarılı") kırardı — geri
+alındı. `UI/main_window_files.py` değişmeden kaldı, yalnızca AÇIKLAYICI
+bir yorum eklendi.
+
+Gömülü kökün bugünkü tek KULLANICISI yok — henüz yazılmamış K4-20'nin
+(B-087) önkoşulu olarak hazır bekliyor. K4-20'nin denetim raporu mührü
+HER ZAMAN uygulamanın kendi varsayılan TSA'sıyla üretileceği için, orada
+sert eşleşme (genel akıştan farklı olarak) yanlış pozitif üretmez — ve
+mühür dışa aktarıldığında, onu doğrulayacak makinede HYCLEUS hiç kurulu
+olmasa bile (`gomulu_kokler()` DB istemiyor) doğrulanabilmesi gerekiyor;
+tam olarak bu maddenin sağladığı şey.
+
+### Test (`tests/test_trusted_roots_builtin.py`, 12 test)
+
+- Gömülü olduğunun yapısal kanıtı: `gomulu_kokler()`'in imzasında `db`
+  yok; hiçbir test dosyası `db`/`DBManager` fixture'ı KURMADAN
+  çağrılabiliyor; modülün AST'i disk/ağ/DB ilkeli (`open`, `sqlite3`,
+  `requests`, ...) çağırmıyor.
+- Gömülü olanın GERÇEKTEN freetsa.org'un kökü olduğunun kanıtı: fixture
+  zincirindeki kökle bayt bayt eşleşiyor, ayrıca sabit bir SHA-256
+  değerine kilitli.
+- Uçtan uca: GERÇEK bir freetsa damgası, `db`/`DBManager` HİÇ
+  kurulmadan, yalnızca `gomulu_kokler()` ile `anchor_trusted=True`
+  çıkıyor.
+- Negatif kontrol: genel doğrulama akışının gömülü kökü KULLANMADIĞI
+  AST ile denetleniyor — yukarıdaki regresyonun geri gelmesini engeller.
+- `main.py --selftest` listesine `CORE.trusted_roots_builtin` eklendi
+  (B-103'ün yakaladığı paketleme kusur sınıfı).
+
+Mutasyonla ölçüldü: `gomulu_kokler()` geçici olarak `[]` döndürecek
+şekilde bozulup 7/12 testin GERÇEKTEN düştüğü, geri alınca hepsinin
+geçtiği doğrulandı (`git diff --stat` ile temiz geri alım teyit edildi).
+
+SECURITY.md §4.9 (EN+TR) güncellendi: iki yoldan üçe çıkan tablo + yeni
+bir paragraf, gömülü kökün neden genel akışın dışında tutulduğunu
+anlatıyor. `test_SECURITY_md_kok_deposunu_anlatiyor`'un saydığı sabit
+değerler (`tsa_trusted_roots` × 2, "B-044" × 2) korundu.
+
+Tam suite: 3146 passed → **3161 passed**, 4 skipped. ruff/mypy/bandit
+temiz.
 
 ---

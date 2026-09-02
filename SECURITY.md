@@ -963,18 +963,37 @@ can rewrite the trailer can mint their own CA, issue their own TSA
 certificate, sign a token saying whatever time they like, and the chain
 check alone will call it valid, because mathematically it is.
 
-The answer is a root store held outside the file, and there are now two
+The answer is a root store held outside the file, and there are now three
 ways to supply one:
 
 | Where | How | Who it is for |
 |---|---|---|
 | Application | `settings.tsa_trusted_roots`, managed in **Admin Panel → Settings** (`CORE/trusted_roots.py`) | Everyday use: the organisation adds its TSA root once and every later verification uses it |
 | CLI | `--trusted-root ca.pem` | An auditor, who brings their own root |
+| Built into the binary | `CORE/trusted_roots_builtin.py::gomulu_kokler()` (B-105) | K4-20's audit-report seal, verified with no database at all |
 
 **The CLI deliberately ignores the stored list.** Someone running the
 command-line verifier is auditing *this machine*; reading the trust list out
 of the database they are auditing would ask the question of the thing being
 questioned. Only the PEM/DER parser is shared, so the two cannot drift.
+
+**The built-in root is narrower still, and stays out of the path above on
+purpose.** It carries exactly one certificate — the root of HYCLEUS's own
+default TSA (freetsa.org) — compiled into the executable as a plain Python
+constant, not a packaged data file, not a database row: nothing to add to
+`HYCLEUS.spec`, and nothing a running instance could ever rewrite.
+`gomulu_kokler()` takes no database argument at all, so it works even
+where no `settings` row, no install, could reach it — the property an
+exported audit-report seal needs, since it may be checked on a machine
+that never ran HYCLEUS. It is **not** merged into the general
+file-verification path above: `tsa_url` is configurable per
+organisation, and once `trusted_roots` is non-empty a non-matching root
+makes the result *invalid*, not merely unconfirmed — mixing it in would
+turn every stamp from an organisation's own, different TSA into a false
+"invalid" the moment that TSA's root isn't yet in Settings. It exists for
+one caller only: K4-20's seal, which is always produced with HYCLEUS's
+own default TSA, so a hard match there is correct rather than a false
+alarm.
 
 **Three outcomes, and they are now visually distinct.** With no root
 configured the result is `valid=True, anchor_trusted=False` and the UI
@@ -4719,19 +4738,38 @@ biri kendi CA'sını üretir, kendi TSA sertifikasını keser, istediği tarihi
 söyleyen bir token imzalar ve tek başına zincir kontrolü ona GEÇERLİ der;
 çünkü matematiksel olarak geçerlidir.
 
-Cevap, dosyanın dışında tutulan bir kök deposu ve artık iki yoldan
+Cevap, dosyanın dışında tutulan bir kök deposu ve artık ÜÇ yoldan
 verilebiliyor:
 
 | Nerede | Nasıl | Kimin için |
 |---|---|---|
 | Uygulama | `settings.tsa_trusted_roots`, **Yönetim Paneli → Ayarlar**'dan yönetiliyor (`CORE/trusted_roots.py`) | Günlük kullanım: kurum kendi TSA kökünü bir kez ekliyor, sonraki her doğrulama onu kullanıyor |
 | Komut satırı | `--trusted-root ca.pem` | Kendi kökünü getiren denetçi |
+| İkili dosyaya gömülü | `CORE/trusted_roots_builtin.py::gomulu_kokler()` (B-105) | K4-20'nin denetim raporu mührü, veritabanı hiç olmadan doğrulanıyor |
 
 **Komut satırı, kayıtlı listeyi BİLEREK yok sayıyor.** Komut satırı
 doğrulayıcısını çalıştıran kişi *bu makineyi* denetliyor; güven listesini
 denetlediği veritabanından okumak, sorulan sorunun cevabını sorunun
 kaynağına sordurmak olurdu. Ortaklaşan tek şey PEM/DER ayrıştırıcısı, yani
 ikisi ayrışamıyor.
+
+**Gömülü kök daha da dar ve yukarıdaki akışın DIŞINDA, bilerek.** Tek bir
+sertifika taşıyor — HYCLEUS'un kendi varsayılan TSA'sının (freetsa.org)
+kökü — ikili dosyaya sıradan bir Python sabiti olarak derlenmiş, ne
+paketlenen bir veri dosyası ne bir veritabanı satırı: `HYCLEUS.spec`'e
+eklenecek bir şey yok, çalışan bir örneğin yeniden yazabileceği bir şey
+yok. `gomulu_kokler()` hiçbir veritabanı parametresi almıyor, yani
+`settings` satırının, kurulumun bile ulaşamayacağı bir yerde çalışıyor —
+dışa aktarılan bir denetim raporu mührünün tam olarak ihtiyacı olan şey
+bu, çünkü o mühür HYCLEUS'un hiç kurulu olmadığı bir makinede
+denetlenebilmeli. Yukarıdaki genel dosya doğrulama akışına
+KARIŞTIRILMIYOR: `tsa_url` kurum başına ayarlanabilir ve `trusted_roots`
+boş olmadığında eşleşmeyen bir kök sonucu yalnızca doğrulanmamış değil
+DOĞRUDAN GEÇERSİZ yapıyor — karıştırmak, kurumun kendi (farklı) TSA'sıyla
+üretilmiş her damgayı, o TSA'nın kökü Ayarlar'a eklenene kadar yanlış
+"geçersiz" gösterirdi. Tek bir çağıranı var: K4-20'nin mührü, HER ZAMAN
+HYCLEUS'un kendi varsayılan TSA'sıyla üretiliyor, yani orada sert
+eşleşme yanlış alarm değil doğru karar.
 
 **Üç sonuç var ve artık görsel olarak da ayrışıyorlar.** Kök tanımlı
 değilken sonuç `valid=True, anchor_trusted=False` oluyor ve arayüz onu

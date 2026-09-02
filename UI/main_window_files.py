@@ -219,6 +219,19 @@ class FileActionsMixin:
         # Kurumsal kök deposu (Ayarlar sayfası → AdminSettingsView). Boşsa `[]` dönüyor ve
         # `verify_timestamp` eskisi gibi `anchor_trusted=False` veriyor —
         # yani depo kurulmamış bir sistemde davranış DEĞİŞMİYOR.
+        #
+        # B-105'in ikili dosyaya gömülü kökü (`CORE.trusted_roots_builtin.
+        # gomulu_kokler()`) BİLEREK buraya karıştırılmıyor: `tsa_url` kurum
+        # başına ayarlanabilir (bkz. `CORE/timestamp.py::tsa_url`) ve
+        # `trusted_roots` VERİLDİĞİNDE eşleşmeyen her kök `anchor_trusted=
+        # False`'u değil doğrudan GEÇERSİZ'i (`failed_check=trust_anchor`)
+        # üretir (bkz. `CORE/timestamp_verify.py` modül docstring'i). Kendi
+        # TSA'sını kullanan bir kurumun damgaları, o kurum kendi kökünü
+        # Ayarlar'a eklemeden, sırf gömülü freetsa kökü eşleşmiyor diye
+        # burada YANLIŞLIKLA geçersiz görünürdü. Gömülü kök şimdilik yalnızca
+        # K4-20'nin (B-087) kendi denetim raporu mührünü doğrulaması için —
+        # o mühür HER ZAMAN uygulamanın kendi varsayılan TSA'sıyla üretiliyor,
+        # yani sert eşleşme orada YANLIŞ pozitif üretmiyor.
         try:
             kokler = der_listesi(DBManager())
         except Exception as exc:  # pragma: no cover — depo doğrulamayı engellemez
