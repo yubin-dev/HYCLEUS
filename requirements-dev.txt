@@ -34,3 +34,18 @@ defusedxml>=0.7.1
 # `sys.platform != "win32"` ise atlanıyor, ama paket iki tarafta da kurulu
 # olmalı ki Linux CI ayağında import hatasıyla TÜM dosya çökmesin.
 psutil>=7.0
+
+# Testler için per-test zaman aşımı (B-098) — bkz. pytest.ini'deki `timeout`.
+#
+# CI'ın kendi `timeout-minutes: 30`u ASILAN bir adımı 30 dakika SESSİZCE
+# tüketip "cancelled" (kırmızı X DEĞİL) ile bitiriyor — hangi testin
+# takıldığını gösteren hiçbir iz bırakmadan (ci.yml'nin kendi başındaki
+# uyarı tam bunu anlatıyor: "Sessiz bir bekleme, açık bir başarısızlıktan
+# her zaman kötüdür"). `pytest-timeout` her testi 120 saniyeyle sınırlıyor
+# — yerel en yavaş test 18,76 sn (ölçüldü, `--durations=25`), Windows
+# koşucusu daha yavaş olsa da 120 sn geniş bir pay bırakıyor. Windows'ta
+# `SIGALRM` YOK, bu yüzden paket otomatik `thread` yöntemine düşüyor: testi
+# zorla İPTAL EDEMEZ ama zaman aşımı anında TÜM thread'lerin yığın izini
+# (stack trace) test çıktısına yazdırıyor — asıl kazanç bu, 30 dakikalık
+# izsiz bir "cancelled" yerine TAKILAN satırı gösteren bir günlük.
+pytest-timeout>=2.3

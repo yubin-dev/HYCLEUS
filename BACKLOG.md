@@ -7827,3 +7827,94 @@ satır ~294, `# noqa: S608` ile zaten işaretli sabit tablo listesi)
 DEĞİŞMEDİ, benim eklediğim kod DEĞİL.
 
 ---
+
+## B-098 — Windows CI'da "Test (pytest)" adımı 30 dakika sessizce takılıp "cancelled" ile bitiyordu: pytest-timeout eklendi, kök neden HÂLÂ TEŞHİS EDİLEMEDİ
+
+Görev: "windows cı testi çökmüş düzeltirmisin."
+
+**Teşhis — GitHub Actions API'siyle (gh CLI yok, ortamda kurulu değil).**
+`curl https://api.github.com/repos/.../actions/runs` (kimliksiz, herkese
+açık depo) son ~10 çalıştırmayı listeledi: hepsi `conclusion=cancelled`.
+İlk bakışta ürkütücü ama çoğu ZARARSIZ: `ci.yml`'nin `concurrency:
+cancel-in-progress: true` ayarı, bu oturumda art arda hızlı push
+yapıldığı için önceki çalıştırmayı YENİ push gelince iptal ediyor —
+beklenen davranış.
+
+**Ama en son çalıştırma (19732b8, B-097 — bu oturumdaki SON push, ondan
+SONRA başka push YOK) da "cancelled" idi ve iş bazında incelemede ("
+/actions/runs/{id}/jobs"): `windows-latest · Python 3.11` işinin `Test
+(pytest)` ADIMI 20:51:11 → 21:20:21, TAM 29 dakika 10 saniye sürüp
+`cancelled` ile bitti — `ci.yml`'nin `timeout-minutes: 30` iş sınırına
+tam oturdu. Sonrasında gelen hiçbir push YOKTU, yani bu bir concurrency
+iptali DEĞİL, GERÇEK bir zaman aşımı. `test-results-windows-latest-*`
+artifact'i bu çalıştırmada HİÇ ÜRETİLMEMİŞ (yalnızca ubuntu'nunki var) —
+`--junitxml` dosyası ya hiç yazılmadı ya da iptal ANINDA flush
+edilmeden kaldı, yani hangi testte takıldığına dair DOSYA BAZLI hiçbir iz
+yok. Aynı desen bir turda daha (d878561, B-095 devam) doğrulandı:
+`windows-latest` işi 19:51:36 → 20:21:49, yine TAM 30 dk 13 sn — bu ikisi
+ARASINDAKİ push'lar (217dd3a, affb91d) ÇOK ÇABUK iptal edildi (sonraki
+push onlardan önce geldi), yani hâlâ takılıp takılmadıkları
+GÖZLEMLENEMEDİ.
+
+**Ham günlüğe erişim ENGELLENDİ.** `/actions/jobs/{id}/logs` uç noktası
+kimliksiz istekte `403 Must have admin rights to Repository` döndürüyor
+— herkese açık bir depo bile olsa iş günlüklerinin ham metnini kimliksiz
+indirmek MÜMKÜN DEĞİL (yalnızca metadata/artifact listesi açık). Bu
+oturumda `gh` CLI kurulu değil (`command not found`, hem Bash hem
+PowerShell'de) ve depo sahibinin kimlik bilgileri paylaşılmadı — yani
+HANGİ testin tam olarak takıldığını gösteren stack trace/son satırlar
+şu an OKUNAMIYOR. Bu, "kök neden bulunup düzeltildi" değil, "kök neden
+teşhis edilemedi, ama BİR SONRAKİ çalıştırma artık kendini teşhis
+edecek" durumu — kullanıcıya böyle iletildi.
+
+**Öne çıkan (ama DOĞRULANAMAMIŞ) şüpheli — panoya (clipboard) erişim.**
+Bu turdan hemen önceki turlarda (`tests/test_pin_giris_kutulari.py`,
+B-095) `QApplication.clipboard().setText(...)` kullanan 9+ yeni test
+eklendi; panoya erişim, etkileşimli masaüstü OLMAYAN başsız CI
+koşucularında bilinen bir Windows-özgü asılma kategorisi. Ama bu SADECE
+bir hipotez — GitHub'ın `windows-latest` koşucuları genelde etkileşimli
+oturumla çalışıyor (gerçek Session-0 izolasyonu YOK), yani bu iddia
+günlük OKUNMADAN doğrulanamaz ve kesin olarak İLERİ SÜRÜLMEDİ.
+
+**Uygulanan düzeltme — teşhis edilebilirlik, kök neden değil.**
+`pytest-timeout` eklendi (`requirements-dev.txt`) ve `pytest.ini`'ye
+`timeout = 120` yazıldı. Gerekçe doğrudan `ci.yml`'nin kendi başındaki
+ilkeyle aynı: "Sessiz bir bekleme, açık bir başarısızlıktan her zaman
+kötüdür." 120 sn, yerel en yavaş testin (`--durations=25` ile ölçülen
+18,76 sn, `test_run_tool_torun_surec_pipe_tutsa_bile_tanitici_ve_
+thread_SIZDIRMIYOR`) 6 katından fazla bir pay bırakıyor — Windows
+koşucusunun bilinen yavaşlığı (`ci.yml`: "dosya sistemi ve Defender
+taraması") hesaba katılarak. Windows'ta `SIGALRM` olmadığı için paket
+otomatik `thread` yöntemine düşüyor: takılan testi zorla İPTAL EDEMEZ
+(altında GERÇEKTEN bloke eden bir sistem çağrısı varsa süreç yine de
+kilitli kalabilir) ama zaman aşımı ANINDA TÜM thread'lerin TAM yığın
+izini test çıktısına yazdırıyor — mekanizma, 2 saniyelik yapay bir
+zaman aşımıyla (`@pytest.mark.timeout(2)`, `time.sleep(10)` yapan
+geçici bir test) doğrudan doğrulandı: beklenen `+++ Timeout +++`
+bandı ve TAKILAN satırı gösteren tam stack trace üretildi, geçici test
+silindi.
+
+**Bu YETERLİ mi?** Emin değil. `thread` yöntemi süreç GERÇEKTEN kilitli
+kalırsa (ör. bir Win32 API çağrısı sonsuza dek bloke oluyorsa) 120 sn'de
+bir stack trace BASAR ama süreç yine de iş-seviyesi 30 dk sınırına kadar
+oturabilir — yine de bu sefer günlükte TAKILAN satır YAZILI olacak, yani
+bir SONRAKİ Windows CI koşusu artık ya (a) 120 sn'de temiz bir
+`Timeout` hatasıyla düşecek ve stack trace'i gösterecek, ya da (b) genel
+görünür bir "cancelled" olacak ama BU SEFER `test-results.xml` en
+azından o ana kadarki testleri kaydetmiş olacak. İkisi de bugünkü
+"hiçbir iz yok" durumundan STRICTLY iyi.
+
+**Yerel doğrulama.** Tam paket (3113 test) `timeout=120` altında yerel
+olarak YENİDEN çalıştırıldı — hiçbir yanlış-pozitif zaman aşımı yok,
+süre değişmedi (~5 dk). `pytest --collect-only` ile ini seçeneğinin
+hatasız yüklendiği doğrulandı ("timeout method: thread" satırı çıktıda
+görünüyor).
+
+**Takip gerekiyor.** Bu push'tan sonraki İLK Windows CI çalıştırması
+izlenmeli — `Test (pytest)` adımı 120 sn'lik bir `Timeout` bandıyla
+düşerse hangi testin takıldığı ORADA görünecek ve GERÇEK düzeltme o
+zaman yapılabilecek. Kullanıcıdan, erişilemeyen ham günlüğün son
+satırlarını (GitHub Actions arayüzünden) paylaşması istendi — paylaşılırsa
+teşhis bu turu beklemeden hemen tamamlanabilir.
+
+---
