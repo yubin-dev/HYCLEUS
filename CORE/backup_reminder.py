@@ -61,8 +61,9 @@ ERTELEME_AYARI = "backup_reminder_snoozed_at"
 #: Yedek hedef dizini (varsa). Boşsa dosya sistemi kontrolü yapılmıyor.
 HEDEF_AYARI = "backup_dest_dir"
 
-#: Varsayılan eşik.
-VARSAYILAN_ESIK_GUN = 7
+#: Varsayılan eşik (B-108: 7 → 15 gün — bkz. `main.py`'deki gösterim
+#: bloğunun yorumu).
+VARSAYILAN_ESIK_GUN = 15
 
 
 class YedekDurum(str, Enum):

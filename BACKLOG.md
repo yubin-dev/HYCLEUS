@@ -8722,3 +8722,71 @@ temiz (yeni dosyalarda; `UI/login_dialog.py`'nin mypy'de değişmeyen 50
 ön-var-olan Qt stub hatası, `git stash` ile teyit edildi).
 
 ---
+
+## B-108 — Yedekleme hatırlatması yalnızca yöneticiye: mekanizma zaten VARDI (B-015), eksik olan rol kontrolüydü
+
+**Durum:** Kapalı
+**Öncelik:** Düşük
+**Bulundu:** 2026-09-02/03 — "15 gün yedek alınmadıysa yöneticiye uyarı göster" istendi
+
+### Keşif: bu özellik zaten üretimde, neredeyse tamamıyla
+
+Görev "küçük, yeni bir iş" olarak tarif edilmişti ama `CORE/backup_
+reminder.py` (B-015) bunu ZATEN yapıyordu: `main.py`'de tam olarak
+`resume_pending_disposals()`'ın birkaç satır ALTINDA, açılışta çalışan,
+`settings.backup_reminder_days` eşiğine göre (varsayılan o zaman 7 gün)
+`QMessageBox` ile uyaran, "sonra sorma" ertelemesi olan, tam test edilmiş
+bir mekanizma. Kullanıcıya bu bulgu bildirildi; iki gerçek fark vardı:
+
+1. Eşik varsayılanı 7'ydi, istenen 15 — ve hiçbir UI'dan değiştirilemiyordu
+   (yalnızca `settings` tablosuna elle yazılabiliyordu, `grep`'le doğrulandı).
+2. Uyarı O AN giriş yapan HERKESE gösteriliyordu, yalnızca yöneticiye değil
+   — bir Standart kullanıcı "sonra sorma" diyerek ertelemeyi SEÇEBİLİYORDU
+   ve asıl ilgilenmesi gereken yönetici bir sonraki eşiğe kadar uyarıyı hiç
+   GÖRMEYEBİLİRDİ.
+
+Kullanıcıya soruldu: mevcut mekanizmayı düzelt mi (rol kısıtı + 7→15),
+yoksa TAMAMEN AYRI, yalnızca yöneticide çalışan sabit-15-günlük ikinci bir
+kontrol mü (risk: aynı açılışta iki ayrı yedek uyarısı görünebilirdi).
+**Seçilen: mevcudu düzelt** — ikinci bir mekanizma AÇILMADI.
+
+### Değişiklik
+
+- `CORE/backup_reminder.py::VARSAYILAN_ESIK_GUN`: 7 → 15.
+- `main.py`'nin gösterim bloğu: `if durum.uyarilmali:` →
+  `if durum.uyarilmali and is_admin_role(role):` — `CORE.roles.
+  is_admin_role()`, "depodaki TEK yönetici karşılaştırması" (kendi
+  docstring'i), ikinci bir `role == "Yönetici"` dizgi karşılaştırması
+  AÇILMADI. `role` değişkeni o noktada zaten oturumdan geliyor
+  (`dialog.role`).
+
+Standart bir kullanıcı artık uyarıyı hiç GÖRMÜYOR — ne "Tamam" ne "sonra
+sorma" seçeneği önüne geliyor; erteleme kararını yalnızca fiilen yedek
+alabilecek olan yönetici verebiliyor.
+
+### Test kırığı ve düzeltmesi
+
+`tests/test_backup_reminder.py`'nin iki testi eşik değerini SEMBOL yerine
+SABİT SAYI olarak varsayıyordu (`(7, True)` parametresi,
+`_gun_once(12)` → `ESKI` bekliyordu) — varsayılan 15'e çıkınca
+KIRILACAKTI. `VARSAYILAN_ESIK_GUN`'a GÖRELİ hâle getirildi (`gun_delta`
+parametrizasyonu), sabit değere bağımlılık kaldırıldı.
+
+### Test (+3 yeni test)
+
+- Mevcut AST denetimine (`test_main_hatirlatmayi_gosteriyor`)
+  `is_admin_role` çağrısının varlığı eklendi.
+- Yeni, daha kesin bir AST testi: `is_admin_role(role)` yalnızca dosyanın
+  BİR YERİNDE değil, yedekleme uyarısını AÇAN `if`'in KOŞULUNUN (`durum.
+  uyarilmali and is_admin_role(role)`) parçası olmalı — koşulun `and` ile
+  bağlandığı (`or` DEĞİL) ayrıca doğrulanıyor.
+
+Mutasyonla ölçüldü: (a) `and is_admin_role(role)` tamamen kaldırılınca 2
+test düştü; (b) `and` → `or` yapılınca (rol kontrolünü fiilen ETKİSİZ
+kılan ama `is_admin_role` çağrısını dosyada BIRAKAN bir mutasyon —
+yalnızca "çağrı var mı" testi bunu YAKALAMAZDI) yeni `and`-denetimi testi
+GERÇEKTEN düştü. İkisi de geri alındı, `git diff --stat` ile temiz.
+
+Tam suite: **3192 passed**, 4 skipped. ruff/mypy/bandit temiz.
+
+---

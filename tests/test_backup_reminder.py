@@ -63,21 +63,24 @@ def test_yeni_yedek_uyari_uretmiyor(db):
 
 
 @pytest.mark.parametrize(
-    "gun,beklenen",
-    [(0, False), (6, False), (7, True), (30, True)],
+    "gun_delta,beklenen",
+    # `VARSAYILAN_ESIK_GUN`'a GÖRELİ — sabit gün sayıları DEĞİL, çünkü
+    # varsayılan değişince (B-108: 7 → 15) bu test kırılmamalı.
+    [(-VARSAYILAN_ESIK_GUN, False), (-1, False), (0, True), (23, True)],
 )
-def test_esik_siniri(db, gun, beklenen):
-    db.set_setting(LAST_BACKUP_SETTING, _gun_once(gun))
+def test_esik_siniri(db, gun_delta, beklenen):
+    db.set_setting(LAST_BACKUP_SETTING, _gun_once(VARSAYILAN_ESIK_GUN + gun_delta))
     d = yedek_durumu(db, simdi=_SIMDI)
     assert d.uyarilmali is beklenen
 
 
 def test_eski_yedek_gun_sayisini_soyluyor(db):
-    db.set_setting(LAST_BACKUP_SETTING, _gun_once(12))
+    gun = VARSAYILAN_ESIK_GUN + 5
+    db.set_setting(LAST_BACKUP_SETTING, _gun_once(gun))
     d = yedek_durumu(db, simdi=_SIMDI)
     assert d.durum is YedekDurum.ESKI
-    assert d.gecen_gun == 12
-    assert "12 gün" in d.mesaj()
+    assert d.gecen_gun == gun
+    assert f"{gun} gün" in d.mesaj()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -288,6 +291,55 @@ def test_main_hatirlatmayi_gosteriyor():
     }
     assert "yedek_durumu" in cagrilar, "main.py yedek durumunu hiç sormuyor"
     assert "ertele" in cagrilar, "\"sonra sorma\" seçeneği bağlanmamış"
+    assert "is_admin_role" in cagrilar, (
+        "B-108: main.py rol kontrolü yapmıyor — uyarı her role gösterilir"
+    )
+
+
+def test_yedek_hatirlatmasi_YALNIZCA_yonetici_KOSULUNDA_gosteriliyor():
+    """
+    B-108 — asıl istenen: `is_admin_role(role)` yalnızca dosyanın BİR
+    YERİNDE çağrılmış olması yetmez, yedekleme uyarısını AÇAN `if`'in
+    KOŞULUNUN parçası olmalı. Aksi hâlde rol kontrolü ölü kod olur ve
+    Standart kullanıcı uyarıyı görmeye/erteleyebilmeye devam eder — B-108'in
+    kapatmak istediği tam boşluk (yönetici olmayan biri ertelerse asıl
+    ilgilenmesi gereken yönetici uyarıyı bir daha hiç görmeyebilirdi).
+    """
+    import ast
+    from pathlib import Path as _P
+
+    kaynak = _P(__file__).resolve().parent.parent / "main.py"
+    agac = ast.parse(kaynak.read_text(encoding="utf-8"))
+
+    hedef_if = None
+    for node in ast.walk(agac):
+        if isinstance(node, ast.If):
+            test_cagrilar = {
+                d.func.id for d in ast.walk(node.test)
+                if isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+            }
+            if "is_admin_role" in test_cagrilar:
+                hedef_if = node
+                break
+
+    assert hedef_if is not None, "is_admin_role() hiçbir if koşulunda kullanılmıyor"
+    assert isinstance(hedef_if.test, ast.BoolOp) and isinstance(hedef_if.test.op, ast.And), (
+        "is_admin_role() `and` DIŞINDA bir bağlaçla kullanılmış (ör. `or`) — "
+        "bu, kontrolü etkisiz kılar: koşul is_admin_role() YANLIŞ olsa bile "
+        "diğer taraf tek başına True'ysa uyarı yine gösterilir"
+    )
+
+    govde_cagrilar = {
+        (d.func.attr if isinstance(d.func, ast.Attribute) else
+         d.func.id if isinstance(d.func, ast.Name) else "")
+        for govde_dugumu in hedef_if.body
+        for d in ast.walk(govde_dugumu)
+        if isinstance(d, ast.Call)
+    }
+    assert "QMessageBox" in govde_cagrilar, (
+        "is_admin_role() bir if'te ama o if'in gövdesi yedekleme uyarısı "
+        "diyaloğunu AÇMIYOR — rol kontrolü yanlış koşula bağlanmış olabilir"
+    )
 
 
 def test_create_backup_hatirlatmayi_guncelliyor():

@@ -562,7 +562,7 @@ def main() -> None:
     except Exception as exc:  # DB/şema sorunları açılışı engellemesin
         _log.warning("Kurtarma parçası durumu okunamadı: %s", exc)
 
-    # ── Yedekleme hatırlatması (B-015) ───────────────────────────────────────
+    # ── Yedekleme hatırlatması (B-015, B-108) ────────────────────────────────
     # Yedekleme özelliği vardı ama hatırlatması yoktu; yedek yalnızca
     # kullanıcının aklına geldiğinde alınıyordu. Kullanılmayan bir yedekleme
     # özelliği, olmayan bir yedekleme özelliğidir.
@@ -570,11 +570,19 @@ def main() -> None:
     # ENGELLEYİCİ DEĞİL: uyarı gösterilip geçiliyor, açılış durmuyor. "Sonra
     # sorma" bir eşik süresi daha susturuyor. Kararın hangi durumda hangi
     # cümleyi kurduğu CORE/backup_reminder.py'de — burada yalnızca gösterim.
+    #
+    # YALNIZCA YÖNETİCİ (B-108): yedeği fiilen ALABİLECEK olan yönetici.
+    # Rol kontrolü olmadan bir Standart kullanıcı "sonra sorma" diyerek
+    # ertelemeyi kendisi seçebiliyordu — asıl ilgilenmesi gereken yönetici
+    # bir sonraki eşik dolana kadar uyarıyı hiç GÖRMEZDİ. `CORE.roles.
+    # is_admin_role()` depodaki TEK yönetici karşılaştırması; ikinci bir
+    # "role == 'Yönetici'" dizgi karşılaştırması AÇILMADI.
     try:
         from CORE.backup_reminder import YedekDurum, ertele, yedek_durumu
+        from CORE.roles import is_admin_role
 
         durum = yedek_durumu(DBManager())
-        if durum.uyarilmali:
+        if durum.uyarilmali and is_admin_role(role):
             _log.info("Yedek hatırlatması: %s", durum.durum)
             kutu = QMessageBox(None)
             kutu.setIcon(QMessageBox.Warning)
