@@ -1434,15 +1434,44 @@ class LoginDialog(QDialog):
         # Kurumsal modda GERÇEK karşılaştırma — eşleşmezse kayıt REDDEDİLİR,
         # sahte bir "geçerli" onayı hiç verilmez. `register_new_user()`
         # çağrılmadan önce döndüğü için DB'ye hiçbir satır yazılmaz.
+        #
+        # Hız sınırı (kaba kuvvete karşı) — CORE/rate_limit.py'nin giriş
+        # ekranında ZATEN kullandığı AYNI mekanizma (`login_attempts` tablosu,
+        # DB'de tutulan sayaç — yeniden başlatmak sıfırlamaz). İkinci bir
+        # implementasyon AÇILMADI; yalnızca anahtar UZAYI ayrı (`_rl_key()`
+        # HWID'i çıplak kullanırken burada `referans:` önekiyle): aksi hâlde
+        # yanlış referans kodu denemeleri PIN/TOTP giriş sayacıyla AYNI
+        # kovaya düşer ve bir kullanıcının kod yazım hatası, o HWID'in giriş
+        # ekranını da kilitlerdi — iki ayrı olay, iki ayrı sayaç.
         if self._reg_referans is not None:
+            rl_key = self._referans_rl_key()
+            lock = rate_limit.check(DBManager(), rl_key)
+            if lock.locked:
+                self._show_reg_error(lock.message())
+                return
+
             girilen_kod = self._reg_referans.text().strip()
-            gercek_kod = get_referans_id(DBManager())
             if not girilen_kod:
+                # Boş gönderim bir TAHMİN değil — sayaca işlenmiyor, aksi
+                # hâlde "Kayıt Ol"a boş alanla art arda basmak bile
+                # kilitlenmeye yol açardı.
                 self._show_reg_error("Referans Kodu boş olamaz.")
                 return
+
+            gercek_kod = get_referans_id(DBManager())
             if gercek_kod is None or girilen_kod != gercek_kod:
-                self._show_reg_error("Referans Kodu geçersiz.")
+                state = rate_limit.record_failure(
+                    DBManager(), rl_key, detail="referans_kodu_hatali"
+                )
+                if state.locked:
+                    self._show_reg_error(state.message())
+                else:
+                    self._show_reg_error("Referans Kodu geçersiz.")
                 return
+
+            # Doğru kod — sayaç sıfırlanır (`record_success` giriş ekranıyla
+            # AYNI davranış: doğru kod gecikme OLMADAN geçer).
+            rate_limit.record_success(DBManager(), rl_key)
 
         new_hwid = get_usb_hwid()
         if new_hwid is None:
@@ -1520,6 +1549,17 @@ class LoginDialog(QDialog):
     def _rl_key(self) -> str:
         """Rate limit anahtarı — giriş ekranı kullanıcı adı değil HWID bazlıdır."""
         return self._hwid or "<no-hwid>"
+
+    def _referans_rl_key(self) -> str:
+        """
+        Referans Kodu denemeleri için AYRI bir rate limit anahtarı.
+
+        `_rl_key()` ile AYNI HWID'i kullanıyor ama `referans:` önekiyle —
+        `login_attempts` tablosunda GİRİŞ sayacıyla farklı bir satıra
+        düşsün diye (bkz. `_on_register()`'ın yorumu: iki ayrı olay, iki
+        ayrı sayaç).
+        """
+        return f"referans:{self._hwid or '<no-hwid>'}"
 
     def _show_error(self, msg: str) -> None:
         if msg:

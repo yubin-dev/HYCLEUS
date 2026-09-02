@@ -9,7 +9,7 @@ Referans ID üretilip `settings` tablosuna kalıcı yazılıyor
 değerle GERÇEKTEN karşılaştırılıyor — sahte bir "geçerli" onayı asla
 verilmiyor.
 
-Bu paket dört şeyi ölçüyor
+Bu paket beş şeyi ölçüyor
 ---------------------------
 1. İlk Kurulum'da Kurumsal seçilince Referans ID gerçekten üretilip
    kaydediliyor; Bireysel seçilince HİÇ üretilmiyor.
@@ -22,6 +22,12 @@ Bu paket dört şeyi ölçüyor
    bir betikle elle doğrulandı (bkz. commit mesajı / oturum notları),
    burada kalıcı bir test olarak DEĞİL çünkü mutasyon üretim dosyasını
    geçici değiştirmeyi gerektiriyor.
+5. Hız sınırı (bu tur, kaba kuvvete karşı): art arda yanlış kod
+   denemesi `CORE/rate_limit.py`'yi (giriş ekranının ZATEN kullandığı
+   AYNI mekanizma, `login_attempts` tablosu) devreye sokuyor — KİLİTLİYKEN
+   doğru kod BİLE reddediliyor; doğru kod İLK denemede gecikme OLMADAN
+   geçiyor (yanlış pozitif yok); ve referans sayacı giriş ekranının PIN/
+   TOTP sayacıyla KARIŞMIYOR (ayrı anahtar uzayı, `_referans_rl_key()`).
 """
 from __future__ import annotations
 
@@ -44,8 +50,9 @@ except ImportError as _exc:  # pragma: no cover — ortama bağlı
         allow_module_level=True,
     )
 
-from CORE import vault_manager
+from CORE import rate_limit, vault_manager
 from CORE.app_mode import BIREYSEL, KURUMSAL, get_app_mode, set_app_mode
+from CORE.rate_limit import MAX_ATTEMPTS
 from CORE.referans_id import get_referans_id, set_referans_id
 
 _HWID_KURULUM = "USB-REFID-KURULUM"
@@ -242,3 +249,150 @@ def test_bireysel_kayitta_referans_alani_hic_YOK_ve_DBye_hic_YAZMIYOR(
         assert "referans" not in k.lower() and "kurum" not in k.lower(), (
             f"users tablosunda beklenmeyen sütun: {k}"
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. Hız sınırı — kaba kuvvete karşı (CORE/rate_limit.py'nin giriş ekranındaki
+#    AYNI mekanizması, yalnızca ayrı bir anahtar uzayıyla)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _yanlis_dene(dlg: LoginDialog, username: str) -> None:
+    """`_on_register()`'ı YANLIŞ bir kodla bir kez çalıştırır."""
+    dlg._reg_error.hide()
+    dlg._reg_username.setText(username)
+    dlg._reg_pin.setText(_PIN_KAYIT)
+    dlg._reg_pin2.setText(_PIN_KAYIT)
+    dlg._reg_role.setCurrentText("Standart")
+    dlg._reg_referans.setText("KRM-YANLISYX")
+    dlg._on_register()
+
+
+def test_kurumsal_kayitta_ART_ARDA_yanlis_kod_HIZ_SINIRINA_TAKILIYOR(
+    qapp, db, kasa_dizini, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Asıl istenen davranış: `MAX_ATTEMPTS` yanlış denemeden sonra sıradaki
+    deneme — DOĞRU kod verilse BİLE — reddediliyor. `CORE/rate_limit.py`'nin
+    `check()`'i karşılaştırmadan ÖNCE çalışıyor (`_on_login()` ile AYNI
+    sıra), yani kilitliyken doğru kodu bilmek bile işe yaramıyor.
+    """
+    gercek_kod = "KRM-DOGRUKOD3"
+    set_app_mode(db, KURUMSAL)
+    set_referans_id(db, gercek_kod)
+    dlg = _kayit_ekrani_kurulu(qapp, monkeypatch, _HWID_KAYIT)
+
+    for i in range(MAX_ATTEMPTS):
+        _yanlis_dene(dlg, f"art_arda_{i}")
+        assert not dlg._reg_error.isHidden()
+        satir = db.fetchone(
+            "SELECT * FROM users WHERE username = ?", (f"art_arda_{i}",)
+        )
+        assert satir is None
+
+    # Eşik aşıldı — şimdi DOĞRU kodla dene.
+    dlg._reg_error.hide()
+    dlg._reg_username.setText("art_arda_dogru_ama_gec")
+    dlg._reg_pin.setText(_PIN_KAYIT)
+    dlg._reg_pin2.setText(_PIN_KAYIT)
+    dlg._reg_role.setCurrentText("Standart")
+    dlg._reg_referans.setText(gercek_kod)
+    dlg._on_register()
+
+    assert not dlg._reg_error.isHidden(), (
+        "MUTASYON: hız sınırı aşıldıktan sonra DOĞRU kod bile geçti"
+    )
+    assert "fazla" in dlg._reg_error.text() or "deneme" in dlg._reg_error.text()
+    satir = db.fetchone(
+        "SELECT * FROM users WHERE username = ?", ("art_arda_dogru_ama_gec",)
+    )
+    assert satir is None, "kilitliyken doğru kodla bile kullanıcı DB'ye yazılmış"
+
+
+def test_kurumsal_kayitta_DOGRU_kod_ILK_denemede_GECIKME_OLMADAN_geciyor(
+    qapp, db, kasa_dizini, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Yanlış pozitif yok: hiç yanlış deneme yapılmamış bir HWID için doğru
+    kod hiçbir gecikmeye uğramadan, ilk denemede geçiyor."""
+    gercek_kod = "KRM-DOGRUKOD4"
+    set_app_mode(db, KURUMSAL)
+    set_referans_id(db, gercek_kod)
+    dlg = _kayit_ekrani_kurulu(qapp, monkeypatch, _HWID_KAYIT)
+
+    assert rate_limit.check(db, dlg._referans_rl_key()).locked is False, (
+        "ön koşul: taze bir HWID'in referans sayacı kilitli olmamalı"
+    )
+
+    dlg._reg_username.setText("hemen_dogru")
+    dlg._reg_pin.setText(_PIN_KAYIT)
+    dlg._reg_pin2.setText(_PIN_KAYIT)
+    dlg._reg_role.setCurrentText("Standart")
+    dlg._reg_referans.setText(gercek_kod)
+    dlg._on_register()
+
+    assert dlg._reg_error.isHidden(), f"beklenmedik ret: {dlg._reg_error.text()}"
+    satir = db.fetchone("SELECT * FROM users WHERE username = ?", ("hemen_dogru",))
+    assert satir is not None
+
+
+def test_kurumsal_kayitta_referans_sayaci_GIRIS_sayaciyla_KARISMIYOR(
+    qapp, db, kasa_dizini, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Referans Kodu denemeleri AYRI bir anahtar uzayında (`referans:` öneki).
+    Aynı HWID için referans sayacı kilitlense bile, GİRİŞ ekranının PIN/
+    TOTP sayacı (`_rl_key()`) ETKİLENMEMELİ — aksi hâlde bir kullanıcının
+    kayıt sırasında kod yazım hataları, o USB'nin giriş ekranını da
+    kilitlerdi (iki ayrı olay, iki ayrı kovaya düşmeli).
+    """
+    set_app_mode(db, KURUMSAL)
+    set_referans_id(db, "KRM-DOGRUKOD5")
+    dlg = _kayit_ekrani_kurulu(qapp, monkeypatch, _HWID_KAYIT)
+
+    for i in range(MAX_ATTEMPTS):
+        _yanlis_dene(dlg, f"karisma_{i}")
+
+    assert rate_limit.check(db, dlg._referans_rl_key()).locked is True, (
+        "test kurulumu hatalı — referans sayacı kilitlenmedi"
+    )
+    assert rate_limit.check(db, dlg._rl_key()).locked is False, (
+        "REGRESYON: referans kodu denemeleri giriş ekranının PIN/TOTP "
+        "sayacını da kilitlemiş"
+    )
+
+
+def test_kurumsal_kayitta_BOS_kod_denemeleri_SAYACI_ARTIRMIYOR(
+    qapp, db, kasa_dizini, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Boş gönderim bir TAHMİN değil — sayaca işlenmemeli, aksi hâlde
+    "Kayıt Ol"a boş alanla art arda basmak bile kilitlenmeye yol açardı."""
+    gercek_kod = "KRM-DOGRUKOD6"
+    set_app_mode(db, KURUMSAL)
+    set_referans_id(db, gercek_kod)
+    dlg = _kayit_ekrani_kurulu(qapp, monkeypatch, _HWID_KAYIT)
+
+    for _ in range(MAX_ATTEMPTS * 2):
+        dlg._reg_error.hide()
+        dlg._reg_username.setText("bos_kod_denemesi")
+        dlg._reg_pin.setText(_PIN_KAYIT)
+        dlg._reg_pin2.setText(_PIN_KAYIT)
+        dlg._reg_role.setCurrentText("Standart")
+        dlg._reg_referans.setText("")
+        dlg._on_register()
+
+    assert rate_limit.check(db, dlg._referans_rl_key()).locked is False, (
+        "boş kod denemeleri referans hız sınırını tetiklemiş"
+    )
+
+    # Doğru kod hâlâ gecikmeden geçiyor.
+    dlg._reg_error.hide()
+    dlg._reg_username.setText("bos_sonra_dogru")
+    dlg._reg_pin.setText(_PIN_KAYIT)
+    dlg._reg_pin2.setText(_PIN_KAYIT)
+    dlg._reg_role.setCurrentText("Standart")
+    dlg._reg_referans.setText(gercek_kod)
+    dlg._on_register()
+
+    assert dlg._reg_error.isHidden()
+    satir = db.fetchone("SELECT * FROM users WHERE username = ?", ("bos_sonra_dogru",))
+    assert satir is not None

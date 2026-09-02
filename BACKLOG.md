@@ -8652,3 +8652,73 @@ Tam suite: **3187 passed**, 4 skipped (22 yeni test dahil). ruff/mypy/
 bandit temiz.
 
 ---
+
+## B-107 — Kurumsal Referans Kodu girişine hız sınırı: CORE/rate_limit.py'nin AYNI mekanizması, AYRI anahtar uzayı
+
+**Durum:** Kapalı
+**Öncelik:** Orta (kaba kuvvet sertleştirmesi — backend F0-2 (a)'da zaten kurulu)
+**Bulundu:** 2026-09-02
+
+F0-2 kararı (a) (2026-08-26) Referans Kodu doğrulamasını ZATEN üretime
+soktu (`CORE/referans_id.py`, `UI/login_dialog.py::_on_register()`) —
+girilen kod `get_referans_id(db)`'nin döndürdüğüyle GERÇEKTEN
+karşılaştırılıyor. Eksik olan tek şey: karşılaştırma sınırsız denenebiliyordu
+— 32⁸ ≈ 1.1×10¹² olasılık uzayı bile, hız sınırı olmadan, otomatikleştirilmiş
+bir istemcinin dakikada binlerce deneme yapmasını engellemiyordu.
+
+### Ne YAPILMADI
+
+Yeni bir sayaç tablosu, yeni bir kilit mekanizması, yeni bir `LockState`
+sınıfı — HİÇBİRİ. `CORE/rate_limit.py` giriş ekranı için ZATEN vardı
+(`login_attempts` tablosu, DB'de tutulan sayaç — yeniden başlatmak
+sıfırlamaz, üstel geri çekilme 30→60→120→300 sn) ve `check()`/
+`record_failure()`/`record_success()`/`record_blocked_attempt()` dört
+fonksiyonu aynen çağrılıyor.
+
+### Tek yeni karar: ayrı anahtar uzayı
+
+`_on_register()`'daki referans kodu bloğu `_rl_key()` (çıplak HWID)
+yerine yeni `_referans_rl_key()`'i kullanıyor — `f"referans:{hwid}"`.
+Aynı `login_attempts` tablosunda, `hwid` sütunu düz metin PRIMARY KEY
+olduğu için önekli bir string de geçerli bir satır. Gerekçe: referans
+kodu denemeleri ile PIN/TOTP giriş denemeleri AYRI olaylar — aynı kovaya
+düşselerdi, bir kullanıcının kayıt sırasında kod yazım hataları o USB'nin
+GİRİŞ ekranını da kilitlerdi. Mutasyonla ölçüldü (bkz. aşağı).
+
+Akış `_on_login()` ile AYNI sıra: önce `rate_limit.check()` — kilitliyse
+karşılaştırma hiç YAPILMADAN reddediliyor (doğru kod bilse bile kilitliyken
+geçemiyor, "hız sınırı" gerçek bir sınır, yalnızca yanlış tahminleri
+yavaşlatan bir sayaç değil). Boş gönderim (`girilen_kod == ""`) sayaca HİÇ
+işlenmiyor — bir tahmin değil, "Kayıt Ol"a boş alanla art arda basmak bile
+kilitlenmeye yol açardı. Doğru kod `record_success()` ile sayacı sıfırlıyor
+— giriş ekranıyla AYNI davranış.
+
+Audit log action adları (`login_failed`/`login_rate_limited`/
+`login_blocked`) BİLEREK değiştirilmedi — bu fonksiyonların içinde sabit;
+yeniden isimlendirmek "ikinci bir implementasyon" tarafına kayardı.
+Ayırt edici bilgi zaten `detail=`'de: `hwid=referans:<hwid>` öneki gerçek
+bir HWID'de asla görünmeyeceği için denetim kaydını okuyan biri karıştırmaz.
+
+### Test (`tests/test_kayit_kurumsal_referans.py`, +4 yeni test)
+
+- Art arda `MAX_ATTEMPTS` (5) yanlış kod → eşik aşılınca DOĞRU kod bile
+  reddediliyor (kilitliyken karşılaştırma hiç çalışmıyor).
+- Yanlış pozitif yok: taze bir HWID'de doğru kod İLK denemede, hiçbir
+  gecikme olmadan geçiyor.
+- Ayrı anahtar uzayı: referans sayacı kilitlenince GİRİŞ ekranının PIN/
+  TOTP sayacı (`_rl_key()`) ETKİLENMİYOR.
+- Boş kod denemeleri (10 kez) sayacı hiç artırmıyor; ardından doğru kod
+  yine gecikmesiz geçiyor.
+
+Mutasyonla ölçüldü: (a) `if lock.locked:` bloğunu `if False:`e çevirince
+"art arda" testi GERÇEKTEN düştü (hız sınırı aşıldıktan sonra doğru kod
+geçti); (b) `_referans_rl_key()`'i `_rl_key()` ile AYNI değeri
+döndürecek şekilde bozunca "karışmıyor" testi GERÇEKTEN düştü (referans
+denemeleri giriş ekranını da kilitledi). İkisi de geri alındı, `git diff
+--stat` ile temiz.
+
+Tam suite: 3187 passed → **3191 passed**, 4 skipped. ruff/mypy/bandit
+temiz (yeni dosyalarda; `UI/login_dialog.py`'nin mypy'de değişmeyen 50
+ön-var-olan Qt stub hatası, `git stash` ile teyit edildi).
+
+---
