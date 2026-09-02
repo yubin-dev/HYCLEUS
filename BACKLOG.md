@@ -8790,3 +8790,82 @@ GERÇEKTEN düştü. İkisi de geri alındı, `git diff --stat` ile temiz.
 Tam suite: **3192 passed**, 4 skipped. ruff/mypy/bandit temiz.
 
 ---
+
+## B-109 — `.hclx` ve Merkle ağacı doğrudan fuzz ediliyor — NOT-WIRED olmaları bunu ERTELEMİYOR
+
+**Durum:** Kapalı
+**Öncelik:** Düşük
+**Bulundu:** 2026-09-03 — "K0-4'te merkle.py/hclx.py üretime bağlanmadı, ama okuyucuları
+kendi başlarına fuzz edilebilir" istendi
+
+### Neden NOT-WIRED olmak fuzz'lamayı ERTELEMİYOR
+
+K0-4 kararınca (b) `CORE/merkle.py`'nin yazma tarafı (`build_leaves`/
+`build_tree`) ve `CORE/hclx.py`'nin ikisi de (`create_package`/
+`open_package`) üretime hiç bağlanmadı — bkz. B-035, B-043,
+`tests/test_deneysel_bagli_degil.py`. Bu maddenin ön koşulu ("K0-4'te
+bağlandıktan sonra") hiç gerçekleşmedi ve bu haftanın kapsamında
+gerçekleşmeyecek. Ama dört fonksiyonun dördü de GÜVENİLMEYEN VERİ
+ayrıştırıyor — üretimde çağrılmıyor olmaları ayrıştırıcının güvenli
+olduğu anlamına gelmiyor. Bağlı olmasalar bile kendi başlarına, modül
+fonksiyonlarına doğrudan karşı fuzz edilebilirler; bu madde onu yaptı.
+
+### Yeni hedefler
+
+`tests/fuzz/harness.py`'nin mevcut altyapısı (`fuzz_crypto.py`/
+`fuzz_shamir.py`'nin izlediği desen) yeniden kullanıldı, ikinci bir
+harness AÇILMADI:
+
+- `tests/fuzz/fuzz_merkle.py` — `build_tree`/`MerkleTree.proof`/
+  `compute_root`/`node_hash`/`MerkleProof` için boy ve aralık
+  kontrollerini (`MerkleError`), `verify_proof` için "hiçbir istisnaya
+  izin yok" sözleşmesini hedefliyor. Ayrıca bir DEĞİŞMEZ sınıyor:
+  `build_tree` + `MerkleTree.proof()` ile kurulan gerçek bir yol
+  `verify_proof()`'ta HER ZAMAN doğrulanmalı, sahte bir kökle AYNI yol
+  REDDEDİLMELİ.
+- `tests/fuzz/fuzz_hclx.py` — `read_manifest`/`create_package`/
+  `open_package`/`pencere_durumu` için tek istisna tipini (`HclxError`)
+  hedefliyor: ham/yarı yapılandırılmış baytlar, GERÇEKTEN üretilmiş bir
+  paketin tek baytının bozulması (`fuzz_crypto.py`'deki gerçek dosya
+  mutasyonu ile aynı fikir). Ayrıca bir tam tur sınıyor: `create_package`
+  ile kurulan bir paket doğru anahtarla açıldığında dosyaları SHA-256'sı
+  değişmeden geri vermeli.
+
+`tests/test_fuzz_harness.py::HEDEFLER`'e ikisi de eklendi — mevcut
+parametrize edilmiş testler (arayüz denetimi, bilinen ihlallere erişim,
+boş girdi, enstrümantasyon bloğu denetimi) otomatik olarak ikisine de
+uygulandı, ayrı bir test dosyası AÇILMADI. `.github/workflows/fuzz.yml`'in
+seçim listesine (`hedef` girdisi ve matris) `merkle`/`hclx` eklendi.
+
+### Bulgular
+
+İlk korpusta (yerel sürücü, tohumlu, `merkle` 20.000 girdi, `hclx` 2.000
+girdi — gerçek AES-256-GCM şifrelemesi yaptığı için daha pahalı) her iki
+hedefte de BİLİNENLERİN dışında bir sözleşme ihlali çıkmadı; `BILINEN`
+listesi ikisinde de boş.
+
+Mutasyonla ölçüldü (iki ayrı, sonra geri alınan mutasyon):
+
+- `CORE/merkle.py::verify_proof`'u koşulsuz `True` döndürecek şekilde
+  bozmak — DEĞİŞMEZ testini (sahte kök reddi) düşürdü.
+- `CORE/hclx.py::open_package`'ın `decrypt_file()` etrafındaki
+  `except AuthenticationError` / `except (ValueError, OSError)`
+  sarmalamasını kaldırmak — `test_yeni_sozlesme_ihlali_yok[fuzz_hclx]`'i
+  düşürdü (harness gerçekten o dönüştürme noktasına ulaşıyor, yalnızca
+  başlık ayrıştırıcısına değil).
+
+İkisi de geri alındı, `git diff --stat CORE/merkle.py CORE/hclx.py` boş.
+
+### NOT-WIRED durumu DEĞİŞMEDİ
+
+SECURITY.md §4.9 ve §4.14'e (EN+TR) birer "Güncelleme (B-109)" paragrafı
+eklendi — fuzzing eklendiğini, hâlâ NOT-WIRED olduğunu ve bunun
+DEĞİŞMEDİĞİNİ açıkça yazıyor. `tests/test_deneysel_bagli_degil.py`
+zaten `tests/` dizinini taradığı üretim yüzeyinin DIŞINDA tutuyor —
+yani yeni fuzz hedeflerinin `create_package`/`open_package`/`build_tree`
+çağırması o testleri hiç etkilemedi (üretim yüzeyi hâlâ boş).
+
+Tam suite: **3202 passed**, 4 skipped. ruff/mypy/bandit temiz (`tests/`
+bandit'in CI kapsamı DIŞINDA, `pyproject.toml::exclude_dirs`).
+
+---

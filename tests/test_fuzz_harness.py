@@ -50,7 +50,7 @@ from harness import (  # noqa: E402
 #: kadar küçük tutuldu (tüm modül ~10 sn).
 _ADET = 120
 
-HEDEFLER = ("fuzz_crypto", "fuzz_shamir")
+HEDEFLER = ("fuzz_crypto", "fuzz_shamir", "fuzz_merkle", "fuzz_hclx")
 
 
 @pytest.fixture(scope="module", params=HEDEFLER)

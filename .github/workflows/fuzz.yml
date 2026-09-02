@@ -18,7 +18,7 @@ on:
         description: "Hangi hedef"
         type: choice
         default: "hepsi"
-        options: ["hepsi", "crypto", "shamir"]
+        options: ["hepsi", "crypto", "shamir", "merkle", "hclx"]
       sure:
         description: "Hedef başına saniye (atheris varken)"
         type: string
@@ -44,7 +44,7 @@ jobs:
         # `hepsi` seçilirse ikisi de koşar; tek hedef seçilirse aşağıdaki
         # `if` diğerini atlar. GitHub Actions matrisi girdiye göre
         # daraltılamadığı için filtre adım seviyesinde.
-        hedef: [crypto, shamir]
+        hedef: [crypto, shamir, merkle, hclx]
 
     steps:
       - name: Checkout

@@ -303,7 +303,7 @@ HYCLEUS/
 │   ├── conftest.py            # Shared fixtures (temp DB, temp vault, …)
 │   ├── test_*.py               # ~70 modules — crypto, vault, UI, CI, packaging, doc parity
 │   ├── data/                  # Fixture data (e.g. one real TSA response)
-│   ├── fuzz/                  # Fuzz targets (crypto container, Shamir)
+│   ├── fuzz/                  # Fuzz targets (crypto container, Shamir, Merkle tree, .hclx)
 │   └── canary_semgrep/        # Deliberately unsafe — proves rules fire
 ├── CORE/
 │   ├── version.py             # Single source of the version string
@@ -715,7 +715,7 @@ HYCLEUS/
 │   ├── conftest.py            # Paylaşılan fixture'lar (geçici DB, geçici vault…)
 │   ├── test_*.py               # ~70 modül — kripto, vault, UI, CI, paketleme, belge-parite
 │   ├── data/                  # Fixture verisi (ör. gerçek bir TSA yanıtı)
-│   ├── fuzz/                  # Fuzz hedefleri (kripto kabı, Shamir)
+│   ├── fuzz/                  # Fuzz hedefleri (kripto kabı, Shamir, Merkle ağacı, .hclx)
 │   └── canary_semgrep/        # Bilerek güvensiz — kuralların canlı kanıtı
 ├── CORE/
 │   ├── version.py             # Sürüm dizesinin tek kaynağı

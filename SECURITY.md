@@ -1077,6 +1077,21 @@ precisely. Both claims — write side dark, read side live but starved of
 real input — are re-checked by AST on every test run in
 `tests/test_deneysel_bagli_degil.py`, not just measured once.
 
+**Update (B-109): the parser is now fuzzed directly, ahead of K0-4.**
+`tests/fuzz/fuzz_merkle.py` calls `build_leaves()`/`build_tree()`/
+`MerkleTree.proof()`/`compute_root()`/`node_hash()`/`verify_proof()`
+straight against the module, bypassing the missing production wiring
+above — these functions parse externally-shaped input regardless of
+whether the shipped app currently reaches them. Every run also checks an
+invariant no amount of exception-contract fuzzing alone would catch: a
+tree built by `build_tree()` and a proof taken from `MerkleTree.proof()`
+must verify under `verify_proof()`, and the same proof against a forged
+root must not — a mutation that made `verify_proof()` unconditionally
+return `True` was confirmed to fail exactly that assertion. No exception
+outside `MerkleError` turned up in the initial corpus. Fuzzing does not
+change the wiring decision: `build_leaves`/`build_tree` remain NOT-WIRED,
+same as **B-035** left them.
+
 ### 4.10 Transparent access puts plaintext on disk for as long as you edit
 
 > **Attacker models:** M2 · M3
@@ -1701,6 +1716,23 @@ action without updating this section will fail a test, not drift silently.
 EXPERIMENTAL/NOT-WIRED marker. See **B-043** for what is missing (a send
 flow, an open flow, and a dialog for a rejected package) and why it was
 deliberately left for a separate decision.
+
+**Update (B-109): both parsers are now fuzzed directly, without waiting
+for B-043.** `tests/fuzz/fuzz_hclx.py` calls `create_package()`,
+`open_package()`, `read_manifest()` and `pencere_durumu()` straight
+against the module — untrusted-shaped headers, truncated/oversized
+manifest-length fields, malformed JSON, and genuinely-produced packages
+with a single byte flipped afterwards (the same idea as `fuzz_crypto.py`'s
+mutation of a real `.hcl`). A round trip is also checked every run: a
+package built by `create_package()` and opened with the right key must
+return files whose SHA-256 matches what went in. A mutation that let
+`decrypt_file()`'s own three documented exceptions escape
+`open_package()` unconverted (removing its `except AuthenticationError` /
+`except (ValueError, OSError)` wrapping) was confirmed to make the fuzz
+suite fail — proving the harness actually reaches that conversion, not
+just the header parser. Fuzzing does not change the wiring decision:
+`create_package`/`open_package` remain NOT-WIRED, same as **B-043** left
+them.
 
 ---
 
@@ -4870,6 +4902,21 @@ tarafı kör, okuma tarafı bağlı ama girdisiz — her test koşusunda AST ile
 yeniden doğrulanıyor: `tests/test_deneysel_bagli_degil.py`, tek seferlik
 bir ölçüm değil.
 
+**Güncelleme (B-109): ayrıştırıcı artık K0-4'ten önce, doğrudan fuzz
+ediliyor.** `tests/fuzz/fuzz_merkle.py`, `build_leaves()`/`build_tree()`/
+`MerkleTree.proof()`/`compute_root()`/`node_hash()`/`verify_proof()`'u
+doğrudan modüle karşı çağırıyor — yukarıdaki eksik üretim bağlantısını
+atlayarak, çünkü bu fonksiyonlar dışarıdan şekillenmiş girdiyi
+ayrıştırıyor, uygulama onlara bugün erişsin ya da erişmesin. Her koşuda
+yalnızca istisna-sözleşmesi fuzzing'inin tek başına yakalayamayacağı bir
+DEĞİŞMEZ de sınanıyor: `build_tree()` ile kurulan bir ağaç ve `MerkleTree.
+proof()`'tan alınan bir yol `verify_proof()` altında doğrulanmalı, aynı
+yol sahte bir kökle REDDEDİLMELİ — `verify_proof()`'u koşulsuz `True`
+döndürecek şekilde bozan bir mutasyon, tam olarak bu iddiayı düşürdüğü
+doğrulandı. İlk korpusta `MerkleError` dışında hiçbir istisna çıkmadı.
+Fuzzing yapmak üretime bağlama kararını DEĞİŞTİRMİYOR: `build_leaves`/
+`build_tree` hâlâ NOT-WIRED, **B-035**'in bıraktığı gibi.
+
 ### 4.10 Şeffaf erişim, düzenlediğiniz sürece düz metni diskte tutuyor
 
 > **Saldırgan modelleri:** M2 · M3
@@ -5498,6 +5545,23 @@ haber verir. `CORE/hclx.py`'nin kendi modül docstring'i aynı
 EXPERIMENTAL/NOT-WIRED notunu taşıyor. Neyin eksik olduğu (gönderme
 akışı, açma akışı, reddedilen paket için bir diyalog) ve bunun neden
 bilinçli olarak ayrı bir karara bırakıldığı **B-043**'te.
+
+**Güncelleme (B-109): iki ayrıştırıcı da B-043'ü beklemeden, doğrudan fuzz
+ediliyor.** `tests/fuzz/fuzz_hclx.py`, `create_package()`, `open_package()`,
+`read_manifest()` ve `pencere_durumu()`'nu doğrudan modüle karşı
+çağırıyor — güvenilmeyen biçimli başlıklar, kesik/devasa manifesto-uzunluk
+alanları, bozuk JSON, ve GERÇEKTEN üretilmiş bir paketin tek bir baytının
+sonradan bozulması (`fuzz_crypto.py`'nin gerçek bir `.hcl`'i bozan
+mutasyonuyla aynı fikir). Her koşuda bir tam tur da sınanıyor:
+`create_package()` ile kurulan bir paket, doğru anahtarla açıldığında
+SHA-256'sı girdiyle eşleşen dosyalar döndürmeli. `decrypt_file()`'ın
+kendi belgelenmiş üç istisnasının `open_package()`'tan DÖNÜŞTÜRÜLMEDEN
+sızmasına izin veren bir mutasyon (`except AuthenticationError` /
+`except (ValueError, OSError)` sarmalamasının kaldırılması) fuzz paketini
+gerçekten düşürdüğü doğrulandı — harness'ın yalnızca başlık ayrıştırıcısına
+değil, o dönüştürme noktasına da GERÇEKTEN ulaştığının kanıtı. Fuzzing
+yapmak üretime bağlama kararını DEĞİŞTİRMİYOR: `create_package`/
+`open_package` hâlâ NOT-WIRED, **B-043**'ün bıraktığı gibi.
 
 ---
 
