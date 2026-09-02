@@ -792,7 +792,16 @@ def _cagri_adlari(dugum: ast.AST) -> set[str]:
 
 def test_adminpanel_payi_DISKE_yazmiyor():
     """
-    Kurtarma parçası hiçbir yere kaydedilmez — modülün ilk kuralı.
+    Kurtarma parçasının KENDİSİ hiçbir yere kaydedilmez — modülün ilk kuralı.
+
+    B-104 SONRASI GÜNCEL DURUM: görüntüleme OLAYININ KENDİSİ artık
+    `_kaydet_ve_cipaya_kazi()` ile denetim kaydına/çıpaya düşüyor — bu
+    yüzden "log" içeren HİÇBİR çağrı olmamalı denetimi artık YANLIŞ
+    olurdu. Doğru soru "log çağrısı var mı" değil, "payın KENDİSİ o
+    çağrıya ARGÜMAN olarak gidiyor mu" — bkz. aşağıdaki
+    `test_the_recovery_share_value_never_reaches_a_persisting_call`, asıl
+    güvenceyi VEREN test bu. Burası yalnızca `_kaydet_ve_cipaya_kazi`
+    DIŞINDA beklenmedik bir yazan çağrı sızmadığını doğruluyor.
 
     Denetim AST ile: ilk yazımda `"log(" in metin` kullanılmıştı ve
     `RecoveryShareDialog(` içindeki "log(" hecesine takıldı. Bu deponun
@@ -809,6 +818,41 @@ def test_adminpanel_payi_DISKE_yazmiyor():
     assert not yazanlar, f"pay diske/kayda gidiyor olabilir: {sorted(yazanlar)}"
 
 
+def test_the_recovery_share_value_never_reaches_a_persisting_call():
+    """
+    ASIL GÜVENCE (B-104) — `share_3`/`disa_aktarim` (payın KENDİSİ), payı
+    ALMASI GEREKEN iki halka (`build_export`, `RecoveryShareDialog`) DIŞINDA
+    HİÇBİR çağrıya ARGÜMAN olarak gitmiyor.
+
+    Bu, üstteki testin BOŞLUĞUNU kapatıyor: "log(" gibi bir çağrı ADI
+    aramak, payı BAŞKA bir yardımcıya (`_kaydet_ve_cipaya_kazi(share_3)`
+    gibi) parametre olarak geçirip yine "temiz" görünmeyi engellemezdi —
+    çağrı adı "log" değil "_kaydet_ve_cipaya_kazi" olurdu. Burada
+    ÇAĞRININ ADINA değil ARGÜMANLARINA bakılıyor.
+    """
+    agac = ast.parse((KOK / "UI" / "security_actions.py").read_text(encoding="utf-8"))
+    govde = next(d for d in ast.walk(agac)
+                 if isinstance(d, ast.FunctionDef) and d.name == "kurtarma_parcasini_goster")
+
+    yasakli = {"share_3", "disa_aktarim"}
+    izinli_cagrilar = {"build_export", "RecoveryShareDialog"}
+
+    for cagri in ast.walk(govde):
+        if not isinstance(cagri, ast.Call):
+            continue
+        cagri_adi = getattr(cagri.func, "attr", getattr(cagri.func, "id", ""))
+        if cagri_adi in izinli_cagrilar:
+            continue
+        argumanlar = list(cagri.args) + [kw.value for kw in cagri.keywords]
+        kullanilan_isimler = {
+            n.id for a in argumanlar for n in ast.walk(a) if isinstance(n, ast.Name)
+        }
+        cakisan = kullanilan_isimler & yasakli
+        assert not cakisan, (
+            f"{ast.unparse(cagri.func)}() payı taşıyor olabilir: {sorted(cakisan)}"
+        )
+
+
 def test_yazan_cagri_denetimi_KOR_degil():
     """Tarayıcı gerçekten yakalıyor mu — sahte bir gövdeyle ölçülüyor."""
     sahte = ast.parse(
@@ -816,6 +860,34 @@ def test_yazan_cagri_denetimi_KOR_degil():
         "    Path('x').write_text(share_3)\n"
         "    DBManager().log('a', detail=share_3)\n")
     assert _cagri_adlari(sahte) & _YAZAN_CAGRILAR == {"write_text", "log"}
+
+
+def test_the_persisting_call_argument_scanner_is_not_blind():
+    """`test_the_recovery_share_value_never_reaches_a_persisting_call`'ın
+    tarayıcısı gerçekten yakalıyor mu — sahte bir gövdeyle ölçülüyor."""
+    sahte = ast.parse(
+        "def kurtarma_parcasini_goster():\n"
+        "    _kaydet_ve_cipaya_kazi(share_3)\n"
+        "    build_export(share_3)\n")
+    govde = sahte.body[0]
+    yasakli = {"share_3", "disa_aktarim"}
+    izinli_cagrilar = {"build_export", "RecoveryShareDialog"}
+    yakalanan = []
+    for cagri in ast.walk(govde):
+        if not isinstance(cagri, ast.Call):
+            continue
+        cagri_adi = getattr(cagri.func, "attr", getattr(cagri.func, "id", ""))
+        if cagri_adi in izinli_cagrilar:
+            continue
+        argumanlar = list(cagri.args) + [kw.value for kw in cagri.keywords]
+        kullanilan_isimler = {
+            n.id for a in argumanlar for n in ast.walk(a) if isinstance(n, ast.Name)
+        }
+        if kullanilan_isimler & yasakli:
+            yakalanan.append(cagri_adi)
+    assert yakalanan == ["_kaydet_ve_cipaya_kazi"], (
+        "tarayıcı ya kaçırdı ya da izinli çağrıyı da yanlışlıkla yakaladı"
+    )
 
 
 def test_modal_key_press_ESC(qapp, disa_aktarim: RecoveryExport):

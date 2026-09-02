@@ -42,6 +42,9 @@ _log = logging.getLogger("hycleus.security_actions")
 #: Zincir doğrulamasının denetim kaydı eylemi.
 EYLEM_ZINCIR = "audit_chain_verified"
 
+#: Kurtarma parçası GÖRÜNTÜLENMESİNİN denetim kaydı eylemi (B-104).
+EYLEM_KURTARMA_GORUNTULENDI = "recovery_share_viewed"
+
 
 def zinciri_dogrula(parent: Any, hwid: str, *, sade: bool = False) -> None:
     """
@@ -154,6 +157,12 @@ def kurtarma_parcasini_goster(parent: Any, pencere: Any) -> None:
             f"Kurtarma parçası üretilemedi:\n\n{exc}")
         return
 
+    # Payın KENDİSİ (share_3/disa_aktarim) bu çağrının argümanlarına HİÇ
+    # girmiyor — yalnızca OLAYIN KENDİSİ (kim, ne zaman, hangi cihaz)
+    # kaydediliyor. B-104: her görüntüleme silinemez bir uyarı olarak
+    # çıpaya kazınmalı — bkz. `_kaydet_ve_cipaya_kazi()` docstring'i.
+    _kaydet_ve_cipaya_kazi(hwid)
+
     try:
         disa_aktarim = build_export(share_3)
         try:
@@ -164,7 +173,59 @@ def kurtarma_parcasini_goster(parent: Any, pencere: Any) -> None:
         del share_3
 
 
-__all__ = ["EYLEM_ZINCIR", "kurtarma_parcasini_goster", "zinciri_dogrula"]
+def _kaydet_ve_cipaya_kazi(hwid: str) -> None:
+    """
+    Kurtarma parçası GÖRÜNTÜLENDİ olayını denetim kaydına yazar ve HEMEN
+    (günlük döngüyü beklemeden) bir çıpa hazırlar — B-104.
+
+    Neden HEMEN, günlük anchor'ı (`maybe_write_daily_anchor`) beklemeden:
+    bu, kasadaki en hassas sırrın (master_key'in Shamir payı) DIŞARI
+    ÇIKTIĞI an. Günlük döngü saatler sonra çalışabilir; o arada denetim
+    kaydı zincirde dursa bile ÇIPALANMAMIŞ kalır — kaydı okuyabilen biri
+    o pencerede satırı SESSİZCE silebilir/değiştirebilir, bir sonraki
+    günlük çıpaya kadar hiçbir karşılaştırma bunu yakalayamaz. `main.py`
+    kapanışta `write_anchor(DBManager(), "shutdown")` çağırıyor — burası
+    AYNI "olay-tetiklemeli anında çıpa" deseni (B-090); yeni bir
+    mekanizma İCAT EDİLMEDİ. `write_anchor()` kendi içinde YEREL diske
+    HER ZAMAN, takılı USB token'a da (varsa) İKİNCİ bir kopya yazıyor —
+    çift-yazım burada TEKRARLANMIYOR, olduğu gibi kullanılıyor.
+
+    Payın KENDİSİ bu fonksiyona hiç GİRMİYOR — imza yalnızca `hwid`
+    alıyor, `share_3`/`disa_aktarim`'a erişimi YOK. Bu, "pay hiçbir
+    kalıcı çağrıya ulaşmaz" kuralının (bkz. `tests/test_recovery_share_ui.py::
+    test_the_recovery_share_value_never_reaches_a_persisting_call`)
+    derleme zamanı garantisi: bu fonksiyon share_3'ü PARAMETRE OLARAK
+    bile alamıyor.
+
+    Kayıt/çıpa BAŞARISIZ olsa bile gösterim ENGELLENMEZ —
+    `zinciri_dogrula()`'daki AYNI karar: kullanıcı zaten PIN'i doğru
+    girdi ve yönetici yetkisi canlı doğrulandı, bir denetim yazma
+    arızası payın kendisinin gösterilmesini durdurmamalı. Ama sessiz de
+    değil: uygulama logına düşüyor.
+    """
+    from CORE.audit_chain import write_anchor
+    from CORE.session_user import kullanici_bilgisi
+    from DB.db_manager import DBManager
+
+    db = DBManager()
+    try:
+        kim = kullanici_bilgisi(db, hwid)
+    except Exception:
+        kim = None
+    try:
+        db.log(
+            EYLEM_KURTARMA_GORUNTULENDI,
+            user_id=kim[0] if kim else None,
+            detail=f"hwid={hwid}",
+        )
+        write_anchor(db, EYLEM_KURTARMA_GORUNTULENDI)
+    except Exception as exc:
+        _log.warning("recovery_share_viewed log/anchor başarısız: %s", exc)
 
 
-__all__ = ["EYLEM_ZINCIR", "zinciri_dogrula"]
+__all__ = [
+    "EYLEM_KURTARMA_GORUNTULENDI",
+    "EYLEM_ZINCIR",
+    "kurtarma_parcasini_goster",
+    "zinciri_dogrula",
+]

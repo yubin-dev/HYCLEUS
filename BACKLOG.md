@@ -8391,3 +8391,67 @@ büyütüp (akmayı iptal ederek) bellek testinin gerçekten düştüğü
 Tam suite: 3136 passed, 4 skipped. ruff/mypy/bandit temiz.
 
 ---
+
+## B-104 — Kurtarma parçası görüntülemesi denetim çıpasına anında kazınıyor
+
+**Durum: UYGULANDI.**
+
+`UI/security_actions.py::kurtarma_parcasini_goster()` (B-093'te
+ortaklaştırılan gövde — damga/yedek/zincir/kurtarma dört doğrulamanın
+sonuncusu) kurtarma parçasını (`master_key`'in Shamir 3. payı)
+ÜRETTİĞİNDE bugüne kadar HİÇBİR denetim kaydı BIRAKMIYORDU — dosyada
+zaten `db.log(...)` çağıran `zinciri_dogrula()`'nın YANINDA, kendisi
+sessizdi. Kasadaki en hassas sırrın dışarı çıktığı an izsizdi.
+
+`_kaydet_ve_cipaya_kazi(hwid)` (yeni, özel bir yardımcı) eklendi:
+`export_recovery_share()` başarıyla döndükten HEMEN sonra çağrılıyor —
+`RecoveryExport`/modal gösteriminden ÖNCE, çünkü asıl kayda değer olay
+payın PIN'le başarıyla ÜRETİLMİŞ olması. İki şey yapıyor:
+
+  1. `db.log(EYLEM_KURTARMA_GORUNTULENDI, ...)` — normal audit_log satırı,
+     hash zincirine katılıyor.
+  2. `write_anchor(db, EYLEM_KURTARMA_GORUNTULENDI)` — B-090'ın çift-yazım
+     (yerel + takılı USB) altyapısı, GÜNLÜK döngüyü (`maybe_write_daily_
+     anchor`) BEKLEMEDEN. `main.py`'nin kapanışta `write_anchor(DBManager(),
+     "shutdown")` çağırdığı AYNI "olay-tetiklemeli anında çıpa" deseni
+     (B-090) — yeni bir mekanizma İCAT EDİLMEDİ. Gerekçe: günlük döngü
+     saatler sonra çalışabilir; o pencerede kayıt zincirde dursa bile
+     ÇIPALANMAMIŞ kalır ve sessizce silinebilir/değiştirilebilir.
+
+**Payın kendisi hâlâ hiçbir yere gitmiyor** — `_kaydet_ve_cipaya_kazi()`
+imzası yalnızca `hwid` alıyor, `share_3`/`disa_aktarim`'a ERİŞİMİ YOK;
+bu, "pay hiçbir kalıcı çağrıya ulaşmaz" kuralının derleme zamanı
+garantisi. Mevcut `tests/test_recovery_share_ui.py::
+test_adminpanel_payi_DISKE_yazmiyor` testi bu yüzden YENİDEN
+YORUMLANDI (eskiden "log içeren HİÇBİR çağrı olamaz" derdi, artık
+yanlış olurdu) ve YENİ, DAHA GÜÇLÜ bir test eklendi
+(`test_the_recovery_share_value_never_reaches_a_persisting_call`) —
+çağrı ADINA değil ARGÜMANLARINA bakıyor, payı BAŞKA bir yardımcıya
+parametre olarak geçirip "temiz" görünmeyi de yakalıyor (mutasyonla
+ölçüldü, `test_the_persisting_call_argument_scanner_is_not_blind`).
+
+Ayrıca dosyanın sonundaki YİNELENEN `__all__` ataması (ikincisi
+`kurtarma_parcasini_goster`'ı SESSİZCE dışarıda bırakıyordu) düzeltildi
+— bu maddenin kapsamı değildi ama dokunulan dosyada fark edilen gerçek
+bir kusurdu.
+
+Test (`tests/test_recovery_share_anchor.py`, 6 test): GERÇEK bir vault +
+GERÇEK bir "takılı USB" simülasyonuyla `kurtarma_parcasini_goster()`
+uçtan uca çalıştırılıyor (yalnızca Qt diyalogları/canlı-yetki kapısı
+sahte). Görüntülemenin hem `audit_log`'a hem YEREL hem USB çıpa
+kopyasına düştüğü, iki ayrı görüntülemenin iki ayrı çıpa satırı
+ürettiği doğrulandı. Asıl test — `tests/test_audit_chain.py`'nin
+`verify_anchor_replicas()` testleriyle AYNI desen: yalnızca YEREL
+kopyayı kurcalayıp (`entry_count` sahtelenerek) USB'yle karşılaştırınca
+farkın YAKALANDIĞI gösterildi. Mutasyonla ölçüldü:
+`_kaydet_ve_cipaya_kazi(hwid)` çağrısı geçici olarak kaldırılıp 5/6
+testin GERÇEKTEN düştüğü, geri konunca hepsinin geçtiği doğrulandı.
+
+Ayrıca `tests/test_layering.py`'nin depo-geneli denetimi (her test
+dosyasının Qt/UI import'larını `try/except ImportError` ile sarması —
+çıplak bir Linux koşucusunda TOPLAMA HATASI vermesin diye) yeni dosyayı
+YAKALADI; diğer yedi UI test dosyasındaki desene sarıldı.
+
+Tam suite: 3146 passed, 4 skipped. ruff/mypy/bandit temiz.
+
+---
