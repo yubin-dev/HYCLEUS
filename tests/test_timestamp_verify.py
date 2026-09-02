@@ -100,7 +100,7 @@ def _hcl(tmp_path: Path, key: bytes, content: bytes, name: str = "belge.bin") ->
 def stamped(tmp_path: Path, key: bytes) -> Path:
     """Yerel otoritenin imzaladığı, damgalı bir .hcl dosyası."""
     path = _hcl(tmp_path, key, b"gizli rapor icerigi" * 100)
-    timestamp_file(path, transport=FakeTSA())
+    timestamp_file(path, key, transport=FakeTSA())
     return path
 
 
@@ -109,9 +109,10 @@ def real_stamped(tmp_path: Path, key: bytes) -> Path:
     """
     GERÇEK freetsa.org token'ı taşıyan bir .hcl dosyası.
 
-    Düz metin, fixture üretilirken kullanılanın aynısı; dolayısıyla AAD'deki
-    original_sha256 token'ın damgaladığı özetle birebir eşleşiyor. Bu, sahte
-    hiçbir parçası olmayan tam bir uçtan uca senaryo.
+    Düz metin, fixture üretilirken kullanılanın aynısı; dolayısıyla dosyanın
+    GERÇEK (anahtarla yeniden hesaplanan) özeti token'ın damgaladığı özetle
+    birebir eşleşiyor. Bu, sahte hiçbir parçası olmayan tam bir uçtan uca
+    senaryo.
     """
     path = _hcl(tmp_path, key, _FIXTURE_PLAIN, name="vektor.bin")
     token = tsp.TimeStampResp.load(_FIXTURE.read_bytes())["time_stamp_token"].dump()
@@ -141,12 +142,12 @@ def _retrailer(path: Path, **degisiklik) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_a_real_freetsa_stamp_verifies_end_to_end(real_stamped: Path) -> None:
+def test_a_real_freetsa_stamp_verifies_end_to_end(real_stamped: Path, key: bytes) -> None:
     """
     ANA TEST: gerçek bir TSA'nın imzası, gerçek bir dosyanın üzerinde,
     ağsız doğrulanıyor.
     """
-    sonuc = verify_timestamp(real_stamped)
+    sonuc = verify_timestamp(real_stamped, key)
 
     assert sonuc.valid, sonuc.reason
     assert sonuc.hashed_hex == _FIXTURE_DIGEST.hex()
@@ -155,15 +156,15 @@ def test_a_real_freetsa_stamp_verifies_end_to_end(real_stamped: Path) -> None:
     assert sonuc.tsa_url == "https://freetsa.org/tsr"
 
 
-def test_the_real_chain_is_walked_to_its_root(real_stamped: Path) -> None:
-    sonuc = verify_timestamp(real_stamped)
+def test_the_real_chain_is_walked_to_its_root(real_stamped: Path, key: bytes) -> None:
+    sonuc = verify_timestamp(real_stamped, key)
     assert len(sonuc.chain_subjects) == 2
     assert sonuc.anchor_subject == sonuc.chain_subjects[-1]
 
 
-def test_every_check_runs_on_the_real_token(real_stamped: Path) -> None:
+def test_every_check_runs_on_the_real_token(real_stamped: Path, key: bytes) -> None:
     """Doğrulamanın kaç adımdan geçtiği görünür olmalı."""
-    sonuc = verify_timestamp(real_stamped)
+    sonuc = verify_timestamp(real_stamped, key)
     assert set(sonuc.checks) >= {
         "parse", "signer_info", "signer_certificate", "content_type",
         "message_digest", "signature", "digest_match", "eku", "validity",
@@ -172,7 +173,7 @@ def test_every_check_runs_on_the_real_token(real_stamped: Path) -> None:
 
 
 def test_the_real_stamp_verifies_with_its_own_root_as_trust_anchor(
-    real_stamped: Path,
+    real_stamped: Path, key: bytes,
 ) -> None:
     """
     Kök dışarıdan verildiğinde `anchor_trusted` True oluyor.
@@ -184,7 +185,7 @@ def test_the_real_stamp_verifies_with_its_own_root_as_trust_anchor(
     certs = cms.ContentInfo.load(token)["content"]["certificates"]
     kokler = [c.chosen.dump() for c in certs if c.chosen.ca]
 
-    sonuc = verify_timestamp(real_stamped, trusted_roots=kokler)
+    sonuc = verify_timestamp(real_stamped, key, trusted_roots=kokler)
     assert sonuc.valid and sonuc.anchor_trusted
 
 
@@ -193,7 +194,7 @@ def test_the_real_stamp_verifies_with_its_own_root_as_trust_anchor(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_verification_opens_no_socket(stamped: Path) -> None:
+def test_verification_opens_no_socket(stamped: Path, key: bytes) -> None:
     """
     `no_network` autouse olduğu için aslında BÜTÜN bu paket bunu sınıyor.
     Bu test niyeti açıkça yazıyor: soket yasağı yürürlükte ve doğrulama
@@ -202,12 +203,17 @@ def test_verification_opens_no_socket(stamped: Path) -> None:
     with pytest.raises(AssertionError, match="ağa çıkmaya"):
         socket.socket()
 
-    assert verify_timestamp(stamped).valid
+    assert verify_timestamp(stamped, key).valid
 
 
-def test_verification_needs_no_key(stamped: Path) -> None:
-    """Doğrulama anahtar istemiyor — özet AAD'de, AAD şifresiz."""
-    assert verify_timestamp(stamped).valid
+def test_verification_needs_a_key(stamped: Path) -> None:
+    """
+    B-092/B-099: `key` artık ZORUNLU — eskiden "doğrulama anahtar
+    istemiyor, özet AAD'de duruyor" denirdi; original_sha256 AAD'den
+    kaldırıldığı için bu artık YANLIŞ, kasıtlı olarak tersine çevrildi.
+    """
+    with pytest.raises(TypeError):
+        verify_timestamp(stamped)  # type: ignore[call-arg]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -215,7 +221,7 @@ def test_verification_needs_no_key(stamped: Path) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_a_tampered_token_is_rejected(stamped: Path) -> None:
+def test_a_tampered_token_is_rejected(stamped: Path, key: bytes) -> None:
     """Token'ın imzasını taşıyan byte'lar değişirse doğrulama düşmeli."""
     info = read_trailer(stamped)
     assert info is not None
@@ -223,7 +229,7 @@ def test_a_tampered_token_is_rejected(stamped: Path) -> None:
     bozuk[-10] ^= 0xFF  # imza bölgesi
     _retrailer(stamped, token_der=bytes(bozuk))
 
-    sonuc = verify_timestamp(stamped)
+    sonuc = verify_timestamp(stamped, key)
     assert not sonuc.valid
     assert sonuc.failed_check in ("signature", "parse")
 
@@ -236,7 +242,7 @@ def test_a_token_signed_by_another_key_is_rejected(tmp_path: Path, key: bytes) -
     taşıyor ama anahtarı farklı.
     """
     path = _hcl(tmp_path, key, b"icerik")
-    digest = bytes.fromhex(_aad_digest(path))
+    digest = bytes.fromhex(_aad_digest(path, key))
 
     yabanci = build_authority()
     attach_trailer(path, TimestampInfo(
@@ -246,8 +252,8 @@ def test_a_token_signed_by_another_key_is_rejected(tmp_path: Path, key: bytes) -
     ))
     # Yabancı otoritenin kendi zinciri tutarlı olduğu için doğrulama GEÇER;
     # yakalanması gereken yer güven kökü. Kendi kökümüzü dayatınca düşmeli.
-    assert verify_timestamp(path).valid
-    sonuc = verify_timestamp(path, trusted_roots=[default_authority().ca_der])
+    assert verify_timestamp(path, key).valid
+    sonuc = verify_timestamp(path, key, trusted_roots=[default_authority().ca_der])
     assert not sonuc.valid
     assert sonuc.failed_check == "trust_anchor"
 
@@ -264,7 +270,7 @@ def test_a_tampered_signing_certificate_is_rejected(tmp_path: Path, key: bytes) 
     bilerek doğrulanmıyor.
     """
     path = _hcl(tmp_path, key, b"icerik")
-    digest = bytes.fromhex(_aad_digest(path))
+    digest = bytes.fromhex(_aad_digest(path, key))
 
     içerik = cms.ContentInfo.load(build_token(digest, 1))
     certs = içerik["content"]["certificates"]
@@ -282,7 +288,7 @@ def test_a_tampered_signing_certificate_is_rejected(tmp_path: Path, key: bytes) 
         tsa_url="https://x/tsr", token_der=içerik.dump(force=True),
     ))
 
-    sonuc = verify_timestamp(path)
+    sonuc = verify_timestamp(path, key)
     assert not sonuc.valid
     assert sonuc.failed_check in ("signature", "certificate_chain")
 
@@ -323,14 +329,14 @@ def test_a_broken_certificate_chain_is_rejected(tmp_path: Path, key: bytes) -> N
         sign_with_wrong_ca=(sahte_ca.ca_cert, sahte_ca.ca_key)
     )
     path = _hcl(tmp_path, key, b"icerik")
-    digest = bytes.fromhex(_aad_digest(path))
+    digest = bytes.fromhex(_aad_digest(path, key))
     attach_trailer(path, TimestampInfo(
         hash_algorithm="sha256", hashed_hex=digest.hex(),
         tsa_url="https://x/tsr",
         token_der=build_token(digest, 1, authority=kirik),
     ))
 
-    sonuc = verify_timestamp(path)
+    sonuc = verify_timestamp(path, key)
     assert not sonuc.valid
     assert sonuc.failed_check == "certificate_chain"
 
@@ -343,7 +349,7 @@ def test_the_tstinfo_cannot_be_swapped(tmp_path: Path, key: bytes) -> None:
     özet tutmaz.
     """
     path = _hcl(tmp_path, key, b"icerik")
-    digest = bytes.fromhex(_aad_digest(path))
+    digest = bytes.fromhex(_aad_digest(path, key))
     token = build_token(digest, 1)
 
     içerik = cms.ContentInfo.load(token)
@@ -357,7 +363,7 @@ def test_the_tstinfo_cannot_be_swapped(tmp_path: Path, key: bytes) -> None:
         tsa_url="https://x/tsr", token_der=içerik.dump(),
     ))
 
-    sonuc = verify_timestamp(path)
+    sonuc = verify_timestamp(path, key)
     assert not sonuc.valid
     assert sonuc.failed_check == "message_digest"
 
@@ -462,10 +468,16 @@ def test_multiple_signers_are_rejected() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def _aad_digest(path: Path) -> str:
-    from CORE.timestamp import read_aad
+def _aad_digest(path: Path, key: bytes) -> str:
+    """
+    Dosyanın GERÇEK düz metin özeti.
 
-    return str(read_aad(path)["original_sha256"])
+    B-092/B-099: `read_aad()["original_sha256"]` artık YOK — anahtarla
+    `file_digest()` üzerinden yeniden hesaplanıyor.
+    """
+    from CORE.timestamp import file_digest
+
+    return file_digest(path, key=key, hwid=_HWID)
 
 
 def test_another_files_stamp_is_rejected(tmp_path: Path, key: bytes) -> None:
@@ -478,13 +490,13 @@ def test_another_files_stamp_is_rejected(tmp_path: Path, key: bytes) -> None:
     """
     a = _hcl(tmp_path, key, b"A dosyasinin icerigi", name="a.bin")
     b = _hcl(tmp_path, key, b"B dosyasinin icerigi", name="b.bin")
-    timestamp_file(a, transport=FakeTSA())
+    timestamp_file(a, key, transport=FakeTSA())
 
     a_info = read_trailer(a)
     assert a_info is not None
     attach_trailer(b, a_info)  # A'nın damgası B'ye yapıştırılıyor
 
-    sonuc = verify_timestamp(b)
+    sonuc = verify_timestamp(b, key)
     assert not sonuc.valid
     assert sonuc.failed_check == "trailer_aad_mismatch"
     assert "kopyalanmış olabilir" in (sonuc.reason or "")
@@ -494,41 +506,42 @@ def test_a_trailer_hash_that_lies_about_the_token_is_caught(
     tmp_path: Path, key: bytes
 ) -> None:
     """
-    Fragmandaki `hashed_hex` AAD'ye uydurulsa bile token'daki imprint
-    farklıysa yakalanmalı — iki alan birbirinden bağımsız kontrol ediliyor.
+    Fragmandaki `hashed_hex` gerçek özete uydurulsa bile token'daki
+    imprint farklıysa yakalanmalı — iki alan birbirinden bağımsız
+    kontrol ediliyor.
     """
     path = _hcl(tmp_path, key, b"gercek icerik")
     baska = hashlib.sha256(b"baska icerik").digest()
     attach_trailer(path, TimestampInfo(
         hash_algorithm="sha256",
-        hashed_hex=_aad_digest(path),          # AAD ile uyumlu (yalan)
+        hashed_hex=_aad_digest(path, key),     # gerçek özetle uyumlu (yalan)
         tsa_url="https://x/tsr",
         token_der=build_token(baska, 1),       # ama token başkasını damgalamış
     ))
 
-    sonuc = verify_timestamp(path)
+    sonuc = verify_timestamp(path, key)
     assert not sonuc.valid
     assert sonuc.failed_check == "digest_match"
 
 
 def test_modifying_the_plaintext_breaks_the_stamp(tmp_path: Path, key: bytes) -> None:
     """
-    Dosya yeniden şifrelenirse AAD'deki özet değişir ve eski damga artık
+    Dosya yeniden şifrelenirse gerçek özeti değişir ve eski damga artık
     eşleşmez.
     """
     path = _hcl(tmp_path, key, b"ilk surum")
-    timestamp_file(path, transport=FakeTSA())
+    timestamp_file(path, key, transport=FakeTSA())
     info = read_trailer(path)
     assert info is not None
 
     yeni = _hcl(tmp_path, key, b"degistirilmis surum", name="v2.bin")
     attach_trailer(yeni, info)
 
-    assert verify_timestamp(yeni).valid is False
+    assert verify_timestamp(yeni, key).valid is False
 
 
 def test_an_unstamped_file_reports_no_timestamp(tmp_path: Path, key: bytes) -> None:
-    sonuc = verify_timestamp(_hcl(tmp_path, key, b"damgasiz"))
+    sonuc = verify_timestamp(_hcl(tmp_path, key, b"damgasiz"), key)
     assert not sonuc.valid
     assert sonuc.failed_check == "no_timestamp"
     assert "damgalı değil" in (sonuc.reason or "")
@@ -550,15 +563,15 @@ def test_a_stripped_trailer_is_indistinguishable_from_never_stamped(
     ham = stamped.read_bytes()
     stamped.write_bytes(ham[: len(ham) - len(encode_trailer(info))])
 
-    silinmis = verify_timestamp(stamped)
-    hic = verify_timestamp(_hcl(tmp_path, key, b"hic damgalanmadi", name="c.bin"))
+    silinmis = verify_timestamp(stamped, key)
+    hic = verify_timestamp(_hcl(tmp_path, key, b"hic damgalanmadi", name="c.bin"), key)
     assert silinmis.failed_check == hic.failed_check == "no_timestamp"
 
 
-def test_a_non_hcl_file_reports_a_clear_error(tmp_path: Path) -> None:
+def test_a_non_hcl_file_reports_a_clear_error(tmp_path: Path, key: bytes) -> None:
     duz = tmp_path / "duz.txt"
     duz.write_bytes(b"bu bir hcl degil")
-    sonuc = verify_timestamp(duz)
+    sonuc = verify_timestamp(duz, key)
     assert not sonuc.valid
     assert sonuc.failed_check == "trailer"
 
@@ -568,22 +581,22 @@ def test_a_non_hcl_file_reports_a_clear_error(tmp_path: Path) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_summary_reads_clearly_when_valid(real_stamped: Path) -> None:
-    özet = verify_timestamp(real_stamped).summary()
+def test_summary_reads_clearly_when_valid(real_stamped: Path, key: bytes) -> None:
+    özet = verify_timestamp(real_stamped, key).summary()
     assert özet.startswith("GEÇERLİ")
     assert "kök doğrulanmadı" in özet
 
 
 def test_summary_reads_clearly_when_invalid(tmp_path: Path, key: bytes) -> None:
-    özet = verify_timestamp(_hcl(tmp_path, key, b"x")).summary()
+    özet = verify_timestamp(_hcl(tmp_path, key, b"x"), key).summary()
     assert özet.startswith("GEÇERSİZ")
 
 
-def test_trust_is_reported_separately_from_validity(stamped: Path) -> None:
+def test_trust_is_reported_separately_from_validity(stamped: Path, key: bytes) -> None:
     """
     `valid` ile `anchor_trusted` AYRI alanlar. Tek bayrağa toplamak, kökün
     dosyadan geldiği gerçeğini gizlerdi.
     """
-    sonuc = verify_timestamp(stamped)
+    sonuc = verify_timestamp(stamped, key)
     assert sonuc.valid is True
     assert sonuc.anchor_trusted is False

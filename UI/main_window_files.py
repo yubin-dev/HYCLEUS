@@ -185,9 +185,15 @@ class FileActionsMixin:
         DEĞİL — bu depoda "aynı iş için iki uygulama" beş kez kusur
         üretti.
 
-        Ne ANAHTAR ne AĞ gerekiyor: damgalanan özet AAD'de duruyor ve AAD
-        şifresiz. Bu yüzden dosya kilitliyken de, kasa oturumu düşmüşken
-        de çalışıyor.
+        AĞ gerekmiyor — ama ANAHTAR artık GEREKİYOR (B-092/B-099):
+        `verify_timestamp()` dosyanın gerçek özetini `self._key`'le akan
+        blok üzerinden yeniden hesaplıyor (anahtarsız doğrulama, yalnızca
+        bir `.hcl` kopyasına erişen biri için kesin bir içerik-doğrulama
+        oracle'ı olduğu için kalıcı olarak kaldırıldı — bkz.
+        `CORE/timestamp_verify.py` modül docstring'i). `self._key` her
+        zaman canlı oturum anahtarı (bkz. bu dosyada `decrypt_file()`
+        çağrıları), yani kilitliyken de çalışmaya devam ediyor — ama
+        kasa hiç açılmamışsa (`self._key` yoksa) artık ÇALIŞAMAZ.
 
         İş parçacığı yok — ölçüldü, 3,3 ms ve süre dosya boyutundan
         bağımsız (bkz. `UI/TimestampDialog.py` modül docstring'i).
@@ -220,7 +226,7 @@ class FileActionsMixin:
             kokler = []
 
         try:
-            sonuc = verify_timestamp(path, trusted_roots=kokler or None)
+            sonuc = verify_timestamp(path, self._key, trusted_roots=kokler or None)
         except Exception as exc:
             # `verify_timestamp()` beklenen hataları sonuca çeviriyor;
             # buraya yalnızca okuma hatası gibi ÖNGÖRÜLMEYEN bir şey

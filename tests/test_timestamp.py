@@ -22,7 +22,6 @@ kırmamalı. Çalıştırmak için HYCLEUS_TSA_NETWORK=1.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import struct
 from pathlib import Path
@@ -151,8 +150,8 @@ def test_v1_file_still_decrypts_byte_identically(
 
 def test_v1_file_still_passes_verify_file(hcl: Path, key: bytes) -> None:
     _downgrade_to_v1(hcl)
-    meta = verify_file(hcl, key, hwid=_HWID)
-    assert meta["original_sha256"] == hashlib.sha256(
+    _meta, sha256_hex = verify_file(hcl, key, hwid=_HWID, return_sha256=True)
+    assert sha256_hex == hashlib.sha256(
         (hcl.parent.parent / "rapor.bin").read_bytes()
     ).hexdigest()
 
@@ -278,7 +277,7 @@ def test_stamped_file_still_decrypts_byte_identically(
     Bu tutmasaydı damgalanan her dosya bütünlük taramasında "bozuk"
     görünürdü — özelliğin kendisi bir veri kaybı alarmına dönüşürdü.
     """
-    timestamp_file(hcl, transport=fake_tsa)
+    timestamp_file(hcl, key, transport=fake_tsa)
     content, meta = decrypt_file(hcl, key, hwid=_HWID)
     assert content == plain_bytes
     assert meta["filename"] == "rapor.bin"
@@ -288,14 +287,14 @@ def test_stamped_file_still_passes_verify_file(
     hcl: Path, key: bytes, fake_tsa: FakeTSA
 ) -> None:
     """Haftalık bütünlük taramasının kullandığı yol da bozulmamalı."""
-    timestamp_file(hcl, transport=fake_tsa)
+    timestamp_file(hcl, key, transport=fake_tsa)
     assert verify_file(hcl, key, hwid=_HWID)["hwid"] == _HWID
 
 
-def test_stamping_only_appends(hcl: Path, fake_tsa: FakeTSA) -> None:
+def test_stamping_only_appends(hcl: Path, key: bytes, fake_tsa: FakeTSA) -> None:
     """Kabın geri kalanı byte-byte aynı kalmalı — yalnızca sona ekleniyor."""
     before = hcl.read_bytes()
-    timestamp_file(hcl, transport=fake_tsa)
+    timestamp_file(hcl, key, transport=fake_tsa)
     after = hcl.read_bytes()
     assert after[: len(before)] == before
     assert len(after) > len(before)
@@ -305,7 +304,7 @@ def test_tampering_a_stamped_file_is_still_caught(
     hcl: Path, key: bytes, fake_tsa: FakeTSA
 ) -> None:
     """Fragman, ciphertext kurcalamasını gizlememelidir."""
-    timestamp_file(hcl, transport=fake_tsa)
+    timestamp_file(hcl, key, transport=fake_tsa)
     raw = bytearray(hcl.read_bytes())
     raw[200] ^= 0xFF  # ciphertext bölgesinin içinde
     hcl.write_bytes(bytes(raw))
@@ -321,7 +320,7 @@ def test_stamping_upgrades_a_v1_file_to_v2(
     fragmanı hiç aramaz ve artık byte'lar ciphertext sanılırdı.
     """
     _downgrade_to_v1(hcl)
-    timestamp_file(hcl, transport=fake_tsa)
+    timestamp_file(hcl, key, transport=fake_tsa)
 
     assert hcl.read_bytes()[4] == VERSION_TIMESTAMPED
     assert read_trailer(hcl) is not None
@@ -341,7 +340,7 @@ def test_removing_the_trailer_leaves_a_valid_unstamped_file(
     test kırılacak ve değişiklik bilinçli bir karar olarak görünecek.
     """
     before = hcl.read_bytes()
-    timestamp_file(hcl, transport=fake_tsa)
+    timestamp_file(hcl, key, transport=fake_tsa)
     hcl.write_bytes(before)  # fragmanı sil
 
     assert read_trailer(hcl) is None
@@ -578,13 +577,13 @@ def test_a_token_without_certificates_is_refused() -> None:
 
 
 def test_a_stamped_file_carries_the_full_certificate_chain(
-    hcl: Path, fake_tsa: FakeTSA
+    hcl: Path, key: bytes, fake_tsa: FakeTSA
 ) -> None:
     """
     Zincir fragmanda AYRI bir alan değil, token'ın İÇİNDE — bu yüzden
     saklandığının kanıtı da token'dan okunuyor.
     """
-    timestamp_file(hcl, transport=fake_tsa)
+    timestamp_file(hcl, key, transport=fake_tsa)
     info = read_trailer(hcl)
     assert info is not None
 
@@ -616,13 +615,13 @@ def test_garbage_is_not_parsed_as_a_response() -> None:
 
 
 def test_the_stamped_hash_is_the_plaintext_hash_not_the_ciphertext(
-    hcl: Path, plain_bytes: bytes, fake_tsa: FakeTSA
+    hcl: Path, key: bytes, plain_bytes: bytes, fake_tsa: FakeTSA
 ) -> None:
     """
     GEREKSİNİM 3'ÜN TESTİ. Damgalanan özet düz metne ait olmalı; ne
     ciphertext'in, ne .hcl dosyasının, ne de özetin özeti.
     """
-    timestamp_file(hcl, transport=fake_tsa)
+    timestamp_file(hcl, key, transport=fake_tsa)
 
     plaintext_hash = hashlib.sha256(plain_bytes).digest()
     assert fake_tsa.last_digest == plaintext_hash
@@ -635,41 +634,52 @@ def test_the_stamped_hash_is_the_plaintext_hash_not_the_ciphertext(
     assert read_trailer(hcl).hashed_hex == plaintext_hash.hex()  # type: ignore[union-attr]
 
 
-def test_the_stamped_hash_comes_from_the_aad_not_a_recomputation(
-    hcl: Path, fake_tsa: FakeTSA, monkeypatch: pytest.MonkeyPatch
+def test_the_stamped_hash_is_a_genuine_recomputation_not_a_stored_claim(
+    tmp_path: Path, key: bytes, fake_tsa: FakeTSA
 ) -> None:
     """
-    Özet YENİDEN HESAPLANMAMALI: AAD'de hazır duruyor ve onu tekrar üretmek
-    dosyayı çözmeyi gerektirirdi.
-
-    Kanıt: AAD'deki original_sha256 elle değiştiriliyor (GCM tag'i bozulur
-    ama damgalama anahtar kullanmadığı için oraya bakmıyor) ve TSA'ya
-    giden özetin DEĞİŞTİĞİ görülüyor. Kod düz metni yeniden hash'leseydi
-    gönderilen özet değişmezdi.
+    B-092/B-099: `original_sha256` artık AAD'de HİÇ YOK — eskiden bu test
+    AAD'deki değeri elle değiştirip TSA'ya giden özetin onu izlediğini
+    kanıtlıyordu ("AAD'den okunuyor, yeniden hesaplanmıyor"). O alan
+    kaldırıldığı için tamamen TERS bir iddiayı kanıtlıyoruz: iki AYRI
+    dosyanın damgalanan özeti kendi GERÇEK içeriklerinden geliyor,
+    paylaşılan/önbelleklenmiş bir değerden değil — çünkü öyle bir değer
+    artık hiçbir yerde SAKLANMIYOR, her `timestamp_file()` çağrısı akan
+    blok üzerinden yeniden hesaplıyor (bkz. `verify_file(...,
+    return_sha256=True)`).
     """
-    sahte = "11" * 32
-    raw = hcl.read_bytes()
-    aad = json.loads(raw[21 : 21 + struct.unpack(">I", raw[17:21])[0]].decode())
-    gercek = aad["original_sha256"]
-    hcl.write_bytes(raw.replace(gercek.encode(), sahte.encode()))
+    src_a = tmp_path / "a.bin"
+    src_a.write_bytes(b"birinci dosyanin icerigi")
+    hcl_a, _sha_a, _aad_a = encrypt_file(src_a, key, _USER_ID, hwid=_HWID)
 
-    timestamp_file(hcl, transport=fake_tsa)
-    assert fake_tsa.last_digest.hex() == sahte
-    assert fake_tsa.last_digest.hex() != gercek
+    src_b = tmp_path / "b.bin"
+    src_b.write_bytes(b"ikinci, tamamen farkli icerik")
+    hcl_b, _sha_b, _aad_b = encrypt_file(src_b, key, _USER_ID, hwid=_HWID)
+
+    timestamp_file(hcl_a, key, transport=fake_tsa)
+    ozet_a = fake_tsa.last_digest
+
+    timestamp_file(hcl_b, key, transport=fake_tsa)
+    ozet_b = fake_tsa.last_digest
+
+    assert ozet_a == hashlib.sha256(src_a.read_bytes()).digest()
+    assert ozet_b == hashlib.sha256(src_b.read_bytes()).digest()
+    assert ozet_a != ozet_b
 
 
-def test_stamping_needs_no_key(hcl: Path, fake_tsa: FakeTSA) -> None:
+def test_stamping_needs_a_key(hcl: Path) -> None:
     """
-    Damgalama oturum anahtarı OLMADAN çalışıyor — düz metne hiç dokunulmuyor.
-    `key` argümanı hiç verilmiyor ve akış tamamlanıyor.
+    B-092/B-099: `key` artık ZORUNLU — anahtarsız damgalama (düz metne hiç
+    dokunmadan AAD'den hazır bir özet okuma) kalıcı olarak kaldırıldı.
+    `timestamp_file()`'ın imzasında artık varsayılan değeri OLMAYAN bir
+    pozisyonel parametre; verilmezse Python'un kendisi TypeError fırlatır.
     """
-    info = timestamp_file(hcl, transport=fake_tsa)
-    assert info.token_der
-    assert read_trailer(hcl) == info
+    with pytest.raises(TypeError):
+        timestamp_file(hcl)  # type: ignore[call-arg]
 
 
-def test_stamping_records_the_tsa_url(hcl: Path, fake_tsa: FakeTSA) -> None:
-    timestamp_file(hcl, url="https://tsa.kurum.example/tsr", transport=fake_tsa)
+def test_stamping_records_the_tsa_url(hcl: Path, key: bytes, fake_tsa: FakeTSA) -> None:
+    timestamp_file(hcl, key, url="https://tsa.kurum.example/tsr", transport=fake_tsa)
     assert fake_tsa.urls == ["https://tsa.kurum.example/tsr"]
     assert read_trailer(hcl).tsa_url == "https://tsa.kurum.example/tsr"  # type: ignore[union-attr]
 
@@ -698,35 +708,14 @@ def test_a_corrupt_file_is_not_stamped_when_a_key_is_given(
     assert hcl.read_bytes() == before   # dosyaya dokunulmadı
 
 
-def test_double_stamping_is_refused(hcl: Path, fake_tsa: FakeTSA) -> None:
-    timestamp_file(hcl, transport=fake_tsa)
+def test_double_stamping_is_refused(hcl: Path, key: bytes, fake_tsa: FakeTSA) -> None:
+    timestamp_file(hcl, key, transport=fake_tsa)
     with pytest.raises(TimestampError, match="zaten damgalı"):
-        timestamp_file(hcl, transport=fake_tsa)
+        timestamp_file(hcl, key, transport=fake_tsa)
     assert len(fake_tsa.requests) == 1
 
 
-def test_a_file_without_original_sha256_cannot_be_stamped(
-    tmp_path: Path, key: bytes, fake_tsa: FakeTSA
-) -> None:
-    """AAD'de özet yoksa damgalanacak bir şey yok — sessizce geçilmemeli."""
-    src = tmp_path / "eski.bin"
-    src.write_bytes(b"veri")
-    dst, _sha, _aad = encrypt_file(src, key, _USER_ID, hwid=_HWID)
-
-    raw = dst.read_bytes()
-    (aad_len,) = struct.unpack(">I", raw[17:21])
-    aad = json.loads(raw[21 : 21 + aad_len].decode())
-    del aad["original_sha256"]
-    yeni = json.dumps(aad, ensure_ascii=False, sort_keys=True).encode()
-    dst.write_bytes(
-        raw[:17] + struct.pack(">I", len(yeni)) + yeni + raw[21 + aad_len :]
-    )
-
-    with pytest.raises(TimestampError, match="original_sha256 yok"):
-        timestamp_file(dst, transport=fake_tsa)
-
-
-def test_a_tsa_failure_leaves_the_file_untouched(hcl: Path) -> None:
+def test_a_tsa_failure_leaves_the_file_untouched(hcl: Path, key: bytes) -> None:
     """Ağ hatası dosyayı yarım bırakmamalı."""
     before = hcl.read_bytes()
 
@@ -734,31 +723,31 @@ def test_a_tsa_failure_leaves_the_file_untouched(hcl: Path) -> None:
         raise OSError("baglanti reddedildi")
 
     with pytest.raises(TimestampError, match="TSA'ya ulaşılamadı"):
-        timestamp_file(hcl, transport=_patlar)
+        timestamp_file(hcl, key, transport=_patlar)
 
     assert hcl.read_bytes() == before
     assert read_trailer(hcl) is None
 
 
-def test_a_dishonest_tsa_response_leaves_the_file_untouched(hcl: Path) -> None:
+def test_a_dishonest_tsa_response_leaves_the_file_untouched(hcl: Path, key: bytes) -> None:
     """TSA başka bir özeti damgalarsa fragman YAZILMAMALI."""
     before = hcl.read_bytes()
     tsa = FakeTSA()
     tsa.override_digest = hashlib.sha256(b"tamamen baska").digest()
 
     with pytest.raises(TimestampError, match="başka bir özeti damgalamış"):
-        timestamp_file(hcl, transport=tsa)
+        timestamp_file(hcl, key, transport=tsa)
 
     assert hcl.read_bytes() == before
     assert read_trailer(hcl) is None
 
 
-def test_no_temp_file_is_left_behind(hcl: Path, fake_tsa: FakeTSA) -> None:
+def test_no_temp_file_is_left_behind(hcl: Path, key: bytes, fake_tsa: FakeTSA) -> None:
     """
     Fragman atomik yazılıyor (geçici kopya + os.replace). Başarılı yolda
     geçici dosya kalmamalı.
     """
-    timestamp_file(hcl, transport=fake_tsa)
+    timestamp_file(hcl, key, transport=fake_tsa)
     assert list(hcl.parent.glob("*-ts-tmp*")) == []
     assert [p.name for p in hcl.parent.iterdir()] == [hcl.name]
 
@@ -790,15 +779,151 @@ def test_an_interrupted_write_leaves_the_original_intact(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 7. AAD okuma ve ayarlar
+# 7. B-092/B-099 — ESKİ (original_sha256 AAD'de) formatta dosyalar
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Bu karardan ÖNCE şifrelenmiş dosyalar yeniden şifrelenmedikçe (B-100)
+# AAD'de HÂLÂ `original_sha256` taşıyor — geriye dönük onarılamıyor (bkz.
+# CORE/crypto.py modül docstring'i). Buradaki testler bu depoda GERÇEKTEN
+# var olacak durumu, sessiz bir yanlış-pozitif ÜRETMEDEN kapsıyor: eski
+# formattaki dosya güvenle işleniyor VE eski (artık güvenilmeyen) alan
+# sessizce KULLANILMIYOR.
+
+
+def _eski_format_hcl(
+    dst: Path, key: bytes, plaintext: bytes, *, user_id: int, hwid: str,
+    sahte_original_sha256: str | None = None,
+) -> Path:
+    """
+    B-099 ÖNCESİ `encrypt_file()`'ın ürettüğü formatı BİREBİR simüle eder:
+    AAD'ye `original_sha256`'yı DA yazar. `encrypt_file()`'ın kendisi
+    artık bunu yapmıyor (bkz. CORE/crypto.py) — bu yüzden gerçek üretim
+    kodu YERİNE aynı ikili biçimi elle kuruyoruz.
+
+    `sahte_original_sha256` verilirse alan GERÇEK özet YERİNE bu değeri
+    taşır — "eski alan artık okunmuyor" iddiasını, alan YANLIŞ olsa bile
+    doğrulamanın hâlâ doğru sonuç verdiğini göstererek kanıtlamak için.
+    """
+    import json
+
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    from CORE.crypto import _MAGIC, _NONCE_SIZE, _VERSION
+
+    gercek_sha256 = hashlib.sha256(plaintext).hexdigest()
+    metadata = {
+        "filename": dst.name,
+        "original_sha256": sahte_original_sha256 or gercek_sha256,
+        "created_at": "2020-01-01T00:00:00Z",
+        "uploaded_at": "2020-01-01T00:00:00Z",
+        "last_modified": "2020-01-01T00:00:00Z",
+        "user_id": user_id,
+        "hwid": hwid,
+    }
+    nonce = os.urandom(_NONCE_SIZE)
+    aad = json.dumps(metadata, ensure_ascii=False, sort_keys=True).encode()
+
+    encryptor = Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
+    encryptor.authenticate_additional_data(aad)
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with open(dst, "wb") as fout:
+        fout.write(_MAGIC)
+        fout.write(bytes([_VERSION]))
+        fout.write(nonce)
+        fout.write(struct.pack(">I", len(aad)))
+        fout.write(aad)
+        fout.write(ciphertext)
+        fout.write(encryptor.tag)
+    return dst
+
+
+def test_an_old_format_file_still_verifies_and_stamps(
+    tmp_path: Path, key: bytes, fake_tsa: FakeTSA,
+) -> None:
+    """
+    Sessiz yanlış-pozitif OLMAMALI: eski formattaki bir dosya ne
+    reddediliyor ne de eski alana güvenerek yanlış bir özetle
+    damgalanıyor — `verify_file(..., return_sha256=True)` AAD'deki
+    `original_sha256`yı hiç OKUMUYOR, düz metni akan blok üzerinden
+    yeniden hesaplıyor.
+    """
+    plaintext = b"eski formatta sifrelenmis rapor" * 200
+    eski = _eski_format_hcl(
+        tmp_path / "eski.bin.hcl", key, plaintext, user_id=_USER_ID, hwid=_HWID,
+    )
+
+    # AAD hâlâ eski alanı taşıyor — dosyanın gerçekten "eski format" olduğunun kanıtı.
+    meta, gercek_hex = verify_file(eski, key, hwid=_HWID, return_sha256=True)
+    assert "original_sha256" in meta
+    assert gercek_hex == hashlib.sha256(plaintext).hexdigest()
+
+    # Damgalama ve doğrulama, eski dosya için de sorunsuz çalışmalı.
+    info = timestamp_file(eski, key, hwid=_HWID, transport=fake_tsa)
+    assert info.hashed_hex == gercek_hex
+
+    from CORE.timestamp_verify import verify_timestamp
+
+    sonuc = verify_timestamp(eski, key)
+    assert sonuc.valid, sonuc.reason
+
+
+def test_an_old_format_files_stale_hash_is_silently_ignored_not_trusted(
+    tmp_path: Path, key: bytes, fake_tsa: FakeTSA,
+) -> None:
+    """
+    ASIL KANIT: eski dosyanın AAD'sindeki `original_sha256` YANLIŞ olsa
+    bile (ör. bozuk bir geçmiş kayıt) doğrulama/damgalama GERÇEK özeti
+    kullanıyor — eski alana asla GÜVENMİYOR. Eskiden (B-099 öncesi) bu
+    durum tam tersiydi: yanlış alan sessizce KABUL edilirdi.
+    """
+    plaintext = b"gercek icerik, eski alan yalan soyluyor" * 100
+    eski = _eski_format_hcl(
+        tmp_path / "yalanci.bin.hcl", key, plaintext, user_id=_USER_ID, hwid=_HWID,
+        sahte_original_sha256="0" * 64,  # gerçek özetle HİÇ eşleşmeyen bir değer
+    )
+
+    meta, gercek_hex = verify_file(eski, key, hwid=_HWID, return_sha256=True)
+    assert meta["original_sha256"] == "0" * 64  # AAD'de hâlâ yalan duruyor
+    assert gercek_hex == hashlib.sha256(plaintext).hexdigest()
+    assert gercek_hex != meta["original_sha256"], "test kurulumu hatalı — alan yanlış değil"
+
+    info = timestamp_file(eski, key, hwid=_HWID, transport=fake_tsa)
+    # Damgalanan özet GERÇEK içerik — AAD'deki yalan DEĞİL.
+    assert info.hashed_hex == gercek_hex
+    assert info.hashed_hex != "0" * 64
+
+    # `file_digest()` — `timestamp_batch()`/`verify_timestamp()`'in ortak
+    # yolu — AYRICA sınanıyor: `verify_file()`'ı DOĞRUDAN çağıran
+    # `timestamp_file()`'dan FARKLI bir kod yolu, ikisi de yalanı
+    # yoksaymalı.
+    assert timestamp.file_digest(eski, key=key, hwid=_HWID) == gercek_hex
+
+    from CORE.timestamp_verify import verify_timestamp
+
+    sonuc = verify_timestamp(eski, key)
+    assert sonuc.valid, sonuc.reason
+    assert sonuc.hashed_hex == gercek_hex
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 8. AAD okuma ve ayarlar
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 def test_read_aad_needs_no_key(hcl: Path) -> None:
+    """
+    `read_aad()`'in kendisi hâlâ anahtarsız çalışıyor — B-092/B-099
+    `original_sha256`'yı AAD'ye YAZMAKTAN vazgeçti, `read_aad()`'i
+    KALDIRMADI (bkz. fonksiyonun kendi docstring'i: filename/created_at
+    gibi diğer alanlar için hâlâ meşru bir ihtiyaç). Yeni bir dosyada
+    original_sha256 artık HİÇ yok.
+    """
     meta = read_aad(hcl)
     assert meta["filename"] == "rapor.bin"
     assert meta["hwid"] == _HWID
-    assert len(meta["original_sha256"]) == 64
+    assert "original_sha256" not in meta
 
 
 def test_read_aad_rejects_a_foreign_file(tmp_path: Path) -> None:
@@ -851,7 +976,7 @@ def test_real_tsa_round_trip(hcl: Path, key: bytes, plain_bytes: bytes) -> None:
     Elle çalıştırılan bu test, sahte TSA'nın gerçeği doğru taklit ettiğini
     zaman zaman teyit etmek için var.
     """
-    info = timestamp_file(hcl, url=DEFAULT_TSA_URL, key=key, hwid=_HWID)
+    info = timestamp_file(hcl, key, url=DEFAULT_TSA_URL, hwid=_HWID)
 
     assert info.hashed_hex == hashlib.sha256(plain_bytes).hexdigest()
     assert len(info.token_der) > 1000

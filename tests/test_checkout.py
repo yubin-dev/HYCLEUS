@@ -244,7 +244,8 @@ def test_the_full_cycle_re_encrypts_the_edit(reg, hcl, key) -> None:
     icerik, meta = decrypt_file(hcl, key, hwid=_HWID)
     assert icerik == _YENI
     assert meta["filename"] == "sozlesme.txt"
-    assert meta["original_sha256"] == hashlib.sha256(_YENI).hexdigest()
+    # B-092/B-099: original_sha256 artık AAD'de yok — asıl iddia zaten
+    # yukarıdaki `icerik == _YENI` karşılaştırması.
 
 
 def test_an_unchanged_file_is_not_re_encrypted(reg, hcl, key) -> None:

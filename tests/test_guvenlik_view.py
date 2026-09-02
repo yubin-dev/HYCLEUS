@@ -115,12 +115,15 @@ def _sahte_db(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict]]:
 class _Pencere(FileActionsMixin, QWidget):
     """`_on_ctx_verify_timestamp`'in dokunduğu asgari pencere yüzeyi."""
 
-    def __init__(self) -> None:
+    def __init__(self, key: bytes) -> None:
         super().__init__()
         self._hwid = _HWID
         self._role = "Yönetici"
         self._T = _DARK
         self.yedek_cagrilari: list[dict] = []
+        # B-092/B-099: `_on_ctx_verify_timestamp` artık `self._key`'i
+        # `verify_timestamp()`e geçiriyor.
+        self._key = key
 
     def _on_verify_backup(self, *, sade: bool = False) -> None:
         self.yedek_cagrilari.append({"sade": sade})
@@ -132,8 +135,13 @@ class _Pencere(FileActionsMixin, QWidget):
 
 
 @pytest.fixture
-def pencere(qapp) -> _Pencere:  # type: ignore[no-untyped-def]
-    return _Pencere()
+def key() -> bytes:
+    return generate_key()
+
+
+@pytest.fixture
+def pencere(qapp, key: bytes) -> _Pencere:  # type: ignore[no-untyped-def]
+    return _Pencere(key)
 
 
 @pytest.fixture
@@ -142,13 +150,13 @@ def gorunum(pencere: _Pencere) -> GuvenlikView:
 
 
 @pytest.fixture
-def damgali(tmp_path: Path) -> Path:
+def damgali(tmp_path: Path, key: bytes) -> Path:
     from tests.test_timestamp_ui import FakeTSA
 
     src = tmp_path / "belge.bin"
     src.write_bytes(b"damgali rapor " * 100)
-    dst, _s, _a = encrypt_file(src, generate_key(), _USER, hwid=_HWID)
-    timestamp_file(dst, transport=FakeTSA())
+    dst, _s, _a = encrypt_file(src, key, _USER, hwid=_HWID)
+    timestamp_file(dst, key, transport=FakeTSA())
     return dst
 
 

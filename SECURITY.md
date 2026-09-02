@@ -119,7 +119,7 @@ can end up in any of the three hands, and §4.4 is where that is worked out.
 |---|---|---|---|
 | AES-256-GCM over file contents | — | ✅ | ⚠️ as strong as the PIN — or as short as one unlocked session (§1.3) |
 | GCM tag / AAD authentication (tamper detection) | — | ✅ | ⚠️ keyed, so unforgeable — until M3 catches the key in an unlocked session (§1.3) |
-| AAD *confidentiality* (filename, plaintext SHA-256, ids) | — | ❌ readable in the header — the SHA-256 is a confirmation oracle, not just a leak (§3, B-092) | ❌ |
+| AAD *confidentiality* (filename, ids — no plaintext hash since B-099) | — | ❌ readable in the header, ordinary metadata leakage (§3) | ❌ |
 | Argon2id PIN → KEK → `share_1` | — | ✅ | ⚠️ offline brute force, no rate limit (§3) |
 | Shamir 2-of-3 | — | ✅ the vault yields one share, and one share is nothing | ❌ `share_2` is already theirs |
 | OS credential store holding `share_2` | — | ⚠️ the blob travels with the disk; the OS account password opens it — unless the record is TPM-sealed | ❌ it answers them |
@@ -140,23 +140,38 @@ Rows tagged M3 also cover the causes that have no attacker at all — bit rot,
 a bad copy, a crash mid-write. The integrity sweep does not distinguish
 them, and does not need to.
 
-**The AAD confidentiality row understates one of its own fields.**
-`filename`, `user_id` and `hwid` being readable is ordinary metadata
-leakage — it says something *about* the file, to whoever already holds a
-copy. `original_sha256` is different in kind, not just in sensitivity:
-because SHA-256 is a public, unkeyed function, anyone holding a *candidate*
-document can hash it themselves and compare the result to the plaintext
-header — no decryption, no brute force, and in practice no false positive.
-That is a confirmation oracle, not a leak: it answers "does the vault hold
-exactly this document" with certainty, for any document the holder can
-independently obtain. A salt does not close this — the salt would have to
-sit in the same plaintext AAD to keep the field readable without a key, so
-the attacker folds it into their own hash at the same zero cost. Closing it
-for real costs the AAD-embedded, keyless RFC 3161 verification path
-(§4.9, `CORE/timestamp_verify.py::verify_timestamp()`, which takes no key
-parameter by design) its entire premise across four modules and a CLI tool.
-That trade-off is tracked as its own architectural decision, **B-092**, not
-folded into this section as if it were already resolved.
+**The AAD confidentiality row used to understate one of its own fields —
+that is fixed now, not just documented.** `filename`, `user_id` and `hwid`
+being readable is ordinary metadata leakage — it says something *about*
+the file, to whoever already holds a copy. `original_sha256` used to be
+different in kind, not just in sensitivity: because SHA-256 is a public,
+unkeyed function, anyone holding a *candidate* document could hash it
+themselves and compare the result to the plaintext header — no
+decryption, no brute force, and in practice no false positive. That was a
+confirmation oracle, not a leak: it answered "does the vault hold exactly
+this document" with certainty, for any document the holder could
+independently obtain. A salt would not have closed this — the salt would
+have had to sit in the same plaintext AAD to keep the field readable
+without a key, so the attacker folds it into their own hash at the same
+zero cost.
+
+**B-099 closed it: `encrypt_file()` no longer writes `original_sha256`
+into the AAD at all.** It still computes and returns the hash (for the
+database), it just stops mirroring it into the plaintext header. The cost
+was real and is paid: the AAD-embedded, keyless RFC 3161 verification
+path (§4.9) lost its entire premise. `timestamp_file()`, `timestamp_batch()`
+and `verify_timestamp()` now take a **mandatory** `key` and recompute the
+plaintext hash themselves, streaming through `verify_file(...,
+return_sha256=True)` the same way the integrity sweep already avoided
+holding whole files in memory — the hash used for the TSA request and for
+the trailer comparison is never read from an untrusted, unkeyed field
+again. **This is not retroactive.** The GCM tag binds the AAD to the
+ciphertext; a field cannot be silently stripped from an already-encrypted
+file without the key. Every `.hcl` file encrypted before this change keeps
+`original_sha256` in its AAD, readable exactly as before, until it is
+re-encrypted — a separate migration, tracked as **B-100**, not attempted
+here. See `CORE/crypto.py` and `CORE/timestamp.py` module docstrings, and
+**B-092** (the analysis) / **B-099** (this decision and its implementation).
 
 ### 1.3 What each model gets, and what is out of scope
 
@@ -170,12 +185,14 @@ cannot turn stamping into a local file reader, and the resulting token is
 verified with no network access at all (§4.9).
 
 **M1 — what does not.** That one request sends the **plaintext SHA-256** to
-a third party. §3 already concedes that this hash lets someone confirm a
-suspected file without decrypting it; stamping hands that capability to the
-timestamp authority, and to anyone on the path if the configured URL is
-plain `http`. And a hostile or impersonated authority can return a token
-that verifies perfectly, because the trust anchor travels inside the token —
-only an externally supplied root (`--trusted-root`) closes that (§4.9).
+a third party. As §3 explains, that hash lets someone confirm a suspected
+file without decrypting it — stamping is now the *only* path that hands
+this capability to an outsider (B-099 closed the AAD copy of it, §1.2),
+and it does so deliberately: to the timestamp authority, and to anyone on
+the path if the configured URL is plain `http`. And a hostile or
+impersonated authority can return a token that verifies perfectly, because
+the trust anchor travels inside the token — only an externally supplied
+root (`--trusted-root`) closes that (§4.9).
 
 **M1 — out of scope.** The supply chain. Dependencies are scanned on every
 push (`pip-audit` in `.github/workflows/ci.yml`), which is reporting, not a
@@ -327,9 +344,14 @@ ReFS), snapshots and VM images. It is best-effort at the logical layer, not
 a wipe.
 
 **Metadata confidentiality.** *(M2 · M3)* In a `.hcl` file the AAD block — original
-filename, SHA-256 of the plaintext, timestamps, `user_id`, `hwid` — is
-authenticated but **not encrypted**. It is readable in the file header. The
-SHA-256 also permits confirming a suspected file without decrypting it.
+filename, timestamps, `user_id`, `hwid` — is authenticated but **not
+encrypted**. It is readable in the file header; that is ordinary metadata
+leakage. It used to also carry the plaintext SHA-256, which turned the
+leak into a confirmation oracle — anyone holding a candidate document
+could hash it and compare, no key needed. **B-099 removed that field from
+the AAD entirely**; it is no longer written for files encrypted from that
+change forward. Files encrypted before it still carry the field, unchanged,
+until re-encrypted (not retroactive — see §4.9 and **B-100**).
 
 > The control that covers the offline-attacker cases is **full-disk
 > encryption**. HYCLEUS is not a substitute for it.
@@ -898,24 +920,37 @@ picks and never touch SafeZone.
 > **Attacker models:** M1 · M2 · M3
 
 A `.hcl` file can carry an RFC 3161 timestamp token, obtained by having a
-Timestamp Authority sign the **plaintext SHA-256** already recorded in the
-AAD (`original_sha256`). Because the hash is taken from the header, stamping
-needs **no key and never touches plaintext**. What the token proves is
-narrow but real: this content existed no later than the time the TSA signed.
+Timestamp Authority sign the file's **plaintext SHA-256**. What the token
+proves is narrow but real: this content existed no later than the time the
+TSA signed.
+
+**As of B-099, stamping and verification both require the vault key.**
+That was not always true. Until B-092/B-099, the hash was read straight
+from the AAD (`original_sha256`), so stamping needed no key and never
+touched plaintext — but the same field, sitting unencrypted in the file
+header, was a confirmation oracle for anyone holding a copy of the file
+(§1.2, §3). Closing it meant giving up the keyless path: `timestamp_file()`,
+`timestamp_batch()` and `verify_timestamp()` now take a **mandatory** `key`
+and recompute the hash themselves, streaming through `CORE.crypto.
+verify_file(..., return_sha256=True)` — the same discipline `verify_file()`
+already used for the integrity sweep, never holding the whole plaintext in
+memory. The `--verify-timestamp` CLI, once advertised as needing "no key,
+no USB, fully offline," now requires `--key-file` pointing at the raw
+32-byte key; offline is still true, keyless is not.
 
 `verify_timestamp()` now checks that claim cryptographically, **with no
 network access at all** — the signing certificate and its chain travel
 inside the token (`certReq=True`), so verification uses nothing but the file
-itself. Ten checks run in order: the token parses and carries exactly one
+itself and the key. Ten checks run in order: the token parses and carries exactly one
 signer; the signer's certificate is embedded; the `message-digest` and
 `content-type` signed attributes match; the signature verifies against that
 certificate's public key; the certificate carries the `timeStamping` EKU
 (RFC 3161 §2.3); it was valid **at `genTime`**, not today; each certificate
-in the chain is signed by the next; and the stamped digest equals the file's
-`original_sha256`. There is a CLI for it:
+in the chain is signed by the next; and the stamped digest equals the
+file's real plaintext hash, recomputed with the key. There is a CLI for it:
 
 ```
-python CORE/verify_timestamp_cli.py --verify-timestamp <file.hcl> [--trusted-root ca.pem]
+python CORE/verify_timestamp_cli.py --verify-timestamp <file.hcl> --key-file <key.bin> [--trusted-root ca.pem]
 ```
 
 A timestamp is therefore no longer merely a record. Three limits remain, and
@@ -963,16 +998,21 @@ ciphertext only — not the magic, the version byte, or the timestamp trailer.
 So a timestamp can be **deleted**: strip the trailer and the file still
 decrypts cleanly, simply looking unstamped. "Never stamped" and "stamp
 removed" are indistinguishable from the file alone. A timestamp cannot be
-*forged onto other content* — the digest is cross-checked against the AAD,
-and another file's token is rejected — but it can be made to disappear.
+*forged onto other content* — the digest is cross-checked against the file's
+real, freshly recomputed hash, and another file's token is rejected — but
+it can be made to disappear.
 
-**Without a key, the stamped hash is unverified.** `original_sha256` sits in
-the AAD, which GCM protects — but checking that protection requires the key.
-Both stamping and verification read it without one, so they answer "was the
-hash the header claims actually timestamped?" The companion question — "does
-the content actually hash to that?" — is `verify_file()`'s job, and needs the
-key. `timestamp_file()` accepts an optional key and runs `verify_file()`
-first when given one.
+**The two questions a timestamp answers used to be split across two calls
+— they no longer are.** Before B-099: "was the hash the header claims
+actually timestamped?" (answered keylessly, from the AAD) and "does the
+content actually hash to that?" (`verify_file()`'s job, needed the key)
+were separate, and a caller could ask the first without the second — a
+"valid" stamp that said nothing about the file in hand. `verify_timestamp()`
+now requires the key and answers both in one call: it recomputes the real
+hash itself before comparing it to what the token signed. A file that
+predates B-099 still carries the old `original_sha256` field in its AAD;
+`verify_timestamp()` never reads it, so a stale or forged value there
+changes nothing.
 
 **What is not checked:** certificate revocation (no OCSP or CRL — both need
 network, and this is deliberately offline), and the self-signature of a
@@ -988,7 +1028,8 @@ could disagree would be worse than one.
 
 **Batch stamping trades N signatures for one, and a proof carries the
 rest of the weight.** `CORE/merkle.py` builds a domain-separated Merkle
-tree over many files' `original_sha256` values, so a single TSA
+tree over many files' real plaintext hashes (each recomputed with the
+key, same as the single-file path), so a single TSA
 signature over the root covers all of them; each file then keeps a short
 path from its own leaf to that root instead of its own token. What the
 signature proves does not change — "this hash existed no later than this
@@ -3833,7 +3874,7 @@ anahtar malzemesi ve bunun hesabı §4.4'te veriliyor.
 |---|---|---|---|
 | Dosya içeriğinde AES-256-GCM | — | ✅ | ⚠️ PIN kadar güçlü — ya da tek bir kilitsiz oturum kadar kısa (§1.3) |
 | GCM etiketi / AAD doğrulaması (kurcalama tespiti) | — | ✅ | ⚠️ anahtarlı, yani sahtelenemez — ta ki M3 anahtarı kilitsiz bir oturumda yakalayana kadar (§1.3) |
-| AAD *gizliliği* (dosya adı, düz metin SHA-256, kimlikler) | — | ❌ başlıkta okunabilir — SHA-256 yalnızca bir sızıntı değil, bir DOĞRULAMA ORACLE'I (§3, B-092) | ❌ |
+| AAD *gizliliği* (dosya adı, kimlikler — B-099'dan beri düz metin özet YOK) | — | ❌ başlıkta okunabilir, sıradan metadata sızıntısı (§3) | ❌ |
 | Argon2id PIN → KEK → `share_1` | — | ✅ | ⚠️ çevrimdışı kaba kuvvet, hız sınırı yok (§3) |
 | Shamir 2-of-3 | — | ✅ kasa tek pay veriyor, tek pay hiçbir şey | ❌ `share_2` zaten onda |
 | `share_2`'yi tutan OS anahtar kasası | — | ⚠️ blob diskle birlikte gidiyor; OS hesap parolası onu açar — kayıt TPM'e mühürlü DEĞİLSE | ❌ ona cevap veriyor |
@@ -3854,23 +3895,36 @@ M3 etiketli satırlar, hiç saldırganı olmayan nedenleri de kapsıyor — bit
 çürümesi, bozuk bir kopya, yazma sırasındaki çökme. Bütünlük taraması
 bunları ayırt etmiyor ve etmesi de gerekmiyor.
 
-**AAD gizliliği satırı KENDİ alanlarından birini hafife alıyor.** `filename`,
-`user_id` ve `hwid`'in okunabilir olması SIRADAN bir metadata sızıntısı —
-dosya HAKKINDA bir şey söylüyor, zaten bir kopyasını elinde tutana.
-`original_sha256` TÜR OLARAK farklı, yalnızca hassasiyetçe değil: SHA-256 herkese
-açık, anahtarsız bir fonksiyon olduğu için, elinde bir ADAY belge tutan
-HERKES onu kendisi hash'leyip düz metin başlıkla karşılaştırabilir — şifre
-çözme YOK, kaba kuvvet YOK, ve pratikte yanlış pozitif YOK. Bu bir sızıntı
-değil, bir DOĞRULAMA ORACLE'I: "kasa TAM OLARAK bu belgeyi tutuyor mu"
-sorusunu, elinde tutanın bağımsız olarak elde edebildiği HERHANGİ bir belge
-için, KESİNLİKLE yanıtlıyor. Bir tuz (salt) bunu KAPATMAZ — tuzun da anahtar
-olmadan okunabilir kalması için AYNI düz metin AAD'de durması gerekir, yani
-saldırgan onu kendi hash'ine AYNI sıfır maliyetle katar. Bunu GERÇEKTEN
-kapatmak, AAD-gömülü, anahtarsız RFC 3161 doğrulama yoluna (§4.9,
-`CORE/timestamp_verify.py::verify_timestamp()` — TASARIM GEREĞİ hiçbir
-anahtar parametresi almıyor) dört modül ve bir CLI aracı genelinde TÜM
-öncülünü kaybettiriyor. Bu ödünleşim KENDİ mimari kararı olarak, **B-092**
-altında izleniyor — bu bölüme zaten çözülmüş gibi KATILMIYOR.
+**AAD gizliliği satırı KENDİ alanlarından birini hafife ALIYORDU — artık
+bu yalnızca belgelenmiş değil, DÜZELTİLDİ.** `filename`, `user_id` ve
+`hwid`'in okunabilir olması SIRADAN bir metadata sızıntısı — dosya
+HAKKINDA bir şey söylüyor, zaten bir kopyasını elinde tutana.
+`original_sha256` TÜR OLARAK farklıydı, yalnızca hassasiyetçe değil:
+SHA-256 herkese açık, anahtarsız bir fonksiyon olduğu için, elinde bir
+ADAY belge tutan HERKES onu kendisi hash'leyip düz metin başlıkla
+karşılaştırabiliyordu — şifre çözme YOK, kaba kuvvet YOK, pratikte
+yanlış pozitif YOK. Bu bir sızıntı değil, bir DOĞRULAMA ORACLE'IYDI. Bir
+tuz (salt) bunu KAPATMAZDI — tuzun da anahtar olmadan okunabilir kalması
+için AYNI düz metin AAD'de durması gerekirdi, yani saldırgan onu kendi
+hash'ine AYNI sıfır maliyetle katardı.
+
+**B-099 kapattı: `encrypt_file()` artık `original_sha256`'yı AAD'ye HİÇ
+yazmıyor.** Özet hâlâ hesaplanıp DÖNDÜRÜLÜYOR (veritabanı için), yalnızca
+düz metin başlığa yansıtılmıyor. Bedeli gerçek ve ÖDENDİ: AAD-gömülü,
+anahtarsız RFC 3161 doğrulama yolu (§4.9) TÜM öncülünü kaybetti.
+`timestamp_file()`, `timestamp_batch()` ve `verify_timestamp()` artık
+ZORUNLU bir `key` alıyor ve düz metin özetini KENDİLERİ, `verify_file(...,
+return_sha256=True)` ile akan blok üzerinden yeniden hesaplıyor — bütünlük
+taramasının zaten kullandığı, dosyanın tamamını belleğe almama disipliniyle
+AYNI. TSA isteği ve fragman karşılaştırması için kullanılan özet artık
+GÜVENİLMEYEN, anahtarsız bir alandan bir daha OKUNMUYOR. **BU GERİYE DÖNÜK
+DEĞİL.** GCM etiketi AAD'yi ciphertext'e bağlıyor; anahtar olmadan bir
+alan zaten şifrelenmiş bir dosyadan sessizce ÇIKARILAMAZ. Bu değişiklikten
+ÖNCE şifrelenen HER `.hcl` dosyası, yeniden şifrelenene kadar
+`original_sha256`'yı AAD'sinde, ÖNCEKİ GİBİ okunabilir tutuyor — ayrı bir
+migrasyon işi, **B-100** olarak izleniyor. Bkz. `CORE/crypto.py` ve
+`CORE/timestamp.py` modül docstring'leri, ve **B-092** (analiz) / **B-099**
+(bu karar ve uygulaması).
 
 ### 1.3 Her model ne elde ediyor, kapsam dışı ne kalıyor
 
@@ -3885,12 +3939,13 @@ kısıtlı — böylece bir ayar satırı damgalamayı yerel dosya okuyucusuna
 (§4.9).
 
 **M1 — ne dayanmıyor.** O tek istek, **düz metnin SHA-256'sını** üçüncü bir
-tarafa gönderiyor. §3 zaten bu hash'in bir dosyayı çözmeden doğrulamaya
-yaradığını kabul ediyor; damgalama o yeteneği zaman damgası makamına ve
-ayardaki adres düz `http` ise yol üzerindeki herkese veriyor. Ayrıca düşman
-ya da taklit bir makam kusursuz doğrulanan bir token döndürebilir, çünkü
-güven kökü token'ın İÇİNDE geliyor — bunu yalnızca dışarıdan verilen bir
-kök (`--trusted-root`) kapatıyor (§4.9).
+tarafa gönderiyor. §3'ün anlattığı gibi bu hash bir dosyayı çözmeden
+doğrulamaya yarıyor — damgalama artık bu yeteneği bir dış tarafa veren
+TEK yol (B-099 AAD'deki kopyasını kapattı, §1.2) ve bunu BİLEREK yapıyor:
+zaman damgası makamına ve ayardaki adres düz `http` ise yol üzerindeki
+herkese. Ayrıca düşman ya da taklit bir makam kusursuz doğrulanan bir
+token döndürebilir, çünkü güven kökü token'ın İÇİNDE geliyor — bunu
+yalnızca dışarıdan verilen bir kök (`--trusted-root`) kapatıyor (§4.9).
 
 **M1 — kapsam dışı.** Tedarik zinciri. Bağımlılıklar her push'ta taranıyor
 (`.github/workflows/ci.yml` içindeki `pip-audit`) ama bu raporlamadır,
@@ -4038,9 +4093,15 @@ VM imajlarında bu yanlıştır. Mantıksal katmanda elden gelenin en iyisidir,
 bir silme değil.
 
 **Metadata gizliliği.** *(M2 · M3)* `.hcl` dosyasındaki AAD bloğu — orijinal dosya adı,
-düz metnin SHA-256'sı, zaman damgaları, `user_id`, `hwid` — doğrulanır ama
-**şifrelenmez.** Dosya başlığında okunabilir. SHA-256 ayrıca şüphelenilen bir
-dosyanın şifresi çözülmeden doğrulanmasına imkân verir.
+zaman damgaları, `user_id`, `hwid` — doğrulanır ama **şifrelenmez.** Dosya
+başlığında okunabilir; bu sıradan bir metadata sızıntısı. Eskiden düz
+metnin SHA-256'sını da taşıyordu, bu da sızıntıyı bir doğrulama
+oracle'ına çeviriyordu — anahtar olmadan, elinde bir aday belge tutan
+herkes onu hash'leyip karşılaştırabiliyordu. **B-099 bu alanı AAD'den
+tamamen kaldırdı**; o değişiklikten SONRA şifrelenen dosyalar için artık
+hiç yazılmıyor. O değişiklikten ÖNCE şifrelenen dosyalar alanı yeniden
+şifrelenene kadar aynen taşımaya devam ediyor (geriye dönük değil — bkz.
+§4.9 ve **B-100**).
 
 > Çevrimdışı saldırgan senaryolarını kapatan kontrol **tam disk
 > şifrelemesidir.** HYCLEUS onun yerine geçmez.
@@ -4612,25 +4673,40 @@ hâlâ doğrudan kullanıcının seçtiği yola akıyor, SafeZone'a hiç uğram�
 
 > **Saldırgan modelleri:** M1 · M2 · M3
 
-Bir `.hcl` dosyası RFC 3161 zaman damgası taşıyabiliyor: AAD'de zaten
-kayıtlı olan **düz metin SHA-256**'sı (`original_sha256`) bir Zaman Damgası
-Otoritesi'ne imzalatılıyor. Özet başlıktan okunduğu için damgalama
-**anahtar istemiyor ve düz metne hiç dokunmuyor**. Kanıtladığı şey dar ama
-gerçek: bu içerik, TSA'nın imzaladığı tarihte zaten vardı.
+Bir `.hcl` dosyası RFC 3161 zaman damgası taşıyabiliyor: dosyanın **düz
+metin SHA-256**'sı bir Zaman Damgası Otoritesi'ne imzalatılıyor.
+Kanıtladığı şey dar ama gerçek: bu içerik, TSA'nın imzaladığı tarihte
+zaten vardı.
+
+**B-099'dan beri damgalama VE doğrulama artık kasa anahtarı istiyor.**
+Bu her zaman böyle değildi. B-092/B-099'dan önce özet doğrudan AAD'den
+(`original_sha256`) okunuyordu, yani damgalama anahtar istemiyor ve düz
+metne hiç dokunmuyordu — ama AYNI alan, dosya başlığında şifresiz
+durduğu için, dosyanın bir kopyasına sahip HERKES için bir doğrulama
+oracle'ıydı (§1.2, §3). Onu kapatmak anahtarsız yolu tamamen terk etmek
+demekti: `timestamp_file()`, `timestamp_batch()` ve `verify_timestamp()`
+artık ZORUNLU bir `key` alıyor ve özeti kendileri, `CORE.crypto.
+verify_file(..., return_sha256=True)` ile akan blok üzerinden (bütünlük
+taramasının zaten kullandığı, düz metnin tamamını belleğe almama
+disipliniyle) yeniden hesaplıyor. Eskiden "ne anahtar ne USB istemiyor,
+tamamen çevrimdışı" diye tanıtılan `--verify-timestamp` CLI'ı artık ham
+32 baytlık anahtara işaret eden bir `--key-file` istiyor; çevrimdışı
+olması hâlâ doğru, anahtarsız olması değil.
 
 `verify_timestamp()` artık bu iddiayı kriptografik olarak, **hiç ağa
 çıkmadan** doğruluyor — imzalama sertifikası ve zinciri token'ın içinde
-geliyor (`certReq=True`), yani doğrulama dosyanın kendisinden başka hiçbir
-şey kullanmıyor. On kontrol sırayla koşuyor: token ayrıştırılabiliyor ve tam
-olarak bir imzalayan taşıyor; imzalayanın sertifikası gömülü; `message-digest`
-ve `content-type` imzalı öznitelikleri tutuyor; imza o sertifikanın açık
-anahtarıyla doğrulanıyor; sertifika `timeStamping` EKU'su taşıyor
-(RFC 3161 §2.3); **`genTime` anında** geçerliydi (bugün değil); zincirdeki
-her sertifika bir üsttekiyle imzalanmış; ve damgalanan özet dosyanın
-`original_sha256`'sıyla aynı. Komut satırı aracı da var:
+geliyor (`certReq=True`), yani doğrulama dosyanın kendisinden ve
+anahtardan başka hiçbir şey kullanmıyor. On kontrol sırayla koşuyor: token
+ayrıştırılabiliyor ve tam olarak bir imzalayan taşıyor; imzalayanın
+sertifikası gömülü; `message-digest` ve `content-type` imzalı öznitelikleri
+tutuyor; imza o sertifikanın açık anahtarıyla doğrulanıyor; sertifika
+`timeStamping` EKU'su taşıyor (RFC 3161 §2.3); **`genTime` anında**
+geçerliydi (bugün değil); zincirdeki her sertifika bir üsttekiyle
+imzalanmış; ve damgalanan özet dosyanın anahtarla yeniden hesaplanan
+GERÇEK özetiyle aynı. Komut satırı aracı da var:
 
 ```
-python CORE/verify_timestamp_cli.py --verify-timestamp <dosya.hcl> [--trusted-root ca.pem]
+python CORE/verify_timestamp_cli.py --verify-timestamp <dosya.hcl> --key-file <anahtar.bin> [--trusted-root ca.pem]
 ```
 
 Yani zaman damgası artık yalnızca bir kayıt değil. Üç sınır kaldı ve
@@ -4677,17 +4753,22 @@ sağladığı gibi — yapılmadı; bkz. B-044.
 kapsıyor; magic, sürüm byte'ı ve zaman damgası fragmanı kapsam dışı. Yani
 bir damga **silinebilir**: fragman kırpılırsa dosya sorunsuz çözülür,
 yalnızca damgasız görünür. "Hiç damgalanmadı" ile "damgası silindi" dosyaya
-bakarak ayırt EDİLEMEZ. Damga *başka bir içeriğe uydurulamaz* — özet AAD ile
-çapraz kontrol ediliyor ve başka bir dosyanın token'ı reddediliyor — ama yok
-edilebilir.
+bakarak ayırt EDİLEMEZ. Damga *başka bir içeriğe uydurulamaz* — özet
+dosyanın GERÇEK, yeniden hesaplanan özetiyle çapraz kontrol ediliyor ve
+başka bir dosyanın token'ı reddediliyor — ama yok edilebilir.
 
-**Anahtarsız damgalamada özet doğrulanmamıştır.** `original_sha256` AAD'de
-duruyor ve GCM onu koruyor, ama bu korumayı kontrol etmek anahtar ister.
-Hem damgalama hem doğrulama onu anahtarsız okuyor, yani "başlığın iddia
-ettiği özet gerçekten damgalanmış mı" sorusuna yanıt veriyorlar. Eşlik eden
-soru — "içerik gerçekten o özete mi sahip" — `verify_file()`'ın işi ve
-anahtar ister. `timestamp_file()` opsiyonel bir anahtar alıyor ve verilirse
-önce `verify_file()` çalıştırıyor.
+**Bir zaman damgasının yanıtladığı iki soru eskiden iki AYRI çağrıya
+bölünmüştü — artık değil.** B-099'dan önce: "başlığın iddia ettiği özet
+gerçekten damgalanmış mı" (anahtarsız, AAD'den yanıtlanırdı) ve "içerik
+gerçekten o özete mi sahip" (`verify_file()`'ın işiydi, anahtar isterdi)
+AYRIYDI ve bir çağıran ikincisini SORMADAN birincisini sorabilirdi — elde
+tutulan dosya hakkında hiçbir şey söylemeyen bir "geçerli" damga.
+`verify_timestamp()` artık anahtar istiyor ve ikisini TEK çağrıda
+yanıtlıyor: token'ın imzaladığı değerle karşılaştırmadan ÖNCE gerçek
+özeti kendisi yeniden hesaplıyor. B-099'dan ÖNCE şifrelenmiş bir dosya
+AAD'sinde hâlâ eski `original_sha256` alanını taşıyor;
+`verify_timestamp()` onu HİÇ okumuyor, yani orada duran bayat ya da
+uydurma bir değer hiçbir şeyi değiştirmiyor.
 
 **Kontrol EDİLMEYENLER:** sertifika iptali (OCSP ya da CRL yok — ikisi de ağ
 ister, burası bilerek çevrimdışı) ve kendini imzalayan bir kökün kendi
@@ -4702,8 +4783,9 @@ için ikinci bir kopya eklenmedi — birbirini tutmayabilecek iki liste, tek
 listeden kötü olurdu.
 
 **Toplu damgalama N imzayı bire indiriyor, ağırlığın geri kalanını bir
-kanıt taşıyor.** `CORE/merkle.py` çok sayıda dosyanın `original_sha256`
-değerleri üzerine alan-ayrımlı bir Merkle ağacı kuruyor, böylece tek bir
+kanıt taşıyor.** `CORE/merkle.py` çok sayıda dosyanın (her biri anahtarla
+yeniden hesaplanan) GERÇEK düz metin özetleri üzerine alan-ayrımlı bir
+Merkle ağacı kuruyor, böylece tek bir
 TSA imzası kökü damgalayarak hepsini kapsıyor; her dosya da kendi
 token'ı yerine kendi yaprağından köke giden kısa bir yol tutuyor.
 İmzanın kanıtladığı şey değişmiyor — "bu özet, o tarihte zaten vardı" —

@@ -355,8 +355,8 @@ def _raise_mesaj_sabitlerini_topla(kaynak: str, dosya_adi: str) -> list[tuple[st
     kaynak değil, bkz. modülün üstündeki not). Kapsam bu yüzden yalnızca
     GERÇEKTEN sızabilecek metne — `raise` çağrısının argümanlarına —
     daraltıldı; bu hem tüm gerçek yanlış-pozitifleri ortadan kaldırdı hem de
-    gerçek bir isabeti korudu (`CORE/timestamp.py:672`, bkz.
-    `_CEVRIMDISI_IZIN_VERILEN_BAGLAM`)."""
+    gerçek bir isabeti korudu (`CORE/timestamp.py`'nin "sertifika
+    gömmemiş" `raise`'i, bkz. `_CEVRIMDISI_IZIN_VERILEN_BAGLAM`)."""
     agac = ast.parse(kaynak, filename=dosya_adi)
     sonuc: list[tuple[str, int]] = []
     for dugum in ast.walk(agac):
@@ -636,18 +636,22 @@ def test_core_db_dosyasi_mi_yol_ayrimi_dogru() -> None:
 
 def test_gercek_CORE_timestamp_dosyasinin_raise_mesaji_UYGUN_ALLOWLIST_ile_GECIYOR(
 ) -> None:
-    """`CORE/timestamp.py:672`'nin gerçek `raise TimestampError(...)` mesajı
+    """`CORE/timestamp.py`'nin gerçek `raise TimestampError(...)` mesajı
     ("...bu damga sonradan çevrimdışı doğrulanamaz.") — ÖLÇÜLDÜ, dar
     taramaya geçilmeden önce bu YAKALANIYORDU (yanlış pozitif değildi, gerçek
     bir isabetti çünkü mesaj gerçekten kullanıcıya sızabilir); allowlist'e
     "çevrimdışı doğrulanamaz" eklenince (bir SINIRLAMA bildirimi, mimari
     İDDİA değil) geçmesi gerekiyor. Bu test o allowlist girdisinin gerçek
-    dosyaya karşı hâlâ doğru çalıştığını kalıcı olarak doğruluyor."""
+    dosyaya karşı hâlâ doğru çalıştığını kalıcı olarak doğruluyor.
+
+    Satır numarası SABİT KODLANMIYOR (B-092/B-099'da `CORE/timestamp.py`ye
+    satır eklenince eski sabit 672 kaymıştı) — mesajın KENDİSİ aranıyor.
+    """
     dosya = KOK / "CORE" / "timestamp.py"
     kaynak = dosya.read_text(encoding="utf-8")
     dizeler = _raise_mesaj_sabitlerini_topla(kaynak, "CORE/timestamp.py")
-    hedef = [m for m, ln in dizeler if ln == 672]
-    assert hedef, "CORE/timestamp.py:672'deki raise mesajı bulunamadı — satır kaymış olabilir"
+    hedef = [m for m, _ln in dizeler if "sonradan çevrimdışı doğrulanamaz" in m]
+    assert hedef, "CORE/timestamp.py'de beklenen raise mesajı bulunamadı"
     assert _metindeki_ihlalleri_bul(hedef[0]) == [], (
         f"Meşru 'çevrimdışı doğrulanamaz' mesajı yanlışlıkla yakalandı: {hedef[0]!r}"
     )

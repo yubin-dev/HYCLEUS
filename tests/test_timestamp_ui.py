@@ -136,7 +136,7 @@ def _hcl(tmp_path: Path, key: bytes, icerik: bytes, ad: str = "belge.bin") -> Pa
 @pytest.fixture
 def stamped(tmp_path: Path, key: bytes) -> Path:
     path = _hcl(tmp_path, key, b"damgali rapor " * 100)
-    timestamp_file(path, transport=FakeTSA())
+    timestamp_file(path, key, transport=FakeTSA())
     return path
 
 
@@ -148,11 +148,15 @@ def unstamped(tmp_path: Path, key: bytes) -> Path:
 class _Sahne(FileActionsMixin, QWidget):
     """`FileActionsMixin._on_ctx_verify_timestamp`'in dokunduğu asgari yüzey."""
 
-    def __init__(self) -> None:
+    def __init__(self, key: bytes) -> None:
         super().__init__()
         self._hwid = _HWID
         self._role = "Yönetici"
         self._T = _DARK
+        # B-092/B-099: `_on_ctx_verify_timestamp` artık `self._key`'i
+        # `verify_timestamp()`e geçiriyor — gerçek HycleusWindow'daki
+        # canlı oturum anahtarının yerine geçiyor.
+        self._key = key
 
     def _open_slide_over(self, baslik: str, icerik) -> None:  # pragma: no cover — fixture değiştirir
         """Gerçek mekanizma `UI/main_window_layout.py::LayoutMixin`'de —
@@ -162,8 +166,8 @@ class _Sahne(FileActionsMixin, QWidget):
 
 
 @pytest.fixture
-def sahne(qapp) -> _Sahne:
-    return _Sahne()
+def sahne(qapp, key: bytes) -> _Sahne:
+    return _Sahne(key)
 
 
 @pytest.fixture(autouse=True)
@@ -194,8 +198,8 @@ def _etiket_metinleri(dlg: QWidget) -> list[str]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_gecerli_damga_diyalogda_gecerli_okunuyor(qapp, stamped: Path) -> None:
-    dlg = TimestampDialog(verify_timestamp(stamped), stamped.name)
+def test_gecerli_damga_diyalogda_gecerli_okunuyor(qapp, stamped: Path, key: bytes) -> None:
+    dlg = TimestampDialog(verify_timestamp(stamped, key), stamped.name)
     metinler = _etiket_metinleri(dlg)
     # Kök deposu boşken başlık "geçerli" DEĞİL, "geçerli ama kök
     # doğrulanmadı" — ayrım kullanıcıya görünür olmalı.
@@ -215,15 +219,15 @@ def test_gercek_freetsa_damgasi_arayuzde_de_gecerli(
         tsa_url="https://freetsa.org/tsr",
         token_der=token,
     ))
-    dlg = TimestampDialog(verify_timestamp(path), path.name)
+    dlg = TimestampDialog(verify_timestamp(path, key), path.name)
     metinler = " ".join(_etiket_metinleri(dlg))
     assert "Damga geçerli" in metinler
     assert "freetsa" in metinler
 
 
-def test_damga_zamani_ve_TSA_adi_gosteriliyor(qapp, stamped: Path) -> None:
+def test_damga_zamani_ve_TSA_adi_gosteriliyor(qapp, stamped: Path, key: bytes) -> None:
     """Kullanıcının sorduğu ilk iki soru: ne zaman, kim."""
-    sonuc = verify_timestamp(stamped)
+    sonuc = verify_timestamp(stamped, key)
     dlg = TimestampDialog(sonuc, stamped.name)
     metinler = _etiket_metinleri(dlg)
     assert "Damga zamanı" in metinler
@@ -231,13 +235,13 @@ def test_damga_zamani_ve_TSA_adi_gosteriliyor(qapp, stamped: Path) -> None:
     assert sonuc.tsa_name in metinler
 
 
-def test_kok_dogrulanmadi_UYARISI_diyalogda_gorunuyor(qapp, stamped: Path) -> None:
+def test_kok_dogrulanmadi_UYARISI_diyalogda_gorunuyor(qapp, stamped: Path, key: bytes) -> None:
     """
     Bu, diyaloğun en kolay kaybedeceği parça ve kaybederse ekranın
     çıktısı yanıltıcı olur: "geçerli" der, neyin geçerli olmadığını
     söylemez.
     """
-    sonuc = verify_timestamp(stamped)
+    sonuc = verify_timestamp(stamped, key)
     assert sonuc.valid and not sonuc.anchor_trusted
 
     metinler = " ".join(_etiket_metinleri(TimestampDialog(sonuc, stamped.name)))
@@ -245,26 +249,26 @@ def test_kok_dogrulanmadi_UYARISI_diyalogda_gorunuyor(qapp, stamped: Path) -> No
     assert "kendi içinden" in metinler.lower() or "KENDİ İÇİNDEN" in metinler
 
 
-def test_kok_dogrulandiginda_uyari_kalkiyor(qapp, stamped: Path) -> None:
-    sonuc = verify_timestamp(stamped, trusted_roots=[default_authority().ca_der])
+def test_kok_dogrulandiginda_uyari_kalkiyor(qapp, stamped: Path, key: bytes) -> None:
+    sonuc = verify_timestamp(stamped, key, trusted_roots=[default_authority().ca_der])
     metinler = " ".join(_etiket_metinleri(TimestampDialog(sonuc, stamped.name)))
     assert "Damgayı atan kurum doğrulandı" in metinler
     assert "doğrulanmadı" not in metinler
 
 
-def test_KAPSAM_siniri_her_gecerli_sonucta_gorunuyor(qapp, stamped: Path) -> None:
+def test_KAPSAM_siniri_her_gecerli_sonucta_gorunuyor(qapp, stamped: Path, key: bytes) -> None:
     """
     "Damga geçerli" ile "dosya değiştirilmemiş" aynı şey değil ve ekran
     bunu söylemek zorunda.
     """
     metinler = " ".join(_etiket_metinleri(
-        TimestampDialog(verify_timestamp(stamped), stamped.name)
+        TimestampDialog(verify_timestamp(stamped, key), stamped.name)
     ))
     assert "Bu kontrol neyi kapsıyor" in metinler
 
 
-def test_damgasiz_dosya_hata_gibi_GORUNMUYOR(qapp, unstamped: Path) -> None:
-    sonuc = verify_timestamp(unstamped)
+def test_damgasiz_dosya_hata_gibi_GORUNMUYOR(qapp, unstamped: Path, key: bytes) -> None:
+    sonuc = verify_timestamp(unstamped, key)
     dlg = TimestampDialog(sonuc, unstamped.name)
     assert dlg._mesaj.seviye == tr.SEVIYE_DAMGASIZ
     metinler = " ".join(_etiket_metinleri(dlg))
@@ -276,7 +280,7 @@ def test_damgasiz_dosya_hata_gibi_GORUNMUYOR(qapp, unstamped: Path) -> None:
 
 @pytest.mark.parametrize("bozuk", ["damgasiz", "gecersiz"])
 def test_basarisiz_sonucta_BOS_alan_kutusu_cizilmiyor(
-    qapp, unstamped: Path, bozuk: str,
+    qapp, unstamped: Path, key: bytes, bozuk: str,
 ) -> None:
     """
     "Damga zamanı: —" satırı bilgi değil gürültü.
@@ -290,7 +294,7 @@ def test_basarisiz_sonucta_BOS_alan_kutusu_cizilmiyor(
     kapatmak için yazıldı.
     """
     if bozuk == "damgasiz":
-        sonuc = verify_timestamp(unstamped)
+        sonuc = verify_timestamp(unstamped, key)
     else:
         sonuc = TimestampVerification(
             valid=False, reason="imza tutmuyor", failed_check="signature"
@@ -300,12 +304,12 @@ def test_basarisiz_sonucta_BOS_alan_kutusu_cizilmiyor(
     assert tr.zaman_metni(None) not in metinler
 
 
-def test_ham_hata_kodu_kullaniciya_GORUNMUYOR(qapp, unstamped: Path) -> None:
+def test_ham_hata_kodu_kullaniciya_GORUNMUYOR(qapp, unstamped: Path, key: bytes) -> None:
     """
     `no_timestamp` bir program sabiti, bir cümle değil. Teknik blokta
     olmalı, başlıkta değil.
     """
-    dlg = TimestampDialog(verify_timestamp(unstamped), unstamped.name)
+    dlg = TimestampDialog(verify_timestamp(unstamped, key), unstamped.name)
     for metin in _etiket_metinleri(dlg):
         assert "no_timestamp" not in metin
     assert "no_timestamp" in dlg.teknik_metin()
@@ -316,13 +320,13 @@ def test_ham_hata_kodu_kullaniciya_GORUNMUYOR(qapp, unstamped: Path) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_teknik_ayrintilar_KAPALI_basliyor(qapp, stamped: Path) -> None:
-    dlg = TimestampDialog(verify_timestamp(stamped), stamped.name)
+def test_teknik_ayrintilar_KAPALI_basliyor(qapp, stamped: Path, key: bytes) -> None:
+    dlg = TimestampDialog(verify_timestamp(stamped, key), stamped.name)
     assert not dlg._teknik_alan.isVisible()
 
 
-def test_teknik_ayrintilar_acilip_kapaniyor(qapp, stamped: Path) -> None:
-    dlg = TimestampDialog(verify_timestamp(stamped), stamped.name)
+def test_teknik_ayrintilar_acilip_kapaniyor(qapp, stamped: Path, key: bytes) -> None:
+    dlg = TimestampDialog(verify_timestamp(stamped, key), stamped.name)
     dlg.show()
     dlg._teknik_degistir()
     assert dlg._teknik_alan.isVisible()
@@ -332,23 +336,23 @@ def test_teknik_ayrintilar_acilip_kapaniyor(qapp, stamped: Path) -> None:
     dlg.close()
 
 
-def test_kopyalanan_metin_DOSYA_ADINI_tasiyor(qapp, stamped: Path) -> None:
+def test_kopyalanan_metin_DOSYA_ADINI_tasiyor(qapp, stamped: Path, key: bytes) -> None:
     """
     Kullanıcı bunu yöneticisine yapıştıracak; hangi dosya olduğu metnin
     içinde durmalı, yoksa ekran görüntüsüne bağımlı kalır.
     """
-    dlg = TimestampDialog(verify_timestamp(stamped), stamped.name)
+    dlg = TimestampDialog(verify_timestamp(stamped, key), stamped.name)
     metin = dlg.teknik_metin()
     assert stamped.name in metin
     assert "Damgayı atan" in metin
 
 
-def test_teknik_metin_CLI_ile_ayni_alanlari_veriyor(qapp, unstamped: Path) -> None:
+def test_teknik_metin_CLI_ile_ayni_alanlari_veriyor(qapp, unstamped: Path, key: bytes) -> None:
     """
     Sadeleştirme bilgiyi SİLMEK değil bir kat aşağı koymak. Düşen kontrol
     ve teknik neden — CLI'ın bastığı iki alan — burada da var.
     """
-    sonuc = verify_timestamp(unstamped)
+    sonuc = verify_timestamp(unstamped, key)
     metin = TimestampDialog(sonuc, unstamped.name).teknik_metin()
     assert sonuc.failed_check in metin
     assert sonuc.reason in metin
@@ -407,9 +411,9 @@ def test_menu_maddesi_DOGRULAMAYI_cagiriyor(
     cagrilar: list[Path] = []
     gercek = verify_timestamp
 
-    def _izle(path, **kw):
+    def _izle(path, key, **kw):
         cagrilar.append(Path(path))
-        return gercek(path, **kw)
+        return gercek(path, key, **kw)
 
     import CORE.timestamp_verify as tv
     monkeypatch.setattr(tv, "verify_timestamp", _izle)

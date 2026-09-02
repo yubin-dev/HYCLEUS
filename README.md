@@ -58,7 +58,7 @@ HYCLEUS is a Windows desktop application that encrypts and manages sensitive fil
 | **Tags** | Color-coded tags, private (admin-only) tags, bulk assignment |
 | **Audit Log** | Every action recorded with user, timestamp, and detail; entries form a SHA-256 hash chain anchored outside the database |
 | **Integrity Sweep** | Weekly background verification of every `.hcl` GCM tag — verification only, plaintext is never assembled |
-| **Trusted Timestamp** | Optional RFC 3161 timestamp over the plaintext hash; verified **fully offline** from the certificate chain inside the token — from the CLI (`--verify-timestamp`) or from the file context menu (**Damgayı Doğrula**); an organisation's own TSA root can be added in Admin Panel → Settings so the verdict shows as fully trusted, not just valid |
+| **Trusted Timestamp** | Optional RFC 3161 timestamp over the plaintext hash; verified **fully offline** from the certificate chain inside the token — from the CLI (`--verify-timestamp`, now requires `--key-file` since B-099 closed the keyless verification path) or from the file context menu (**Damgayı Doğrula**); an organisation's own TSA root can be added in Admin Panel → Settings so the verdict shows as fully trusted, not just valid |
 | **Dark / Light UI** | Full theme support, readable in both modes |
 
 ---
@@ -468,7 +468,7 @@ HYCLEUS, hassas dosyaları donanıma bağlı şifreli bir kasada yönetmek için
 | **Etiket Sistemi** | Renkli etiketler, gizli (sadece Yönetici) etiketler, toplu atama |
 | **Denetim Kaydı** | Her işlem kullanıcı, zaman ve detayla kayıt altına alınır; kayıtlar veritabanı dışına çıpalanan bir SHA-256 hash zinciri oluşturur |
 | **Bütünlük Taraması** | Haftalık arka plan taraması her `.hcl` dosyasının GCM tag'ini doğrular — yalnızca doğrulama, düz metin hiç birleştirilmez |
-| **Güvenilir Zaman Damgası** | Düz metin özeti üzerinde opsiyonel RFC 3161 damgası; token'ın içindeki sertifika zinciriyle **tamamen çevrimdışı** doğrulanır — komut satırından (`--verify-timestamp`) ya da dosya sağ tık menüsünden (**Damgayı Doğrula**); kurumun kendi TSA kökü Yönetici Paneli → Ayarlar'a eklenebilir, karar o zaman "geçerli" değil tam güvenilir görünür |
+| **Güvenilir Zaman Damgası** | Düz metin özeti üzerinde opsiyonel RFC 3161 damgası; token'ın içindeki sertifika zinciriyle **tamamen çevrimdışı** doğrulanır — komut satırından (`--verify-timestamp`, B-099'dan beri anahtarsız doğrulama yolu kapatıldığı için artık `--key-file` istiyor) ya da dosya sağ tık menüsünden (**Damgayı Doğrula**); kurumun kendi TSA kökü Yönetici Paneli → Ayarlar'a eklenebilir, karar o zaman "geçerli" değil tam güvenilir görünür |
 | **Karanlık / Açık Tema** | Tam tema desteği, her iki modda da okunabilir |
 
 ---

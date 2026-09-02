@@ -7,6 +7,7 @@ testler projenin data/quarantine/ klasörünü kirletmesin.
 """
 from __future__ import annotations
 
+import hashlib
 import struct
 from pathlib import Path
 
@@ -90,7 +91,11 @@ def test_encrypt_decrypt_round_trip_is_byte_identical(plain_file: Path, key: byt
     assert content == original
     assert len(content) == len(original)
     assert meta["filename"] == plain_file.name
-    assert meta["original_sha256"] == sha256_hex
+    # B-092/B-099: original_sha256 artık AAD'de YOK (anahtarsız bir
+    # doğrulama-oracle'ı olmasın diye) — encrypt_file() onu hâlâ DB'ye
+    # kaydedilmek üzere DÖNDÜRÜYOR, yalnızca AAD'ye yazmıyor.
+    assert "original_sha256" not in meta
+    assert sha256_hex == hashlib.sha256(original).hexdigest()
     assert meta["user_id"] == _USER_ID
     assert meta["hwid"] == _HWID
 
@@ -232,19 +237,26 @@ def test_aad_metadata_tampering_is_rejected(
         decrypt_file(hcl_path, key, hwid=_HWID)
 
 
-def test_aad_original_sha256_tampering_is_rejected(plain_file: Path, key: bytes) -> None:
-    """AAD'a bağlı SHA-256 özeti değiştirilirse dosya çözülememeli."""
-    hcl_path, sha256_hex, _aad_json = encrypt_file(plain_file, key, _USER_ID, hwid=_HWID)
-    _nonce, aad, ciphertext, tag = _parse_hcl(hcl_path)
+def test_original_sha256_is_absent_from_the_aad_on_disk(plain_file: Path, key: bytes) -> None:
+    """
+    B-092/B-099: `original_sha256` artık AAD'ye HİÇ yazılmıyor — bir
+    zamanlar bu dosyanın "AAD'a bağlı SHA-256 özeti değiştirilirse dosya
+    çözülememeli" testinin konusuydu; alan tamamen kaldırıldığı için o
+    test artık anlamsız (kurcalanacak bir şey yok). Bunun yerine alanın
+    GERÇEKTEN yok olduğunu, hem AAD JSON'ında hem ham disk baytlarında,
+    doğrudan doğruluyoruz — B-092'nin "anahtarsız doğrulama-oracle'ı
+    kapatıldı" iddiasının somut kanıtı.
+    """
+    hcl_path, sha256_hex, aad_json = encrypt_file(plain_file, key, _USER_ID, hwid=_HWID)
 
-    fake_sha = ("0" * 64).encode()
-    mutated_aad = aad.replace(sha256_hex.encode(), fake_sha, 1)
-    assert mutated_aad != aad
+    assert "original_sha256" not in aad_json
+    assert sha256_hex.encode() not in aad_json.encode()
 
-    _rebuild_hcl(hcl_path, aad=mutated_aad, ciphertext=ciphertext, tag=tag)
-
-    with pytest.raises(AuthenticationError):
-        decrypt_file(hcl_path, key, hwid=_HWID)
+    _nonce, aad, _ciphertext, _tag = _parse_hcl(hcl_path)
+    assert b"original_sha256" not in aad
+    # Alan adı yoksa bile, aynı hex DEĞERİN başka bir anahtar altında
+    # kazara sızmadığını da doğruluyoruz.
+    assert sha256_hex.encode() not in aad
 
 
 # ── 4. Nonce benzersizliği ────────────────────────────────────────────────────

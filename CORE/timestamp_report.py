@@ -48,16 +48,22 @@ yüzeyi de o tek kaynağa bağlıyor.
 
 DOĞRULUK, SADELİKTEN ÖNCE GELİR
 --------------------------------
-Sadeleştirmenin en kolay hatası fazla söylemek. `verify_timestamp()`
-AAD'deki `original_sha256`'nın damgalandığını doğruluyor; dosyanın
-İÇERİĞİNİN gerçekten o özete sahip olduğunu DOĞRULAMIYOR — o kontrol
-anahtar ister ve şifre çözmede yapılıyor (bkz. `CORE/timestamp_verify.py`
-`verify_timestamp()` docstring'i).
+Sadeleştirmenin en kolay hatası fazla söylemek — ama az söylemek de
+eşit derecede yanlış olabilir. B-092/B-099 öncesinde `verify_timestamp()`
+yalnızca AAD'deki `original_sha256`'nın damgalandığını doğruluyordu;
+dosyanın İÇERİĞİNİN gerçekten o özete sahip olduğu AYRI bir soruydu
+(`verify_file()`'ın işi, anahtar isterdi). O ayrım artık YOK:
+`verify_timestamp()` artık `key` alıyor ve dosyanın GERÇEK düz metin
+özetini kendisi, akan blok üzerinden yeniden hesaplıyor — "damga
+geçerli" demesi ARTIK "dosyanın içeriği bu özete gerçekten sahip"
+DEMEK. Bkz. `CORE/timestamp_verify.py::verify_timestamp()` docstring'i.
 
-Bu yüzden "damga geçerli" mesajı "dosya değiştirilmemiş" DEMİYOR.
-`notlar()` bu sınırı ayrı bir madde olarak, her geçerli sonuçta
-gösteriyor. Kullanıcıya olduğundan fazlasını vaat eden bir arayüz,
-CLI'dan daha kötüdür.
+Kalan sınır farklı: "damga geçerli" hâlâ "dosya HİÇ değiştirilmemiş"
+demiyor — yalnızca "bu içerik, damganın atıldığı tarihte VARDI" diyor
+(bir belge damgalandıktan sonra yeniden şifrelenip yeni bir damga
+alabilir; eski damga o an için hâlâ doğrudur). `notlar()` bu sınırı
+ayrı bir madde olarak, her geçerli sonuçta gösteriyor. Kullanıcıya
+olduğundan fazlasını vaat eden bir arayüz, CLI'dan daha kötüdür.
 """
 from __future__ import annotations
 
@@ -162,8 +168,10 @@ _ADIM: dict[str, Aciklama] = {
         seviye=SEVIYE_OKUNAMADI,
         baslik="Damganın hangi içeriğe ait olduğu belirlenemedi",
         ozet=(
-            "Dosyanın başlık bilgisi eksik ya da okunamıyor. Damga bir "
-            "içeriğe bağlanamadığı için kontrol tamamlanamadı."
+            "Dosya verilen anahtarla doğrulanamadı — yanlış anahtar "
+            "verilmiş olabilir ya da dosya bozulmuş/değiştirilmiş "
+            "olabilir. Damga bir içeriğe bağlanamadığı için kontrol "
+            "tamamlanamadı."
         ),
         oneri=_ONERI_YEDEK,
     ),
@@ -442,11 +450,10 @@ def notlar(sonuc: TimestampVerification) -> list[Aciklama]:
         seviye=SEVIYE_BILGI,
         baslik="Bu kontrol neyi kapsıyor",
         ozet=(
-            "Doğrulanan şey damganın kendisi: parmak izinin gerçekten "
-            "imzalandığı. Dosyanın İÇERİĞİNİN bu parmak iziyle eşleştiği "
-            "burada kontrol edilmiyor — o kontrol anahtar gerektiriyor ve "
-            "dosyayı her açtığınızda ya da indirdiğinizde otomatik "
-            "yapılıyor. İkisi birlikte zinciri tamamlıyor."
+            "Hem damganın kendisi (parmak izinin gerçekten imzalandığı) "
+            "hem dosyanın GERÇEK içeriği (o parmak izine gerçekten sahip "
+            "olduğu) bu kontrolde birlikte doğrulandı — dosya bu işlem "
+            "sırasında anahtarla yeniden okunup özeti hesaplandı."
         ),
     ))
     return cikti

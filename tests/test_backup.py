@@ -701,9 +701,11 @@ def test_restored_files_still_decrypt(dolu_db, vault, tmp_path, key) -> None:
     restore_backup(rapor.path, hedef, key, hwid=_HWID)
 
     for p in (hedef / "files").glob("*.hcl"):
-        icerik, meta = decrypt_file(p, key, hwid=_HWID)
+        # B-092/B-099: original_sha256 artık AAD'de yok (meta bunu
+        # taşımıyor) — asıl iddia zaten decrypt_file()'ın istisnasız
+        # dönmesi ve içeriğin BOŞ olmaması.
+        icerik, _meta = decrypt_file(p, key, hwid=_HWID)
         assert icerik
-        assert meta["original_sha256"] == hashlib.sha256(icerik).hexdigest()
 
 
 def test_restore_refuses_a_corrupt_backup(dolu_db, vault, tmp_path, key) -> None:

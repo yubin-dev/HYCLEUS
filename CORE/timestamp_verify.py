@@ -74,7 +74,9 @@ Ne doğrulanıyor (sırayla)
 7. İmzalama sertifikası `timeStamping` EKU taşıyor mu (RFC 3161 §2.3)
 8. Sertifikanın geçerlilik penceresi `genTime`'ı kapsıyor mu
 9. Zincir: her sertifikanın imzası bir üsttekiyle doğrulanıyor mu
-10. TSTInfo'daki özet, dosyanın AAD'sindeki `original_sha256` ile aynı mı
+10. TSTInfo'daki özet, dosyanın GERÇEK (verilen `key` ile akan blok
+    üzerinden yeniden hesaplanan) düz metin özetiyle aynı mı — B-092/
+    B-099, bkz. `CORE/timestamp.py` modül docstring'i
 11. Fragmandaki `hashed_hex` token'la tutarlı mı
 
 Hepsi geçerse `TimestampVerification.valid` True olur. Herhangi biri
@@ -98,10 +100,11 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.types import CertificatePublicKeyTypes
 
+from CORE.crypto import AuthenticationError
 from CORE.timestamp import (
     TimestampError,
     TimestampInfo,
-    read_aad,
+    file_digest,
     read_trailer,
     verify_merkle_path,
 )
@@ -511,26 +514,48 @@ def _verify(
 
 def verify_timestamp(
     path: Path | str,
+    key: bytes,
     *,
+    hwid: str | None = None,
     trusted_roots: Sequence[bytes] | None = None,
     at_time: datetime | None = None,
 ) -> TimestampVerification:
     """
     Bir `.hcl` dosyasının zaman damgasını ÇEVRİMDIŞI doğrular.
 
-    Ağ erişimi YOK: token da, sertifika zinciri de, karşılaştırılan özet de
-    dosyanın kendisinden geliyor.
+    Ağ erişimi YOK: token da, sertifika zinciri de dosyanın kendisinden
+    geliyor.
 
-    Anahtar da GEREKMİYOR — damgalanan özet AAD'de duruyor ve AAD şifresiz.
-    Bunun sınırı damgalamadakiyle aynı: AAD'nin bütünlüğünü GCM tag'i
-    koruyor ve onu kontrol etmek anahtar ister. Yani bu fonksiyon "AAD'nin
-    iddia ettiği özet damgalanmış mı" sorusuna yanıt veriyor; "dosyanın
-    içeriği gerçekten o özete mi sahip" sorusu `verify_file()`'ın işi.
-    İkisi birlikte tam zinciri kuruyor ve CLI ikisini de çalıştırabiliyor.
+    `key` ARTIK ZORUNLU (B-092/B-099 — bkz. `CORE/timestamp.py` modül
+    docstring'i). Eskiden anahtar gerekmiyordu çünkü damgalanan özet
+    AAD'de, şifresiz duruyordu — ama bu, yalnızca bir `.hcl` kopyasına
+    erişen biri için anahtarsız bir DOĞRULAMA-ORACLE'I anlamına
+    geliyordu: aday bir belgeyi kendisi hash'leyip AAD'deki değerle
+    karşılaştırarak, kasayı hiç çözmeden içeriği doğrulayabiliyordu.
+    `encrypt_file()` artık `original_sha256`yı AAD'ye YAZMIYOR; bu
+    fonksiyon karşılaştıracağı özeti `CORE.timestamp.file_digest()` ile
+    — yani `verify_file()`in akan blok üzerinden, biriktirmeden yaptığı
+    GERÇEK hesaplamayla — elde ediyor. Sonuç: "damganın imzaladığı özet
+    damgalanmış mı" ve "dosyanın içeriği GERÇEKTEN o özete mi sahip"
+    soruları artık AYRI değil, TEK bu çağrıda birlikte yanıtlanıyor —
+    eskiden ikincisi ayrıca `verify_file()`in işiydi.
+
+    GERİYE DÖNÜK ONARILMIYOR: bu, mevcut (bu karardan ÖNCE şifrelenmiş)
+    `.hcl` dosyalarını anahtarsız doğrulama YETENEĞİNİ de kalıcı olarak
+    kaldırıyor — yeniden şifrelenmedikçe (ayrı bir migrasyon işi,
+    BACKLOG.md B-100) bu dosyalar da artık `key` gerektiriyor.
 
     Returns:
         TimestampVerification — damgasız dosyada `valid=False`,
         `failed_check="no_timestamp"`.
+
+    Raises:
+        Fırlatmaz — `key`/`hwid` ile doğrulama başarısız olursa (yanlış
+        anahtar, bozuk/değiştirilmiş dosya) sonuç `valid=False`,
+        `failed_check="aad"` olarak döner; bu, "damganın hangi içeriğe
+        ait olduğu belirlenemedi" ile AYNI kullanıcı mesajını paylaşıyor
+        (`CORE/timestamp_report.py`) çünkü ikisi de aynı şeyi anlatıyor:
+        dosyanın GERÇEK içeriği bu çağrıda belirlenemedi.
     """
     path = Path(path)
     try:
@@ -547,44 +572,37 @@ def verify_timestamp(
         )
 
     try:
-        meta = read_aad(path)
-    except TimestampError as exc:
+        gercek_hex = file_digest(path, key=key, hwid=hwid)
+    except AuthenticationError as exc:
+        return TimestampVerification(
+            valid=False,
+            reason=(
+                f"Dosya verilen anahtarla doğrulanamadı — {exc} "
+                "Damga bir içeriğe bağlanamıyor."
+            ),
+            failed_check="aad",
+            tsa_url=info.tsa_url,
+        )
+    except (TimestampError, ValueError, OSError) as exc:
         return TimestampVerification(
             valid=False, reason=str(exc), failed_check="aad", tsa_url=info.tsa_url
         )
 
-    aad_hex = meta.get("original_sha256")
-    if not aad_hex:
-        return TimestampVerification(
-            valid=False,
-            reason="AAD'de original_sha256 yok — damga bir özete bağlanamıyor.",
-            failed_check="aad",
-            tsa_url=info.tsa_url,
-        )
-
-    # Fragmandaki özet ile AAD'deki özet ayrı ayrı tutuluyor; tutmazlarsa
-    # token doğru olsa bile fragman bu dosyaya ait değildir.
-    if info.hashed_hex != aad_hex:
+    # Fragmandaki özet ile dosyanın GERÇEK özeti ayrı ayrı tutuluyor;
+    # tutmazlarsa token doğru olsa bile fragman bu dosyaya ait değildir.
+    if info.hashed_hex != gercek_hex:
         return TimestampVerification(
             valid=False,
             reason=(
-                "Fragmandaki özet dosyanın AAD'siyle uyuşmuyor — "
-                f"fragman {info.hashed_hex}, AAD {aad_hex}. "
+                "Fragmandaki özet dosyanın gerçek içeriğiyle uyuşmuyor — "
+                f"fragman {info.hashed_hex}, gerçek {gercek_hex}. "
                 "Başka bir dosyanın damgası buraya kopyalanmış olabilir."
             ),
             failed_check="trailer_aad_mismatch",
             tsa_url=info.tsa_url,
         )
 
-    try:
-        beklenen = bytes.fromhex(aad_hex)
-    except ValueError:
-        return TimestampVerification(
-            valid=False,
-            reason=f"AAD'deki original_sha256 geçerli hex değil: {aad_hex!r}",
-            failed_check="aad",
-            tsa_url=info.tsa_url,
-        )
+    beklenen = bytes.fromhex(gercek_hex)
 
     # ── Toplu damga (v2): token KÖKÜ imzalıyor, dosya köke YOLLA bağlanıyor ──
     #

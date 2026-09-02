@@ -44,25 +44,42 @@ Gizlilik bedeli yok: SHA-256 tek yönlüdür, özetin TSA'ya gitmesi içeriği
 açığa çıkarmaz. RFC 3161 zaten bunun için tasarlanmış — protokol asla
 belgenin kendisini istemiyor, yalnızca "message imprint" denen özeti.
 
-Özet YENİDEN HESAPLANMIYOR
---------------------------
-`encrypt_file()` düz metnin SHA-256'sını şifrelemeden önce hesaplayıp
-AAD'ye yazıyor (`original_sha256`). Damgalama onu OKUYOR. Sonuç, bu
-modülün en önemli özelliği:
+Özet YENİDEN HESAPLANIYOR — B-092/B-099, mimari karar
+-------------------------------------------------------
+Bu modül bir zamanlar şöyleydi: `encrypt_file()` düz metnin SHA-256'sını
+şifrelemeden önce hesaplayıp AAD'ye yazıyordu (`original_sha256`),
+damgalama onu anahtarsız OKUYORDU. Sonuç: "damgalama anahtar İSTEMEZ ve
+düz metne HİÇ dokunmaz."
 
-    **Damgalama anahtar İSTEMEZ ve düz metne HİÇ dokunmaz.**
+Bu tasarım KALICI olarak TERK EDİLDİ. Sebep, `CORE/crypto.py` modül
+docstring'inde ayrıntılı: AAD şifresiz olduğu için `original_sha256`'nın
+orada durması, yalnızca bir `.hcl` KOPYASINA erişen (DB'ye/kimliğe/
+çalışan uygulamaya erişimi OLMAYAN — SECURITY.md §1.1'in M2 modeli)
+biri için anahtarsız, kesin bir DOĞRULAMA-ORACLE'I demekti. Tuz işe
+yaramaz — saldırgan onu da aday belgeye ekler; yalnızca gerçek bir SIR
+(anahtar) bunu kapatır, ki bu zaten "anahtarsız" tanımıyla ÇELİŞİR.
 
-AAD dosya başlığında şifresiz duruyor; damgalamak için dosyayı çözmek
-şöyle dursun, oturum anahtarının varlığı bile gerekmiyor. `verify_file()`
-için yazılan "düz metni gereksiz yere maruz bırakma" ilkesi burada
-kendiliğinden sağlanıyor.
+Karar: oracle'ı kapatmak, "anahtarsız damgalama" özelliğinden daha ağır
+bastı. Sonuç:
 
-Karşılığında bir sınır var: AAD'nin bütünlüğünü GCM tag'i koruyor ve onu
-doğrulamak anahtar ister. Anahtarsız damgalarken `original_sha256`
-DOĞRULANMAMIŞ bir alandır. Bu yüzden `timestamp_file()` opsiyonel bir
-`key` alıyor: verilirse önce `verify_file()` çalışıyor, yani damga
-gerçekten o dosyanın içeriğine bağlanıyor. Verilmezse damga "AAD'nin iddia
-ettiği özet" için alınmış olur — çağıranın bilinçli tercihi.
+    **Damgalama artık anahtar İSTİYOR ve düz metni GERÇEKTEN okuyor**
+    (akan blok üzerinden, `CORE.crypto.verify_file(..., return_sha256=
+    True)` ile — biriktirmeden, `verify_file()`'ın kendi "düz metni
+    gereksiz yere maruz bırakma" ilkesiyle AYNI disiplinle).
+
+`timestamp_file()`/`timestamp_batch()`'in `key` parametresi artık
+ZORUNLU — `None` verilemez. Karşılığında AAD'nin bütünlüğü VE düz
+metnin GERÇEK özeti aynı çağrıda, aynı anahtarla doğrulanmış oluyor;
+"AAD'nin iddia ettiği özet" diye anahtarsız bir yol artık YOK.
+
+**GERİYE DÖNÜK ONARILMIYOR.** GCM AAD'si ciphertext'e bağlı; anahtar
+olmadan mevcut bir dosyanın AAD'sinden `original_sha256` sessizce
+çıkarılamaz. Yalnızca BUNDAN SONRA şifrelenen dosyalar korunuyor —
+mevcut HER `.hcl` dosyası, yeniden şifrelenmedikçe (ayrı bir migrasyon
+işi, BACKLOG.md B-100) bu oracle'a KALICI olarak açık kalıyor.
+
+Tam gerekçe, tuzun neden işe yaramadığı ve kapsam analizi: BACKLOG.md
+B-092 (analiz) ve B-099 (bu karar/uygulama).
 
 
 TS_TRAILER biçimi
@@ -91,8 +108,10 @@ Merkle'sız bir fragman bugün de byte-byte eski hâliyle üretiliyor ve eski
 dosyalar okunmaya devam ediyor.
 
 `hashed_hex` fragmanda AYRICA tutuluyor, token'ın içinden de okunabilecek
-olmasına rağmen: fragmanın AAD ile eşleşip eşleşmediğini ASN.1 ayrıştırmadan
-kontrol edebilmek için. Tutarsızlık olursa token yine de yetkilidir.
+olmasına rağmen: dosyanın GERÇEK (anahtarla yeniden hesaplanan) özetiyle
+eşleşip eşleşmediğini ASN.1 ayrıştırmadan kontrol edebilmek için (bkz.
+`CORE/timestamp_verify.py::verify_timestamp()`). Tutarsızlık olursa
+token yine de yetkilidir.
 
 **v2'de `hashed_hex` ile token'ın imprint'i EŞLEŞMEZ** — ve bu doğru
 davranıştır. Token kökü damgalıyor; dosyanın özeti köke yolla bağlanıyor.
@@ -470,8 +489,16 @@ def read_aad(path: Path | str) -> dict:
     Dosyanın AAD metadata'sını anahtar OLMADAN okur.
 
     AAD şifresiz saklanıyor (bkz. SECURITY.md §3), dolayısıyla bu yeni bir
-    şey açığa çıkarmıyor. Damgalamanın `original_sha256`'yı buradan alması
-    ve dosyayı hiç çözmemesi bu sayede mümkün.
+    şey açığa çıkarmıyor.
+
+    B-092/B-099: bu modül artık BUNU KULLANMIYOR — damgalama/doğrulama
+    düz metnin GERÇEK özetini `verify_file(..., return_sha256=True)` ile
+    (anahtarla) hesaplıyor, çünkü `encrypt_file()` `original_sha256`'yı
+    artık AAD'ye hiç YAZMIYOR (anahtarsız bir doğrulama-oracle'ı olmasın
+    diye). Fonksiyon yine de dışa açık ve genel amaçlı kalıyor —
+    `filename`/`created_at` gibi DİĞER AAD alanlarını anahtarsız okumak
+    hâlâ meşru bir ihtiyaç olabilir; yalnızca ESKİ (bu karardan önce
+    şifrelenmiş) dosyalarda `original_sha256` alanı hâlâ görülebilir.
 
     UYARI: burada okunan AAD DOĞRULANMAMIŞTIR. Bütünlüğünü GCM tag'i
     koruyor ama onu kontrol etmek anahtar ister — bkz. modül docstring'i.
@@ -723,9 +750,9 @@ def tsa_url(db: Any) -> str:
 
 def timestamp_file(
     path: Path | str,
+    key: bytes,
     *,
     url: str = DEFAULT_TSA_URL,
-    key: bytes | None = None,
     hwid: str | None = None,
     timeout: int = TSA_TIMEOUT,
     transport: Callable[[str, bytes, int], bytes] | None = None,
@@ -734,17 +761,18 @@ def timestamp_file(
     Bir `.hcl` dosyasını damgalar ve fragmanı dosyaya yazar.
 
     Akış:
-        AAD'den original_sha256 oku → (opsiyonel) verify_file ile doğrula →
-        TimeStampReq kur → TSA'ya POST → yanıtı kontrol et → fragmanı yaz
+        verify_file(..., return_sha256=True) ile düz metnin GERÇEK özetini
+        anahtarla doğrula/hesapla → TimeStampReq kur → TSA'ya POST → yanıtı
+        kontrol et → fragmanı yaz
 
     Args:
         path: Damgalanacak `.hcl` dosyası.
+        key: ZORUNLU (B-092/B-099 — bkz. modül docstring'i). Dosya bu
+            anahtarla doğrulanıp düz metnin GERÇEK özeti akan blok
+            üzerinden hesaplanmadan damga alınamaz; "anahtarsız damgalama"
+            kalıcı olarak feda edildi.
         url: TSA adresi. Uygulamada `tsa_url(db)` ile ayarlardan gelir.
-        key: Verilirse damgalamadan ÖNCE `verify_file()` çalışır, yani
-            AAD'nin (ve dolayısıyla özetin) bütünlüğü doğrulanmış olur.
-            Verilmezse damga doğrulanmamış bir özet için alınır — bkz.
-            modül docstring'i.
-        hwid: `key` verildiğinde `verify_file()`e geçirilir.
+        hwid: `verify_file()`e geçirilir.
         transport: (url, body, timeout) → yanıt byte'ları. Testlerin
             gerçek ağa çıkmadan akışın tamamını koşturmasını sağlıyor.
 
@@ -752,9 +780,9 @@ def timestamp_file(
         Dosyaya yazılan TimestampInfo.
 
     Raises:
-        TimestampError — AAD'de özet yok, TSA reddetti, yanıt tutarsız
-            ya da fragman yazılamadı.
-        AuthenticationError — `key` verildi ve dosya doğrulanamadı.
+        TimestampError — TSA reddetti, yanıt tutarsız ya da fragman
+            yazılamadı.
+        AuthenticationError — dosya `key`/`hwid` ile doğrulanamadı.
     """
     path = Path(path)
     if read_trailer(path) is not None:
@@ -763,29 +791,15 @@ def timestamp_file(
             "geçersiz kılardı; önce mevcut fragmanı bilinçli olarak kaldırın."
         )
 
-    if key is not None:
-        # AuthenticationError bilerek yakalanmıyor: bozuk bir dosyaya damga
-        # basmak, bozulmayı "o tarihte böyleydi" diye onaylamak olurdu.
-        meta = verify_file(path, key, hwid=hwid)
-    else:
-        meta = read_aad(path)
-
-    hashed_hex = meta.get("original_sha256")
-    if not hashed_hex:
-        raise TimestampError(
-            f"{path.name}: AAD'de original_sha256 yok — bu dosya, özet alanı "
-            "eklenmeden önce şifrelenmiş. Damgalamak için yeniden şifrelenmeli."
-        )
-    try:
-        digest = bytes.fromhex(hashed_hex)
-    except ValueError as exc:
-        raise TimestampError(
-            f"AAD'deki original_sha256 geçerli hex değil: {hashed_hex!r}"
-        ) from exc
-    if len(digest) != hashlib.sha256().digest_size:
-        raise TimestampError(
-            f"AAD'deki original_sha256 {len(digest)} byte — SHA-256 değil."
-        )
+    # AuthenticationError bilerek yakalanmıyor: bozuk bir dosyaya damga
+    # basmak, bozulmayı "o tarihte böyleydi" diye onaylamak olurdu.
+    #
+    # `hashed_hex` `hashlib.sha256().hexdigest()`'ten geliyor — her zaman
+    # 64 geçerli hex karakteri. Eski kod burada AAD'den okunan (ve
+    # dolayısıyla bozuk/uydurma olabilecek) bir dizeyi doğruluyordu; artık
+    # bu kontrol imkânsız bir durumu sınıyor olurdu, kaldırıldı.
+    _meta, hashed_hex = verify_file(path, key, hwid=hwid, return_sha256=True)
+    digest = bytes.fromhex(hashed_hex)
 
     request_der, nonce = build_request(digest)
     send = transport or _http_post
@@ -903,35 +917,26 @@ def anchor_leaf_payload(anchor_hash: str) -> bytes:
     ).digest()
 
 
-def _file_digest(path: Path, *, key: bytes | None, hwid: str | None) -> str:
-    """Bir `.hcl` dosyasının damgalanacak düz metin özetini okur."""
-    meta = verify_file(path, key, hwid=hwid) if key is not None else read_aad(path)
-    hashed_hex = meta.get("original_sha256")
-    if not hashed_hex:
-        raise TimestampError(
-            f"{path.name}: AAD'de original_sha256 yok — bu dosya, özet alanı "
-            "eklenmeden önce şifrelenmiş. Damgalamak için yeniden şifrelenmeli."
-        )
-    try:
-        ham = bytes.fromhex(hashed_hex)
-    except ValueError as exc:
-        raise TimestampError(
-            f"{path.name}: AAD'deki original_sha256 geçerli hex değil: "
-            f"{hashed_hex!r}"
-        ) from exc
-    if len(ham) != HASH_SIZE:
-        raise TimestampError(
-            f"{path.name}: AAD'deki original_sha256 {len(ham)} byte — "
-            "SHA-256 değil."
-        )
+def file_digest(path: Path, *, key: bytes, hwid: str | None) -> str:
+    """
+    Bir `.hcl` dosyasının damgalanacak/doğrulanacak GERÇEK düz metin özeti.
+
+    B-092/B-099: eskiden AAD'deki `original_sha256`yı anahtarsız OKUYORDU
+    (ya da `key` verildiğinde onu yalnızca DOĞRULUYORDU). Artık `key`
+    ZORUNLU ve özet her zaman `verify_file(..., return_sha256=True)` ile
+    akan blok üzerinden GERÇEKTEN hesaplanıyor — AAD'de böyle bir alan
+    hiç yok. `CORE/timestamp_verify.py::verify_timestamp()` de aynı
+    fonksiyonu kullanıyor; tek kaynak.
+    """
+    _meta, hashed_hex = verify_file(path, key, hwid=hwid, return_sha256=True)
     return hashed_hex
 
 
 def timestamp_batch(
     paths: list[Path | str],
+    key: bytes,
     *,
     url: str = DEFAULT_TSA_URL,
-    key: bytes | None = None,
     hwid: str | None = None,
     anchor_hash: str | None = None,
     timeout: int = TSA_TIMEOUT,
@@ -941,27 +946,29 @@ def timestamp_batch(
     Birden çok dosyayı TEK TSA çağrısıyla damgalar.
 
     Akış:
-        her dosyanın AAD özetini oku → yaprakları kur → (varsa çıpa
-        yaprağını ekle) → ağacı kur → KÖKÜ damgala → her dosyaya kendi
-        yolunu içeren v2 fragmanı yaz
+        her dosyanın GERÇEK düz metin özetini `key` ile hesapla/doğrula →
+        yaprakları kur → (varsa çıpa yaprağını ekle) → ağacı kur → KÖKÜ
+        damgala → her dosyaya kendi yolunu içeren v2 fragmanı yaz
 
     Args:
         paths: Damgalanacak `.hcl` dosyaları. SIRA ANLAMLIDIR: yaprak
             indisleri buradan geliyor.
+        key: ZORUNLU (B-092/B-099 — bkz. modül docstring'i). Her dosya
+            damgalanmadan önce `verify_file()` ile doğrulanır (tekil
+            akıştaki anlamın aynısı) — "anahtarsız damgalama" yok.
         anchor_hash: `CORE.audit_chain`'in günlük çıpasının `last_hash`
             değeri. Verilirse ağaca ETİKETLİ bir yaprak olarak giriyor ve
             iki özellik tek damgada birleşiyor — kullanıcı bir tek
             token'la hem dosyalarının hem denetim kaydının o tarihte var
             olduğunu gösterebiliyor.
-        key: Verilirse her dosya damgalanmadan önce `verify_file()` ile
-            doğrulanır (tekil akıştaki anlamın aynısı).
 
     Returns:
         BatchResult.
 
     Raises:
-        TimestampError — liste boş, bir dosya zaten damgalı, AAD'de özet
-            yok, TSA reddetti ya da fragman yazılamadı.
+        TimestampError — liste boş, bir dosya zaten damgalı, TSA
+            reddetti ya da fragman yazılamadı.
+        AuthenticationError — bir dosya `key`/`hwid` ile doğrulanamadı.
 
     KISMİ YAZMA UYARISI
     -------------------
@@ -999,7 +1006,7 @@ def timestamp_batch(
             + ", ".join(sorted(p.name for p in tekrar))
         )
 
-    ozetler = [_file_digest(p, key=key, hwid=hwid) for p in yollar]
+    ozetler = [file_digest(p, key=key, hwid=hwid) for p in yollar]
     yukler = [bytes.fromhex(h) for h in ozetler]
     if anchor_hash:
         yukler.append(anchor_leaf_payload(anchor_hash))
@@ -1098,6 +1105,7 @@ __all__ = [
     "current_anchor_hash",
     "decode_proof",
     "encode_proof",
+    "file_digest",
     "read_aad",
     "read_trailer",
     "timestamp_batch",

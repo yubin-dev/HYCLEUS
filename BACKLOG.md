@@ -7918,3 +7918,179 @@ satırlarını (GitHub Actions arayüzünden) paylaşması istendi — paylaşı
 teşhis bu turu beklemeden hemen tamamlanabilir.
 
 ---
+
+## B-099 — B-092'nin kararı UYGULANDI: `original_sha256` AAD'den kaldırıldı, anahtarsız RFC 3161 doğrulaması KALICI olarak feda edildi
+
+Görev: B-092'nin analizini temel alıp uygulamaya geç. Karar (önerilen,
+kullanıcı onayıyla): `original_sha256`'yı AAD'den kaldır, anahtarsız RFC
+3161 doğrulamasını feda et. Gerekçe: M2 tehdit modelinde (yalnızca bir
+`.hcl` kopyasına erişim) kesin bir içerik-doğrulama oracle'ı, "anahtarsız
+air-gapped doğrulama" kolaylığından daha ağır basıyor.
+
+**Karara katıldım — gerekçe.** B-092'nin analizindeki "tuz işe yaramaz"
+argümanı zaten HMAC seçeneğini de fiilen eledi: anahtarsız kalmak için
+tuzun da AAD'de açık durması gerekirdi, ki bu "anahtarsız" tanımıyla
+çelişirdi — yani gerçek seçenek hiçbir zaman "kaldır mı HMAC'le mi"
+değildi, "kaldır" idi (HMAC bir anahtar gerektirdiği andan itibaren zaten
+"anahtarsız" olma özelliğini kaybediyordu). Bu proje K1-14/K0'da HWID/HMAC
+gibi anahtar-kaynaklı kontrolleri zaten normalleştirmiş durumda; aynı
+disiplini burada uygulamak tutarlı.
+
+**Kapsam — B-092'nin öngördüğünden GENİŞ çıktı.** B-092 dört CORE modülü +
+CLI + ~900 satır test öngörmüştü. Gerçekte dokunulan:
+  - `CORE/crypto.py` — `encrypt_file()` artık `original_sha256`'yı AAD'ye
+    YAZMIYOR (hâlâ hesaplayıp DB için DÖNDÜRÜYOR). `verify_file()`'a yeni
+    `return_sha256: bool = False` parametresi (mevcut `decrypt_file()`nin
+    `zeroizable` desenini taklit eden `@overload` çifti) — `True` ise düz
+    metnin SHA-256'sını AYNI akan-blok döngüsünde (`decryptor.
+    update_into()`'nin artık KULLANILAN dönen uzunluğuyla), biriktirmeden
+    hesaplayıp `(meta, sha256_hex)` döndürüyor. VARSAYILAN `False`: mevcut
+    çağıranların (backup.py, integrity.py, fuzz) çoğu yalnızca GCM tag'ini
+    önemsiyor, ek özet geçişinin maliyetini ödememeli — BİLEREK opt-in,
+    global bir imza değişikliği DEĞİL.
+  - `CORE/timestamp.py` — `timestamp_file()`/`timestamp_batch()`'in `key`
+    parametresi artık ZORUNLU (varsayılan yok). `_file_digest()` → genel
+    `file_digest()` oldu (artık `timestamp_verify.py` da kullanıyor, TEK
+    kaynak). `read_aad()` KALDIRILMADI — hâlâ dışa açık, genel amaçlı
+    (filename/created_at gibi diğer alanlar için); yalnızca bu modülün
+    KENDİSİ artık kullanmıyor.
+  - `CORE/timestamp_verify.py` — `verify_timestamp()`'e ZORUNLU `key`
+    eklendi. 10. adım YENİDEN YAZILDI: `read_aad()` + AAD'nin
+    `original_sha256`'sı yerine `file_digest(path, key=key)` — yani artık
+    "AAD'nin iddia ettiği özet damgalanmış mı" değil "dosyanın GERÇEK
+    içeriği damgalanan özete sahip mi" soruluyor. Yeni hata yolları
+    (AuthenticationError/ValueError/OSError/TimestampError) MEVCUT `"aad"`
+    failed_check'ine düşüyor — YENİ bir kod GEREKMEDİ, açıklaması ("bu
+    içeriğe bağlanamadı") zaten uyuyordu.
+  - `CORE/timestamp_report.py` — kod DEĞİŞMEDİ, yalnızca ARTIK YANLIŞ olan
+    iki metin düzeltildi: modül docstring'inin "DOĞRULUK, SADELİKTEN ÖNCE
+    GELİR" bölümü ve `notlar()`'ın "Bu kontrol neyi kapsıyor" bilgi notu —
+    ikisi de eskiden "içerik burada kontrol EDİLMİYOR" diyordu, artık
+    ediliyor.
+  - `CORE/verify_timestamp_cli.py` — `--key-file` (ZORUNLU, ham 32 bayt,
+    hex/base64 DEĞİL) eklendi. Modül docstring'i ve `argparse`
+    `description`'ı "ne anahtar ne USB istemiyor" iddiasını KALDIRDI.
+  - `UI/main_window_files.py::_on_ctx_verify_timestamp()` — B-092'nin
+    listesinde YOKTU ama `verify_timestamp()`'in imza değişikliği
+    DOLAYLI olarak bunu da kırıyordu: canlı "Damgayı Doğrula" sağ-tık
+    eylemi. `self._key` (zaten `decrypt_file()` için kullanılan canlı
+    oturum anahtarı) geçiriliyor artık. Docstring'in "ne anahtar ne ağ
+    gerekiyor... kasa oturumu düşmüşken de çalışıyor" iddiası düzeltildi:
+    `self._key` kilitliyken de canlı kalıyor (USB geri takılınca PIN'siz
+    devam ediyor), ama kasa HİÇ açılmamışsa artık çalışamıyor.
+
+**`CORE/merkle.py` — İNCELENDİ, DEĞİŞİKLİK GEREKMEDİ.** B-092 bunu da
+listelemişti; gerçekte yalnızca docstring'de "dosya `original_sha256`'sı"
+diye BETİMSEL bir geçiş var, hiçbir fonksiyonel kod AAD okumuyor —
+kavram (dosyanın düz metin özeti) hâlâ doğru, yalnızca kaynağı değişti.
+
+**Mimari karar — anahtarsız yolun KENDİSİ, "sessizce eksik" DEĞİL.**
+`timestamp_file(path)` (key'siz) artık `TypeError` — Python'un kendisi
+reddediyor, çünkü `key` artık varsayılansız bir pozisyonel parametre.
+Aynısı `verify_timestamp(path)` için. Bu BİLİNÇLİ: "eksik anahtar →
+sessizce eski davranışa düş" gibi bir geriye-uyumluluk köprüsü KURULMADI,
+çünkü o köprünün kendisi oracle'ı YENİDEN AÇARDI.
+
+**GERİYE DÖNÜK ONARILAMAMA SINIRI — SECURITY.md'ye (EN+TR) NET yazıldı.**
+GCM AAD'si ciphertext'e bağlı; anahtar olmadan mevcut bir dosyanın
+AAD'sinden bir alan sessizce çıkarılamaz. Yalnızca BUNDAN SONRA
+şifrelenen dosyalar korunuyor — mevcut HER `.hcl` dosyası, yeniden
+şifrelenmedikçe bu oracle'a KALICI olarak açık kalıyor. Migrasyon bu
+turun KAPSAMINDA DEĞİL — ayrı madde: **B-100**.
+
+**Test — mevcut ~900 satırlık yükün TAMAMI anahtarlı API'ye göre yeniden
+yazıldı, artı YENİ testler.** Etkilenen dosyalar ve YAKLAŞIK test sayıları
+(hepsi çalıştırıldı, hepsi yeşil):
+  `tests/test_crypto.py` (42), `tests/test_timestamp.py` (71 — 2 yeni
+  `_eski_format_hcl` testi dahil), `tests/test_timestamp_batch.py` (34),
+  `tests/test_timestamp_verify.py` (27), `tests/test_timestamp_report.py`
+  (88), `tests/test_verify_timestamp_cli.py` (19 — 2 yeni `--key-file`
+  testi dahil), `tests/test_timestamp_ui.py` (29), `tests/
+  test_trusted_roots.py` (33), `tests/test_guvenlik_view.py` (35),
+  `tests/test_merkle.py`/`tests/test_deneysel_bagli_degil.py`
+  (DEĞİŞİKLİK GEREKMEDİ, doğrulandı) — B-092'nin listesinde OLMAYAN ama
+  imza değişikliği yüzünden GERÇEKTEN kıran 4 dosya da bulunup
+  düzeltildi: `tests/test_backup.py`, `tests/test_checkout.py`, `tests/
+  test_recovery_e2e.py` (üçü de `meta["original_sha256"]` okuyordu,
+  zaten ayrı bir içerik-eşitliği assert'iyle KAPSANAN bir kontroldü,
+  kaldırıldı) ve `tests/test_ui_yasakli_iddia_terimleri.py` (satır
+  numarasına SABİT KODLANMIŞ bir `raise` mesajı araması — `CORE/
+  timestamp.py`ye satır eklenince kaydı; arama metne göre yapılacak
+  şekilde SAĞLAMLAŞTIRILDI).
+
+**Yeni test — "sessiz yanlış-pozitif olmamalı" talebi.**
+`tests/test_timestamp.py::test_an_old_format_file_still_verifies_and_
+stamps` ve `test_an_old_format_files_stale_hash_is_silently_ignored_
+not_trusted` — B-099 ÖNCESİ `encrypt_file()`'ın ürettiği formatı BİREBİR
+simüle eden bir yardımcı (`_eski_format_hcl`, ham `cryptography` GCM
+ilkelleriyle) kuruyor ve: (1) eski formattaki bir dosyanın hâlâ sorunsuz
+doğrulandığını/damgalandığını, (2) AAD'deki eski alan BİLEREK YANLIŞ
+bir değer taşısa bile (`"0"*64`) hem `verify_file()` hem `file_digest()`
+hem `timestamp_file()` hem `verify_timestamp()`'in GERÇEK özeti
+kullandığını, eski alana ASLA güvenmediğini kanıtlıyor.
+
+**Mutasyon kanıtı (test tasarımının kendisini de sınadı).** İlk taslakta
+`file_digest()`'i eski AAD alanına GERİ DÖNDÜREN bir mutasyon
+uygulandığında testler YEŞİL KALDI — sebebi bulundu: `timestamp_file()`
+`verify_file()`'ı DOĞRUDAN çağırıyor, `file_digest()`'i HİÇ kullanmıyor,
+yani mutasyon o test yolunu ETKİLEMİYORDU. Test, `timestamp_batch()`/
+`verify_timestamp()`'in ortak yolu olan `file_digest()`'i AYRICA
+çağıracak şekilde GÜÇLENDİRİLDİ; aynı mutasyon tekrarlanınca bu sefer
+doğru şekilde `AssertionError` ile YAKALANDI. Geri alındı, `grep -n
+"MUTATION"` (temiz) ve `git diff --stat` ile doğrulandı.
+
+**SECURITY.md (EN+TR) — §1.2, §3, §4.9 güncellendi.** AAD gizliliği
+tablosu satırı, "AAD gizliliği satırı kendi alanlarından birini hafife
+alıyor" paragrafı, "Metadata confidentiality" paragrafı ve §4.9'un TAMAMI
+(açılış, "Anahtarsız damgalamada özet doğrulanmamıştır" bölümü, Merkle
+paragrafı, CLI kod örneği) — hepsi geçmiş zamana (B-099 ÖNCESİ nasıldı) ve
+şimdiki zamana (B-099 SONRASI nasıl) ayrıştırılarak yeniden yazıldı,
+geriye dönük onarılamama sınırı her ikisinde de açıkça belirtildi.
+README.md (EN+TR) özellik tablosu satırı `--key-file` gerekliliğini
+belirtecek şekilde güncellendi. Doc-parity testi (`tests/
+test_belge_dil_paritesi.py`) EN/TR'nin hâlâ eşleştiğini doğruluyor.
+
+Tam test suite: 3116 passed, 4 skipped (B-098'den +10 — yukarıdaki yeni
+testler). Ruff temiz. mypy: `UI/main_window_files.py`'de +1 hata
+(`self._key` — bu dosyada ZATEN 106 örnekle yaygın olan "mixin kendi
+kardeşinin özniteliğini göremiyor" kalıbı, B-094'te belgelenen AYNI
+kategori, gerçek bir tip hatası değil). bandit: yeni bulgu YOK.
+
+Ayrıntı: BACKLOG.md **B-092** (analiz), SECURITY.md §1.2/§3/§4.9 (EN+TR).
+
+---
+
+## B-100 — Mevcut `.hcl` dosyalarının `original_sha256`'sını AAD'den temizleyen migrasyon (B-099'un tamamlayıcısı, henüz UYGULANMADI)
+
+**Durum: AÇIK, kapsam dışı bırakıldı (B-099'un kendi kararı).**
+
+B-099, `original_sha256`'yı AAD'den kaldırdı ama bu GERİYE DÖNÜK DEĞİL:
+GCM AAD'si ciphertext'e bağlı olduğu için anahtar olmadan mevcut bir
+dosyanın AAD'sinden bir alan sessizce çıkarılamaz. Bu değişiklikten ÖNCE
+şifrelenmiş HER `.hcl` dosyası, bu madde ele alınana kadar
+`original_sha256`'yı AAD'sinde okunabilir taşımaya devam ediyor — yani
+M2 doğrulama-oracle'ı riski, MEVCUT kasalar için hâlâ TAM olarak açık.
+
+**Gerekli olan (taslak, henüz tasarlanmadı):** kasadaki her `.hcl`
+dosyasını anahtarla ÇÖZÜP `original_sha256` alanı OLMADAN yeniden
+şifreleyen bir toplu işlem. Düşünülmesi gerekenler:
+  - Yeniden şifreleme yeni bir nonce üretir — eski dosyayla byte-byte
+    farklı bir ciphertext demektir. Zaten damgalanmış (RFC 3161) dosyalar
+    için bu bir SORUN: `CORE/crypto.py`'nin "Neden düz metnin özeti
+    damgalanıyor, ciphertext'in değil" gerekçesi burada da geçerli mi
+    kontrol edilmeli — muhtemelen EVET (damga düz metne bağlı, ciphertext
+    değişse de damga geçerli kalmalı) ama AYRICA doğrulanmalı.
+  - `CORE/checkout.py`'nin AÇIK belgeleri (transparent access) migrasyon
+    sırasında nasıl ele alınacak — kilitli bir dosyayı yeniden şifrelemek
+    checkout kaydını bozabilir.
+  - Ölçek: büyük bir kasada binlerce dosya olabilir; ilerleme raporlama,
+    kesinti toleransı (yarıda kalan bir migrasyonun güvenli şekilde
+    devam edilebilir/geri alınabilir olması) gerekiyor.
+  - Denetim kaydı: migrasyon kendi başına kayda değer bir olay
+    (`file_re_encrypted` gibi), B-094/B-097'nin "her yazma kendi
+    denetim izini bırakır" ilkesiyle tutarlı olmalı.
+
+Ele alınana kadar SECURITY.md bu sınırı açıkça belirtiyor (§1.2, §3,
+§4.9, EN+TR) — sessizce "çözüldü" gibi davranılmıyor.
+
+---

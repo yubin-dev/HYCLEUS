@@ -67,7 +67,7 @@ def test_full_loss_and_recovery_cycle(ortam: Path, db) -> None:
     kaynak = ortam / "onemli_rapor.txt"
     icerik = b"kurtarma sonrasi da okunabilmeli\n" * 500
     kaynak.write_bytes(icerik)
-    hcl_yolu, sha_ilk, _aad = encrypt_file(kaynak, master_key_ilk, user_id=1, hwid=_ESKI_HWID)
+    hcl_yolu, _sha_ilk, _aad = encrypt_file(kaynak, master_key_ilk, user_id=1, hwid=_ESKI_HWID)
 
     share_3 = export_recovery_share(_ESKI_HWID, _ESKI_PIN)
     basili_parca = encode_share(share_3)  # kullanıcının kâğıda yazdığı hâli
@@ -99,9 +99,10 @@ def test_full_loss_and_recovery_cycle(ortam: Path, db) -> None:
     )
 
     # ── 5b. Önceden şifrelenmiş dosya hâlâ çözülüyor mu ──────────────────────
-    cozulen, meta = decrypt_file(hcl_yolu, master_key_sonra, hwid=_ESKI_HWID)
+    cozulen, _meta = decrypt_file(hcl_yolu, master_key_sonra, hwid=_ESKI_HWID)
     assert cozulen == icerik, "kurtarma öncesi şifrelenmiş dosya artık açılamıyor"
-    assert meta["original_sha256"] == sha_ilk
+    # B-092/B-099: original_sha256 artık AAD'de yok — asıl iddia zaten
+    # yukarıdaki `cozulen == icerik` karşılaştırması.
 
     # ── 5c. Basılı parça hâlâ geçerli mi ─────────────────────────────────────
     yeni_share_3 = export_recovery_share(_YENI_HWID, _YENI_PIN)

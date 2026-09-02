@@ -12,8 +12,27 @@ Dosya formatı (ikili):
   [?B ] TS_TRAILER — OPSİYONEL, yalnızca v2; bkz. CORE/timestamp.py
 
 AAD alanları (tek karakter değişse decrypt_file() AuthenticationError fırlatır):
-  filename, original_sha256, created_at, uploaded_at, last_modified,
-  user_id, hwid
+  filename, created_at, uploaded_at, last_modified, user_id, hwid
+
+B-092/B-099 — `original_sha256` artık AAD'DE YOK
+--------------------------------------------------
+AAD şifresiz duruyor (bütünlüğünü GCM tag'i koruyor, ama bunu kontrol
+etmek anahtar ister — okumak istemez). Düz metnin SHA-256'sını orada
+tutmak, yalnızca bir .hcl KOPYASINA erişen (DB'ye/kimliğe/çalışan
+uygulamaya erişimi OLMAYAN — SECURITY.md §1.1'in M2 tanımı) biri için
+anahtarsız, kesin bir DOĞRULAMA-ORACLE'I demekti: elindeki bir aday
+belgeyi kendisi hash'leyip başlıktaki değerle karşılaştırarak, kasayı
+HİÇ çözmeden, o belgenin TAM OLARAK orada olduğunu doğrulayabiliyordu.
+Tuz işe yaramaz (saldırgan onu da aday belgeye ekler); yalnızca gerçek
+bir SIR (anahtar) bunu kapatır — ki bu zaten "anahtarsız" tanımıyla
+çelişir. Karar: `encrypt_file()` özeti hâlâ hesaplayıp DB'ye kaydedilmek
+üzere DÖNDÜRÜYOR, ama AAD'ye YAZMIYOR. Bedeli: `CORE/timestamp.py`'nin
+"anahtar istemeyen damgalama/doğrulama" tasarımı KALICI olarak feda
+edildi — ayrıntı orada. GERİYE DÖNÜK ONARILMIYOR: mevcut bir `.hcl`
+dosyasının AAD'sinden bir alanı anahtar olmadan sessizce çıkarmak
+mümkün değil (GCM AAD'si ciphertext'e bağlı) — yalnızca BUNDAN SONRA
+şifrelenen dosyalar korunuyor. Ayrıntı ve gerekçe: BACKLOG.md B-092,
+B-099.
 
 
 Versiyon 0x02 — RFC 3161 zaman damgası kabı
@@ -50,7 +69,8 @@ fragman kapsam dışında. Sonuç:
     açık ve fragmanın yokluğu "hiç damgalanmadı" ile ayırt edilemez.
   · Fragman UYDURULAMAZ — içindeki token TSA tarafından imzalı ve belirli
     bir düz metin özetine bağlı. Başka bir dosyanın token'ı buraya
-    kopyalansa AAD'deki original_sha256 ile eşleşmez.
+    kopyalansa dosyanın GERÇEK (anahtarla yeniden hesaplanan) özetiyle
+    eşleşmez — bkz. `CORE/timestamp_verify.py::verify_timestamp()`.
 
 Yani damga, denetim zinciriyle aynı sınıfta: kurcalamayı ENGELLEMİYOR,
 KANIT bırakıyor. Silinmeye karşı koruma, damga kaydının dosyadan bağımsız
@@ -288,13 +308,13 @@ def encrypt_file(
     """
     src dosyasını AES-256-GCM ile şifreler, data/quarantine/<ad>.hcl'e yazar.
 
-    Şifrelemeden önce orijinal dosyanın SHA-256 özeti hesaplanır; hem AAD'a
-    bağlanır hem de döndürülür (DB'ye kaydedilmesi için).
+    Şifrelemeden önce orijinal dosyanın SHA-256 özeti hesaplanır ve
+    DÖNDÜRÜLÜR (DB'ye kaydedilmesi için) — AAD'YE YAZILMAZ (B-092/B-099,
+    bkz. modül docstring'i "AAD alanları").
 
     AAD (şifrelenmez, bütünlük koruması altında — tek karakter değişse
     decrypt_file() AuthenticationError fırlatır):
         filename        — orijinal dosya adı
-        original_sha256 — şifreleme öncesi SHA-256 (hex)
         created_at      — dosya oluşturma zamanı (ISO 8601, UTC)
         uploaded_at     — sisteme eklenme zamanı (ISO 8601, UTC)
         last_modified   — dosyanın son değişiklik zamanı (ISO 8601, UTC)
@@ -330,13 +350,15 @@ def encrypt_file(
     if len(key) != 32:
         raise ValueError(f"Anahtar 32 byte olmalı, {len(key)} byte verildi.")
 
-    # SHA-256 şifrelemeden önce hesaplanır — orijinal içeriği doğrular
+    # SHA-256 şifrelemeden önce hesaplanır — orijinal içeriği doğrular ve
+    # DB'ye kaydedilmek üzere döndürülür. B-092/B-099: AAD'YE YAZILMIYOR —
+    # AAD şifresiz olduğu için bir kopyası orada, anahtarsız bir
+    # DOĞRULAMA-ORACLE'I olurdu (bkz. modül docstring'i, "AAD alanları").
     sha256_hex = _sha256_file(src)
 
     stat = src.stat()
     metadata = {
         "filename": filename or src.name,
-        "original_sha256": sha256_hex,
         "created_at": created_at or _fmt_ts(stat.st_ctime),
         "uploaded_at": uploaded_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "last_modified": last_modified or _fmt_ts(stat.st_mtime),
@@ -368,12 +390,33 @@ def encrypt_file(
     return dst, sha256_hex, aad.decode()
 
 
+@overload
 def verify_file(
     src: Path | str,
     key: bytes,
     *,
     hwid: str | None = None,
-) -> dict:
+    return_sha256: Literal[False] = False,
+) -> dict: ...
+
+
+@overload
+def verify_file(
+    src: Path | str,
+    key: bytes,
+    *,
+    hwid: str | None = None,
+    return_sha256: Literal[True],
+) -> tuple[dict, str]: ...
+
+
+def verify_file(
+    src: Path | str,
+    key: bytes,
+    *,
+    hwid: str | None = None,
+    return_sha256: bool = False,
+) -> dict | tuple[dict, str]:
     """
     .hcl dosyasının GCM doğrulamasını yapar — DÜZ METNİ DÖNDÜRMEZ.
 
@@ -381,10 +424,27 @@ def verify_file(
     Sözleşmesi decrypt_file() ile aynıdır, tek farkı düz metni vermemesi:
     aynı istisnaları aynı koşullarda fırlatır.
 
+    Args:
+        return_sha256: True verilirse, akan blok üzerinden (biriktirmeden —
+            aşağıdaki "DÜRÜST SINIR" bölümüyle AYNI ilke) düz metnin
+            SHA-256'sı da hesaplanır ve `(meta, sha256_hex)` olarak
+            döndürülür. B-092/B-099: `encrypt_file()` artık bu özeti AAD'ye
+            YAZMIYOR (anahtarsız bir doğrulama-oracle'ı olmasın diye) —
+            `CORE/timestamp.py` gibi GERÇEK, doğrulanmış özete ihtiyaç
+            duyan çağıranlar bunu kullanmalı. Varsayılan `False`: mevcut
+            çağıranların (CORE/backup.py, CORE/integrity.py) çoğu yalnızca
+            GCM tag'ini önemsiyor, ek bir özet geçişinin maliyetini
+            ÖDEMEMELİ.
+
     Returns:
-        metadata_dict — AAD içeriği. Düz metin DEĞİL; AAD zaten dosya
-        başlığında şifresiz duruyor (bkz. SECURITY.md §3, "Metadata
-        gizliliği"), dolayısıyla döndürmek yeni bir şey açığa çıkarmaz.
+        `return_sha256=False` (varsayılan): metadata_dict — AAD içeriği.
+        Düz metin DEĞİL; AAD zaten dosya başlığında şifresiz duruyor (bkz.
+        SECURITY.md §3, "Metadata gizliliği"), dolayısıyla döndürmek yeni
+        bir şey açığa çıkarmaz.
+
+        `return_sha256=True`: `(metadata_dict, sha256_hex)` — ikinci
+        değer düz metnin GERÇEKTEN bu çağrıda, bu anahtarla doğrulanmış
+        özeti.
 
     Neden decrypt_file() ÇAĞRILMIYOR
     --------------------------------
@@ -453,6 +513,12 @@ def verify_file(
         # yazar; bir sonraki blok üzerine yazar, çıkışta memset'lenir.
         # update_into sözleşmesi: tampon >= len(veri) + blok_boyu - 1.
         scratch = bytearray(_CHUNK + _BLOCK_SLACK)
+        # `return_sha256=False` (varsayılan): dönen uzunluk BİLEREK
+        # kullanılmıyor, düz metin okunmuyor, yalnızca GCM durumunun
+        # ilerlemesi için yazılıyor. `return_sha256=True`: hasher YALNIZCA
+        # kendi iç özet durumunu (64-128 bayt) tutuyor, tampondaki düz
+        # metnin bir KOPYASINI değil — "biriktirmeme" ilkesi bozulmuyor.
+        hasher = hashlib.sha256() if return_sha256 else None
         try:
             view = memoryview(scratch)
             remaining = ciphertext_len
@@ -460,9 +526,9 @@ def verify_file(
                 chunk = fin.read(min(_CHUNK, remaining))
                 if not chunk:
                     raise ValueError("Ciphertext beklenenden kısa, dosya kesilmiş.")
-                # Dönen uzunluk BİLEREK kullanılmıyor: düz metin okunmuyor,
-                # yalnızca GCM durumunun ilerlemesi için yazılıyor.
-                decryptor.update_into(chunk, view)
+                n = decryptor.update_into(chunk, view)
+                if hasher is not None:
+                    hasher.update(view[:n])
                 remaining -= len(chunk)
             try:
                 decryptor.finalize()
@@ -482,6 +548,8 @@ def verify_file(
             raise AuthenticationError(
                 "HWID uyuşmazlığı — dosya farklı bir cihazda şifrelendi."
             )
+        if hasher is not None:
+            return meta, hasher.hexdigest()
         return meta
 
 

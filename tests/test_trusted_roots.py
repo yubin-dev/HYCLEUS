@@ -384,8 +384,12 @@ def _kok_der_cikar() -> bytes:
 
 
 @pytest.fixture
-def damgali(tmp_path: Path) -> Path:
-    """GERÇEK freetsa.org damgası taşıyan bir `.hcl`."""
+def damgali(tmp_path: Path) -> tuple[Path, bytes]:
+    """GERÇEK freetsa.org damgası taşıyan bir `.hcl`, ŞİFRELEME ANAHTARIYLA birlikte.
+
+    B-092/B-099: `verify_timestamp()` artık `key` istiyor — dosyayı
+    şifrelerken kullanılan anahtar da fixture'dan dönüyor.
+    """
     import hashlib
 
     from asn1crypto import tsp
@@ -404,11 +408,11 @@ def damgali(tmp_path: Path) -> Path:
         tsa_url="https://freetsa.org/tsr",
         token_der=token,
     ))
-    return hcl
+    return hcl, anahtar
 
 
 def test_UCTAN_UCA_bilinmeyen_kok_uyarili_eklenen_kok_TAM(
-    yonetici_db, damgali: Path,  # type: ignore[no-untyped-def]
+    yonetici_db, damgali: tuple[Path, bytes],  # type: ignore[no-untyped-def]
 ) -> None:
     """
     Maddenin istediği test, GERÇEK bir damgayla ve gerçek zincir yürüyüşüyle.
@@ -418,8 +422,10 @@ def test_UCTAN_UCA_bilinmeyen_kok_uyarili_eklenen_kok_TAM(
     """
     from CORE.timestamp_verify import verify_timestamp
 
+    hcl, anahtar = damgali
+
     # ── 1. Depo BOŞ → uyarılı geçerli ────────────────────────────────────
-    once = verify_timestamp(damgali, trusted_roots=der_listesi(yonetici_db) or None)
+    once = verify_timestamp(hcl, anahtar, trusted_roots=der_listesi(yonetici_db) or None)
     assert once.valid is True
     assert once.anchor_trusted is False
     assert tr.aciklama(once).seviye == tr.SEVIYE_UYARI
@@ -427,14 +433,14 @@ def test_UCTAN_UCA_bilinmeyen_kok_uyarili_eklenen_kok_TAM(
     # ── 2. YANLIŞ kök eklendi → geçersiz (karar sertleşiyor) ─────────────
     yabanci, _ = _sertifika("Alakasiz CA")
     ekle(yonetici_db, yabanci, ad="yabanci.der", user_id=5)
-    yanlis = verify_timestamp(damgali, trusted_roots=der_listesi(yonetici_db))
+    yanlis = verify_timestamp(hcl, anahtar, trusted_roots=der_listesi(yonetici_db))
     assert yanlis.valid is False
     assert yanlis.failed_check == "trust_anchor"
     assert tr.aciklama(yanlis).seviye == tr.SEVIYE_GECERSIZ
 
     # ── 3. DOĞRU kök de eklendi → tam geçerli ────────────────────────────
     ekle(yonetici_db, _kok_der_cikar(), ad="freetsa.der", user_id=5)
-    sonra = verify_timestamp(damgali, trusted_roots=der_listesi(yonetici_db))
+    sonra = verify_timestamp(hcl, anahtar, trusted_roots=der_listesi(yonetici_db))
     assert sonra.valid is True
     assert sonra.anchor_trusted is True
     assert tr.aciklama(sonra).seviye == tr.SEVIYE_GECERLI
@@ -445,17 +451,21 @@ def test_UCTAN_UCA_bilinmeyen_kok_uyarili_eklenen_kok_TAM(
     assert once.gen_time == sonra.gen_time
 
 
-def test_kok_SILININCE_uyariya_geri_donuyor(yonetici_db, damgali: Path) -> None:  # type: ignore[no-untyped-def]
+def test_kok_SILININCE_uyariya_geri_donuyor(
+    yonetici_db, damgali: tuple[Path, bytes],  # type: ignore[no-untyped-def]
+) -> None:
     """Kaldırma da çalışmalı — yoksa liste tek yönlü bir kapı olurdu."""
     from CORE.timestamp_verify import verify_timestamp
 
+    hcl, anahtar = damgali
+
     kok = ekle(yonetici_db, _kok_der_cikar(), ad="freetsa.der", user_id=5)
     assert verify_timestamp(
-        damgali, trusted_roots=der_listesi(yonetici_db)).anchor_trusted is True
+        hcl, anahtar, trusted_roots=der_listesi(yonetici_db)).anchor_trusted is True
 
     sil(yonetici_db, kok.parmak_izi, user_id=5)
     sonra = verify_timestamp(
-        damgali, trusted_roots=der_listesi(yonetici_db) or None)
+        hcl, anahtar, trusted_roots=der_listesi(yonetici_db) or None)
     assert sonra.valid is True and sonra.anchor_trusted is False
 
 

@@ -2,9 +2,9 @@
 HYCLEUS — Zaman damgasi dogrulama araci (komut satiri)
 
 Kullanim:
-    python CORE/verify_timestamp_cli.py --verify-timestamp <dosya.hcl>
-    python CORE/verify_timestamp_cli.py --verify-timestamp <dosya> --trusted-root ca.der
-    python CORE/verify_timestamp_cli.py --verify-timestamp <dosya> --show-chain
+    python CORE/verify_timestamp_cli.py --verify-timestamp <dosya.hcl> --key-file <anahtar.bin>
+    python CORE/verify_timestamp_cli.py --verify-timestamp <dosya> --key-file <anahtar.bin> --trusted-root ca.der
+    python CORE/verify_timestamp_cli.py --verify-timestamp <dosya> --key-file <anahtar.bin> --show-chain
 
 Cikis kodlari:
     0  damga gecerli
@@ -18,13 +18,31 @@ Uc gerekce, ucu de recover_vault.py'dekiyle ayni aileden:
   1. Dogrulama, uygulamanin CALISMADIGI durumlarda gerekir. Bir zaman
      damgasinin isi "bu icerik su tarihte vardi" demek ve bu iddia cogu
      zaman HYCLEUS'un disinda, bir denetci ya da hukukcu karsisinda
-     sinaniyor. Grafik arayuz takili ve KAYITLI bir USB istiyor; damga
-     dogrulamasi ise ne anahtar ne USB istiyor - tamamen cevrimdisi ve
-     dosyanin kendisiyle yapiliyor. Bunu UI'a hapsetmek, tam ihtiyac
-     duyuldugu anda ulasilamaz yapardi.
+     sinaniyor. Grafik arayuz KAYITLI bir USB istiyor; bu arac ise ag
+     ISTEMIYOR - tamamen cevrimdisi ve dosyanin kendisiyle yapiliyor.
+     Bunu UI'a hapsetmek, tam ihtiyac duyuldugu anda ulasilamaz yapardi.
   2. Cikis kodu var. Bir betik ya da denetim otomasyonu sonucu okuyabilir;
      bir diyalog kutusu okuyamaz.
   3. Cikti metin. Bir denetim dosyasina yapistirilabilir.
+
+ANAHTAR ARTIK ZORUNLU (B-092/B-099)
+------------------------------------
+Bu arac eskiden "ne anahtar ne USB istemiyor" diye tanitiliyordu - bu
+ARTIK DOGRU DEGIL, bilerek terk edildi. Gerekce CORE/timestamp_verify.py
+modul docstring'inde ayrintili: anahtarsiz dogrulama, yalniz bir `.hcl`
+KOPYASINA erisen (DB'ye/kimlige erisimi OLMAYAN) biri icin, kasayi hic
+acmadan bir aday belgeyi kesin dogrulukla eslestirebilecegi bir
+DOGRULAMA-ORACLE'I anlamina geliyordu. Kapatmanin bedeli acikca budur:
+bu arac artik yalniz kasaya erisimi (anahtar) olan biri tarafindan
+calistirilabilir - "USB takmadan, PIN girmeden, dosyayi disari cikarip
+herkesin dogrulayabilecegi bir kanit" ozelligi KALICI olarak gitti.
+`--key-file`, HYCLEUS'un `open_vault()`dan aldigi HAM 32 baytlik AES
+anahtarini (hex DEGIL) okuyan bir dosya yoluna isaret etmeli.
+
+GERIYE DONUK ONARILMIYOR: bu karardan ONCE sifrelenmis `.hcl` dosyalari
+da anahtar gerektiriyor artik - yeniden sifrelenmedikce (ayri bir
+migrasyon isi, BACKLOG.md B-100) anahtarsiz dogrulama YETENEGI hicbir
+mevcut dosya icin geri gelmiyor.
 
 Arayuz dugmesi (adim 3.1, "Damgayi Dogrula") bunun YERINE gecmiyor,
 ustune geliyor. Ayni `verify_timestamp()` fonksiyonunu cagiriyor; fark
@@ -90,6 +108,31 @@ def _load_roots(paths: list[str]) -> list[bytes]:
     return roots
 
 
+def _load_key(raw_path: str) -> bytes:
+    """
+    Ham 32 baytlık AES anahtarını diskten okur (hex/base64 DEĞİL, ham byte).
+
+    HYCLEUS'un `open_vault()`dan aldığı anahtarla AYNI biçim. Bu CLI'ın
+    kendisi vault'a erişemez (USB/PIN istemiyor, bilerek) — anahtarı
+    NASIL bir dosyaya çıkaracağı çağıranın işi; bu yalnızca okuyor.
+    """
+    path = Path(raw_path)
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        print(f"Hata: anahtar dosyası okunamadı ({path}): {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    if len(data) != 32:
+        print(
+            f"Hata: anahtar dosyası 32 bayt olmalı, {len(data)} bayt "
+            f"okundu ({path}). Ham AES anahtarı bekleniyor — hex/base64 "
+            "kodlu bir metin DEĞİL.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    return data
+
+
 def _report(path: Path, result: TimestampVerification, *, show_chain: bool) -> None:
     print(_SEP)
     print(f"  {path.name}")
@@ -143,7 +186,11 @@ def main(argv: list[str] | None = None) -> int:
         prog="verify_timestamp_cli.py",
         description=(
             "HYCLEUS RFC 3161 zaman damgasi dogrulayici. "
-            "Tamamen cevrimdisi calisir: ag, anahtar ve USB gerektirmez."
+            "Ag gerektirmez, tamamen cevrimdisi calisir — ama ARTIK "
+            "ANAHTAR ISTIYOR (--key-file): B-092/B-099, anahtarsiz "
+            "dogrulama bir icerik-dogrulama-oracle'i olustugu icin "
+            "kalici olarak kaldirildi. Bkz. CORE/timestamp_verify.py "
+            "modul docstring'i."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -152,6 +199,16 @@ def main(argv: list[str] | None = None) -> int:
         metavar="DOSYA",
         required=True,
         help="Dogrulanacak .hcl dosyasi",
+    )
+    p.add_argument(
+        "--key-file",
+        metavar="ANAHTAR",
+        required=True,
+        help=(
+            "Ham 32 baytlik AES anahtari (hex/base64 DEGIL) taşıyan dosya "
+            "— open_vault()'un dondurdugu anahtarla ayni bicim. ARTIK "
+            "ZORUNLU: bu arac anahtarsiz calismiyor (B-092/B-099)."
+        ),
     )
     p.add_argument(
         "--trusted-root",
@@ -180,8 +237,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Hata: dosya bulunamadi: {path}", file=sys.stderr)
         return 1
 
+    key = _load_key(args.key_file)
     roots = _load_roots(args.trusted_root) if args.trusted_root else None
-    result = verify_timestamp(path, trusted_roots=roots)
+    result = verify_timestamp(path, key, trusted_roots=roots)
 
     if args.quiet:
         print(f"{path.name}: {result.summary()}")

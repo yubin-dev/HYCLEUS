@@ -22,7 +22,7 @@ import pytest
 from tsa_fixtures import FakeTSA, default_authority
 
 from CORE import crypto, timestamp
-from CORE.crypto import encrypt_file, generate_key
+from CORE.crypto import AuthenticationError, encrypt_file, generate_key
 from CORE.merkle import build_leaves, build_tree, leaf_hash
 from CORE.timestamp import (
     TRAILER_VERSION,
@@ -89,9 +89,15 @@ def dosyalar(tmp_path: Path, key: bytes) -> list[Path]:
     ]
 
 
-def _ozet(path: Path) -> str:
-    """Dosyanın AAD'sindeki düz metin özeti (damgalanan değer)."""
-    return str(timestamp.read_aad(path)["original_sha256"])
+def _ozet(path: Path, key: bytes) -> str:
+    """
+    Dosyanın GERÇEK düz metin özeti (damgalanan değer).
+
+    B-092/B-099: AAD'den anahtarsız OKUMUYOR artık — original_sha256
+    orada hiç yok. `CORE.timestamp.file_digest()` ile aynı yolu (`verify_
+    file(..., return_sha256=True)`) kullanıp anahtarla yeniden hesaplıyor.
+    """
+    return timestamp.file_digest(path, key=key, hwid=_HWID)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -99,9 +105,9 @@ def _ozet(path: Path) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_bes_dosya_tek_tsa_cagrisi(dosyalar: list[Path], tsa: FakeTSA) -> None:
+def test_bes_dosya_tek_tsa_cagrisi(dosyalar: list[Path], key: bytes, tsa: FakeTSA) -> None:
     """ÖZELLİĞİN VARLIK SEBEBİ: N dosya, 1 çağrı."""
-    sonuc = timestamp_batch(dosyalar, transport=tsa)
+    sonuc = timestamp_batch(dosyalar, key, transport=tsa)
 
     assert len(tsa.requests) == 1, f"{len(tsa.requests)} çağrı yapıldı, 1 bekleniyordu"
     assert isinstance(sonuc, BatchResult)
@@ -109,7 +115,7 @@ def test_bes_dosya_tek_tsa_cagrisi(dosyalar: list[Path], tsa: FakeTSA) -> None:
     assert sonuc.saved_calls == 4
 
 
-def test_tsaya_gonderilen_KOK(dosyalar: list[Path], tsa: FakeTSA) -> None:
+def test_tsaya_gonderilen_KOK(dosyalar: list[Path], key: bytes, tsa: FakeTSA) -> None:
     """
     TSA'ya giden imprint kök olmalı — herhangi bir dosyanın özeti DEĞİL.
 
@@ -117,19 +123,19 @@ def test_tsaya_gonderilen_KOK(dosyalar: list[Path], tsa: FakeTSA) -> None:
     gibi bir uygulama da geçerdi ve o damga diğer dosyaları hiç
     kanıtlamazdı.
     """
-    sonuc = timestamp_batch(dosyalar, transport=tsa)
+    sonuc = timestamp_batch(dosyalar, key, transport=tsa)
 
     gonderilen = bytes(
         tsa.requests[0]["message_imprint"]["hashed_message"].native
     )
     assert gonderilen == sonuc.root
 
-    dosya_ozetleri = {bytes.fromhex(_ozet(p)) for p in dosyalar}
+    dosya_ozetleri = {bytes.fromhex(_ozet(p, key)) for p in dosyalar}
     assert gonderilen not in dosya_ozetleri
 
 
-def test_her_dosya_kendi_yolunu_aliyor(dosyalar: list[Path], tsa: FakeTSA) -> None:
-    sonuc = timestamp_batch(dosyalar, transport=tsa)
+def test_her_dosya_kendi_yolunu_aliyor(dosyalar: list[Path], key: bytes, tsa: FakeTSA) -> None:
+    sonuc = timestamp_batch(dosyalar, key, transport=tsa)
 
     for i, yol in enumerate(dosyalar):
         info = read_trailer(yol)
@@ -137,12 +143,12 @@ def test_her_dosya_kendi_yolunu_aliyor(dosyalar: list[Path], tsa: FakeTSA) -> No
         assert info.batched is True
         assert info.leaf_index == i
         assert info.merkle_root == sonuc.root
-        assert info.hashed_hex == _ozet(yol)
+        assert info.hashed_hex == _ozet(yol, key)
         assert verify_merkle_path(info), f"{yol.name} yolu köke çıkmıyor"
 
 
-def test_hepsi_ayni_token_ve_koku_tasiyor(dosyalar: list[Path], tsa: FakeTSA) -> None:
-    timestamp_batch(dosyalar, transport=tsa)
+def test_hepsi_ayni_token_ve_koku_tasiyor(dosyalar: list[Path], key: bytes, tsa: FakeTSA) -> None:
+    timestamp_batch(dosyalar, key, transport=tsa)
     infolar = [read_trailer(p) for p in dosyalar]
     assert len({i.token_der for i in infolar}) == 1
     assert len({i.merkle_root for i in infolar}) == 1
@@ -156,7 +162,7 @@ def test_tek_dosyalik_toplu_damga_calisiyor(
 ) -> None:
     """Tek yapraklı ağaç: kök = yaprak, yol boş. Özel durum olmamalı."""
     tek = _hcl(tmp_path, key, "tek", b"yalniz")
-    sonuc = timestamp_batch([tek], transport=tsa)
+    sonuc = timestamp_batch([tek], key, transport=tsa)
 
     info = read_trailer(tek)
     assert info.batched is True
@@ -173,7 +179,7 @@ def test_yol_boyutu_makul(tmp_path: Path, key: bytes, tsa: FakeTSA) -> None:
     ekonomisi. Ölçmeden yazılmış bir iddia olsaydı burada görünürdü.
     """
     coklu = [_hcl(tmp_path, key, f"d{i}", f"i{i}".encode()) for i in range(16)]
-    timestamp_batch(coklu, transport=tsa)
+    timestamp_batch(coklu, key, transport=tsa)
 
     for yol in coklu:
         info = read_trailer(yol)
@@ -186,7 +192,7 @@ def test_yol_boyutu_makul(tmp_path: Path, key: bytes, tsa: FakeTSA) -> None:
 
 
 def test_toplu_damga_uctan_uca_dogrulaniyor(
-    dosyalar: list[Path], tsa: FakeTSA
+    dosyalar: list[Path], key: bytes, tsa: FakeTSA
 ) -> None:
     """
     ASIL KABUL TESTİ: yol köke çıkıyor VE kök imzalı.
@@ -194,16 +200,16 @@ def test_toplu_damga_uctan_uca_dogrulaniyor(
     `verify_timestamp` v2'yi tanımıyorsa burada düşer — token'ın imprint'i
     dosyanın özetiyle eşleşmiyor ve eski kod onu "tutarsız" sayardı.
     """
-    timestamp_batch(dosyalar, transport=tsa)
+    timestamp_batch(dosyalar, key, transport=tsa)
     for yol in dosyalar:
-        sonuc = verify_timestamp(yol, trusted_roots=[_KOK])
+        sonuc = verify_timestamp(yol, key, trusted_roots=[_KOK])
         assert sonuc.valid, f"{yol.name}: {sonuc.reason}"
         assert "merkle_path" in sonuc.checks
         assert sonuc.anchor_trusted is True
 
 
 def test_dogrulama_dosyanin_KENDI_ozetini_raporluyor(
-    dosyalar: list[Path], tsa: FakeTSA
+    dosyalar: list[Path], key: bytes, tsa: FakeTSA
 ) -> None:
     """
     Sonuçtaki `hashed_hex` KÖK değil, dosyanın özeti olmalı.
@@ -211,16 +217,16 @@ def test_dogrulama_dosyanin_KENDI_ozetini_raporluyor(
     Token'ın imprint'i kök; onu "dosyanın özeti" diye raporlamak
     doğrulama çıktısını okuyan birini yanıltırdı.
     """
-    sonuc_batch = timestamp_batch(dosyalar, transport=tsa)
+    sonuc_batch = timestamp_batch(dosyalar, key, transport=tsa)
     for yol in dosyalar:
-        v = verify_timestamp(yol, trusted_roots=[_KOK])
-        assert v.hashed_hex == _ozet(yol)
+        v = verify_timestamp(yol, key, trusted_roots=[_KOK])
+        assert v.hashed_hex == _ozet(yol, key)
         assert v.hashed_hex != sonuc_batch.root.hex()
 
 
-def test_bozulmus_yol_reddediliyor(dosyalar: list[Path], tsa: FakeTSA) -> None:
+def test_bozulmus_yol_reddediliyor(dosyalar: list[Path], key: bytes, tsa: FakeTSA) -> None:
     """Kardeş hash'i değiştirilirse yol köke çıkmamalı."""
-    timestamp_batch(dosyalar, transport=tsa)
+    timestamp_batch(dosyalar, key, transport=tsa)
     hedef = dosyalar[1]
     info = read_trailer(hedef)
 
@@ -242,7 +248,7 @@ def test_bozulmus_yol_reddediliyor(dosyalar: list[Path], tsa: FakeTSA) -> None:
     assert verify_merkle_path(bozuk) is False
 
     _fragmani_degistir(hedef, bozuk)
-    sonuc = verify_timestamp(hedef, trusted_roots=[_KOK])
+    sonuc = verify_timestamp(hedef, key, trusted_roots=[_KOK])
     assert sonuc.valid is False
     assert sonuc.failed_check == "merkle_path"
 
@@ -256,7 +262,7 @@ def test_baska_agacin_koku_reddediliyor(
     İki adımın AYRI olmasının sebebi bu: yalnızca yolu doğrulamak
     yeterli olsaydı saldırgan kendi ağacını kurup kendi kökünü yazardı.
     """
-    timestamp_batch(dosyalar, transport=tsa)
+    timestamp_batch(dosyalar, key, transport=tsa)
     hedef = dosyalar[0]
     info = read_trailer(hedef)
 
@@ -276,7 +282,7 @@ def test_baska_agacin_koku_reddediliyor(
     assert verify_merkle_path(sahte) is True
 
     _fragmani_degistir(hedef, sahte)
-    sonuc = verify_timestamp(hedef, trusted_roots=[_KOK])
+    sonuc = verify_timestamp(hedef, key, trusted_roots=[_KOK])
     # …ama token o kökü imzalamamış.
     assert sonuc.valid is False
     assert sonuc.failed_check == "digest_match"
@@ -305,7 +311,7 @@ def test_bir_dosya_degisince_digerleri_gecerli_kaliyor(
     kanıtını ETKİLEMEMELİ. Merkle'ın tüm anlamı bu: yapraklar birbirinden
     bağımsız.
     """
-    timestamp_batch(dosyalar, transport=tsa)
+    timestamp_batch(dosyalar, key, transport=tsa)
 
     kurban = dosyalar[2]
     ham = bytearray(kurban.read_bytes())
@@ -313,7 +319,7 @@ def test_bir_dosya_degisince_digerleri_gecerli_kaliyor(
     kurban.write_bytes(bytes(ham))
 
     for yol in dosyalar:
-        sonuc = verify_timestamp(yol, trusted_roots=[_KOK])
+        sonuc = verify_timestamp(yol, key, trusted_roots=[_KOK])
         if yol == kurban:
             assert sonuc.valid is False
         else:
@@ -327,7 +333,7 @@ def test_bir_dosyanin_icerigi_degisince_yalnizca_o_dusuyor(
     İçerik değişimi (fragman değil): AAD'deki özet artık yolla
     uyuşmamalı, ama diğer dosyalar etkilenmemeli.
     """
-    timestamp_batch(dosyalar, transport=tsa)
+    timestamp_batch(dosyalar, key, transport=tsa)
 
     kurban = dosyalar[3]
     info = read_trailer(kurban)
@@ -342,10 +348,10 @@ def test_bir_dosyanin_icerigi_degisince_yalnizca_o_dusuyor(
     )
     _fragmani_degistir(kurban, sahte)
 
-    assert verify_timestamp(kurban, trusted_roots=[_KOK]).valid is False
+    assert verify_timestamp(kurban, key, trusted_roots=[_KOK]).valid is False
     for yol in dosyalar:
         if yol != kurban:
-            assert verify_timestamp(yol, trusted_roots=[_KOK]).valid is True
+            assert verify_timestamp(yol, key, trusted_roots=[_KOK]).valid is True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -353,7 +359,7 @@ def test_bir_dosyanin_icerigi_degisince_yalnizca_o_dusuyor(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_cipa_agaca_giriyor(dosyalar: list[Path], tsa: FakeTSA) -> None:
+def test_cipa_agaca_giriyor(dosyalar: list[Path], key: bytes, tsa: FakeTSA) -> None:
     """
     İKİ ÖZELLİK TEK DAMGADA — kullanıcının 4. maddesi.
 
@@ -361,13 +367,13 @@ def test_cipa_agaca_giriyor(dosyalar: list[Path], tsa: FakeTSA) -> None:
     değişiyor; yani token gerçekten çıpayı da kapsıyor.
     """
     cipa = "a" * 64
-    cipasiz = timestamp_batch(dosyalar, transport=FakeTSA())
+    cipasiz = timestamp_batch(dosyalar, key, transport=FakeTSA())
 
     # Aynı dosyalarla ama çıpalı yeniden kur (fragmanları temizle).
     for yol in dosyalar:
         _fragmani_sil(yol)
 
-    cipali = timestamp_batch(dosyalar, transport=tsa, anchor_hash=cipa)
+    cipali = timestamp_batch(dosyalar, key, transport=tsa, anchor_hash=cipa)
 
     assert cipali.leaf_count == cipasiz.leaf_count + 1
     assert cipali.root != cipasiz.root
@@ -403,24 +409,24 @@ def test_cipa_yuku_HAM_HASH_DEGIL() -> None:
 
 
 def test_cipali_agacta_dosya_yollari_hala_dogru(
-    dosyalar: list[Path], tsa: FakeTSA
+    dosyalar: list[Path], key: bytes, tsa: FakeTSA
 ) -> None:
     """Çıpa yaprağı eklemek dosya yollarını bozmamalı."""
-    timestamp_batch(dosyalar, transport=tsa, anchor_hash="c" * 64)
+    timestamp_batch(dosyalar, key, transport=tsa, anchor_hash="c" * 64)
     for yol in dosyalar:
-        assert verify_timestamp(yol, trusted_roots=[_KOK]).valid
+        assert verify_timestamp(yol, key, trusted_roots=[_KOK]).valid
 
 
-def test_cipa_yapragi_da_koke_cikiyor(dosyalar: list[Path], tsa: FakeTSA) -> None:
+def test_cipa_yapragi_da_koke_cikiyor(dosyalar: list[Path], key: bytes, tsa: FakeTSA) -> None:
     """
     Çıpanın kendisi de kanıtlanabilmeli — yoksa ağaca eklemenin anlamı
     yok. Çıpa yaprağı SON indiste ve ağacı yeniden kurarak yolu
     hesaplanabiliyor.
     """
     cipa = "d" * 64
-    sonuc = timestamp_batch(dosyalar, transport=tsa, anchor_hash=cipa)
+    sonuc = timestamp_batch(dosyalar, key, transport=tsa, anchor_hash=cipa)
 
-    yukler = [bytes.fromhex(_ozet(p)) for p in dosyalar]
+    yukler = [bytes.fromhex(_ozet(p, key)) for p in dosyalar]
     yukler.append(anchor_leaf_payload(cipa))
     yapraklar = build_leaves(yukler)
     agac = build_tree(yapraklar)
@@ -460,7 +466,7 @@ def test_tekil_damga_HALA_v1_uretiyor(
     değişikliği olurdu.
     """
     tek = _hcl(tmp_path, key, "eski", b"tekil")
-    timestamp_file(tek, transport=tsa)
+    timestamp_file(tek, key, transport=tsa)
 
     ham = tek.read_bytes()
     info = read_trailer(tek)
@@ -509,7 +515,7 @@ def test_v1_fragman_kodlamasi_DEGISMEDI() -> None:
 def test_v1_fragman_okunuyor(tmp_path: Path, key: bytes, tsa: FakeTSA) -> None:
     """Tekil damgalı bir dosya, Merkle kodu eklendikten sonra da okunmalı."""
     tek = _hcl(tmp_path, key, "eski", b"tekil")
-    timestamp_file(tek, transport=tsa)
+    timestamp_file(tek, key, transport=tsa)
 
     info = read_trailer(tek)
     assert info is not None
@@ -524,9 +530,9 @@ def test_v1_dosyasi_HALA_dogrulaniyor(
 ) -> None:
     """Uçtan uca: eski akış Merkle'dan hiç etkilenmemeli."""
     tek = _hcl(tmp_path, key, "eski", b"tekil")
-    timestamp_file(tek, transport=tsa)
+    timestamp_file(tek, key, transport=tsa)
 
-    sonuc = verify_timestamp(tek, trusted_roots=[_KOK])
+    sonuc = verify_timestamp(tek, key, trusted_roots=[_KOK])
     assert sonuc.valid is True
     assert "merkle_path" not in sonuc.checks
 
@@ -540,16 +546,16 @@ def test_v1_ve_v2_yan_yana_yasayabiliyor(
     """
     tsa1, tsa2 = FakeTSA(), FakeTSA()
     eski = _hcl(tmp_path, key, "eski", b"tekil")
-    timestamp_file(eski, transport=tsa1)
+    timestamp_file(eski, key, transport=tsa1)
 
     yeniler = [_hcl(tmp_path, key, f"yeni{i}", f"y{i}".encode()) for i in range(3)]
-    timestamp_batch(yeniler, transport=tsa2)
+    timestamp_batch(yeniler, key, transport=tsa2)
 
     assert read_trailer(eski).trailer_version == TRAILER_VERSION
-    assert verify_timestamp(eski, trusted_roots=[_KOK]).valid
+    assert verify_timestamp(eski, key, trusted_roots=[_KOK]).valid
     for yol in yeniler:
         assert read_trailer(yol).trailer_version == TRAILER_VERSION_MERKLE
-        assert verify_timestamp(yol, trusted_roots=[_KOK]).valid
+        assert verify_timestamp(yol, key, trusted_roots=[_KOK]).valid
 
 
 def test_bilinmeyen_fragman_surumu_reddediliyor() -> None:
@@ -571,8 +577,8 @@ def test_bilinmeyen_fragman_surumu_reddediliyor() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_v2_fragman_gidip_geliyor(dosyalar: list[Path], tsa: FakeTSA) -> None:
-    timestamp_batch(dosyalar, transport=tsa)
+def test_v2_fragman_gidip_geliyor(dosyalar: list[Path], key: bytes, tsa: FakeTSA) -> None:
+    timestamp_batch(dosyalar, key, transport=tsa)
     for yol in dosyalar:
         info = read_trailer(yol)
         assert decode_trailer(encode_trailer(info)) == info
@@ -631,44 +637,56 @@ def test_kok_32_byte_olmali() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_bos_liste_reddediliyor(tsa: FakeTSA) -> None:
+def test_bos_liste_reddediliyor(key: bytes, tsa: FakeTSA) -> None:
     with pytest.raises(TimestampError, match="en az bir dosya"):
-        timestamp_batch([], transport=tsa)
+        timestamp_batch([], key, transport=tsa)
     assert not tsa.requests, "boş listede TSA'ya gidildi"
 
 
 def test_zaten_damgali_dosya_reddediliyor(
     tmp_path: Path, key: bytes, dosyalar: list[Path], tsa: FakeTSA
 ) -> None:
-    timestamp_file(dosyalar[0], transport=FakeTSA())
+    timestamp_file(dosyalar[0], key, transport=FakeTSA())
     with pytest.raises(TimestampError, match="zaten damgalı"):
-        timestamp_batch(dosyalar, transport=tsa)
+        timestamp_batch(dosyalar, key, transport=tsa)
     assert not tsa.requests, "reddedilen turda TSA'ya gidildi"
 
 
 def test_ayni_dosya_iki_kez_reddediliyor(
-    dosyalar: list[Path], tsa: FakeTSA
+    dosyalar: list[Path], key: bytes, tsa: FakeTSA
 ) -> None:
     """
     Aynı dosya iki yaprağa girerse ikinci fragman yazımı birinciyi ezer
     ve dosya yanlış indisli bir yol taşır — sessizce bozuk bir damga.
     """
     with pytest.raises(TimestampError, match="birden çok kez"):
-        timestamp_batch([dosyalar[0], dosyalar[1], dosyalar[0]], transport=tsa)
+        timestamp_batch([dosyalar[0], dosyalar[1], dosyalar[0]], key, transport=tsa)
     assert not tsa.requests
 
 
-def test_ozetsiz_dosya_reddediliyor(
-    tmp_path: Path, key: bytes, dosyalar: list[Path], tsa: FakeTSA, monkeypatch
+def test_dogrulanamayan_dosya_reddediliyor(
+    tmp_path: Path, key: bytes, dosyalar: list[Path], tsa: FakeTSA
 ) -> None:
-    """AAD'de original_sha256 yoksa tur hiç başlamamalı."""
-    monkeypatch.setattr(timestamp, "read_aad", lambda p: {})
-    with pytest.raises(TimestampError, match="original_sha256 yok"):
-        timestamp_batch(dosyalar, transport=tsa)
-    assert not tsa.requests
+    """
+    B-092/B-099: Eskiden "AAD'de original_sha256 yok" senaryosu vardı —
+    o alan artık AAD'de hiç YOK, dolayısıyla "eksik" diye ayrı bir durum
+    da yok. Yerine geçen GERÇEK risk: listedeki bir dosya verilen
+    anahtarla doğrulanamıyorsa (bozuk/değiştirilmiş) tur TSA'ya HİÇ
+    gitmeden reddedilmeli — `ozetler = [file_digest(...) for p in yollar]`
+    TSA isteğinden ÖNCE çalışıyor, yani ilk kırık dosyada liste
+    değerlendirmesi durur.
+    """
+    bozuk = dosyalar[2]
+    raw = bytearray(bozuk.read_bytes())
+    raw[300] ^= 0xFF  # ciphertext bölgesi
+    bozuk.write_bytes(bytes(raw))
+
+    with pytest.raises(AuthenticationError):
+        timestamp_batch(dosyalar, key, transport=tsa)
+    assert not tsa.requests, "dosya doğrulanamadan TSA'ya gidildi"
 
 
-def test_tsa_reddederse_hicbir_fragman_yazilmiyor(dosyalar: list[Path]) -> None:
+def test_tsa_reddederse_hicbir_fragman_yazilmiyor(dosyalar: list[Path], key: bytes) -> None:
     """
     Damga alınamadıysa dosyalara dokunulmamalı.
 
@@ -680,7 +698,7 @@ def test_tsa_reddederse_hicbir_fragman_yazilmiyor(dosyalar: list[Path]) -> None:
     onceki = {p: p.read_bytes() for p in dosyalar}
 
     with pytest.raises(TimestampError, match="TSA damgayı vermedi"):
-        timestamp_batch(dosyalar, transport=red)
+        timestamp_batch(dosyalar, key, transport=red)
 
     for yol in dosyalar:
         assert yol.read_bytes() == onceki[yol]
