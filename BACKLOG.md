@@ -8094,3 +8094,189 @@ Ele alınana kadar SECURITY.md bu sınırı açıkça belirtiyor (§1.2, §3,
 §4.9, EN+TR) — sessizce "çözüldü" gibi davranılmıyor.
 
 ---
+
+## B-101 — sqlcipher3'e geçiş analizi (SQLite DB'yi disk hırsızlığına karşı şifreleme) — ANALİZ, henüz UYGULANMADI
+
+**Durum: ANALİZ TAMAMLANDI, kod değişikliğine GEÇİLMEDİ — maliyet/fayda net olumlu değil.**
+
+Tetikleyici: `DB/db_manager.py`'nin kendi modül docstring'i zaten "Şu an düz
+sqlite3 kullanıyor. sqlcipher3 geçişi: connect() içindeki iki satırı
+değiştir" diyor ve `connect()` bir `key: bytes | None` parametresi taşıyor
+— görünüşte hazır bir iskelet. Bu madde o iskeletin GERÇEKTEN iki satırlık
+bir iş olup olmadığını inceliyor.
+
+### 1. Bugün ne durumda — iskelet var, hiç kullanılmıyor
+
+`key` parametresi kod tabanının HİÇBİR gerçek çağrı yerinde dolu
+verilmiyor — üçü de `key=None`:
+
+  - `main.py:349` — `DBManager().connect(hwid=hwid, key=None)`,
+    yorumu: "DB bağlantısını geçici boş anahtar ile aç (şifreleme anahtarı
+    login'den sonra gelir)" — ama login SONRASI yeniden `connect()`
+    çağrılmıyor (bkz. §2, bu "sonra gelir" hiç gelmiyor).
+  - `CORE/backup_cli.py:97`, `CORE/recover_vault.py:250` — aynı desen.
+
+Yani bugün `data/hycleus.db` HER ZAMAN düz sqlite3, hiçbir kurulumda
+istisna yok. İçeriği: `users` (username, role — password_hash zaten
+hash'li, düşük değerli), `files` (filename, filepath, notes),
+`audit_log` (detail — serbest metin), `usb_tokens` (hwid, token_id),
+`quarantine` (reason). Gerçek, bugün var olan düz metin maruziyeti.
+
+`CORE/backup.py` (KARAR 2, modül docstring'i) bu boşluğu KISMEN zaten
+ele alıyor ama yalnızca YEDEK kopyası için: DB tabloları kanonik JSON'a
+çıkarılıp `encrypt_file()`/master_key ile şifrelenip yedeğe
+`metadata.hcl` olarak giriyor. Canlı `data/hycleus.db`'ye
+DOKUNULMUYOR — operatörün makinesindeki çalışan kopya her zaman düz
+metin kalıyor. sqlcipher3 sorusu tam olarak bu kalan boşlukla ilgili.
+
+### 2. Kritik mimari engel — anahtar SIRASI, "iki satır" değil
+
+`CORE/vault_manager.py::open_vault()` — `master_key`'i ÜRETEN fonksiyonun
+KENDİSİ — `master_key` henüz yokken DB'den okuyor:
+
+```
+share_1, role = _decrypt_vault(hwid, pin)
+row = DBManager().fetchone("SELECT hwid FROM usb_tokens WHERE hwid = ?", (hwid,))
+master_key = _sss_recover(share_1, _load_share_2(hwid))   # ← master_key BURADA doğuyor
+```
+
+Ayrıca `main.py` DB'yi login/İlk Kurulum akışından TAMAMEN ÖNCE açıyor
+(`users` tablosu okuma, `login_attempts` hız sınırlaması — hepsi
+kimlik doğrulanmadan ÖNCE çalışması gereken sorgular, tıpkı
+`secret_store.py`'nin HWID-önce-kayıt sorununa benzer bir tavuk-yumurta).
+
+Sonuç: `master_key` (ya da ondan HKDF ile türetilmiş herhangi bir şey)
+`PRAGMA key` OLAMAZ — DB, master_key var olmadan ÖNCE okunabilir olmak
+zorunda. `connect()` içindeki iki satırı değiştirmek yetmez; bu,
+pre-auth DB erişim yolunun (rate limiting, users tablosu, usb_tokens
+kontrolü) YENİDEN TASARLANMASINI gerektirir — modülün kendi yorumunun
+iddia ettiğinden çok daha büyük bir değişiklik.
+
+### 3. Anahtar nerede tutulur — üç tasarım
+
+  **(a) master_key'den türetilmiş (HKDF, ayrı context).** §2 nedeniyle
+  MİMARİ OLARAK İMKÂNSIZ — reddedildi.
+
+  **(b) share_2/TOTP ile AYNI OS anahtar kasası, ama BAĞIMSIZ yeni bir
+  sır** (`db_key:<hwid>` gibi bir kullanıcı adı, `secret_store.py`'nin
+  zaten kurduğu şemayla simetrik). `create_vault()` sırasında bir kez
+  üretilir; `main()` içinde `ensure_available()` başarılı olur olmaz —
+  PIN/USB kombinasyonundan ÖNCE — okunup `connect()`'e verilir. Bu,
+  §2'deki sıra sorununu ÇÖZER (kasa DB'den önce açılabiliyor) ve
+  kullanıcının orijinal gerekçesiyle (K0'da HWID/HMAC gibi anahtar-
+  kaynaklı kontroller zaten normalleştirildi) TUTARLI. Gerçek kazanım:
+  `data/` dizininin OS OTURUMU DIŞINDA kopyalanması (disk görüntüleme,
+  el konan/atılan makine, çalınan yedek medya) senaryosunda DPAPI/
+  Keychain/Secret Service kullanıcı oturumuna bağlı olduğu için anahtar
+  da erişilemez kalır — dosya İÇERİĞİNİN bugün zaten sahip olduğu
+  koruma katmanının DB metadata'sına GENİŞLEMESİ.
+
+  Bedeli: YENİ bir kayıp kategorisi. Bu kasa girdisi silinir/bozulursa
+  (makine değişimi, kasa temizliği) DB TAMAMEN okunamaz hâle gelir —
+  Shamir bunu KAPSAMIYOR (yalnızca `master_key`'i kurtarıyor,
+  `CORE/backup.py` KARAR 3: "yedek → medya kaybı, Shamir → anahtar
+  kaybı" ayrımı burada üçüncü bir kategori olarak "db_key kaybı" açar).
+  Kısmen hafifletici: `CORE/backup.py::restore_backup()` zaten
+  `metadata.hcl`'i (aynı master_key ile) ayrı şifreliyor ve
+  `apply_metadata` üzerinden bir DB'ye uygulayabiliyor — GÜNCEL bir
+  yedek varsa "db_key kayıp" pratikte "yeni anahtarlı boş DB + son
+  yedekten geri yükle" ile kurtarılabilir GİBİ görünüyor, ama bu
+  DOĞRULANMADI (`apply_metadata` bugün canlı DB'yi değil ayrı bir
+  hedefi dolduruyor — bkz. `restore_backup()` docstring'i "canlı
+  veritabanına DOKUNULMUYOR") ve yedekten SONRA eklenen veri her hâlde
+  gider. Kendi başına, Shamir'e EKLENMEYEN (KARAR 3'ün "kasayı
+  yedekleme, offline kaba kuvvet hedefi yaratır" gerekçesi burada da
+  geçerli) bir kurtarma tasarımı gerektirir — bugün TASARLANMADI.
+
+  **(c) Shamir eşiğine dahil (4. bir pay).** Reddedildi: (b) zaten
+  aynı OS-kasası koruma gücünü veriyor, eşiği genişletmenin ek bir
+  faydası yok, yalnızca karmaşıklık ekliyor.
+
+  **Sonuç: (b) tek mimari olarak tutarlı seçenek, ama kendi kurtarma
+  hikâyesi tasarlanmadan eksik.**
+
+### 4. Paketleme etkisi — CI, EXE (Windows), AppImage (Linux)
+
+  - Her iki paketleme işi de (`HYCLEUS.spec`, `HYCLEUS-linux.spec`)
+    PyInstaller `Analysis`'e `collect_all()`-tarzı `hiddenimports`/
+    `binaries` ekleme desenini ZATEN kullanıyor (wmi, reportlab) —
+    yeni bir C-uzantısı için aynı desen (`collect_dynamic_libs` ya da
+    eşdeğeri) uygulanabilir; YENİ bir mekanizma icat etmek GEREKMİYOR.
+  - `sqlcipher3-binary` (PyPI, son sürüm 0.6.0, 2025-12-31) Linux
+    (manylinux) ve Windows için KENDİ KENDİNE YETEN, statik bağlı,
+    harici bağımlılık istemeyen wheel'ler sağlıyor. Doğruysa,
+    AppImage işindeki apt-sertleştirme dramının (f61a470, ~30dk asılma,
+    ci.yml'nin bugün ÜÇ AYRI mekanizma kapattığı bölüm) bir benzerinin
+    YAŞANMAMASI anlamına gelir — `libsqlcipher`'ı apt'tan kurmak
+    gerekmiyor GİBİ görünüyor.
+  - Ama bu iddia CI'da HENÜZ DOĞRULANMADI. pip metadata'sına/PyPI
+    açıklamasına güvenip kabul etmek, B-024'ün tam olarak REDDETTİĞİ
+    şey — B-024 iki sessiz paketleme bozukluğundan doğdu ve o
+    zamandan beri bu depoda kural: "gerçekten temiz bir ağaçta üretiliyor
+    mu" ÖLÇÜLÜR, varsayılmaz.
+  - `requirements.txt`'e yeni bir satır gerekir (platform işaretçisiz —
+    DB her iki platformda da açılıyor, `wmi`'nin aksine).
+  - **Lisans:** SQLCipher Community Edition BSD tarzı ama Zetetic'in
+    kendi lisans sayfası uygulamanın "About" ekranında/belgelerinde
+    GÖRÜNÜR bir lisans+telif bildirimi istiyor. Projede bugün böyle bir
+    üçüncü-taraf-lisans bildirim yüzeyi YOK (doğrulanmalı) — yeni bir
+    UI/doküman yükümlülüğü, "requirements.txt'e bir satır" kadar basit
+    değil.
+  - `requirements-security.txt`/pip-audit yeni pakete otomatik bakar,
+    ek iş yok. `.semgrep/hycleus.yml` yerel kuralları DB bağlantı
+    katmanına bugün dokunmuyor gibi görünüyor, gözden geçirilmeli ama
+    şu an bir engel değil.
+
+### 5. Test/migrasyon maliyeti (uygulanırsa — bu maddenin kapsamı DEĞİL)
+
+  - Mevcut kurulumlardaki `data/hycleus.db` düz sqlite3 formatında;
+    sqlcipher3 bağlantısı bunu AÇAMAZ. B-100'e simetrik bir "geriye
+    dönük onarılamama" sınırı gerekir: yalnızca YENİ kurulan kasalar
+    şifreli DB alır, mevcutlar migrasyon olmadan (`sqlcipher_export()`
+    ya da ATTACH+dışa aktarma) plaintext kalır. Migrasyonun kendisi
+    ayrı bir BACKLOG maddesi olurdu (B-100'ün DB karşılığı).
+  - `tests/conftest.py` dahil DB'ye dokunan onlarca test dosyası
+    (`connect(hwid=...)` çağıran ~15+ dosya) `key` zorunlu hâle
+    gelirse etkilenir — B-099'daki "beklenenden geniş kapsam"
+    deneyiminin AYNISI, muhtemelen daha büyük ölçekte (DB neredeyse
+    her testin altyapısında).
+
+### 6. Maliyet/fayda — neden bu turda KOD YAZILMADI
+
+Kapattığı gerçek boşluk: `data/hycleus.db`'nin OS oturumu DIŞINDA
+(disk görüntüleme, el konan/atılan makine, çalınan yedek medya) düz
+metin okunabilir olması. SECURITY.md §3 bu boşluğu zaten yazılı
+biçimde kabul ediyor.
+
+Ama proje AYNI kategorideki bir boşluk için (`.hcl` AAD metadata'sı)
+zaten açık bir pozisyon almış durumda: *"Çevrimdışı saldırgan
+senaryolarını kapatan kontrol tam disk şifrelemesidir. HYCLEUS onun
+yerine geçmez."* (SECURITY.md §3). DB'nin durumu ÖLÇEK olarak daha
+büyük (tek dosyanın AAD'si değil, tüm envanter + denetim izi) ama
+KATEGORİ olarak aynı: M2/M3, disk erişimi olan bir saldırgan. Bu analiz
+o pozisyonu SORGULAMIYOR — yalnızca not düşüyor: sqlcipher3'e
+geçilecekse SECURITY.md'de bu çizginin DB için neden farklı çizildiği
+açıklanmalı; sessizce iki farklı standart bırakılamaz.
+
+Maliyet üç kalemde toplanıyor: (1) mimari — bağımsız bir kasa girdisi
+gerekiyor ve onun kendi kurtarma/kayıp hikâyesi bugün TASARLANMADI
+(§3b); (2) paketleme — "harici bağımlılık istemez" iddiası CI'da
+DOĞRULANMADI, doğrulanırsa maliyet düşük, doğrulanmazsa (özellikle
+Windows'ta önceden derlenmiş bir ikili bulunamazsa) önemli ölçüde
+yükselir; (3) lisans — bugün karşılığı olmayan yeni bir görünür-bildirim
+yükümlülüğü.
+
+**Sonuç: bu turda kod değişikliğine GEÇİLMEDİ.** Maliyet/fayda net
+olumlu değil.
+
+**Önerilen sıradaki adım (ayrı bir tur, bu maddenin kapsamı):** ucuz bir
+spike — `sqlcipher3-binary`'i hem Windows hem Linux CI koşucusunda
+(geçici bir dal/iş) kurup PyInstaller `Analysis`'in onu SORUNSUZ
+topladığını ve üretilen EXE/AppImage'ın `--selftest`inde gerçekten bir
+`PRAGMA key` round-trip'i yaptığını ölçmek — tam entegrasyon değil,
+yalnızca "bu bağımlılık iki platformda GERÇEKTEN sorunsuz mu" sorusuna
+kanıt. Sonuç olumluysa (3b)'deki anahtar tasarımı ve DB migrasyonu
+(B-100'ün karşılığı) ayrı maddeler olarak açılır; olumsuzsa bu madde
+kapatılır.
+
+---
