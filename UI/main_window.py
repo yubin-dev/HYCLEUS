@@ -44,6 +44,7 @@ from CORE.rehber import MENU_ETIKETI as _REHBER_ETIKETI
 from CORE.rehber import erisim_yolu as _rehber_erisim_yolu
 from CORE.tpm_sealing import durum as tpm_durum
 from CORE.usb_manager import get_usb_hwid
+from CORE.worker_sizing import recommended_thread_count
 from UI.AdminSettingsView import SAYFA_ADI as _ADMIN_SETTINGS_SAYFA_ADI
 from UI.AuditLogView import SAYFA_ADI as _AUDIT_SAYFA_ADI
 from UI.GuvenlikView import (
@@ -130,7 +131,9 @@ class HycleusWindow(
             self._app_mode = KURUMSAL
 
         self._pool = QThreadPool.globalInstance()
-        self._pool.setMaxThreadCount(6)
+        # Sabit "6" yerine: RAM bol olduğunda AYNI 6'ya çıkar (bkz.
+        # CORE/worker_sizing.py), yalnızca gerçekten düşük RAM'de küçülür.
+        self._pool.setMaxThreadCount(recommended_thread_count())
         self._batch_total:      int  = 0
         self._batch_done:       int  = 0
         self._batch_errors:     int  = 0

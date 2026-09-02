@@ -8337,3 +8337,57 @@ mutasyonla bozup çökme-kurtarma testinin gerçekten düştüğü, sonra
 düzeltilip geçtiği ölçüldü.
 
 ---
+
+## B-103 — Toplu dosya-ekleme işçi havuzu, düşük RAM'de küçülen bir tavan alıyor
+
+**Durum: UYGULANDI.**
+
+`UI/main_window.py`'nin `QThreadPool`'u (dosya ekleme: şifrele → DB
+kaydı → tara) uzun süre sabit `setMaxThreadCount(6)` taşıdı.
+
+**Ölçülen gerçek** (bu maddeye başlamadan önce, `CORE/worker_sizing.py`
+modül docstring'inde de yazılı): `CORE/crypto.py::encrypt_file()` zaten
+64 KB'lık bloklar hâlinde akıyor — 6 işçi eş zamanlı 100 MB'lık birer
+dosyayı (600 MB toplam) şifrelerken süreç RSS'i yalnızca ~1 MB büyüdü.
+Yani kripto tamponunun KENDİSİ "6 worker × tampon" şişmesinin kaynağı
+değil. Buna rağmen bir işçinin GERÇEK ayak izi yalnızca o tampondan
+ibaret değil — OS iş parçacığı yığını, `scan_file()`'ın ayrı alt
+süreci, Qt/GC yükü — ve sabit "6" bunu hiç ölçmüyordu; eski/kısıtlı bir
+adli bilişim istasyonunda (1-2 GB RAM) ya da ileride `_CHUNK` büyürse
+önemli hâle gelebilir.
+
+`CORE/worker_sizing.py::recommended_thread_count()` bu payı işçi
+SAYISINI (tampon boyutunu DEĞİL — `_CHUNK` GCM akışının paylaşılan,
+gerekçeli sabiti, dokunulmadı) O AN `psutil.virtual_memory().available`
+RAM'in bir kesrine göre öneriyor. RAM bol olduğunda (ve `psutil`
+erişilemediğinde — bu bir güvenlik kontrolü DEĞİL, sessizce dünkü sabit
+6'ya düşülüyor) davranış AYNI kalıyor, yalnızca gerçekten düşük RAM'de
+küçülüyor. `UI/main_window.py`'deki tek çağrı yeri güncellendi.
+
+**Paketleme**: `psutil` `requirements-dev.txt`'ten (yalnızca B-081
+tutamaç-sızıntısı regresyon testi için) `requirements.txt`'e taşındı —
+artık üretim kodu da kullanıyor. `worker_sizing.py` onu FONKSİYON
+GÖVDESİNDE import ediyor (`_kullanilabilir_ram_bytes()`), yani
+PyInstaller'ın statik analizi göremiyor — reportlab/qrcode ile AYNI
+sınıf sorun (B-024). Her iki spec'e de (`HYCLEUS.spec`,
+`HYCLEUS-linux.spec`) `collect_all('psutil')` eklendi (paket saf Python
+değil, platforma özgü derlenmiş bir C uzantısı taşıyor) ve `main.py::
+_SELFTEST_MODULLERI`/`_SELFTEST_UCUNCU_TARAF`'a `CORE.worker_sizing`/
+`psutil` eklendi — `tests/test_packaging.py`'nin elle tutulan liste
+denetimi bunu YAKALADI (ilk `pytest -q` tam koşusunda tek başarısızlık
+buydu, düzeltilip yeniden koşuldu).
+
+Test (`tests/test_worker_sizing.py`, 8 test): saf hesap (`available_bytes`
+enjekte edilerek — bol RAM'de sabit 6, düşük RAM'de orantılı küçülme,
+`min_count`/`max_count` kelepçeleri, `psutil` erişilemezse sessiz
+düşüş) VE gerçek ölçüm — `psutil.Process().memory_info()` ile 6×20 MB'lık
+GERÇEK bir toplu şifrelemenin RSS büyümesinin toplam verinin dörtte
+birinin ÇOK altında kaldığı, ayrıca düşük-RAM simülasyonuyla küçülen
+işçi sayısının GERÇEKTEN o kadar işçiyle bir toplu işlemi sorunsuz
+tamamladığı doğrulandı. `_CHUNK`'ı geçici olarak devasa bir değere
+büyütüp (akmayı iptal ederek) bellek testinin gerçekten düştüğü
+(`MemoryError`), sonra düzeltilip geçtiği ölçüldü.
+
+Tam suite: 3136 passed, 4 skipped. ruff/mypy/bandit temiz.
+
+---

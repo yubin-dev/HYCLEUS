@@ -63,6 +63,14 @@ rl_datas, rl_binaries, rl_hiddenimports = collect_all('reportlab')
 # yani statik analiz hiçbirini göremiyor.
 qr_hiddenimports = collect_submodules('qrcode')
 
+# psutil (CORE/worker_sizing.py, B-103) de FONKSİYON GÖVDESİNDE import
+# ediliyor (`_kullanilabilir_ram_bytes()`) — reportlab'la AYNI gerekçe:
+# statik analiz hiç göremiyor. `collect_all` ZORUNLU çünkü paket saf
+# Python değil: platforma özgü derlenmiş bir C uzantısı taşıyor
+# (`_psutil_windows` vb.) ve o ikili `hiddenimports` ile bulunmaz,
+# yalnızca `binaries` ile pakete girer.
+ps_datas, ps_binaries, ps_hiddenimports = collect_all('psutil')
+
 # Kullanım rehberinin PDF kopyası — menüdeki "Kullanım Rehberi" bunu
 # açıyor. Pakete GİRMEZSE menü web adresine düşer; rehberin kitlesi ise
 # tam olarak "bir şeyler ters gitti" durumundaki kullanıcı ve o an
@@ -73,14 +81,15 @@ _REHBER = [("docs/kullanici-rehberi.pdf", "docs")]
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=wmi_binaries + rl_binaries,
-    datas=wmi_datas + rl_datas + _REHBER,
+    binaries=wmi_binaries + rl_binaries + ps_binaries,
+    datas=wmi_datas + rl_datas + ps_datas + _REHBER,
     hiddenimports=(
         ['wmi', 'pythoncom', 'win32api', 'win32con']
         + wmi_hiddenimports
         + _uygulama_modulleri()
         + rl_hiddenimports
         + qr_hiddenimports
+        + ps_hiddenimports
     ),
     hookspath=[],
     hooksconfig={},

@@ -26,3 +26,9 @@ reportlab
 # kullanamazdık, dosyayı çözüp düz metni kütüphaneye vermek gerekirdi.
 # Ayrıntılı gerekçe CORE/timestamp.py modül docstring'inde.
 asn1crypto
+# Toplu dosya-ekleme iş parçacığı havuzunun boyutunu O AN kullanılabilir
+# RAM'e göre öner (CORE/worker_sizing.py, B-103) — düşük-RAM makinelerde
+# sabit işçi sayısı bellek darlığını ağırlaştırmasın. Zaten
+# requirements-dev.txt'te bir B-081 regresyon testi için kuruluydu; bu
+# satır onu üretim koduna da bağlıyor, gerekçe orada TEKRARLANMADI.
+psutil>=7.0

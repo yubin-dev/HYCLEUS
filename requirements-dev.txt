@@ -28,12 +28,11 @@ bandit[toml]>=1.9
 # Saf Python, kendi bağımlılığı yok, ~30 KB.
 defusedxml>=0.7.1
 
-# tests/test_scanner_backends.py'nin işletim sistemi tanıtıcı/thread sızıntısı
-# regresyon testi için (B-081 devamı — bkz. SECURITY.md §4.22).
-# `psutil.Process().num_handles()` yalnızca Windows'ta var; test bu yüzden
-# `sys.platform != "win32"` ise atlanıyor, ama paket iki tarafta da kurulu
-# olmalı ki Linux CI ayağında import hatasıyla TÜM dosya çökmesin.
-psutil>=7.0
+# psutil BURADA DEĞİL — requirements.txt'e taşındı (B-103): artık yalnızca
+# tests/test_scanner_backends.py'nin B-081 tutamaç/thread sızıntısı
+# regresyon testi değil, CORE/worker_sizing.py de kullanıyor (üretim
+# kodu). `-r requirements.txt` (yukarıda) zaten getiriyor, burada ikinci
+# kez listelemek sürüm pininin iki yerde AYRIŞMASI riski taşırdı.
 
 # Testler için per-test zaman aşımı (B-098) — bkz. pytest.ini'deki `timeout`.
 #

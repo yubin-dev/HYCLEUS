@@ -143,7 +143,7 @@ _SELFTEST_MODULLERI: tuple[str, ...] = (
     "CORE.timestamp_report",
     "CORE.timestamp_verify", "CORE.tpm_sealing", "CORE.trusted_roots",
     "CORE.usb_manager", "CORE.usb_tokens", "CORE.vault_manager",
-    "CORE.verify_timestamp_cli", "CORE.version",
+    "CORE.verify_timestamp_cli", "CORE.version", "CORE.worker_sizing",
     "DB.db_manager", "DB.migrations",
 )
 
@@ -166,6 +166,7 @@ _SELFTEST_UCUNCU_TARAF: tuple[str, ...] = (
     "asn1crypto.tsp",
     "cryptography.hazmat.primitives.ciphers",
     "keyring",
+    "psutil",
     "pyotp",
     "qrcode",
     "qrcode.image.svg",
