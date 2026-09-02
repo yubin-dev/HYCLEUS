@@ -775,6 +775,11 @@ def test_pdf_rfc3161_muhurlenmedigini_acikca_soyluyor(rapor_saglam, tmp_path: Pa
     SECURITY.md §4.25): PDF kendini RFC 3161 ile mühürlenmiş gibi
     GÖSTERMİYOR, açıkça YALANLIYOR — `txt_basligi()`'nin "bu dosya imzalı
     DEĞİLDİR" notuyla AYNI dürüstlük ilkesi.
+
+    B-106: bu, `export_pdf()`'in VARSAYILANI (`sealed=False`) için hâlâ
+    doğru — mühür artık GERÇEK olarak eklenebiliyor (`export_sealed_pdf()`,
+    `sealed=True` metniyle), ama bu fonksiyonun kendi varsayılanı
+    DEĞİŞMEDİ. Mühürlü yol testleri `tests/test_report_seal.py`'de.
     """
     out = export_pdf([_satir()], rapor_saglam, tmp_path / "r.pdf")
     assert b"RFC 3161" in out.read_bytes()

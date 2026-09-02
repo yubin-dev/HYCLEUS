@@ -3178,6 +3178,24 @@ by `csv_hucre_guvenli()`, and the injection tests' own construction
 (only the deliberately dangerous field is exercised per test) keeps the
 positive and negative claims from being conflated.
 
+**Update (K4-20, B-106): the RFC 3161 seal deferred above now exists.**
+`CORE/audit_report.py::export_sealed_pdf()` seals the PDF's own bytes the
+same way file contents already were — through `CORE.timestamp.
+request_token()`, the exact request/response body `timestamp_file()`/
+`timestamp_batch()` use, not a second TSA client. Sequencing avoids a
+circular dependency: the "MÜHÜRLÜDÜR" paragraph names only the sidecar
+file (`<pdf>.tsr`) and the verifier to run, both knowable before the seal
+exists, since the seal itself covers those exact final bytes; on TSA
+failure the function honestly rewrites the PDF with the original
+"MÜHÜRLENMEMİŞTİR" wording rather than leaving a false claim on disk. The
+seal deliberately pins `DEFAULT_TSA_URL` rather than a configured
+`tsa_url(db)`, because verification (`CORE/verify_report_seal_cli.py`, a
+`.tsr`-and-PDF-only sibling of `verify_timestamp_cli.py` needing no vault
+key or database) defaults its trust anchor to §4.9's third, binary-embedded
+root (B-105) — a mismatch there would otherwise read as a false
+"invalid" for every organisation running its own TSA, the exact failure
+mode §4.9 documents choosing not to risk for the general verifier.
+
 ### 4.26 Pending Registrations went from a table to a card list — cosmetic in scope, but the approve/reject wiring had to change shape
 
 `UI/PendingRegistrationsView.py`'s pending-users screen changed from a
@@ -7001,6 +7019,24 @@ YOK: ayrı bir negatif test, sıradan değerlerin `csv_hucre_guvenli()`'den
 AYNEN döndüğünü doğruluyor, ve enjeksiyon testlerinin kendi kurgusu
 (test başına yalnızca kasıtlı olarak tehlikeli alan sınanıyor) pozitif
 ve negatif iddiaların BİRBİRİNE KARIŞMASINI önlüyor.
+
+**Güncelleme (K4-20, B-106): yukarıda ertelenen RFC 3161 mührü artık
+var.** `CORE/audit_report.py::export_sealed_pdf()` PDF'in KENDİ
+baytlarını, dosya içeriklerinin zaten kullandığı AYNI yoldan —
+`CORE.timestamp.request_token()`, `timestamp_file()`/`timestamp_batch()`
+ile TEK istek/yanıt gövdesi, ikinci bir TSA istemcisi DEĞİL — mühürlüyor.
+Sıralama döngüsel bir bağımlılığı önlüyor: "MÜHÜRLÜDÜR" paragrafı yalnızca
+yardımcı dosyanın (`<pdf>.tsr`) adını ve çalıştırılacak doğrulayıcıyı
+söylüyor — ikisi de mühür VAR OLMADAN ÖNCE bilinebilir, çünkü mührün
+kendisi tam olarak O NİHAİ baytları kapsıyor; TSA başarısız olursa
+fonksiyon PDF'i dürüstçe özgün "MÜHÜRLENMEMİŞTİR" metniyle YENİDEN yazıyor,
+diskte yanlış bir iddia BIRAKMIYOR. Mühür bilerek yapılandırılmış `tsa_url
+(db)` yerine `DEFAULT_TSA_URL`'i SABİT kullanıyor — çünkü doğrulama
+(`CORE/verify_report_seal_cli.py`, vault anahtarı/veritabanı istemeyen,
+`verify_timestamp_cli.py`'nin `.tsr`+PDF'e özel kardeşi) güven köku
+varsayılanını §4.9'un ÜÇÜNCÜ, ikili dosyaya gömülü köküne (B-105) alıyor —
+aksi hâlde kendi TSA'sını çalıştıran her kurum için YANLIŞ bir "geçersiz"
+üretirdi, §4.9'un genel doğrulayıcı için GÖZE ALMAMAYI seçtiği tam kusur.
 
 ### 4.26 Bekleyen Kayıtlar tablodan kart listesine döndü — kapsam kozmetikti, ama onayla/reddet bağlanması ŞEKİL DEĞİŞTİRMEK ZORUNDA kaldı
 

@@ -8552,3 +8552,103 @@ Tam suite: 3146 passed → **3161 passed**, 4 skipped. ruff/mypy/bandit
 temiz.
 
 ---
+
+## B-106 — Denetim raporu (PDF) artık GERÇEK bir RFC 3161 mührü taşıyabiliyor (K4-20, B-087 kapandı)
+
+**Durum:** Kapalı
+**Öncelik:** Yüksek (B-087'nin bilinçli olarak ertelediği madde)
+**Bulundu:** 2026-09-02 — B-105'in gömülü kökü kullanılabilir hâle gelince
+
+B-087, `export_pdf()`'in "İmzalı Rapor"unun zincirin KENDİ kanıtını
+(hash zinciri + dış çıpa) gömdüğünü ama PDF DOSYASININ KENDİSİNİ bir
+RFC 3161 otoritesine imzalatmadığını, bunu kasıtlı olarak ayrı bir
+maddeye bıraktığını belgelemişti. Bu madde onu kapatıyor.
+
+### `CORE/timestamp.py::request_token()` — tek istemci gövdesi ayrıştırıldı
+
+`timestamp_file()`/`timestamp_batch()`'in `build_request → gönder →
+parse_response` gövdesi ORTAK bir fonksiyona çıkarıldı: `request_token
+(digest, *, url, timeout, transport)`. `.hcl` formatından tamamen
+bağımsız — yalnızca 32 baytlık bir özet alıp imzalı token döndürüyor.
+Saf çıkarma (davranış değişmedi); `timestamp_file()`/`timestamp_batch()`
+şimdi bunu çağırıyor, ikisi de aynı testlerle (`test_timestamp.py`,
+`test_timestamp_batch.py`) hiç değişmeden geçti.
+
+### `CORE/audit_report.py::export_sealed_pdf()` — döngüsel bağımlılık çözümü
+
+PDF'in KENDİ SHA-256'sı mühre gidecek değer; ama PDF'in gövde metni
+"mühürlü mü değil mi" diyorsa ve o metin token'a özgü bilgi (seri no,
+damga zamanı) taşısaydı, metni yazmadan mühür alınamaz, mühür almadan
+metin yazılamazdı — döngü. Çözüm: `sealed=True` metni token'a özgü HİÇBİR
+ŞEY içermiyor, yalnızca dosyanın KENDİ adını (`<pdf>.tsr`, `verify_
+report_seal_cli.py`) — ikisi de mühür alınmadan ÖNCE bilinir. Akış:
+
+1. PDF'i `sealed=True` metniyle üret (`export_pdf(..., sealed=True)`).
+2. O NİHAİ dosyanın SHA-256'sını hesapla.
+3. `request_token()` ile TSA'ya damgalat.
+4. Başarılıysa token'ı `<pdf>.tsr` (openssl'in `.tsr` adlandırmasıyla
+   aynı) yardımcı dosyasına yaz.
+5. BAŞARISIZSA (ağ, TSA reddi): PDF'i `sealed=False` metniyle YENİDEN
+   üret — disk asla yanlış bir "mühürlü" iddiası TAŞIMAZ.
+
+Mühür HER ZAMAN `DEFAULT_TSA_URL` (freetsa.org) kullanıyor, kurumun
+yapılandırılabilir `tsa_url(db)` ayarını DEĞİL — bilinçli: B-105'in
+gömülü kökü yalnızca freetsa.org'u taşıyor, doğrulama o kökle YAPILACAK.
+
+### `CORE/verify_report_seal_cli.py` — bağımsız doğrulama, `verify_timestamp_cli.py`'nin eşdeğeri
+
+`verify_timestamp_cli.py` bir `.hcl` KASA DOSYASI için yazıldı ve
+`--key-file` zorunlu (B-092/B-099). PDF hiç şifreli değil — bu yeni araç
+vault anahtarı/DB istemiyor, yalnızca PDF'in kendi SHA-256'sı ve `.tsr`
+token'ı. Doğrulama gövdesi ORTAK: `CORE.timestamp_verify.verify_token()`
+— ikinci bir kripto implementasyonu YOK. Varsayılan güven kökü BİLEREK
+`verify_timestamp_cli.py`'den FARKLI: o araç kök verilmezse "doğrulanmadı"
+der (denetlediği dosya HERHANGİ bir TSA'yla damgalanmış olabilir); bu
+araç doğruladığı mührün HER ZAMAN freetsa.org'la üretildiğini bildiği
+için varsayılanı B-105'in gömülü kökü (`CORE.trusted_roots_builtin.
+gomulu_kokler()`) — DB'siz, dosyasız, yalnızca ikili dosyanın kendisi.
+`--trusted-root` yine de veriliyorsa (testler için) onun YERİNE geçiyor.
+
+`main.py --selftest` listesine `CORE.verify_report_seal_cli` eklendi.
+
+### Test (`tests/test_report_seal.py`, 22 test)
+
+- Metin flip: `sealed=False` → "MÜHÜRLENMEMİŞTİR" (ASCII-güvenli
+  "KANITLAMAZ" araması, Türkçe özel karakterlerin reportlab'ta ham
+  bayt aramasıyla eşleşmediği B-086'nın bilinen kısıtı); `sealed=True`
+  → "MÜHÜRLÜDÜR" + `verify_report_seal_cli.py`/`.tsr` referansı, İKİSİ
+  BİRDEN asla aynı belgede.
+- `export_sealed_pdf()`: yazılan `.tsr`'nin döndürülen `TimestampInfo.
+  token_der`'le AYNI baytlar olduğu; damgalanan özetin ARA (mühürsüz)
+  sürümün değil NİHAİ (mühürlü metinli) dosyanın SHA-256'sı olduğu
+  (döngüsellik kontrolü); TSA başarısızlığında dürüst geri dönüş VE
+  `.tsr` dosyasının hiç yazılmadığı.
+- CLI: gerçek bir mühür `FakeTSA` (gerçekten imzalayan test TSA'sı,
+  `tests/tsa_fixtures.py`) ile üretilip `--trusted-root` ile doğrulandı;
+  varsayılan (gömülü, gerçek freetsa) kökle yanlış TSA'nın GEÇERSİZ
+  (yalnızca "doğrulanmadı" değil — B-105'in "trusted_roots verilince
+  sert eşleşme" kuralı burada da geçerli) çıktığı; `gomulu_kokler()`
+  monkeypatch'lenip varsayılan kökün GERÇEKTEN çağrıldığı; PDF kurcalama
+  tespiti; eksik `.tsr`/PDF hataları; `--token` verilmeden `<pdf>.tsr`
+  varsayılanının çalıştığı; gerçek alt süreçle (`subprocess.run`)
+  `__main__` yolunun çalıştığı (`verify_timestamp_cli.py`'nin kendi
+  testiyle AYNI desen).
+- Yapısal: `CORE/audit_report.py`/`CORE/verify_report_seal_cli.py`
+  `requests`'i DOĞRUDAN import ETMİYOR (tek HTTP çağrısı `CORE/
+  timestamp.py::_http_post()`'ta); `export_sealed_pdf()` `request_token`
+  çağırıyor, `build_request`/`_http_post`'u DOĞRUDAN çağırmıyor.
+
+Mutasyonla ölçüldü: (a) `sealed=True` dalını geçici olarak devre dışı
+bırakınca 2 test düştü (mühürlü metin hiç üretilmedi); (b) CLI'ın
+`--trusted-root` geçersiz kılmasını kaldırıp HER ZAMAN `gomulu_kokler()`
+kullandırınca 3 test düştü (açık kök verilen testler artık yanlış kökü
+kullanıyordu). İkisi de geri alındı, `git diff --stat` ile temiz.
+
+SECURITY.md §4.25 (EN+TR) güncellendi: B-087'nin ertelediği kararın
+kapandığını, döngüsellik çözümünü ve varsayılan kök seçimini anlatan bir
+"Güncelleme" paragrafı.
+
+Tam suite: **3187 passed**, 4 skipped (22 yeni test dahil). ruff/mypy/
+bandit temiz.
+
+---

@@ -39,10 +39,12 @@ birine bakmak yanlış bir güven duygusu üretirdi.
 from __future__ import annotations
 
 import csv
+import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from CORE.audit_chain import (
     LINK_BROKEN,
@@ -55,6 +57,16 @@ from CORE.audit_chain import (
 )
 from CORE.csv_utils import csv_hucre_guvenli
 from CORE.pdf_utils import escape_for_reportlab as _escape
+from CORE.timestamp import (
+    DEFAULT_TSA_URL,
+    HASH_ALGORITHM,
+    TSA_TIMEOUT,
+    TimestampError,
+    TimestampInfo,
+    request_token,
+)
+
+_log = logging.getLogger("hycleus.audit_report")
 
 #: HALKA durumu → görüntü metni. TEK yerden: `UI/AuditLogView.py` (tablo
 #: sütunu) ve buradaki CSV/PDF dışa aktarımı AYNI sözlüğü kullanıyor —
@@ -289,6 +301,25 @@ def export_csv(satirlar: list[DenetimSatiri], path: str | Path) -> Path:
 _PDF_BASLIKLAR = ["ID", "Zaman (UTC)", "İşlem", "Kullanıcı", "HWID", "Halka"]
 _PDF_COL_WIDTHS = (35, 95, 190, 120, 130, 70)
 
+#: RFC 3161 mührünün (K4-20) yazıldığı yardımcı dosyanın eklentisi —
+#: `openssl ts`'in ürettiği `.tsr` dosyalarıyla aynı adlandırma. PDF'in
+#: KENDİSİ değişmiyor (reportlab'ın tek geçişli `doc.build()`'ı sonradan
+#: eklemeye uygun değil); mühür PDF'in YANINA, `<pdf adı>.tsr` olarak
+#: yazılıyor. İçeriği ham `TimeStampToken` DER'i — `CORE.timestamp`'in
+#: `.hcl` fragmanında zaten sakladığı AYNI bayt dizisi, ikinci bir zarf
+#: biçimi İCAT EDİLMEDİ.
+_TSR_SUFFIX = ".tsr"
+
+
+def tsr_path_for(pdf_path: str | Path) -> Path:
+    """`<pdf adı>.tsr` yolunu üretir — yazan (`export_sealed_pdf()`) ve
+    okuyan (`CORE/verify_report_seal_cli.py`) AYNI kuralı kullansın diye
+    TEK yerde. `Path.with_suffix()` KULLANILMIYOR: o `.pdf`'i `.tsr`'ye
+    DEĞİŞTİRİRDİ (`rapor.tsr`), oysa istenen `rapor.pdf.tsr` — dosya adının
+    kendisinden hangi PDF'e ait olduğu okunabilsin diye."""
+    p = Path(pdf_path)
+    return p.with_name(p.name + _TSR_SUFFIX)
+
 
 def export_pdf(
     satirlar: list[DenetimSatiri],
@@ -298,6 +329,7 @@ def export_pdf(
     title: str = "HYCLEUS — Denetim Günlüğü (İmzalı Rapor)",
     generated_at: datetime | None = None,
     filters_note: str = "",
+    sealed: bool = False,
 ) -> Path:
     """
     Denetim günlüğünü PDF "imzalı rapor" olarak yazar.
@@ -308,13 +340,33 @@ def export_pdf(
     `zincir_raporu()`) GÖMÜLÜ taşıyor — okuyanın ayrıca bir komut
     çalıştırmasına gerek yok, "İmzalı" burada BUNU ifade ediyor.
 
-    RFC 3161 mührü İSE (PDF DOSYASININ KENDİSİNİ bir zaman damgası
-    otoritesine imzalatıp, dosyanın sonradan değiştirilmediğini
-    KRİPTOGRAFİK olarak kanıtlamak) BU FONKSİYONUN KAPSAMINDA DEĞİL —
-    kasıtlı bir karar, sessizce ertelenmedi: bkz. BACKLOG.md B-087,
-    SECURITY.md §4.25. PDF bunu ASLA sessizce iddia etmiyor — aşağıdaki
+    `sealed` ve RFC 3161 mührü (K4-20, B-087) — bu fonksiyon TSA'ya HİÇ
+    KONUŞMUYOR
+    ---------------------------------------------------------------------
+    `sealed` yalnızca gövdedeki UYARI PARAGRAFINI seçiyor — bu fonksiyon
+    kendisi bir TSA'ya asla bağlanmıyor, asla ağa çıkmıyor. Gerçek mühür
+    (PDF DOSYASININ KENDİSİNİ bir zaman damgası otoritesine imzalatıp,
+    dosyanın sonradan değiştirilmediğini KRİPTOGRAFİK olarak kanıtlamak)
+    `export_sealed_pdf()`'in işi — o, PDF'i ÖNCE `sealed=True` ile burada
+    üretiyor, SONRA onun SHA-256'sını `CORE.timestamp.request_token()`'a
+    veriyor (K4-20'nin B-105'te gömülen kökle doğrulanacak mühür budur).
+
+    Neden metin TOKEN'A ÖZGÜ hiçbir şey (seri no, damga zamanı) İÇERMİYOR
+    ------------------------------------------------------------------------
+    Döngüsel bir bağımlılığı önlemek için: mührü ALACAK tam olarak BU
+    dosyanın baytları, ve mühür alınana kadar token'ın seri no'su/damga
+    zamanı BİLİNMİYOR — onları gövdeye yazmak, gövdeyi yazdıktan SONRA
+    mühürlemeyi gerektirirdi (döngü). Bunun yerine metin SABİT: hangi
+    yardımcı dosyaya (`<pdf adı>.tsr`) ve hangi araca (`CORE/verify_
+    report_seal_cli.py`) bakılacağını söylüyor — ikisi de dosyanın PATH'i
+    biliniyor olsun yeter, TSA'nın cevabı değil. `export_sealed_pdf()`
+    başarısız olursa (TSA'ya ulaşılamadı vb.) `sealed=False` ile YENİDEN
+    üretiyor — PDF asla yanlış bir mühür iddiası taşımıyor.
+
+    PDF bunu ASLA sessizce iddia etmiyor: `sealed=False` (varsayılan)
     gövde açıkça "RFC 3161 ile mühürlenmedi" diyor, `txt_basligi()`'nin
-    "bu dosya imzalı DEĞİLDİR" notuyla AYNI dürüstlük ilkesi.
+    "bu dosya imzalı DEĞİLDİR" notuyla AYNI dürüstlük ilkesi. Ayrıntı:
+    BACKLOG.md B-087/B-106, SECURITY.md §4.25.
 
     Raises:
         RuntimeError: reportlab kurulu değilse. İçe aktarım fonksiyon
@@ -402,13 +454,28 @@ def export_pdf(
         if satir.strip():
             story.append(Paragraph(_escape(satir), ozet_style))
     story.append(Spacer(1, 3 * mm))
-    story.append(Paragraph(
-        "NOT: Bu PDF dosyası RFC 3161 zaman damgasıyla MÜHÜRLENMEMİŞTİR. "
-        "Yukarıdaki zincir/çıpa durumu dosyanın ÜRETİLDİĞİ ANDAKİ veritabanı "
-        "durumunu yansıtır; dosyanın KENDİSİNİN sonradan değiştirilmediğini "
-        "KANITLAMAZ.",
-        kirik_style,
-    ))
+    if sealed:
+        # Token'a özgü hiçbir şey (seri no, damga zamanı) burada YOK —
+        # döngüsel bağımlılık, bkz. bu fonksiyonun docstring'i. Yalnızca
+        # dosyanın KENDİ adı (`out.name`) kullanılıyor — mühür alınmadan
+        # ÖNCE de bilinen tek şey bu.
+        tsr_adi = tsr_path_for(out).name
+        story.append(Paragraph(_escape(
+            "NOT: Bu PDF dosyası RFC 3161 zaman damgasıyla MÜHÜRLÜDÜR. "
+            f"Doğrulama: bu dosyanın SHA-256 özetini, yanındaki "
+            f"'{tsr_adi}' dosyasındaki zaman damgası token'ıyla "
+            "karşılaştırın — "
+            f"CORE/verify_report_seal_cli.py --pdf {out.name} --token "
+            f"{tsr_adi} (ya da eşdeğer bir RFC 3161 doğrulayıcı ile)."
+        ), saglam_style))
+    else:
+        story.append(Paragraph(
+            "NOT: Bu PDF dosyası RFC 3161 zaman damgasıyla MÜHÜRLENMEMİŞTİR. "
+            "Yukarıdaki zincir/çıpa durumu dosyanın ÜRETİLDİĞİ ANDAKİ veritabanı "
+            "durumunu yansıtır; dosyanın KENDİSİNİN sonradan değiştirilmediğini "
+            "KANITLAMAZ.",
+            kirik_style,
+        ))
     story.append(Spacer(1, 6 * mm))
 
     data: list[list[Any]] = [[Paragraph(h, header_style) for h in _PDF_BASLIKLAR]]
@@ -440,3 +507,80 @@ def export_pdf(
 
     doc.build(story)
     return out
+
+
+def export_sealed_pdf(
+    satirlar: list[DenetimSatiri],
+    rapor: ZincirRaporu,
+    path: str | Path,
+    *,
+    title: str = "HYCLEUS — Denetim Günlüğü (İmzalı Rapor)",
+    generated_at: datetime | None = None,
+    filters_note: str = "",
+    timeout: int = TSA_TIMEOUT,
+    transport: Callable[[str, bytes, int], bytes] | None = None,
+) -> tuple[Path, TimestampInfo | None]:
+    """
+    `export_pdf()`'in üstüne GERÇEK bir RFC 3161 mührü ekliyor (K4-20,
+    B-087) — B-105'te ikili dosyaya gömülen freetsa.org kökünün ilk
+    kullanıcısı.
+
+    Akış (iyimser, başarısızlıkta dürüst geri dönüş)
+    ---------------------------------------------------
+    1. PDF'i `sealed=True` metniyle üret (bu dosyanın SHA-256'sı mühre
+       gidecek DEĞER, o yüzden metin ÖNCE, nihai hâliyle yazılmalı).
+    2. O dosyanın ham baytlarının SHA-256'sını hesapla.
+    3. `CORE.timestamp.request_token()` ile TSA'ya damgalat — İKİNCİ bir
+       TSA-istemci implementasyonu YOK, `timestamp_file()`/
+       `timestamp_batch()`'in kullandığı AYNI gövde.
+    4. Başarılıysa token'ı `<pdf>.tsr` yardımcı dosyasına yaz.
+    5. BAŞARISIZSA (ağ, TSA reddi, ...): PDF'i `sealed=False` metniyle
+       YENİDEN üret — dosya diskte YANLIŞ bir "mühürlü" iddiasıyla
+       KALMAZ. `(yol, None)` döner; çağıran (ör. bir UI) bunu "mühürsüz
+       devam edildi" diye kullanıcıya bildirebilir.
+
+    Neden HER ZAMAN `DEFAULT_TSA_URL` — kurumun `tsa_url(db)` ayarı
+    KULLANILMIYOR
+    ------------------------------------------------------------------
+    B-105'in gömülü kökü YALNIZCA freetsa.org'un kökünü taşıyor ve bu
+    fonksiyonun mührü tam olarak o kökle doğrulanabilir kalmalı —
+    kurumun kendi TSA'sına yönlendirilseydi (`tsa_url(db)`), gömülü kökle
+    karşılaştırma YANLIŞ bir "geçersiz" üretirdi (B-105'in `CORE/
+    trusted_roots_builtin.py` docstring'inde belgelenen, genel dosya
+    doğrulamasına KARIŞTIRILMAMA gerekçesiyle AYNI risk). `url`/`timeout`/
+    `transport` yine de parametre: testlerin gerçek ağa çıkmadan akışın
+    tamamını koşturabilmesi için (`timestamp_file()` ile AYNI desen).
+
+    Returns:
+        `(pdf_yolu, TimestampInfo)` mühürlendiyse; `(pdf_yolu, None)`
+        mühürlenemediyse. `TimestampInfo.token_der`
+        `CORE.timestamp_verify.verify_token()`'a doğrudan verilebilir.
+    """
+    out = Path(path)
+    export_pdf(
+        satirlar, rapor, out, title=title, generated_at=generated_at,
+        filters_note=filters_note, sealed=True,
+    )
+    digest = hashlib.sha256(out.read_bytes()).digest()
+
+    try:
+        token_der = request_token(
+            digest, url=DEFAULT_TSA_URL, timeout=timeout, transport=transport,
+        )
+    except TimestampError as exc:
+        _log.warning("rapor_muhru_basarisiz  dosya=%s  exc=%s", out.name, exc)
+        export_pdf(
+            satirlar, rapor, out, title=title, generated_at=generated_at,
+            filters_note=filters_note, sealed=False,
+        )
+        return out, None
+
+    tsr_path_for(out).write_bytes(token_der)
+    info = TimestampInfo(
+        hash_algorithm=HASH_ALGORITHM,
+        hashed_hex=digest.hex(),
+        tsa_url=DEFAULT_TSA_URL,
+        token_der=token_der,
+    )
+    _log.info("rapor_muhurlendi  dosya=%s  tsa=%s", out.name, DEFAULT_TSA_URL)
+    return out, info

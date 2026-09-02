@@ -31,6 +31,17 @@ yolu saklıyor. 100 dosya için 100 çağrı ve ~500 KB token yerine 1 çağrı,
 Tekil kip KALDIRILMADI: tek bir dosyayı damgalamak için ağaç kurmak
 gereksiz bir dolaylılık ve v1 fragmanı okuyan mevcut dosyalar var.
 
+`request_token()` — TEK TSA-istemci gövdesi, `.hcl`'den BAĞIMSIZ
+--------------------------------------------------------------------
+İkisinin ORTAK TSA-konuşma gövdesi (`build_request` → gönder → `parse_
+response`) B-106'da `request_token()` olarak ayrıştırıldı: ham bir özet
+alıp imzalı token DER'ini döndüren, `.hcl` fragmanından tamamen bağımsız
+bir fonksiyon. `CORE/audit_report.py::export_sealed_pdf()`'in denetim
+raporu PDF'ini mühürlemesi (K4-20, B-087) da BURAYA geliyor — PDF hiç
+şifreli değil, `.hcl`'in `verify_file()`/`attach_trailer()` adımlarına
+hiç ihtiyaç duymuyor, ama TSA'ya KONUŞMA gövdesi aynı olmalı. İkinci bir
+istek/yanıt implementasyonu AÇILMADI.
+
 
 Neden düz metnin özeti damgalanıyor, ciphertext'in değil
 --------------------------------------------------------
@@ -726,6 +737,38 @@ def _http_post(url: str, body: bytes, timeout: int) -> bytes:
     return content
 
 
+def request_token(
+    digest: bytes,
+    *,
+    url: str = DEFAULT_TSA_URL,
+    timeout: int = TSA_TIMEOUT,
+    transport: Callable[[str, bytes, int], bytes] | None = None,
+) -> bytes:
+    """
+    Ham bir özeti TSA'ya damgalatır, token'ı DER olarak döndürür.
+
+    TEK TSA-istemci gövdesi — `timestamp_file()` ve `timestamp_batch()`
+    burayı çağırıyor, `.hcl` formatından tamamen bağımsız (K4-20,
+    `CORE/audit_report.py::export_sealed_pdf()`'in denetim raporu PDF'ini
+    mühürlemesi de BURAYA geliyor — ikinci bir istek/yanıt/HTTP
+    implementasyonu AÇILMADI). Yalnızca 32 baytlık bir SHA-256 özeti alıp
+    imzalı token'ı döndürüyor; özetin nereden geldiği (bir `.hcl`'in düz
+    metni mi, bir PDF'in ham baytları mı) bu fonksiyonun umurunda değil.
+
+    Raises:
+        TimestampError — TSA'ya ulaşılamadı, reddetti ya da yanıt tutarsız.
+    """
+    request_der, nonce = build_request(digest)
+    send = transport or _http_post
+    try:
+        response_der = send(url, request_der, timeout)
+    except TimestampError:
+        raise
+    except Exception as exc:
+        raise TimestampError(f"TSA'ya ulaşılamadı ({url}): {exc}") from exc
+    return parse_response(response_der, digest=digest, nonce=nonce)
+
+
 def tsa_url(db: Any) -> str:
     """
     Ayarlardan TSA adresini okur; yoksa DEFAULT_TSA_URL.
@@ -801,16 +844,7 @@ def timestamp_file(
     _meta, hashed_hex = verify_file(path, key, hwid=hwid, return_sha256=True)
     digest = bytes.fromhex(hashed_hex)
 
-    request_der, nonce = build_request(digest)
-    send = transport or _http_post
-    try:
-        response_der = send(url, request_der, timeout)
-    except TimestampError:
-        raise
-    except Exception as exc:
-        raise TimestampError(f"TSA'ya ulaşılamadı ({url}): {exc}") from exc
-
-    token_der = parse_response(response_der, digest=digest, nonce=nonce)
+    token_der = request_token(digest, url=url, timeout=timeout, transport=transport)
     info = TimestampInfo(
         hash_algorithm=HASH_ALGORITHM,
         hashed_hex=hashed_hex,
@@ -1015,16 +1049,7 @@ def timestamp_batch(
     agac = build_tree(yapraklar)
     kok = agac.root
 
-    request_der, nonce = build_request(kok)
-    send = transport or _http_post
-    try:
-        response_der = send(url, request_der, timeout)
-    except TimestampError:
-        raise
-    except Exception as exc:
-        raise TimestampError(f"TSA'ya ulaşılamadı ({url}): {exc}") from exc
-
-    token_der = parse_response(response_der, digest=kok, nonce=nonce)
+    token_der = request_token(kok, url=url, timeout=timeout, transport=transport)
 
     yazilamayan: list[str] = []
     for i, (yol, ozet) in enumerate(zip(yollar, ozetler)):
@@ -1099,6 +1124,7 @@ __all__ = [
     "decode_trailer",
     "encode_trailer",
     "parse_response",
+    "request_token",
     "SUPPORTED_TRAILER_VERSIONS",
     "TRAILER_VERSION_MERKLE",
     "anchor_leaf_payload",
