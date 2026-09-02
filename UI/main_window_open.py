@@ -123,8 +123,8 @@ class OpenMixin:
 
         try:
             entry = check_out(
-                self._checkouts, file_id=file_id, hcl_path=filepath,
-                key=self._key, aad_hwid=aad_hwid,
+                self._checkouts, db=db, file_id=file_id, hcl_path=filepath,
+                key=self._key, aad_hwid=aad_hwid, user_id=self._user_id,
             )
         except CheckoutError as exc:
             _log.error("checkout_failed  file_id=%s exc=%s", file_id, exc)
@@ -204,7 +204,7 @@ class OpenMixin:
                 continue
             try:
                 sonuc = check_in(
-                    self._checkouts, entry.file_id, self._key,
+                    self._checkouts, entry.file_id, self._key, db=db,
                     user_id=self._user_id, hwid=self._hwid,
                     reason="autosave", shred=False,   # belge açık kalıyor
                 )
@@ -227,7 +227,7 @@ class OpenMixin:
         db = DBManager()
         try:
             sonuc = check_in(
-                self._checkouts, file_id, self._key,
+                self._checkouts, file_id, self._key, db=db,
                 user_id=self._user_id, hwid=self._hwid, reason="manual",
             )
             apply_checkin(db, sonuc, user_id=self._user_id, hwid=self._hwid)
@@ -254,7 +254,7 @@ class OpenMixin:
             return
         db = DBManager()
         for sonuc in check_in_all(
-            self._checkouts, self._key,
+            self._checkouts, self._key, db=db,
             user_id=self._user_id, hwid=self._hwid, reason=reason,
         ):
             try:

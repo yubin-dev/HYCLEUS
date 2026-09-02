@@ -91,6 +91,7 @@ from CORE.audit_chain import (
     verify_anchor_replicas,
     write_anchor,
 )
+from CORE.checkout import release_stale_locks
 from CORE.console import ensure_utf8_console
 from CORE.disposal import resume_pending_disposals
 from CORE.safezone import purge_on_exit, purge_orphans
@@ -485,6 +486,19 @@ def main() -> None:
             )
     except Exception as exc:  # kurtarma sorunu açılışı engellemesin
         _log.error("Yarım kalan imha kurtarması başarısız: %s", exc)
+
+    # ── Sahipsiz kalan dosya kilitlerinin temizlenmesi ────────────────────────
+    # `file_locks`'ta BU makineye ait, artık çalışmayan bir sürece ait bir
+    # satır bulmak, önceki oturumun bir belgeyi açıkken çöktüğü anlamına
+    # gelir — bkz. CORE/checkout.py modül docstring'i, SafeZone/disposal
+    # artakalan temizlikleriyle aynı desen. Temizlenen dosyalar bir sonraki
+    # check_out() çağrısında normal şekilde devralınabilir.
+    try:
+        kilit_raporu = release_stale_locks(DBManager())
+        if kilit_raporu.had_stale:
+            _log.warning("Açılışta sahipsiz dosya kilidi: %s", kilit_raporu.summary())
+    except Exception as exc:  # kilit temizliği açılışı engellemesin
+        _log.error("Sahipsiz dosya kilidi temizliği başarısız: %s", exc)
 
     # ── Sır migration'ı ──────────────────────────────────────────────────────
     # Düz metin sırları (DB usb_tokens.share_2, data/totp_secret.json) kasaya

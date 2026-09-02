@@ -8280,3 +8280,60 @@ kanıt. Sonuç olumluysa (3b)'deki anahtar tasarımı ve DB migrasyonu
 kapatılır.
 
 ---
+
+## B-102 — Aynı dosyanın birden fazla uygulama örneğinde açılmasını engelleyen kilit (`file_locks`)
+
+**Durum: UYGULANDI.**
+
+`CORE/checkout.py::CheckoutRegistry` bellekte, süreç başına — iki AYRI
+HYCLEUS süreci (aynı makinede çift açılış, ya da aynı `data/` dizinini
+paylaşan iki kurulum) aynı `file_id`'yi aynı anda çıkışa alırsa hiçbiri
+diğerinin kaydını GÖRMÜYORDU: iki düz metin kopyası, iki bağımsız
+düzenleme, son geri yazan diğerininkini sessizce siliyordu.
+
+`DB/migrations.py::_m26_file_locks` (Migration 26) `disposal_queue`
+(B-079) ile AYNI desen: niyet FİİLİ çözmeden ÖNCE kalıcı yazılır.
+`file_id` PRIMARY KEY olduğu için ikinci bir yazma `IntegrityError` ile
+atomik biçimde reddedilir — SELECT-sonra-INSERT'ün açacağı yarış
+penceresi yok. `CORE/checkout.py::acquire_lock()`/`release_lock()`
+`check_out()`/`check_in()`/`discard()`/`check_in_all()`'a `db`
+(zorunlu) ve `session_id` (süreç başına bir kez üretilen `SESSION_ID`)
+parametreleriyle bağlandı; kilit yalnızca `shred=True`/`discard`'ta
+(belge GERÇEKTEN kapanırken) serbest bırakılıyor, ara geri yazmalarda
+(`shred=False`, autosave) korunuyor.
+
+Çakışma `FileLockedError` (yeni, `CheckoutError`'ın alt sınıfı) ile
+bildiriliyor — mevcut `except CheckoutError` çağrı yerleri
+(`UI/main_window_open.py::_on_ctx_open`) hiçbir değişiklik gerekmeden
+onu da yakalıyor.
+
+Çökme kurtarması `release_stale_locks()` — `main.py`'de
+`resume_pending_disposals()`/`purge_orphans()` ile aynı açılış
+bölümünde çağrılıyor. Yalnızca BU makineye ait (`hostname` eşleşen) VE
+`pid`'i artık yaşamayan satırlar temizleniyor; `_pid_alive()` Windows'ta
+`os.kill(pid, 0)` KULLANMIYOR (Windows'ta sinyal 0 `TerminateProcess`'e
+düşüyor ve GERÇEKTEN öldürüyor) — bunun yerine `ctypes`/`OpenProcess`.
+Başka bir makineye ait bir kilidin canlılığı doğrulanamıyor, o yüzden
+DOKUNULMUYOR — yanıtlanamayan bir soruya "ölü" demek yanlış tarafta
+hata yapmak olurdu. Bilinen sınır: `pid` yeniden kullanılmışsa (süreç
+çıkmış, OS aynı numarayı başka bir programa vermiş) canlılık kontrolü
+yanlış pozitif verir ve kilit gereğinden uzun tutulur — KASITLI: bu,
+canlı bir kilidi erken serbest bırakıp iki sürecin aynı dosyayı aynı
+anda düzenlemesine izin vermekten kesinlikle daha güvenli.
+
+`file_locks` BİLEREK `_RBAC_KORUMALI_TABLOLAR`'a EKLENMEDİ —
+`login_attempts`'le aynı gerekçe: dosya açmak (yalnızca görüntülemek)
+rol bağımsız çalışıyor, kilidin amacı gizlilik/yetki değil eşzamanlılık.
+
+Test: `tests/test_checkout.py` bölüm 10 — iki AYRI `CheckoutRegistry` +
+farklı `session_id` ile gerçek süreç başlatmadan "iki uygulama örneği"
+simülasyonu. İki eşzamanlı açılıştan yalnızca birinin kazandığı,
+kapatma/atmanın kilidi sonraki örneğe devrettiği, ara geri yazmanın
+kilidi koruduğu, ölü bir `pid`'in kilidinin açılışta temizlenip dosyanın
+devralınabildiği, CANLI bir `pid`'in (test sürecinin kendi PID'i) ve
+BAŞKA bir `hostname`'in süpürmede DOKUNULMADAN hayatta kaldığı ayrı ayrı
+doğrulandı. `_pid_alive()`'ı her zaman `True` döndürecek şekilde
+mutasyonla bozup çökme-kurtarma testinin gerçekten düştüğü, sonra
+düzeltilip geçtiği ölçüldü.
+
+---

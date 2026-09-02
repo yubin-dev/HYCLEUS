@@ -493,6 +493,55 @@ def _m25_disposal_queue(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _m26_file_locks(conn: sqlite3.Connection) -> None:
+    """`file_locks` tablosu — aynı dosyanın birden fazla uygulama örneğinde
+    açılmasını engelleyen çökmeye dayanıklı kilit (2026-09-02).
+
+    `CORE/checkout.py::check_out()` bir belgeyi düzenlemek için SafeZone'a
+    çözmeden ÖNCE bu tabloya bir kilit satırı yazar (`acquire_lock()`) —
+    `disposal_queue`'nun "niyeti önce kalıcı kaydet, sonra işlemi yap"
+    deseninin BİREBİR aynısı, yalnızca korunan işlem "kalıcı silme" değil
+    "aynı anda iki yerden düzenleme" riski. `file_id` PRIMARY KEY olduğu
+    için ikinci bir `INSERT` — başka bir uygulama örneği aynı dosyayı zaten
+    açıksa — `IntegrityError` ile reddedilir; bu, bir SELECT'le önce
+    kontrol edip sonra INSERT etmenin açacağı yarış penceresi OLMADAN,
+    SQLite'ın kendi tekillik garantisiyle atomik bir "yalnızca biri
+    kazanır" sağlıyor.
+
+    Kilit `session_id` (süreç başına bir kez üretilen rastgele bir kimlik),
+    `hostname` ve `pid` taşıyor — SAHİPSİZ KALAN bir kilidi (önceki
+    oturum, dosyayı açıkken çökmüş) tanımak için: `release_stale_locks()`
+    açılışta HER satırı gözden geçirir, yalnızca KENDİ makinesindekileri
+    (`hostname` eşleşiyorsa) `pid`'in hâlâ yaşayıp yaşamadığına bakarak
+    değerlendirir — başka bir makineye ait bir kilit doğrulanamıyorsa
+    DOKUNULMAZ (bkz. `CORE/checkout.py` modül docstring'i, "PID canlılığı"
+    bölümü — bu, bir kilidi YANLIŞLIKLA erken serbest bırakıp iki sürecin
+    aynı anda düzenlemesine izin vermektense, ölü bir kilidin biraz daha
+    uzun durmasını tercih eden BİLİNÇLİ bir asimetri).
+
+    `file_locks` BİLEREK `_RBAC_KORUMALI_TABLOLAR`'a EKLENMEDİ —
+    `login_attempts`'le AYNI gerekçe (`DB/db_manager.py` "BİLEREK DIŞARIDA
+    BIRAKILANLAR"): bir dosyayı AÇMAK (yalnızca GÖRÜNTÜLEMEK) bugün rol
+    bağımsız çalışıyor — Salt Okunur bir oturum da `check_out()`
+    çağırabiliyor. Kilidi korumalı tablolar listesine eklemek bu rolü
+    dosya açmaktan TAMAMEN alıkoyardı; kilidin amacı gizlilik/yetki
+    değil, eşzamanlılık — ham SQL ile bu tabloya yazabilen bir saldırgan
+    zaten RBAC'ın koruduğu her şeyi de yazabilir, tek bir tabloyu
+    korumak ek bir güvenlik kazandırmaz.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS file_locks (
+            file_id    INTEGER PRIMARY KEY,
+            session_id TEXT    NOT NULL,
+            user_id    INTEGER,
+            hostname   TEXT    NOT NULL,
+            pid        INTEGER NOT NULL,
+            locked_at  TEXT    NOT NULL
+                       DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        )
+    """)
+
+
 #: Numaralı, SIRALI, değişmez göç listesi. Sıra anlamlıdır: 11 numara
 #: `folders` tablosuna referans veriyor, yani 10'dan sonra gelmek ZORUNDA.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -584,7 +633,12 @@ MIGRATIONS: tuple[Migration, ...] = (
               "açılışta yarım kalan silmeler resume_pending_disposals() "
               "ile tamamlanır.",
               _m25_disposal_queue),
-    # Migration(26, "tpm-...", "...", _m26_...),
+    Migration(26, "file-locks-tablosu",
+              "Aynı dosyanın birden fazla uygulama örneğinde açılmasını "
+              "engelleyen çökmeye dayanıklı kilit — açılışta "
+              "release_stale_locks() sahipsiz kalanları temizler.",
+              _m26_file_locks),
+    # Migration(27, "tpm-...", "...", _m27_...),
 )
 
 

@@ -158,6 +158,12 @@ class YazmaYetkisiYokError(PermissionError):
 #:                       gerek yok.
 #:   usb_tokens       — kayıt/kurtarma akışının parçası, rol henüz
 #:                       oturumla ilişkilenmemişken de yazılabilmeli.
+#:   file_locks       — dosya AÇMANIN (yalnızca görüntülemenin) kendisi rol
+#:                       bağımsız çalışıyor (CORE/checkout.py::check_out());
+#:                       kilit gizlilik/yetki değil eşzamanlılık koruması,
+#:                       ham SQL yazabilen biri zaten RBAC'ın koruduğu her
+#:                       şeyi de yazabilir — tek tabloyu korumak ek güvenlik
+#:                       kazandırmaz (bkz. DB/migrations.py::_m26_file_locks).
 #:
 #: Yönetici-vs-Standart ayrımı (ör. yalnızca yöneticinin retention_profiles
 #: şablonu değiştirebilmesi) bu kümenin kapsamı DIŞINDA: `can_write()` o

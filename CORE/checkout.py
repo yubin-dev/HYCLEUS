@@ -80,13 +80,65 @@ Kayıt defteri `file_id` ile anahtarlı. İkinci açma YENİ bir kopya
   · biri check-in edilip silinince diğeri artık dosya olarak kalırdı
 
 `reopened` bayrağı arayüze "yeni açmadım, olanı gösteriyorum" diyor.
+
+
+Aynı belge BAŞKA BİR UYGULAMA ÖRNEĞİNDE açıksa — `file_locks`
+----------------------------------------------------------------
+Yukarıdaki "iki kez açılırsa" bölümü tek bir SÜREÇ içindir: `registry`
+bellekte, süreç kapanınca (ya da çökünce) kaybolur. İKİ AYRI HYCLEUS
+süreci (aynı makinede çift tıklama, ya da aynı `data/` dizinini paylaşan
+iki kurulum) aynı `file_id`'yi aynı anda çıkışa alırsa, hiçbiri diğerinin
+bellek içi kaydını GÖREMEZ — sonuç modülün en üstteki "iki kopya olsaydı"
+uyarısıyla AYNI sınıf sorun, yalnızca ikinci kopya başka bir SÜREÇTE:
+iki düz metin kopyası, iki bağımsız düzenleme, son geri yazan diğerininkini
+SESSİZCE SİLER.
+
+Çözüm `disposal_queue` (B-079) ile AYNI desen — DB/migrations.py::
+_m26_file_locks: niyet (kimin, hangi makineden, hangi süreçten açtığı)
+FİİLİ çözmeden ÖNCE `file_locks` tablosuna kalıcı yazılır. `file_id`
+PRIMARY KEY olduğu için ikinci bir yazma denemesi `IntegrityError` ile
+anında reddedilir — SELECT'le önce kontrol edip sonra INSERT etmenin
+açacağı yarış penceresi yok, SQLite'ın kendi tekillik garantisi kilidi
+veriyor.
+
+PID canlılığı — SAHİPSİZ KALAN kilit
+-------------------------------------
+Bir süreç dosyayı açıkken çökerse (`check_in`/`discard` hiç çağrılmaz),
+kilit satırı SÜRESİZ orada kalır — tıpkı `disposal_queue`'nun yarım kalan
+bir silmeyi kalıcı kaydetmesi gibi. `release_stale_locks()` açılışta
+(`main.py`, `resume_pending_disposals()`/`purge_orphans()` ile AYNI
+bölümde) her satırı gözden geçirir:
+
+  · `hostname` BU makineyle eşleşmiyorsa DOKUNULMAZ — başka bir makinenin
+    süreç tablosu buradan sorgulanamaz, "canlı mı" sorusu YANITLANAMAZ ve
+    yanıtlanamayan bir soruya "ölü" demek YANLIŞ tarafta hata yapmak olur.
+  · Eşleşiyorsa `pid` işletim sisteminden sorgulanır (`_pid_alive`):
+    Windows'ta `OpenProcess` (ctypes, `os.kill(pid, 0)` KULLANILMIYOR —
+    Windows'ta 0 sinyali `TerminateProcess`'e düşüyor ve GERÇEKTEN
+    öldürüyor, bu yüzden POSIX'teki "sinyal gönderme, yalnızca var mı
+    bak" anlamını TAŞIMIYOR), POSIX'te `os.kill(pid, 0)`. Ölüyse kilit
+    SAHİPSİZ sayılır ve kaldırılır — dosya bir sonraki `check_out()`
+    çağrısında normal şekilde devralınabilir.
+
+BİLİNÇLİ ASİMETRİ: `pid` YENİDEN KULLANILMIŞSA (süreç çıkmış, işletim
+sistemi aynı numarayı BAŞKA bir programa vermiş) canlılık kontrolü
+YANLIŞ POZİTİF verir — kilit "hâlâ tutuluyor" sanılıp SERBEST
+BIRAKILMAZ. Bu KASITLI: yanlış tarafta hata yapmak (ölü bir kilidi biraz
+daha uzun tutmak) diğer yönden (canlı bir kilidi erken serbest bırakıp
+iki sürecin aynı dosyayı aynı anda düzenlemesine izin vermek) kesinlikle
+daha güvenli — ikincisi bu modülün var olma sebebini bizzat ihlal
+ederdi.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
 import os
+import socket
+import sqlite3
+import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -107,9 +159,40 @@ SETTLE_SECONDS = 2.0
 #: Geri yazma sırasında kullanılan geçici uzantı.
 _TMP_SUFFIX = ".hcl-rewrite-tmp"
 
+#: Bu SÜRECİN kilit sahipliği kimliği — süreç başına BİR KEZ, ithal
+#: edilirken üretilir (modül tekil, bkz. DBManager singleton deseni).
+#: `file_locks.session_id`'ye yazılır; `release_lock()` yalnızca KENDİ
+#: session_id'sine ait satırı kaldırır. Testler iki AYRI "uygulama
+#: örneğini" aynı süreçte simüle etmek için `check_out()`'a açıkça farklı
+#: bir `session_id` geçebilir.
+SESSION_ID = uuid.uuid4().hex
+
 
 class CheckoutError(Exception):
     """Çıkış/giriş akışının bir adımı başarısız olduğunda fırlar."""
+
+
+class FileLockedError(CheckoutError):
+    """
+    Dosya BAŞKA bir uygulama örneğinde zaten açık.
+
+    `CheckoutError`'ın alt sınıfı: mevcut `except CheckoutError` çağrı
+    yerleri (ör. `UI/main_window_open.py::_on_ctx_open`) hiçbir değişiklik
+    gerekmeden bunu da yakalıyor — yalnızca mesaj daha bilgilendirici.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        holder_user_id: int | None,
+        holder_hostname: str,
+        locked_at: str,
+    ) -> None:
+        super().__init__(message)
+        self.holder_user_id = holder_user_id
+        self.holder_hostname = holder_hostname
+        self.locked_at = locked_at
 
 
 @dataclass
@@ -204,6 +287,186 @@ class CheckoutRegistry:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Kilit — `file_locks` (modül docstring'i, "BAŞKA BİR UYGULAMA ÖRNEĞİNDE")
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class LockSweepReport:
+    """`release_stale_locks()`'ın sonucu — `CORE/disposal.py::DisposalResumeReport` ile aynı biçim."""
+
+    released: int = 0
+    #: (file_id, eski sahibin hostname'i) çiftleri — denetim/UI için.
+    released_ids: list[tuple[int, str]] = field(default_factory=list)
+
+    @property
+    def had_stale(self) -> bool:
+        return self.released > 0
+
+    def summary(self) -> str:
+        if not self.had_stale:
+            return "Dosya kilitleri temiz — sahipsiz kalan yok."
+        return f"{self.released} sahipsiz kalan dosya kilidi temizlendi."
+
+
+def _pid_alive(pid: int) -> bool:
+    """
+    `pid`'in BU makinede hâlâ çalışan bir sürece ait olup olmadığı.
+
+    `os.kill(pid, 0)` Windows'ta KULLANILMIYOR: POSIX'te sinyal 0 "sinyal
+    gönderme, yalnızca izin/varlığı sına" anlamına gelir ama Windows'un
+    `os.kill()` uygulaması sinyal değerini `TerminateProcess`'e geçiriyor
+    — yani `0` GERÇEKTEN süreci öldürür (ölçülmedi, CPython kaynağından:
+    `Modules/posixmodule.c` Windows dalı `TerminateProcess(handle, sig)`
+    çağırıyor). Bunun yerine `OpenProcess` ile bir tutamaç açılabiliyor mu
+    diye bakılıyor — yalnızca sorgulama, yan etkisi yok.
+    """
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(  # type: ignore[attr-defined]
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # var ama başka kullanıcıya ait — yine de ÇALIŞIYOR
+    except OSError:
+        return False
+    return True
+
+
+def acquire_lock(
+    db: Any,
+    *,
+    file_id: int,
+    user_id: int | None = None,
+    session_id: str | None = None,
+    pid: int | None = None,
+    hostname: str | None = None,
+) -> None:
+    """
+    `file_id` için kalıcı bir kilit satırı yazar — FİİLİ çözmeden ÖNCE.
+
+    `file_id` PRIMARY KEY olduğu için ikinci bir çağrı `IntegrityError`
+    ile reddedilir; bu satır o zaman kimin elinde olduğuna bakar:
+    KENDİ `session_id`'mize aitse (aynı süreç yeniden açıyor) sessizce
+    başarılı sayılır — `check_out()`'un "aynı belge iki kez açılırsa"
+    yolunun bu tabloda karşılığı budur. Başkasına aitse `FileLockedError`.
+
+    `pid`/`hostname` yalnızca TESTLER için dışarıdan verilebiliyor
+    (sahte/ölü bir süreç simüle etmek); üretim çağrıları hep gerçek
+    `os.getpid()`/`socket.gethostname()` kullanır.
+
+    Raises:
+        FileLockedError — dosya BAŞKA bir session_id tarafından tutuluyor.
+    """
+    sid = session_id or SESSION_ID
+    gercek_pid = pid if pid is not None else os.getpid()
+    gercek_host = hostname or socket.gethostname()
+    try:
+        db.execute(
+            "INSERT INTO file_locks (file_id, session_id, user_id, hostname, pid)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (file_id, sid, user_id, gercek_host, gercek_pid),
+        )
+    except sqlite3.IntegrityError:
+        row = db.fetchone("SELECT * FROM file_locks WHERE file_id = ?", (file_id,))
+        if row is not None and row["session_id"] == sid:
+            _log.info("lock_reused  file_id=%s session=%s", file_id, sid)
+            return
+        sahip = row["hostname"] if row is not None else "?"
+        kilit_zamani = row["locked_at"] if row is not None else "?"
+        sahip_kullanici = row["user_id"] if row is not None else None
+        raise FileLockedError(
+            f"Bu dosya başka bir uygulama örneğinde zaten açık "
+            f"(makine={sahip}, kullanıcı={sahip_kullanici}, "
+            f"açılma={kilit_zamani}). Bu dosyayı düzenlemek için önce "
+            "orada kapatılması gerekiyor.",
+            holder_user_id=sahip_kullanici,
+            holder_hostname=sahip,
+            locked_at=kilit_zamani,
+        ) from None
+
+
+def release_lock(db: Any, file_id: int, *, session_id: str | None = None) -> bool:
+    """
+    `file_id`'nin kilidini kaldırır — yalnızca KENDİ `session_id`'mize aitse.
+
+    Başka bir session_id'ye ait bir satırı SESSİZCE atlar (silmez): bu
+    süreç o dosyayı hiç açmamıştır, bir başkasının kilidine dokunmak
+    `check_out()`'un verdiği tekillik garantisini bozardı.
+
+    Returns:
+        True  — kilit KALDIRILDI (bizimdi)
+        False — satır yoktu ya da bize ait değildi
+    """
+    sid = session_id or SESSION_ID
+    row = db.fetchone("SELECT session_id FROM file_locks WHERE file_id = ?", (file_id,))
+    if row is None or row["session_id"] != sid:
+        return False
+    db.execute("DELETE FROM file_locks WHERE file_id = ? AND session_id = ?", (file_id, sid))
+    return True
+
+
+def release_stale_locks(db: Any) -> LockSweepReport:
+    """
+    Açılış kurtarması — SAHİPSİZ KALAN kilitleri temizler.
+
+    `main.py`'de `resume_pending_disposals()`/`purge_orphans()` ile AYNI
+    açılış bölümünde çağrılmalı. Modül docstring'indeki "PID canlılığı"
+    bölümüne bakın: yalnızca BU makineye ait (`hostname` eşleşen) VE
+    `pid`'i artık yaşamayan satırlar kaldırılır; başka bir makineye ait
+    ya da hâlâ yaşayan bir sürece ait satırlara DOKUNULMAZ.
+
+    Temizlenen bir dosya bir SONRAKİ `check_out()` çağrısında normal
+    şekilde (yeniden `acquire_lock()` ile) devralınabilir — bu fonksiyon
+    kendiliğinden yeniden açmaz, yalnızca yolu temizler.
+    """
+    kendi_host = socket.gethostname()
+    rows = db.fetchall("SELECT * FROM file_locks")
+    released = 0
+    released_ids: list[tuple[int, str]] = []
+
+    for row in rows:
+        if row["hostname"] != kendi_host:
+            continue  # başka makine — canlılık buradan doğrulanamaz, dokunma
+        if _pid_alive(row["pid"]):
+            continue  # hâlâ çalışıyor — meşru kilit
+
+        db.execute("DELETE FROM file_locks WHERE file_id = ?", (row["file_id"],))
+        db.log(
+            "file_lock_released_stale",
+            target_type="file",
+            target_id=row["file_id"],
+            detail=(
+                f"eski_session={row['session_id']} pid={row['pid']} "
+                f"hostname={row['hostname']} locked_at={row['locked_at']} "
+                "— önceki oturum dosya açıkken çökmüş olabilir"
+            ),
+        )
+        released += 1
+        released_ids.append((row["file_id"], row["hostname"]))
+
+    if released:
+        _log.warning(
+            "Açılışta %d sahipsiz kalan dosya kilidi temizlendi — "
+            "önceki oturum bir belge açıkken çökmüş olabilir.",
+            released,
+        )
+    return LockSweepReport(released=released, released_ids=released_ids)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Çıkış (check-out)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -211,19 +474,30 @@ class CheckoutRegistry:
 def check_out(
     registry: CheckoutRegistry,
     *,
+    db: Any,
     file_id: int,
     hcl_path: Path | str,
     key: bytes,
     aad_hwid: str | None = None,
+    user_id: int | None = None,
+    session_id: str | None = None,
 ) -> CheckedOutFile:
     """
     Belgeyi SafeZone'a çözer ve kayıt defterine ekler.
 
-    Aynı belge zaten açıksa YENİ kopya üretmez; mevcut kaydı
-    `reopened=True` ile döndürür (gerekçe modül docstring'inde).
+    Aynı belge AYNI süreçte zaten açıksa YENİ kopya üretmez; mevcut kaydı
+    `reopened=True` ile döndürür (gerekçe modül docstring'inde, "iki kez
+    açılırsa"). BAŞKA bir uygulama örneğinde açıksa `FileLockedError`
+    (modül docstring'i, "BAŞKA BİR UYGULAMA ÖRNEĞİNDE") — dosyaya HİÇ
+    dokunulmaz.
+
+    `db`'ye ne kadar erken sırada gerekli — kilit çözmeden ÖNCE alınır:
+    kilit alınamazsa (başka bir örnek tutuyor) şifre çözme hiç
+    denenmemeli.
 
     Raises:
-        CheckoutError — şifre çözme ya da yazma başarısız olursa.
+        FileLockedError — dosya başka bir örnekte açık.
+        CheckoutError    — şifre çözme ya da yazma başarısız olursa.
     """
     mevcut = registry.get(file_id)
     if mevcut is not None and mevcut.exists():
@@ -236,10 +510,14 @@ def check_out(
         _log.warning("checkout_stale  file_id=%s path=%s", file_id, mevcut.safe_path)
         registry.remove(file_id)
 
+    sid = session_id or SESSION_ID
+    acquire_lock(db, file_id=file_id, user_id=user_id, session_id=sid)
+
     hcl_path = Path(hcl_path)
     try:
         content, meta = decrypt_file(hcl_path, key, hwid=aad_hwid)
     except Exception as exc:
+        release_lock(db, file_id, session_id=sid)
         raise CheckoutError(f"Dosya çözülemedi: {exc}") from exc
 
     original_name = str(meta.get("filename") or hcl_path.stem)
@@ -249,6 +527,7 @@ def check_out(
     try:
         safe_path.write_bytes(content)
     except Exception as exc:
+        release_lock(db, file_id, session_id=sid)
         raise CheckoutError(f"SafeZone'a yazılamadı: {exc}") from exc
     finally:
         del content
@@ -375,20 +654,23 @@ def check_in(
     file_id: int,
     key: bytes,
     *,
+    db: Any,
     user_id: int,
     hwid: str | None = None,
     reason: str = "manual",
     shred: bool = True,
+    session_id: str | None = None,
 ) -> CheckinResult:
     """
     Belgeyi kapatır: değiştiyse geri şifreler, geçici kopyayı güvenli siler.
 
     `shred=False` yalnızca ara geri yazmalar için (belge açık kalmaya
-    devam ediyor).
+    devam ediyor) — bu durumda `file_locks` kilidi de KORUNUR, belge
+    hâlâ bu süreçte açık.
 
     Geri yazma BAŞARISIZ olursa geçici kopya SİLİNMEZ ve kayıt defterinde
     kalır: kullanıcının düzenlemesi tek nüsha hâlinde orada duruyor,
-    onu silmek veri kaybı olurdu.
+    onu silmek veri kaybı olurdu — kilit de aynı gerekçeyle KORUNUR.
     """
     entry = registry.get(file_id)
     if entry is None:
@@ -411,6 +693,7 @@ def check_in(
     if shred:
         silindi = _shred(entry)
         registry.remove(file_id)
+        release_lock(db, file_id, session_id=session_id)
 
     return CheckinResult(
         file_id=file_id, rewritten=degisti, shredded=silindi,
@@ -419,7 +702,7 @@ def check_in(
     )
 
 
-def discard(registry: CheckoutRegistry, file_id: int) -> bool:
+def discard(registry: CheckoutRegistry, file_id: int, *, db: Any, session_id: str | None = None) -> bool:
     """
     Değişiklikleri ATARAK kapatır — geri yazma YOK, yalnızca güvenli silme.
 
@@ -431,6 +714,7 @@ def discard(registry: CheckoutRegistry, file_id: int) -> bool:
     if entry is None:
         return False
     _log.info("discard  file_id=%s", file_id)
+    release_lock(db, file_id, session_id=session_id)
     return _shred(entry)
 
 
@@ -453,9 +737,11 @@ def check_in_all(
     registry: CheckoutRegistry,
     key: bytes,
     *,
+    db: Any,
     user_id: int,
     hwid: str | None = None,
     reason: str = "shutdown",
+    session_id: str | None = None,
 ) -> list[CheckinResult]:
     """
     Açık BÜTÜN belgeleri kapatır — kapanışta ve oturum kilidinde çağrılıyor.
@@ -468,8 +754,9 @@ def check_in_all(
     for entry in registry.all():
         try:
             sonuclar.append(
-                check_in(registry, entry.file_id, key,
-                         user_id=user_id, hwid=hwid, reason=reason)
+                check_in(registry, entry.file_id, key, db=db,
+                         user_id=user_id, hwid=hwid, reason=reason,
+                         session_id=session_id)
             )
         except CheckoutError as exc:
             _log.error("checkin_failed  file_id=%s exc=%s", entry.file_id, exc)
@@ -548,11 +835,15 @@ def stale_safezone_files(registry: CheckoutRegistry) -> list[Path]:
 
 
 __all__ = [
+    "SESSION_ID",
     "SETTLE_SECONDS",
     "CheckedOutFile",
     "CheckinResult",
     "CheckoutError",
     "CheckoutRegistry",
+    "FileLockedError",
+    "LockSweepReport",
+    "acquire_lock",
     "apply_checkin",
     "check_in",
     "check_in_all",
@@ -561,6 +852,8 @@ __all__ = [
     "has_changed",
     "is_settled",
     "log_checkout",
+    "release_lock",
+    "release_stale_locks",
     "rewrite_encrypted",
     "sha256_of",
     "stale_safezone_files",
