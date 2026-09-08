@@ -40,6 +40,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from CORE.checkout import (
     CheckoutError,
     CheckoutRegistry,
+    FileLockedError,
     apply_checkin,
     check_in,
     check_in_all,
@@ -92,6 +93,26 @@ def open_with_default_app(path: Path) -> None:
         subprocess.Popen(["xdg-open", str(path)])  # nosec B607
 
 
+def _kullanici_gorunen_adi(db: DBManager, user_id: int | None) -> str:
+    """
+    `FileLockedError.holder_user_id`'yi mesaj için bir görünen ada çevirir.
+
+    Salt kozmetik: kilit kararının kendisi zaten `CORE/checkout.py`'de
+    verildi, burası yalnızca kullanıcıya HAM bir `user_id` yerine
+    okunabilir bir ad göstermek için. Kullanıcı silinmişse (ya da id
+    None'sa — makine eşleşmesi olmayan bir satır) ham kimliğe düşülüyor,
+    hata FIRLATILMIYOR: bu bir "kilidi kim tutuyor" bildirimi, başarısız
+    olması gereken bir doğrulama değil.
+    """
+    if user_id is None:
+        return "bilinmiyor"
+    try:
+        row = db.fetchone("SELECT username FROM users WHERE id = ?", (user_id,))
+    except Exception:  # pragma: no cover — salt kozmetik, DB hatası burada boğulur
+        row = None
+    return row["username"] if row is not None else f"kullanıcı #{user_id}"
+
+
 class OpenMixin:
     """Şeffaf erişim: aç → düzenle → geri şifrele."""
 
@@ -126,6 +147,17 @@ class OpenMixin:
                 self._checkouts, db=db, file_id=file_id, hcl_path=filepath,
                 key=self._key, aad_hwid=aad_hwid, user_id=self._user_id,
             )
+        except FileLockedError as exc:
+            _log.error("checkout_failed  file_id=%s exc=%s", file_id, exc)
+            ad = _kullanici_gorunen_adi(db, exc.holder_user_id)
+            QMessageBox.critical(
+                self, "Aç",
+                f"Bu dosya başka bir uygulama örneğinde zaten açık "
+                f"(makine={exc.holder_hostname}, kullanıcı={ad}, "
+                f"açılma={exc.locked_at}). Bu dosyayı düzenlemek için önce "
+                "orada kapatılması gerekiyor.",
+            )
+            return
         except CheckoutError as exc:
             _log.error("checkout_failed  file_id=%s exc=%s", file_id, exc)
             QMessageBox.critical(self, "Aç", str(exc))

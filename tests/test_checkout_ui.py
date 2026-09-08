@@ -194,6 +194,53 @@ def test_opening_twice_does_not_launch_a_second_copy(sahne, db, hcl, _acma_engel
     assert len(set(_acma_engelle)) == 1   # aynı yol iki kez açıldı, kopya yok
 
 
+def test_locked_by_someone_else_shows_a_username_not_a_raw_id(
+    sahne, db, hcl, _diyalog_engelle
+) -> None:
+    """
+    Kilit BAŞKA bir kullanıcıya aitse hata mesajı bir kullanıcı ADI
+    göstermeli — `CORE/checkout.py::FileLockedError.holder_user_id` ham
+    bir `user_id` tamsayısı taşıyor ve bunu doğrudan basmak
+    ("kullanıcı=6") kullanıcıya hiçbir şey söylemezdi.
+    """
+    import socket
+
+    from CORE.checkout import acquire_lock
+
+    _kayit(db, hcl)
+    db.execute(
+        "INSERT OR IGNORE INTO users (id, username, password_hash, role, status, hwid)"
+        " VALUES (6, 'baska_kullanici', '', 'user', 'approved', 'H2')")
+    acquire_lock(db, file_id=1, user_id=6, session_id="baska-oturum",
+                 pid=os.getpid(), hostname=socket.gethostname())
+
+    sahne._on_ctx_open(1, str(hcl))
+
+    assert sahne._checkouts.get(1) is None  # açılmadı
+    assert _diyalog_engelle and _diyalog_engelle[0][0] == "critical"
+    metin = _diyalog_engelle[0][1]
+    assert "kullanıcı=baska_kullanici" in metin
+    assert "kullanıcı=6" not in metin
+
+
+def test_locked_by_a_deleted_user_falls_back_to_the_raw_id(
+    sahne, db, hcl, _diyalog_engelle
+) -> None:
+    """Kullanıcı satırı artık yoksa (silinmiş) ham kimliğe düşülmeli —
+    mesaj GÖSTERİLEMEMELİ değil, yalnızca daha az bilgilendirici olmalı."""
+    import socket
+
+    from CORE.checkout import acquire_lock
+
+    _kayit(db, hcl)
+    acquire_lock(db, file_id=1, user_id=999, session_id="baska-oturum",
+                 pid=os.getpid(), hostname=socket.gethostname())
+
+    sahne._on_ctx_open(1, str(hcl))
+
+    assert _diyalog_engelle and "kullanıcı=kullanıcı #999" in _diyalog_engelle[0][1]
+
+
 def test_opening_is_audited(sahne, db, hcl) -> None:
     _kayit(db, hcl)
     sahne._on_ctx_open(1, str(hcl))
