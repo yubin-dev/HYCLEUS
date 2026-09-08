@@ -45,6 +45,7 @@ from CORE.timestamp import (
     TRAILER_VERSION,
     TimestampError,
     TimestampInfo,
+    _take,
     attach_trailer,
     build_request,
     decode_trailer,
@@ -371,6 +372,128 @@ def test_a_length_pointing_into_the_header_is_rejected(hcl: Path) -> None:
     evil = struct.pack(">I", size) + crypto.TRAILER_MAGIC
     hcl.write_bytes(hcl.read_bytes() + evil)
     assert read_trailer(hcl) is None
+
+
+# ── `_trailer_offset()` sınırları — 2026-09-08 mutasyon turunun bulduğu
+# üç durum. Rastgele ciphertext'e dayanan yukarıdaki testler bunları
+# YAKALAMIYORDU: "ikinci magic tesadüfen tutmuyor" olasılığı (2⁻³²) pratikte
+# her zaman doğru çıktığı için, altlarındaki asıl sınır kontrolleri hiç
+# ÇALIŞTIRILMADAN geçiyordu. Aşağıdakiler ikinci magic'i BİLEREK doğru
+# yere yerleştirip yalnızca hedeflenen sınırı test ediyor.
+
+
+def test_a_trailer_immediately_after_empty_ciphertext_is_found(
+    tmp_path: Path, key: bytes
+) -> None:
+    """
+    Boş bir kaynak dosya (ciphertext_len=0) + tam `_TRAILER_MIN_SIZE`
+    (29 bayt) uzunluğunda GERÇEK bir fragman: `_trailer_offset()`'in iki
+    sınır kontrolü de ("gövde + minimum fragman sığıyor mu", "fragman
+    gövdenin içine mi taşıyor") burada TAM EŞİTLİKTE — rastgele içerikli
+    hiçbir test bu tam eşitliği doğal olarak üretmiyordu. `<` yerine `<=`
+    yazılsa (mutasyon turu ikisini de buldu) bu GEÇERLİ, sınırdaki durum
+    "fragman yok" sayılırdı.
+    """
+    src = tmp_path / "bos.bin"
+    src.write_bytes(b"")
+    dst, _sha, _aad = encrypt_file(src, key, _USER_ID, hwid=_HWID)
+
+    info = TimestampInfo(hash_algorithm="", hashed_hex="", tsa_url="", token_der=b"")
+    assert len(encode_trailer(info)) == 29  # _TRAILER_MIN_SIZE'ın ta kendisi
+    attach_trailer(dst, info)
+
+    assert read_trailer(dst) == info
+    content, _meta = decrypt_file(dst, key, hwid=_HWID)
+    assert content == b""
+
+
+def test_a_declared_length_below_the_minimum_trailer_size_is_rejected(
+    hcl: Path,
+) -> None:
+    """
+    `total < _TRAILER_MIN_SIZE`: ikinci magic'i BİLEREK doğru konuma
+    yerleştirip kontrolün rastgele ciphertext'e güvenmediğini kanıtlıyor.
+    """
+    raw = bytearray(hcl.read_bytes())
+    total = 20  # _TRAILER_MIN_SIZE (29)'un altında
+    yeni_boyut = len(raw) + 8  # footer eklendikten SONRAKİ boyut
+    start = yeni_boyut - total
+    raw[start:start + 4] = crypto.TRAILER_MAGIC  # ikinci magic kontrolünü bilerek geçir
+    footer = struct.pack(">I", total) + crypto.TRAILER_MAGIC
+    hcl.write_bytes(bytes(raw) + footer)
+
+    assert read_trailer(hcl) is None
+
+
+def test_the_minimum_trailer_size_boundary_is_exact(hcl: Path) -> None:
+    """
+    `_TRAILER_MIN_SIZE` (29) tam sınırında: 28 reddedilmeli, 29
+    reddedilmemeli (yalnızca uzunluktan — 29 baytlık gövde `decode_trailer`
+    için hâlâ yetersiz olabilir, ama BU kontrolden geçmeli). Sabitin
+    kendisi 28 olsaydı (kapatılmamış bir off-by-one) yukarıdaki "20"
+    testi bunu YAKALAMAZDI — 20 ikisinin de altında.
+    """
+    def _yerlestir(total: int) -> bytes:
+        raw = bytearray(hcl.read_bytes())
+        yeni_boyut = len(raw) + 8
+        start = yeni_boyut - total
+        raw[start:start + 4] = crypto.TRAILER_MAGIC
+        footer = struct.pack(">I", total) + crypto.TRAILER_MAGIC
+        return bytes(raw) + footer
+
+    hcl.write_bytes(_yerlestir(28))
+    assert read_trailer(hcl) is None  # 28 < 29 → reddedilmeli
+
+    hcl.write_bytes(_yerlestir(29))
+    # 29, uzunluk kontrolünü GEÇMELİ — `decode_trailer` içindeki alan
+    # ayrıştırması başka bir sebeple düşebilir (29 bayt gerçek bir
+    # şemayı taşımaya yetmeyebilir), ama BU sınırdan reddedilmemeli.
+    try:
+        read_trailer(hcl)
+    except TimestampError as exc:
+        assert "TRAILER_MAGIC" not in str(exc)  # magic kontrollerinden değil
+
+
+def test_a_footer_without_its_own_closing_magic_is_rejected(hcl: Path) -> None:
+    """
+    Footer'ın kendi kapanış magic'i tutmuyorsa reddedilmeli — `len(footer)
+    != 8 or footer[4:] != TRAILER_MAGIC` yerine `and` yazılsa (mutasyon
+    turu bunu buldu), dosyanın gerçek son 8 baytı HER ZAMAN tam 8 bayt
+    olduğu için ilk yarı hep `False` olur ve kontrol FİİLEN HİÇ ÇALIŞMAZ
+    hale gelirdi — kapanış magic'i ne olursa olsun kabul edilirdi.
+    """
+    raw = bytearray(hcl.read_bytes())
+    total = 40
+    yeni_boyut = len(raw) + 8
+    start = yeni_boyut - total
+    raw[start:start + 4] = crypto.TRAILER_MAGIC  # baştaki magic GERÇEK
+    footer = struct.pack(">I", total) + b"YANL"  # kapanış magic'i BOZUK
+    hcl.write_bytes(bytes(raw) + footer)
+
+    assert read_trailer(hcl) is None
+
+
+def test_take_accepts_a_length_field_ending_exactly_at_the_buffer_end() -> None:
+    """
+    `_take()`: `pos + 4 == len(buf)` sınırında — uzunluk alanının kendisi
+    arabelleğin TAM son 4 baytı ve ardından sıfır uzunluklu, geçerli bir
+    alan geliyor. `>` yerine `>=` yazılsa (mutasyon turu bunu buldu) bu
+    meşru sınır durumu reddedilirdi.
+    """
+    buf = struct.pack(">I", 0)  # yalnızca uzunluk alanı (0), başka veri yok
+    veri, pos = _take(buf, 0)
+    assert veri == b""
+    assert pos == 4
+
+
+def test_take_accepts_a_payload_ending_exactly_at_the_buffer_end() -> None:
+    """`_take()`: `pos + size == len(buf)` sınırında — veri arabelleğin
+    TAM sonuna kadar uzanıyor, taşmıyor."""
+    veri_baytlari = b"1234567"
+    buf = struct.pack(">I", len(veri_baytlari)) + veri_baytlari
+    veri, pos = _take(buf, 0)
+    assert veri == veri_baytlari
+    assert pos == len(buf)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

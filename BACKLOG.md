@@ -8869,3 +8869,234 @@ Tam suite: **3202 passed**, 4 skipped. ruff/mypy/bandit temiz (`tests/`
 bandit'in CI kapsamı DIŞINDA, `pyproject.toml::exclude_dirs`).
 
 ---
+
+## B-111 — `tsa_url()` şema kontrolü `http`'i de kabul ediyor — sertleştirme kararı, henüz alınmadı
+
+**Durum:** AÇIK, karar bekliyor.
+**Öncelik:** Düşük.
+**Bulundu:** 2026-09-08 — ağ mimarisi/API anahtarı envanteri (SECURITY.md
+§4.28, EN+TR) sırasında.
+
+`CORE/timestamp.py::tsa_url()` ayarlardaki TSA adresini `urlparse(url).
+scheme not in ("http", "https")` ile kontrol ediyor — `file://`/`ftp://`'yi
+doğru biçimde kapatıyor ama `http://`'ye izin veriyor. TSA yanıtı kendi
+kendini doğruladığı için (imzalı token, `parse_response()`'un özet/
+algoritma/nonce çapraz kontrolü) düz metin HTTP sahte bir damga
+ÜRETİLMESİNE yol açmıyor — yalnızca (a) hangi özetin damgalandığını yol
+üzerindeki birine sızdırıyor (trafik analizi, belge içeriği değil) ve
+(b) TLS'e göre daha kolay bir hizmet-engelleme yüzeyi açıyor.
+
+**Karar bekliyor:** `http`'i tamamen reddetmek mi (bazı kurumsal/hava
+boşluklu TSA'ların dahili ağda düz HTTP kullanma ihtimalini kapatır), yoksa
+yalnızca Admin Panel'de `https` olmayan bir adres kaydedilirken ayrı,
+belirgin bir uyarı mı göstermek — henüz seçilmedi. Ayrıntı ve gerekçe:
+SECURITY.md §4.28.
+
+---
+
+## B-112 — `get_usb_hwid()` yalnızca Windows'ta çalışıyor: paketlenmiş Linux/macOS derlemesi USB takılı olsun ya da olmasın HİÇ AÇILMIYOR
+
+**Durum:** AÇIK, karar bekliyor.
+**Öncelik:** Yüksek.
+**Bulundu:** 2026-09-08 — K2-24'ün donanım-değişikliği kırılganlığı analizi
+sırasında (`docs/hwid-crossplatform.md`, "2026-09-08" bölümü).
+
+`CORE/usb_manager.py::get_usb_hwid()`'in gerçek donanım okuyan iki
+yöntemi de (`wmi` modülü, `wmic` subprocess) Windows'a özgü; Linux/macOS'ta
+ikisi de `except Exception: pass`'e düşüp fonksiyon `None` döndürüyor —
+USB fiziksel olarak takılı olsun ya da olmasın. `CORE/hwid_probe.py`'nin
+üç platformu okuyan prototipi (`read_linux()`/`read_macos()`) VAR ama
+`get_usb_hwid()`'e hiç BAĞLI DEĞİL (kendi NOT-WIRED durumu, K2-24).
+
+`main()` (main.py:322) QApplication kurulur kurulmaz, herhangi bir giriş
+ekranından ÖNCE `get_usb_hwid()`'i koşulsuz çağırıyor; `None` dönerse
+"USB Bulunamadı" diyip `sys.exit(1)` ile kapanıyor. Paketlenmiş (frozen)
+bir derlemede `DEV_MODE` yok sayıldığı için bu, **paketlenmiş Linux/macOS
+derlemesinin HER ZAMAN, koşulsuz, ilk ekrandan önce kapandığı** anlamına
+geliyor — donanım-değişikliği kırılganlığından çok daha büyük bir sorun:
+sıfırdan hiç çalışmıyor.
+
+`packaging/linux/smoke-test.sh` bunu bilerek etrafından dolaşıyor —
+kendi yorumu GUI açılışının başsız bir koşucuda sonsuza kadar bekleyen
+bir modal açacağını söylüyor ve bu yüzden yalnızca `--selftest`/`--version`
+test ediyor. Bu, sorunu ÇÖZMÜYOR, yalnızca CI'ın onu YAKALAMASINI
+engelliyor.
+
+**Karar bekliyor:**
+1. `CORE/hwid_probe.py`'nin `read_linux()`/`read_macos()`'unu
+   `get_usb_hwid()`'e bağlamak (K2-24'ün NOT-WIRED durumunu kapatan asıl
+   mimari karar — büyük iş, hwid_probe.py'nin kendi "gerçek donanımda
+   hiç çalıştırılmadı" sınırıyla birlikte değerlendirilmeli).
+2. Ya da Linux/macOS paketlemesini şimdilik "deneysel, USB-gated
+   özellikler çalışmaz" diye AÇIKÇA etiketlemek (README/packaging
+   dokümanı) — en azından kullanıcı sessizce kilitlenen bir uygulamayla
+   karşılaşmasın.
+3. Her durumda: `get_usb_hwid() is None` → `main()` çıkışını doğrudan
+   sınayan bir test eksik (mevcut testler bunu ölçmüyor) — hangi karar
+   alınırsa alınsın bu test yazılmalı.
+
+Ayrıntı ve gerekçe: `docs/hwid-crossplatform.md`, "2026-09-08 — Asıl soru
+... değildi" bölümü.
+
+---
+
+## B-113 — `export_sealed_pdf()` (K4-20/B-106) UI'a hiç bağlı değil: "İmzalı Rapor (PDF)" düğmesi yalnızca mühürsüz `export_pdf()`'i çağırıyor
+
+**Durum:** AÇIK, karar bekliyor.
+**Öncelik:** Düşük-Orta.
+**Bulundu:** 2026-09-08 — bu haftaki değişikliklerin arayüz yansımasını
+gözden geçirirken (K4-16/K4-20/B-092/B-099 UI taraması).
+
+`UI/AuditLogView.py::_export_pdf()` yalnızca `CORE.audit_report.export_pdf`
+(`sealed=False`) çağırıyor. B-106'da eklenen `export_sealed_pdf()` — PDF'e
+GERÇEK bir RFC 3161 mührü ekleyen fonksiyon — hiçbir UI'dan çağrılmıyor,
+tek kullanıcısı `CORE/verify_report_seal_cli.py` (komut satırı). Sonuç:
+son kullanıcı arayüzden hiçbir zaman mühürlü bir denetim raporu PDF'i
+üretemiyor; bu yetenek yalnızca CLI'dan erişilebilir.
+
+Bu bir çelişki DEĞİL — düğme metni ("İmzalı Rapor (PDF)") ürettiği şeyi
+doğru anlatıyor, yanlış bir "mühürlü" iddiası taşımıyor. Ama kullanıcı
+K4-20/B-106'nın sağladığı mühürleme yeteneğinden arayüzde hiç haberdar
+olmuyor ve ona erişemiyor.
+
+**Karar bekliyor:** UI'a bir "Mühürle" seçeneği eklemek (kasa anahtarı
+ZATEN oturumda mevcut — B-092/B-099'un CLI için getirdiği `--key-file`
+zorunluluğu burada sorun değil) mimari bir karar gerektiriyor: TSA ağ
+çağrısı UI iş parçacığında mı yapılacak (yukarıdaki `TimestampDialog.py`
+gerekçesi "iş parçacığı gerekmiyor" diyor ama o ÇEVRİMİÇİ bir TSA çağrısı
+değil, yalnızca yerel okuma; `export_sealed_pdf()` GERÇEK bir ağ isteği
+yapıyor — süre ve hata modu farklı), TSA hatası durumunda kullanıcıya ne
+gösterileceği, ve mühürsüz-mü-mühürlü-mü seçiminin nerede sunulacağı
+(dışa aktarma diyaloğunda bir onay kutusu mu). Salt kozmetik bir düzeltme
+değil, bu yüzden bu turda UYGULANMADI — ayrı bir madde olarak açıldı.
+
+---
+
+## B-110 — Sistematik mutasyon testi turu: CORE/crypto.py, timestamp.py, merkle.py, hclx.py — 54 hedefli mutasyon, 12 gerçek boşluk bulundu ve kapatıldı
+
+**Durum:** Kapalı.
+**Öncelik:** Orta.
+**Bulundu:** 2026-09-08 — bu haftaki dört kritik güvenlik modülünde
+sistematik bir mutasyon testi turu istendi.
+
+### Yeni bir araç kurulmadı — mevcut desen kullanıldı
+
+Depoda otomatik bir mutasyon test aracı (mutmut/cosmic-ray) hiç
+kurulmamış; bunun yerine SECURITY.md'nin onlarca girdisinde belgelenen
+**elle mutasyon** deseni var: hedeflenen satırı geçici olarak boz, testi
+çalıştır, düştüğünü doğrula, geri al (`git diff --stat` ile temiz
+onayı). Bu tur AYNI deseni kullandı, yalnızca elle tek tek yapmak yerine
+küçük bir Python betiğiyle (`old`/`new` dize değişimi + pytest + `git
+checkout`) ONLARCA hedefi ardı ardına otomatikleştirdi — mutmut/cosmic-
+ray'in kendisi KURULMADI.
+
+**Karar gerekçesi (görev bunu değerlendirmeyi istedi):** Otomatik bir
+araç kurmak bu depoda üç sebeple gerekçesiz kaldı: (1) mevcut elle desen
+zaten ÇALIŞIYOR ve her B-XXX girdisinde iz bırakıyor — SECURITY.md'nin
+"mutasyonla ölçüldü" cümleleri otomatik bir aracın üreteceği rapordan
+daha OKUNAKLI, çünkü HANGİ satırın NEDEN test edildiğini anlatıyor. (2)
+Bu depo `requirements-dev.txt`/`requirements-security.txt` bağımlılık
+eklemelerini son derece temkinli yönetiyor (her satır gerekçeli); genel
+amaçlı bir mutasyon aracı MODÜL BAŞINA saatler sürebilir (3600+ satırlık
+dört dosya × onlarca mutasyon varyantı) ve CI'a eklenirse süre bütçesini
+büyük ölçüde büyütürdü. (3) Otomatik araçlar YORUM/docstring-ağır
+Python'da (bu depo tam olarak böyle) çok sayıda "eşdeğer mutant" üretir
+— bu tur da tam olarak bunlardan ikisini BULDU (aşağıya bakın) ve bunları
+insan muhakemesiyle ayıklamak otomatik bir raporda daha ZOR olurdu.
+
+### Yöntem
+
+`CORE/crypto.py`, `CORE/timestamp.py`, `CORE/merkle.py`, `CORE/hclx.py`
+içindeki güvenlik-kritik her karşılaştırma/koşul/sınır taranıp 54 hedefli
+mutasyon uygulandı: karşılaştırma operatörü tersine çevirme (`!=`→`==`,
+`<`→`<=`, `>`→`>=`), koşul kaldırma (`if X:`→`if False:`), bileşik
+mantık bozma (`or`→`and`), operand takası (`node_hash(a,b)`→
+`node_hash(b,a)`), ve istisna daraltma kaldırma. İlk turda dar dosya
+hedefleri (`tests/test_crypto.py` gibi) kullanıldı ve BAŞLANGIÇTA hepsi
+"KILLED" göründü — ama bu YANLIŞTI: (a) yerel ortamda `pytest` hiç kurulu
+değildi, hata mesajı "module not found" bir test BAŞARISIZLIĞIYLA AYNI
+`returncode`'u veriyordu — düzeltildi (izole bir venv kurulup
+`requirements.txt`+`requirements-dev.txt` yüklendi); (b) bazı fonksiyonlar
+(`verify_file`, `verify_merkle_path`, `decode_proof`) testleri İSİMLERİNE
+göre TAHMİN edilen dosyada değil AYRI dosyalarda yaşıyordu
+(`tests/test_integrity.py`, `tests/test_timestamp_batch.py`) — dar dosya
+hedefleme YANLIŞ POZİTİF üretiyordu. İkisi de düzeltilip TÜM 54 mutasyon
+tam test takımına (`pytest tests/ -x` + iki bilinen alakasız
+başarısızlığın `--deselect`i) karşı YENİDEN çalıştırıldı.
+
+### Sonuç: 54 mutasyondan 42'si zaten ölüyordu, 12'si GERÇEKTEN kaçıyordu
+
+42 mutasyon (parse_response'un dört TSA-yanıt kontrolü, merkle ağacının
+CVE-2012-2459 önlemi, hclx'in imza/pencere/manifesto karşılaştırmaları,
+crypto'nun başlık doğrulaması, dahil) mevcut testler tarafından zaten
+YAKALANIYORDU. **12 mutasyon kaçıyordu** — hepsi için yeni test yazıldı,
+mutasyonla yeniden doğrulandı (KILLED), sonra geri alındı:
+
+1. **`crypto._trailer_offset`: dört sınır/bileşik kontrol** — `total <
+   MIN veya total > file_size`, `file_size-body_start < TAG+MIN`
+   (`<`→`<=`), `start < body_start+TAG` (`<`→`<=`), footer'ın kendi
+   `len(footer)!=8 or footer[4:]!=MAGIC` kontrolü (`or`→`and`).
+   **Kök sebep, hepsinde AYNI:** mevcut testler RASTGELE ciphertext
+   kullanıyordu ve "ikinci magic tesadüfen tutmuyor" olasılığı (2⁻³²)
+   pratikte HER ZAMAN doğru çıktığı için altındaki asıl sınır hiç
+   ÇALIŞTIRILMADAN geçiyordu — modülün kendi "kaza kontrolü" gerekçesinin
+   birebir kanıtı. Yeni testler ikinci magic'i BİLEREK doğru konuma
+   yerleştirip yalnızca hedeflenen satırı izole ediyor
+   (`tests/test_timestamp.py`, 6 yeni test — boş-ciphertext + tam 29
+   baytlık gerçek bir fragmanla iki sınırı AYNI ANDA tam eşitlikte
+   sınayan testi de içeriyor).
+2. **`crypto._TRAILER_MIN_SIZE` (29) off-by-one** — 28 ile 29'u ayıran
+   ayrı bir sınır testi (`test_the_minimum_trailer_size_boundary_is_exact`).
+3. **`crypto.verify_file`: `meta.get("hwid") is not None` koruması** —
+   dosyanın AAD'sinde hiç hwid kaydı YOKSA, çağıran bir hwid verse bile
+   hata FIRLATILMAMALI kontrolü hiç test edilmiyordu (`decrypt_file`'ın
+   AYNI kontrolü test ediliyordu ama `verify_file`'ın KENDİ kopyası
+   değil). Yeni test: `tests/test_integrity.py::
+   test_verify_file_does_not_enforce_hwid_when_the_file_never_recorded_one`.
+4. **`timestamp._take`: iki sınır** (`pos+4 > len(buf)`,
+   `pos+size > len(buf)`, ikisi de `>`→`>=`) — uzunluk alanı ya da veri
+   arabelleğin TAM sonunda biten meşru durumlar hiç test edilmiyordu.
+5. **`hclx.read_manifest`: `_AZAMI_MANIFEST` sınırı** (`>`→`>=`) —
+   mevcut test yalnızca AŞIRI aşan ucu (`\xff\xff\xff\xff`) sınıyordu,
+   tam sınırı değil.
+6. **`hclx.create_package`: `AZAMI_TOPLAM` sınırı** (`>`→`>=`) — aynı
+   desen, `test_boyut_siniri_net_hata_veriyor` de yalnızca aşan ucu
+   sınıyordu.
+7. **`hclx.read_manifest`: `if not payload: raise`** — tamamen boş
+   gövdeli ama geçerli uzunluklu bir manifesto hiç test edilmiyordu.
+
+**+16 yeni test** (6 test_timestamp.py, 4 test_checkout.py, 3
+test_hclx.py, 2 test_checkout_ui.py, 1 test_integrity.py — son ikisi
+görev 4/5'in bulduğu, aynı turda kapatılan Windows-şubesi ve UI
+boşluklarıyla ilgili, ayrıntı aşağıda B-112/kozmetik özet bölümünde).
+
+### İki mutasyon KASITLI OLARAK geri çevrildi — kanıtlanmış eşdeğer mutant
+
+- **`timestamp.verify_merkle_path`: `kok is None or yol is None` →
+  `and`.** `TimestampInfo.__post_init__` merkle alanlarının (root/index/
+  proof) ya BİRLİKTE dolu ya birlikte boş olmasını KENDİSİ zorluyor —
+  yani her üç GERÇEK `TimestampInfo` örneğinde `kok is None` ile
+  `yol is None` HER ZAMAN aynı değeri taşır ve `or`/`and` davranışça
+  AYNI. Farklı davranmaları için sınıfın kendi doğrulamasını ATLATAN
+  (elle `object.__setattr__` ile kurulmuş) bir nesne gerekirdi — hiçbir
+  gerçek çağıran bunu yapmıyor. Test YAZILMADI: ulaşılamaz bir durumu
+  sabitlemek, okuyucuya var olmayan bir riski varmış gibi gösterirdi.
+- **`crypto._trailer_offset`: `total > file_size` alt-koşulu.**
+  Ayrıştırıldığında: bu koşul kaldırılsa bile hemen altındaki `if start <
+  body_start + _TAG_SIZE: return None` kontrolü AYNI durumu HER ZAMAN
+  yakalıyor — `total > file_size` ⟹ `start = file_size - total` her
+  zaman NEGATİF ⟹ negatif değer her zaman `body_start+_TAG_SIZE`'tan
+  (pozitif) küçük. Yani bu alt-koşul, mevcut kod yapısında KANITLANABİLİR
+  biçimde ölü/gereksiz — kaldırılması hiçbir gözlemlenebilir davranışı
+  değiştirmiyor (mutasyon turu tam bunu doğruladı: genel "sınır kontrolü
+  kaldırıldı" mutasyonu yine de KILLED oldu, ama YALNIZCA alt sınır
+  (`total < MIN`) üzerinden — üst sınır hiç tetiklenmedi). Koda
+  dokunulmadı: gereksiz ama zararsız, basitleştirme ayrı bir estetik
+  karardır, bu turun kapsamı değil.
+
+### Doğrulama
+
+Tam suite (yeni 16 test dahil): **3181 passed**, 37 skipped (2 alakasız,
+önceden var olan başarısızlık ayrı `--deselect`; ayrıntı bu commit'in
+özetinde). ruff/mypy temiz. `git diff --stat CORE/` boş — mutasyonların
+hiçbiri kalıcı kod değişikliği bırakmadı, yalnızca testler kaldı.

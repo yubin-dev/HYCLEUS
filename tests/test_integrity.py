@@ -203,6 +203,26 @@ def test_verify_file_checks_hwid_when_asked(tmp_path: Path):
         verify_file(hcl, _KEY, hwid="BASKA-CIHAZ")
 
 
+def test_verify_file_does_not_enforce_hwid_when_the_file_never_recorded_one(
+    tmp_path: Path,
+):
+    """
+    Dosyanın AAD'sinde `hwid` hiç kaydedilmemişse (`meta.get("hwid") is
+    None`) — çağıran bir `hwid` verse bile — eşleşmezlik hatası
+    FIRLATILMAMALI. `verify_file()`'ın kendi gerekçesi: "meta.get('hwid')
+    is not None" koruması tam olarak bu senaryo için var; kaldırılırsa
+    hiçbir hwid'i olmayan meşru dosyalar (ör. eski bir kayıt, ya da HWID
+    zorunlu olmadan önce şifrelenmiş bir dosya) sahte bir HWID
+    uyuşmazlığıyla reddedilir.
+    """
+    src = tmp_path / "hwidsiz.txt"
+    src.write_bytes(_PLAINTEXT)
+    hcl, _sha, _aad = encrypt_file(src, _KEY, user_id=1, hwid=None)
+    src.unlink()
+
+    verify_file(hcl, _KEY, hwid="HERHANGI-BIR-CIHAZ")  # hata VERMEMELİ
+
+
 def test_verify_file_raises_oserror_for_a_missing_file(tmp_path: Path):
     with pytest.raises(OSError):
         verify_file(tmp_path / "yok.hcl", _KEY)

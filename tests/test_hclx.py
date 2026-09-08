@@ -35,6 +35,7 @@ from CORE.hclx import (
     RED_IMZA,
     RED_MANIFEST,
     RED_SURE_DOLDU,
+    VERSION,
     HclxError,
     create_package,
     open_package,
@@ -188,6 +189,28 @@ def test_boyut_siniri_net_hata_veriyor(tmp_path: Path,
     buyuk.write_bytes(b"a" * 100)
     with pytest.raises(HclxError, match="sınırını aşıyor"):
         create_package([buyuk], _KEY, user_id=1, hwid="H", dst=tmp_path / "x.hclx")
+
+
+def test_boyut_siniri_tam_sinirda_kabul_asilinca_reddediliyor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    `toplam > AZAMI_TOPLAM` sınırda: tam sınır DEĞERİ kabul edilmeli,
+    yalnızca AŞANI reddetmeli — `>` yerine `>=` yazılsa (mutasyon turu
+    2026-09-08'de bunu buldu) sınırdaki GEÇERLİ bir dosyayı da reddederdi.
+    Yukarıdaki `test_boyut_siniri_net_hata_veriyor` yalnızca AŞAN ucu
+    sınıyordu, tam sınırı değil.
+    """
+    monkeypatch.setattr(hclx, "AZAMI_TOPLAM", 10)
+
+    tam_sinirda = tmp_path / "tam.bin"
+    tam_sinirda.write_bytes(b"a" * 10)
+    create_package([tam_sinirda], _KEY, user_id=1, hwid="H", dst=tmp_path / "x.hclx")
+
+    asan = tmp_path / "asan.bin"
+    asan.write_bytes(b"a" * 11)
+    with pytest.raises(HclxError, match="sınırını aşıyor"):
+        create_package([asan], _KEY, user_id=1, hwid="H", dst=tmp_path / "y.hclx")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -429,6 +452,47 @@ def test_bicimsiz_girdiler_TEMIZ_hata_veriyor(tmp_path: Path, bozuk: bytes) -> N
     with pytest.raises(HclxError) as ex:
         read_manifest(yol)
     assert ex.value.kod == RED_BICIM
+
+
+def test_manifest_govdesi_tamamen_bos_reddediliyor(tmp_path: Path) -> None:
+    """
+    `if not payload: raise` — mutasyon turu bu kontrol kaldırılınca
+    hiçbir testin düşmediğini buldu; `_bicimsiz_girdiler` parametrelerinin
+    hiçbiri "geçerli uzunluklu manifesto + SIFIR baytlık gövde" durumunu
+    üretmiyordu.
+    """
+    icerik = b"{}"
+    yol = tmp_path / "govdesiz.hclx"
+    yol.write_bytes(MAGIC + bytes([VERSION]) + struct.pack(">I", len(icerik)) + icerik)
+    with pytest.raises(HclxError, match="gövdesi boş"):
+        read_manifest(yol)
+
+
+def test_manifest_uzunlugu_tam_sinirda_kabul_asilinca_reddediliyor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    `uzunluk > _AZAMI_MANIFEST` sınırda: tam sınır DEĞERİ yalnızca
+    UZUNLUK kontrolünden geçmeli (sonra JSON ayrıştırmasında başka bir
+    sebeple düşebilir) — `>` yerine `>=` yazılsa (mutasyon turu bunu
+    buldu) sınırdaki geçerli bir manifestoyu da uzunluktan reddederdi.
+    Mevcut `test_bicimsiz_girdiler_TEMIZ_hata_veriyor`daki
+    `\\xff\\xff\\xff\\xff` yalnızca AŞIRI AŞAN ucu sınıyordu, tam sınırı
+    değil.
+    """
+    monkeypatch.setattr(hclx, "_AZAMI_MANIFEST", 10)
+    bas = MAGIC + bytes([VERSION])
+
+    tam_sinirda = tmp_path / "tam.hclx"
+    tam_sinirda.write_bytes(bas + struct.pack(">I", 10) + b"x" * 10 + b"PAYLOAD")
+    with pytest.raises(HclxError) as ex:
+        read_manifest(tam_sinirda)
+    assert "makul değil" not in str(ex.value)  # uzunluktan REDDEDİLMEDİ
+
+    asan = tmp_path / "asan.hclx"
+    asan.write_bytes(bas + struct.pack(">I", 11) + b"x" * 11 + b"PAYLOAD")
+    with pytest.raises(HclxError, match="makul değil"):
+        read_manifest(asan)
 
 
 def test_hcl_dosyasi_hclx_diye_acilmiyor(tmp_path: Path, kaynak: list[Path]) -> None:
