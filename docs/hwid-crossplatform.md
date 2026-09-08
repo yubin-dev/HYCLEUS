@@ -277,3 +277,109 @@ geçiş" zaten var ve B-016'nın gerçek donanım ölçümüyle daralttığı
 kapsamla (serili aygıtlar geçiş gerektirmiyor, serisiz aygıtlar asıl
 kalan boşluk) hâlâ tutarlı — bu tur onu yeniden açmadı, yalnızca yeniden
 doğruladı.
+
+---
+
+## 2026-09-08 — Asıl soru "donanım değişince HWID kırılır mı" değildi: ÜRETİM yolu Linux/macOS'ta hiç YOK
+
+Bu turun görevi K2-24'ü temel alıp donanım DEĞİŞİKLİĞİ senaryolarına
+(disk değişimi, RAM eklenmesi) karşı kırılganlığı ölçmekti. Doğrudan
+yanıt önce:
+
+**Disk değişimi ve RAM eklenmesi HWID'i HİÇ ETKİLEMİYOR — çünkü HYCLEUS'un
+HWID'i ana makinenin donanımını hiçbir zaman ölçmüyor.** `CORE/usb_manager.
+py::get_usb_hwid()` yalnızca TAKILI, HARİCİ bir USB depolama aygıtının
+seri numarasını okuyor (yukarıdaki tablo); anakart, CPU, RAM ya da dahili
+disk hiçbir yerde ölçüme girmiyor. Bir kullanıcı ana makinenin diskini
+değiştirse, RAM eklese, hatta anakartı değiştirse — USB token aynı
+kalınca HWID aynı kalır. "Sık değişebilir" kategorisindeki TEK bileşen,
+tasarım gereği zaten USB token'ın kendisi (bkz. yukarıdaki "Öneri" bölümü,
+kayıp/değişim senaryosu 2.1 kurtarma parçasına yönlendiriyor).
+
+Bunu ölçerken çok daha büyük ve önceliği daha yüksek bir bulgu çıktı:
+
+### `get_usb_hwid()`'in ÜRETİM kodu yalnızca Windows'ta çalışıyor — hwid_probe.py'nin üç platformu OKUMA prototipi buraya hiç BAĞLI DEĞİL
+
+`CORE/usb_manager.py::get_usb_hwid()`'in ikisi de gerçek donanım okumaya
+çalışan iki yöntemi var ve İKİSİ DE Windows'a özgü:
+
+    Yöntem 1: `import wmi` → `wmi.WMI().Win32_DiskDrive()`
+    Yöntem 2: `subprocess` ile `wmic diskdrive get ...`
+
+İkisi de `except Exception: pass` ile sarılı (B-024'ün kendi gerekçesi:
+eksik `wmi` bir hata değil "USB bulunamadı" olarak görünmeli). Linux'ta
+`wmi` paketi zaten kurulamıyor (`import` anında `ImportError`) ve `wmic`
+programı yok (`subprocess` `FileNotFoundError` fırlatır, aynı `except`e
+düşer) — yani **bu fonksiyon Linux'ta HER ZAMAN, fiziksel bir USB takılı
+olsa bile, `None` döner.** macOS için de üçüncü bir yöntem YOK. Bu
+modülün kendi docstring'i "Windows'ta USB depolama kimliklerini
+okur" diyor ama bunun tersi — "başka hiçbir platformda okumuyor" — hiçbir
+yerde açıkça yazılmamış.
+
+`CORE/hwid_probe.py`'nin üç platformu (Windows/Linux/macOS) okuyan
+`read_linux()`/`read_macos()` fonksiyonları VAR ve çalışıyor (bu belgenin
+geri kalanı onları anlatıyor) — ama bu modül, kendi docstring'inin ilk
+satırında söylediği gibi, **uygulamaya BAĞLI DEĞİL**. `get_usb_hwid()`
+`CORE/hwid_probe.py`'yi hiç import etmiyor, çağırmıyor. K2-24'ün "üç
+platformda okuma nasıl yapılır" sorusuna verdiği yanıt, üretim koduna hiç
+ULAŞMADI.
+
+**Sonuç, `main.py`'nin kendi akışında ölçülebilir:** `main()` QApplication
+kurulur kurulmaz, HERHANGİ bir giriş/kayıt ekranından ÖNCE,
+`get_usb_hwid()`'i koşulsuz çağırıyor (main.py:322) ve `None` dönerse:
+
+```python
+if hwid is None:
+    QMessageBox.critical(None, "USB Bulunamadı",
+        "Yetkili USB cihazı takılı değil.\nUygulama başlatılamaz.")
+    sys.exit(1)
+```
+
+Paketlenmiş (frozen) bir derlemede `DEV_MODE` yok sayılıyor ("EXE olarak
+çalışırken DEV_MODE ne olursa olsun gerçek USB okunur" —
+`get_usb_hwid()`'in kendi docstring'i). Yani **paketlenmiş Linux/macOS
+derlemesinde uygulama, USB takılı olsun ya da olmasın, HER ZAMAN "USB
+Bulunamadı" diyip kapanıyor** — bu bir donanım-değişikliği kırılganlığı
+değil, sıfırdan hiç çalışmama durumu.
+
+**Bu, projenin kendi araçlarında ZATEN üstü örtük biliniyor, ama hiçbir
+yerde açıkça yazılmamış.** `packaging/linux/smoke-test.sh`'ın kendi
+yorumu: *"main() USB bulamayınca modal bir QMessageBox açar ve başsız bir
+koşucuda o kutu sonsuza kadar bekler. Bu yüzden test, uygulamanın
+GUI'siz bayraklarını (--version / --selftest) kullanıyor."* — yani Linux
+AppImage'ının duman testi GERÇEK GUI açılışını hiç denemiyor, bilerek
+`--selftest`e (main.py'nin `_selftest()`'i, `get_usb_hwid()`'e hiç
+dokunmuyor) yönleniyor. Sorunu çözmüyor, etrafından dolaşıyor — ve bu
+dolaşma hiçbir yerde "Linux'ta giriş ekranı hiç açılmıyor" diye
+yazılmamış, yalnızca "GUI'yi başsız test edemeyiz" diye gerekçelendirilmiş.
+
+**Bunu doğrudan gözlemleyen bir test de yok.** `tests/` içinde
+`sys.platform`'a göre atlanan tek HWID/USB testi
+`test_static_analysis.py`'deki bir statik denetim (Windows'ta anlamlı);
+`get_usb_hwid() is None` durumunda `main()`'in gerçekten çıktığını (ya da
+Linux'ta HER ZAMAN `None` döndüğünü) doğrulayan hiçbir test yok — bu
+turda **B-112** olarak açıldı (aşağıya bakın).
+
+**Kod değişikliği önerisi buraya YAZILMADI, ayrı backlog maddesi olarak
+açıldı — B-112, öncelik Yüksek.** Gerekçesi: bu bulgu bu belgenin asıl
+konusundan (donanım-değişikliği kırılganlığı) daha büyük ve daha acil bir
+sınıfta — "USB token değişince ne olur" sorusundan önce "Linux/macOS'ta
+hiç açılıyor mu" sorusu var, ve bugünkü yanıt hayır.
+
+### İkincil, daha dar bir kırılganlık: `usb_ids.json` MAKİNEYE bağlı, USB'ye değil
+
+Yukarıdaki tablonun zaten söylediği "serisiz USB, başka makine → FARKLI"
+satırının bir özel hâli donanım-değişikliği açısından ilgili: **ana
+makinenin diskinin DEĞİŞTİRİLMESİ** (yeni disk + taze OS kurulumu, RAM
+eklenmesinden FARKLI olarak `data_dir()`'i de götürür) `usb_ids.json`'u
+kaybettirir. Etkisi yalnızca **serisiz** USB token'lar için gerçek: fiziksel
+token DEĞİŞMEDİĞİ hâlde, ana makinenin diskini değiştiren bir kullanıcı
+(yedekten geri yükleme, taze kurulum) o token için daha önce üretilmiş
+UUID'yi kaybeder ve token "yeni" bir HWID alır — sessizce, uyarısız.
+Serili token'lar (gerçek `iSerialNumber` taşıyanlar, B-016'nın ölçtüğü
+HYCLEUS'un kendi token'ı dahil) bundan ETKİLENMİYOR: seri her okumada
+donanımdan yeniden okunuyor, hiçbir dosyaya bağımlı değil.
+
+Bu, yukarıdaki "Öneri: dosya tabanlı token'a geçiş" önerisinin (kimliği
+MAKİNEYE değil USB'YE yazmak) zaten çözdüğü tam senaryo — ayrı bir
+backlog maddesi açılmadı, mevcut öneri bunu kapsıyor.

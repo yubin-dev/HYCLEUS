@@ -3515,6 +3515,81 @@ pre-change commit).
 
 ---
 
+### 4.28 There is exactly one outbound network call in the whole application, and it needs no secret
+
+**Inventory method.** Grepped the whole tree (`CORE`, `UI`, `DB`, `main.py`)
+for `requests.`, `http(s)://`, `urlopen`, and `socket.` to find every
+network-capable call site, then read each hit.
+
+**Result: one live call.** `CORE/timestamp.py::_http_post()` — a single
+`requests.post()` to an RFC 3161 Time-Stamp Authority — is the *only*
+outbound network call in the codebase. Its two callers are
+`request_token()` (used by `timestamp_file()`/`timestamp_batch()`, both
+still NOT-WIRED into the shipped app, §4.9/B-035) and
+`CORE/audit_report.py::export_sealed_pdf()` (K4-20, genuinely wired). No
+second HTTP client, no second protocol, exists anywhere — §4.9 already
+notes `request_token()` is deliberately the *only* TSA-client body in the
+tree so a second implementation can't quietly diverge.
+
+**There is no license server.** `CORE/referans_id.py`'s "Kurumsal Referans
+Kodu" reads like an activation code but never leaves the machine: it is
+generated locally (`secrets.choice`, CSPRNG), stored in the local
+`settings` table, and compared byte-for-byte at the registration screen —
+no round trip, no remote validation, nothing to phone home to. There is no
+update-checker either — searched for `license`, `update.?check`,
+`telemetry`, `analytics`, `phone.?home`; none exist.
+
+**There is no API key anywhere, because the one protocol in use is
+keyless by design.** RFC 3161 timestamping is anonymous: the request
+carries a 32-byte SHA-256 digest and a locally-generated nonce, nothing
+that identifies the caller, and the TSA requires no credential to answer.
+`parse_response()` (§4.9) then authenticates the *response*
+cryptographically (digest match, algorithm match, nonce match, embedded
+certificate chain) rather than via any shared secret. There being no key
+is not an oversight to fix — it is the protocol's actual shape, and
+inventing one to "secure" it would add a secret with nothing real to
+protect.
+
+**The TSA URL is configurable, not hardcoded — with one gap worth
+flagging.** `DEFAULT_TSA_URL` (`"https://freetsa.org/tsr"`, a public,
+well-known free TSA) is a plain constant, but it is only the *fallback*:
+`tsa_url(db)` reads an admin-settable `settings.tsa_url` override first.
+That override is scheme-checked — `urlparse(url).scheme not in ("http",
+"https")` raises — which correctly closes off `file://`/`ftp://` turning
+the "network" call into a local-file read. **It does not, however,
+require `https`.** An admin (or anyone with write access to `settings` —
+already M3 in this document's threat model) can point the client at a
+plaintext `http://` TSA. Because the response is self-authenticating
+(paragraph above) a passive or active network attacker cannot forge a
+stamp this way — they would need the TSA's own private key, same as over
+TLS — but plaintext HTTP does leak which digest is being timestamped
+(traffic-analysis metadata, not document content) to anyone on the path,
+and makes a trivial denial-of-service (drop or corrupt the response)
+easier than it would be under TLS, where `request_token()` already turns
+a corrupted or absent response into a clean `TimestampError` rather than
+a silent failure. This is a hardening judgment call, not a demonstrated
+break, and no code changed for it — recorded here per this section's own
+rule (§4.5) that a gap gets written down before it gets closed. A
+follow-up (reject `http`, or at least warn distinctly in the Admin Panel
+when a non-`https` TSA URL is saved) is open as **B-111**.
+
+**TLS certificate verification uses the library default, unmodified.**
+Grepped for `verify=False` and any custom `SSLContext`/transport adapter
+around the `requests` call — none exists, so certificate validation runs
+exactly as `requests` ships it (system CA store, hostname checked).
+
+**Every other secret in this application never touches the network at
+all.** The vault master-key's Shamir share (`share_2`) and per-device TOTP
+secrets live exclusively in the OS keychain (`CORE/secret_store.py`  —
+Windows Credential Manager/DPAPI, macOS Keychain, Linux Secret Service),
+optionally TPM-sealed on Windows (§4.13). Nothing is read from an
+environment variable or written into source for secrets; `pip-audit`
+(`requirements-security.txt`) already screens the three network-capable
+dependencies in use (`requests`, `cryptography`, `PySide6`) for known CVEs
+as part of CI's `security` job.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -7395,6 +7470,84 @@ bandit temiz — bandit'in `CORE/usb_manager.py` üzerindeki sayısı 6'dan
 kullanılan AYNI kabul edilmiş desen (YENİ bir risk sınıfı değil; bandit'in
 kendi çıktısı değişiklik-öncesi commit'e karşı karşılaştırılarak
 doğrulandı).
+
+---
+
+### 4.28 Uygulamanın tamamında TEK bir dışa ağ çağrısı var, ve onun bir sırra ihtiyacı yok
+
+**Envanter yöntemi.** Tüm ağaç (`CORE`, `UI`, `DB`, `main.py`)
+`requests.`, `http(s)://`, `urlopen`, `socket.` için tarandı — her
+eşleşme okunarak ağ yeteneği olan TÜM çağrı noktaları bulundu.
+
+**Sonuç: TEK bir canlı çağrı.** `CORE/timestamp.py::_http_post()` — bir
+RFC 3161 Zaman Damgası Otoritesi'ne tek bir `requests.post()` — kod
+tabanındaki TEK dışa ağ çağrısı. İki çağıranı var: `request_token()`
+(`timestamp_file()`/`timestamp_batch()` tarafından kullanılıyor, ikisi de
+hâlâ NOT-WIRED, §4.9/B-035) ve `CORE/audit_report.py::export_sealed_pdf()`
+(K4-20, GERÇEKTEN bağlı). Ağaçta ikinci bir HTTP istemcisi, ikinci bir
+protokol YOK — §4.9 zaten `request_token()`'ın BİLEREK tek TSA-istemci
+gövdesi olduğunu, ikinci bir uygulamanın sessizce ayrışamayacağını
+belirtiyor.
+
+**Lisans sunucusu YOK.** `CORE/referans_id.py`'nin "Kurumsal Referans
+Kodu"su bir aktivasyon kodu gibi okunuyor ama makineden hiç ÇIKMIYOR:
+yerel üretiliyor (`secrets.choice`, CSPRNG), yerel `settings` tablosunda
+saklanıyor, kayıt ekranında bayt bayt karşılaştırılıyor — ne bir gidiş-
+dönüş, ne uzaktan doğrulama, eve telefon edecek hiçbir şey yok.
+Güncelleme kontrolü de YOK — `license`, `update.?check`, `telemetry`,
+`analytics`, `phone.?home` için tarandı; hiçbiri bulunamadı.
+
+**Hiçbir yerde API anahtarı YOK, çünkü kullanılan tek protokol tasarım
+gereği anahtarsız.** RFC 3161 damgalaması anonim: istek 32 baytlık bir
+SHA-256 özeti ve yerel üretilmiş bir nonce taşıyor, çağıranı tanımlayan
+hiçbir şey yok, ve TSA yanıt vermek için hiçbir kimlik bilgisi istemiyor.
+`parse_response()` (§4.9) sonra YANITI kriptografik olarak doğruluyor
+(özet eşleşmesi, algoritma eşleşmesi, nonce eşleşmesi, gömülü sertifika
+zinciri) — paylaşılan bir sır üzerinden DEĞİL. Anahtarın olmaması
+düzeltilecek bir eksiklik değil — protokolün gerçek biçimi bu; onu
+"güvenli kılmak" için bir tane uydurmak, korunacak gerçek bir şeyi
+OLMAYAN bir sır eklemek olurdu.
+
+**TSA adresi YAPILANDIRILABİLİR, sabit kodlanmış değil — ama bir noktada
+gedik var.** `DEFAULT_TSA_URL` (`"https://freetsa.org/tsr"`, herkese açık,
+bilinen, ücretsiz bir TSA) düz bir sabit, ama yalnızca YEDEK: `tsa_url(db)`
+önce yönetici tarafından ayarlanabilen `settings.tsa_url` geçersiz
+kılmasını okuyor. O geçersiz kılma şema kontrolünden geçiyor —
+`urlparse(url).scheme not in ("http", "https")` hata fırlatıyor — bu da
+"ağ" çağrısını bir yerel dosya okumasına çeviren `file://`/`ftp://`'yi
+doğru biçimde kapatıyor. **Ama `https` ZORUNLU KILINMIYOR.** Bir yönetici
+(ya da `settings`'e yazma erişimi olan herkes — bu belgenin tehdit
+modelinde zaten M3) istemciyi düz metin bir `http://` TSA'ya
+yönlendirebilir. Yanıt kendi kendini doğrulayan bir yapıda olduğu için
+(yukarıdaki paragraf) pasif ya da aktif bir ağ saldırganı bu yolla sahte
+bir damga ÜRETEMEZ — TLS'te olduğu gibi TSA'nın kendi özel anahtarına
+ihtiyaçları olurdu — ama düz metin HTTP, yoldaki herkese hangi özetin
+damgalandığını sızdırıyor (trafik analizi metadatası, belge içeriği
+DEĞİL) ve TLS altında olduğundan daha kolay bir hizmet-engelleme
+(yanıtı düşürmek/bozmak) sağlıyor — ki `request_token()` zaten bozuk ya
+da eksik bir yanıtı sessiz bir başarısızlık yerine temiz bir
+`TimestampError`'a çeviriyor. Bu bir sertleştirme kararı, KANITLANMIŞ bir
+kırılma değil, ve bunun için hiçbir kod DEĞİŞMEDİ — bu bölümün kendi
+kuralı (§4.5) gereği bir gedik kapatılmadan ÖNCE yazılıyor. Bir takip
+maddesi (`http`'i reddetmek, ya da en azından Admin Panel'de `https`
+olmayan bir TSA adresi kaydedilirken ayrı bir uyarı göstermek) **B-111**
+olarak açıldı.
+
+**TLS sertifika doğrulaması kütüphane varsayılanını KULLANIYOR,
+değiştirilmemiş.** `verify=False` ve `requests` çağrısı etrafında özel
+bir `SSLContext`/taşıyıcı adaptörü için tarandı — hiçbiri yok, yani
+sertifika doğrulaması `requests`'in gönderdiği HALİYLE çalışıyor (sistem
+CA deposu, hostname kontrol ediliyor).
+
+**Bu uygulamadaki DİĞER her sır ağa hiç DOKUNMUYOR.** Kasa master
+key'inin Shamir payı (`share_2`) ve cihaz başına TOTP sırları YALNIZCA
+işletim sistemi anahtar kasasında yaşıyor (`CORE/secret_store.py` —
+Windows Credential Manager/DPAPI, macOS Keychain, Linux Secret Service),
+Windows'ta isteğe bağlı TPM mührüyle (§4.13). Sırlar için hiçbir şey bir
+ortam değişkeninden okunmuyor ya da kaynağa yazılmıyor; `pip-audit`
+(`requirements-security.txt`) zaten kullanılan üç ağ-yetenekli
+bağımlılığı (`requests`, `cryptography`, `PySide6`) CI'ın `security`
+işinin parçası olarak bilinen CVE'lere karşı tarıyor.
 
 ---
 
