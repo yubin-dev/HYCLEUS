@@ -1,13 +1,35 @@
 """
-HYCLEUS — Çapraz platform USB kimliği PROTOTİPİ (3.4)
+HYCLEUS — Çapraz platform USB kimliği okuyucusu (3.4, B-112/B-114 ile BAĞLANDI)
 
-**Bu modül uygulamaya BAĞLI DEĞİL.** `CORE/usb_manager.py` hâlâ tek
-yetkili okuyucu. Buradaki kod bir mimari soruyu yanıtlamak için var:
+**GÜNCELLEME (2026-09-08, B-112/B-114): `read_linux()`/`read_macos()`
+ARTIK ÜRETİME BAĞLI.** `CORE/usb_manager.py::get_usb_hwid()` bu ikisini
+Yöntem 3/4 olarak çağırıyor — `CORE/usb_manager.py` hâlâ TEK yetkili
+okuyucu (tek karar noktası; bkz. `tests/test_hwid_probe.py::
+test_okuyucular_yalnizca_usb_manager_uzerinden_uretime_bagli`), ama artık
+Linux/macOS dallarını KENDİSİ yeniden yazmak yerine BURADAN çağırıyor.
+Gerekçe: `get_usb_hwid()`'in önceki iki yöntemi (`wmi`/`wmic`) yalnızca
+Windows'a özgüydü — Linux/macOS'ta fonksiyon HER ZAMAN `None` dönüyordu
+(USB takılı olsun olmasın) ve `main.py::main()` bunu açılışta koşulsuz
+çağırdığı için paketlenmiş bir Linux/macOS derlemesi hiç açılamıyordu.
+Ayrıntı: `docs/hwid-crossplatform.md`, BACKLOG.md/B-112 (bulgu) ve B-114
+(düzeltme).
+
+Bu modülün geri kalanı (aşağıdaki araştırma, `main()`/CLI, `--json`/
+`--compare` bayrakları) hâlâ yalnızca elle çalıştırılan bir TEŞHİS
+aracı — üretim yalnızca `read_linux()`/`read_macos()`'u çağırıyor,
+`main()`'i ya da CLI yüzeyini DEĞİL.
+
+Bu modül aslen bir mimari soruyu yanıtlamak için yazıldı:
 
     Aynı USB çubuğu Windows, Linux ve macOS'ta AYNI kimliği verir mi?
 
-Yanıt kısaca: **hayır, güvenilir biçimde vermiyor.** Ayrıntı ve kanıt
-aşağıda; sonuç `docs/hwid-crossplatform.md` içinde raporlandı.
+Yanıt kısaca: **hayır, güvenilir biçimde vermiyor** (bkz. aşağıdaki
+ölçüm). Bu, `read_linux()`/`read_macos()`'un üretime bağlanmasını
+ENGELLEMEDİ — üretimin ihtiyacı "iki platform aynı kimliği versin mi"
+değil, "Linux/macOS'ta HİÇBİR kimlik okunamamasın" sorununu çözmekti, ve
+o dar hedef için bu iki fonksiyon zaten yeterliydi. Çapraz platform
+taşınabilirlik sınırı (aşağıda, ve docs/hwid-crossplatform.md'de) hâlâ
+GEÇERLİ ve DEĞİŞMEDİ.
 
 
 Üç platform hangi alanı okuyor

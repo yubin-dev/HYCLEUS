@@ -687,24 +687,53 @@ def test_cli_gecersiz_bayrak_KULLANIM_HATASI_veriyor() -> None:
     assert exc.value.code == 2
 
 
-def test_the_prototype_is_not_wired_into_the_app() -> None:
+def test_okuyucular_yalnizca_usb_manager_uzerinden_uretime_bagli() -> None:
     """
-    `hwid_probe` bir PROTOTİP; canlı kimlik yolu hâlâ `usb_manager`.
-    Yanlışlıkla bağlanırsa yakalansın — mimari karar verilmeden
-    üretime girmemeli.
+    2026-09-08 (B-112/B-114) ÖNCESİNDE bu test `hwid_probe`nin HİÇ bir
+    üretim dosyasından import edilmediğini denetliyordu — o zamanki
+    mimari karar buydu ("yanlışlıkla bağlanırsa yakalansın, mimari karar
+    verilmeden üretime girmesin"). Karar artık VERİLDİ:
+    `CORE/usb_manager.py::get_usb_hwid()` main.py'nin açılışta koşulsuz
+    çağırdığı bir fonksiyondu ve Linux/macOS'ta HER ZAMAN `None`
+    dönüyordu (paketlenmiş bir derleme USB takılı olsun olmasın hiç
+    açılamıyordu) — ayrıntı docs/hwid-crossplatform.md, BACKLOG.md/B-114.
+
+    Bu testin YENİ işi: bağlantının TEK bir yerden, TEK bir biçimde
+    kalmasını denetlemek — `read_linux`/`read_macos` DIŞINDA bir isim
+    (ör. `main()`, `parse_windows_pnp_id`, CLI'a özgü herhangi bir şey)
+    üretime SIZMAMALI, ve bağlayan dosya `CORE/usb_manager.py`'DEN
+    BAŞKASI OLMAMALI — ikinci bir uygulama (ör. bir UI dosyasının
+    doğrudan `hwid_probe`ye bağlanması) sessizce ayrışabilirdi.
     """
     import ast
     from pathlib import Path
 
     kok = Path(__file__).resolve().parent.parent
+    _IZINLI_ISIMLER = {"read_linux", "read_macos"}
+    _IZINLI_DOSYA = "CORE/usb_manager.py"
+
     for yol in sorted(kok.rglob("*.py")):
-        if yol.name in ("hwid_probe.py", "test_hwid_probe.py"):
+        if yol.name in ("hwid_probe.py", "test_hwid_probe.py", "test_usb_manager.py"):
             continue
         if any(p in yol.parts for p in ("__pycache__", ".venv")):
             continue
         agac = ast.parse(yol.read_text(encoding="utf-8"))
         for n in ast.walk(agac):
             if isinstance(n, ast.ImportFrom) and (n.module or "").endswith("hwid_probe"):
-                pytest.fail(f"{yol.relative_to(kok)} prototipi import ediyor")
+                goreli = str(yol.relative_to(kok))
+                assert goreli == _IZINLI_DOSYA, (
+                    f"{goreli} hwid_probe'u import ediyor — TEK yetkili "
+                    f"çağıran {_IZINLI_DOSYA} olmalı (ikinci bir bağlanma "
+                    "yolu sessizce ayrışabilir)."
+                )
+                ithal_edilenler = {a.name for a in n.names}
+                assert ithal_edilenler <= _IZINLI_ISIMLER, (
+                    f"{goreli}, hwid_probe'dan {ithal_edilenler - _IZINLI_ISIMLER} "
+                    f"içe aktarıyor — yalnızca {_IZINLI_ISIMLER} beklenirdi."
+                )
             if isinstance(n, ast.Import):
-                assert not any(a.name.endswith("hwid_probe") for a in n.names), yol
+                assert not any(a.name.endswith("hwid_probe") for a in n.names), (
+                    f"{yol} hwid_probe'u `import hwid_probe` biçiminde alıyor — "
+                    "yalnızca `from CORE.hwid_probe import read_linux/read_macos` "
+                    "bekleniyor."
+                )

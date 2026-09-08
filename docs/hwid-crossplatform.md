@@ -1,6 +1,11 @@
 # Çapraz platform USB kimliği — bulgular ve mimari öneri
 
-**Durum:** 3.4 prototip raporu · Kod: `CORE/hwid_probe.py` (uygulamaya bağlı DEĞİL)
+**Durum:** 3.4 prototip raporu · Kod: `CORE/hwid_probe.py` — **2026-09-08'den
+itibaren `read_linux()`/`read_macos()` üretime BAĞLI** (`CORE/usb_manager.py::
+get_usb_hwid()` üzerinden, B-112/B-114 — aşağıdaki "2026-09-08 — Doğrulama ve
+düzeltme" bölümüne bakın). Bu belgenin geri kalanındaki "bağlı değil" ifadeleri
+o TARİHTEKİ durumu anlatıyor; okuyucu her ifadeyi tarihiyle birlikte
+değerlendirmeli.
 
 > ⛔ **Bu belgedeki öneri UYGULANMADI ve uygulanmayacak — eksik bacak
 > 2026-08-16'da ölçüldü ve öneriyi zayıflattı.** Gerçek HYCLEUS token USB'si
@@ -383,3 +388,103 @@ donanımdan yeniden okunuyor, hiçbir dosyaya bağımlı değil.
 Bu, yukarıdaki "Öneri: dosya tabanlı token'a geçiş" önerisinin (kimliği
 MAKİNEYE değil USB'YE yazmak) zaten çözdüğü tam senaryo — ayrı bir
 backlog maddesi açılmadı, mevcut öneri bunu kapsıyor.
+
+---
+
+## 2026-09-08 — Doğrulama ve düzeltme: B-112'nin iddiası bağımsız olarak KANITLANDI, kod düzeltildi (B-114)
+
+Bir önceki tur B-112'yi (`get_usb_hwid()` yalnızca Windows'ta çalışıyor,
+paketlenmiş Linux/macOS derlemesi hiç açılmıyor) açtıktan sonra, bu tur
+o iddiayı düzeltmeye geçmeden ÖNCE bağımsız olarak yeniden doğruladı.
+
+### Kanıt 1 — `get_usb_hwid()`'in Windows-özgü olduğu, GERÇEK ÇALIŞTIRMAYLA
+
+`CORE/usb_manager.py::get_usb_hwid()`'in (düzeltmeden ÖNCEKİ hâli) iki
+yöntemi vardı, ikisi de Windows'a özgü:
+
+    Yöntem 1: `import wmi` → `wmi.WMI().Win32_DiskDrive()`
+    Yöntem 2: `subprocess` ile tam yola çözülmüş `wmic.exe`
+
+Bu makinede (Linux) DOĞRUDAN çalıştırılarak ölçüldü:
+
+    >>> import wmi
+    ImportError: No module named 'wmi'
+
+    >>> yol = 'C:\Windows\System32\wbem\wmic.exe'  # _wmic_yolu()'nun hesapladığı
+    >>> subprocess.check_output([yol, ...])
+    FileNotFoundError: [Errno 2] No such file or directory: '...wmic.exe'
+
+İkisi de fonksiyonun kendi `except Exception: pass`'ine düşüyor. Gerçek
+fonksiyon (`from CORE.usb_manager import get_usb_hwid`) bu makinede
+DOĞRUDAN çağrılarak ölçüldü: `DEV_MODE=False` iken **`None` döndü** —
+iddia edilen davranışın ta kendisi, çıkarım değil.
+
+### Kanıt 2 — `main()`'in koşulsuz açılış kapısı olduğu, ÇAĞRI GRAFİĞİYLE
+
+`main.py::main()` (uygulamanın TEK giriş noktası, `if __name__ ==
+"__main__": main()`) şu sırayı izliyor:
+
+    1. `_erken_komut()` — yalnızca `--version`/`--selftest` bayrakları
+       için erken çıkış; İKİSİ DE `QApplication` kurulmadan ÖNCE döner,
+       giriş/kayıt akışına hiç dokunmaz.
+    2. `QApplication(sys.argv)` kurulur.
+    3. `hwid = get_usb_hwid()` — KOŞULSUZ, hiçbir try/except ya da
+       özellik bayrağı YOK.
+    4. `if hwid is None: ... sys.exit(1)` — giriş ekranından, kayıttan,
+       vault'tan ÖNCE.
+
+Paketlenmiş bir derlemede (`sys.frozen` True — `packaging/linux/
+build-appimage.sh` gerçekten `pyinstaller ... HYCLEUS-linux.spec`
+çalıştırıyor) `DEV_MODE` bayrağı da devre dışı ("sys.frozen → PyInstaller
+EXE; ortam değişkeni miras alınsa bile DEV_MODE kapalı", main.py). Yani
+kaçış yolu yok. Projenin kendi `packaging/linux/smoke-test.sh`'ı bunu
+zaten biliyor ve etrafından dolaşıyor — kendi yorumu: *"main() USB
+bulamayınca modal bir QMessageBox açar ve başsız bir koşucuda o kutu
+sonsuza kadar bekler. Bu yüzden test, uygulamanın GUI'siz bayraklarını
+(--version / --selftest) kullanıyor."*
+
+**Sonuç: iki iddia da doğrulandı, yanlış alarm değildi.**
+
+### Düzeltme (B-114) — `CORE/hwid_probe.py::read_linux()`/`read_macos()` üretime BAĞLANDI
+
+İKİNCİ bir ayrıştırıcı YAZILMADI: `CORE/hwid_probe.py`'nin
+`read_linux()` (pyudev/sysfs) ve `read_macos()` (ioreg) fonksiyonları
+ZATEN vardı ve çalışıyordu, yalnızca üretime bağlı değillerdi.
+`get_usb_hwid()`'e Yöntem 3/4 olarak eklendi: `descriptor_serial` dolu
+olan ilk aygıtın serisi, Windows yollarıyla AYNI `_sanitize_hwid()`'den
+geçiriliyor. `tests/test_hwid_probe.py`'nin eski "hiç bağlı değil" AST
+denetimi, yeni bir "yalnızca `CORE/usb_manager.py`'den, yalnızca
+`read_linux`/`read_macos` olarak bağlı" denetimine dönüştürüldü — ikinci
+bir bağlanma yolu (ör. bir UI dosyasının doğrudan bağlanması) hâlâ
+yakalanıyor.
+
+**Gerçek donanımla doğrulandı — bu satırların yazıldığı makinede o an
+takılı iki gerçek USB depolama aygıtı vardı:**
+
+    >>> from CORE.usb_manager import get_usb_hwid
+    >>> get_usb_hwid()
+    '4C530301470118102554'
+
+Bu, `hwid_probe.read_linux()`'un aynı anda bağımsız okuduğu gerçek
+`iSerialNumber` ile (VID:PID `0781:5567`, B-016'nın ölçtüğü kayıtlı
+SanDisk token'ıyla AYNI üretici/ürün kodu) BİREBİR eşleşiyor — sentetik
+ya da sahte veri değil.
+
+`tests/test_usb_manager.py` (yeni dosya, `get_usb_hwid()`'in daha önce
+HİÇ doğrudan test edilmediği de bu turda fark edildi) sahte
+`read_linux`/`read_macos` dönüşleriyle sekiz senaryoyu sınıyor —
+en önemlisi, USB hiç takılı değilken (`read_linux` boş liste
+döndürünce) fonksiyonun ÇÖKMEDEN, sessizce `None` döndüğü.
+
+### Dürüst sınır — ne değişmedi
+
+`hwid_probe.py`'nin kendi "gerçek donanımda hiç çalıştırılmadı" sınırı
+`read_macos()` için hâlâ geçerli: bu turda yalnızca Linux tarafı gerçek
+donanımla doğrulanabildi (elde macOS makinesi yok). `read_macos()`'un
+üretime bağlanması aynı "tek karar noktası" gerekçesiyle yapıldı ama
+`ioreg` çıktısının gerçek bir Mac'te belgelenen biçimde geldiği hâlâ
+KANITLANMADI — yalnızca kaydedilmiş örnek çıktı üzerinde test edildi.
+Çapraz platform taşınabilirlik sınırı (aynı USB'nin üç platformda aynı
+kimliği vermemesi) de DEĞİŞMEDİ — bu düzeltme yalnızca "Linux/macOS'ta
+HİÇ kimlik okunamıyor" sorununu kapattı, "üç platformda aynı kimlik"
+sorununu değil.

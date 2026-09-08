@@ -218,6 +218,49 @@ def get_usb_hwid() -> str | None:
     except Exception:
         pass
 
+    # ── Yöntem 3/4: Linux (pyudev/sysfs) ve macOS (ioreg) ────────────────────
+    #
+    # 2026-09-08 (B-112/B-114) ÖNCESİNDE bu fonksiyon Windows dışında HER
+    # ZAMAN None dönüyordu: yukarıdaki iki yöntem de yalnızca Windows'a
+    # özgü (`wmi` paketi başka platformda kurulamıyor, `wmic.exe` yalnızca
+    # Windows'ta var) — main.py'nin açılışta koşulsuz çağırdığı bu
+    # fonksiyon None dönünce uygulama "USB Bulunamadı" diyip kapanıyordu,
+    # USB takılı olsun ya da olmasın. Ayrıntı: docs/hwid-crossplatform.md.
+    #
+    # İKİNCİ bir ayrıştırıcı YAZILMADI — `CORE/hwid_probe.py::read_linux()`/
+    # `read_macos()` (K2-24) ZATEN bu işi yapıyordu, yalnızca üretime
+    # BAĞLI DEĞİLDİ. Buradan çağırmak "tek karar noktası" kuralını
+    # koruyor: `tests/test_hwid_probe.py::
+    # test_hwid_probe_okuyuculari_tek_yerden_cagriliyor` `read_linux`/
+    # `read_macos`'un yalnızca BU dosyadan içe aktarıldığını AST ile
+    # denetliyor — ikinci bir uygulama sessizce ayrışamaz.
+    #
+    # `descriptor_serial` (yalnızca GERÇEK bir iSerialNumber varsa dolu —
+    # `UsbIdentity.stable_id`'nin aksine, "üretilmiş" kimlikleri burada
+    # ELEMİYORUZ: `_sanitize_hwid()` zaten boş/"0" seri için KENDİ UUID
+    # yedeğine düşüyor, aynı Windows'taki `SerialNumber` davranışıyla
+    # simetrik kalsın diye) `_sanitize_hwid()`'e veriliyor — Windows
+    # yollarıyla AYNI temizleme/yedek mantığından geçiyor.
+    try:
+        from CORE.hwid_probe import read_linux
+        for aygit in read_linux():
+            if aygit.descriptor_serial:
+                hwid = _sanitize_hwid(aygit.descriptor_serial)
+                if hwid:
+                    return hwid
+    except Exception:
+        pass
+
+    try:
+        from CORE.hwid_probe import read_macos
+        for aygit in read_macos():
+            if aygit.descriptor_serial:
+                hwid = _sanitize_hwid(aygit.descriptor_serial)
+                if hwid:
+                    return hwid
+    except Exception:
+        pass
+
     return None
 
 

@@ -8896,8 +8896,8 @@ SECURITY.md §4.28.
 
 ## B-112 — `get_usb_hwid()` yalnızca Windows'ta çalışıyor: paketlenmiş Linux/macOS derlemesi USB takılı olsun ya da olmasın HİÇ AÇILMIYOR
 
-**Durum:** AÇIK, karar bekliyor.
-**Öncelik:** Yüksek.
+**Durum:** Kapalı — bağımsız olarak yeniden doğrulandı, düzeltildi. Bkz. **B-114**.
+**Öncelik:** Yüksek (düzeltilmeden önce).
 **Bulundu:** 2026-09-08 — K2-24'ün donanım-değişikliği kırılganlığı analizi
 sırasında (`docs/hwid-crossplatform.md`, "2026-09-08" bölümü).
 
@@ -9100,3 +9100,86 @@ Tam suite (yeni 16 test dahil): **3181 passed**, 37 skipped (2 alakasız,
 önceden var olan başarısızlık ayrı `--deselect`; ayrıntı bu commit'in
 özetinde). ruff/mypy temiz. `git diff --stat CORE/` boş — mutasyonların
 hiçbiri kalıcı kod değişikliği bırakmadı, yalnızca testler kaldı.
+
+---
+
+## B-114 — B-112 bağımsız olarak yeniden doğrulandı (GERÇEK donanımla) ve düzeltildi: `get_usb_hwid()` artık Linux/macOS'ta da çalışıyor
+
+**Durum:** Kapalı.
+**Öncelik:** Yüksek.
+**Bulundu/Kapatıldı:** 2026-09-08 — B-112'nin bulgusu, düzeltmeye
+geçmeden önce bağımsız doğrulama istenerek ele alındı.
+
+### Doğrulama (düzeltmeden ÖNCE, kanıtla)
+
+**İddia 1 — `get_usb_hwid()` yalnızca Windows'ta çalışıyor:** bu makinede
+(Linux) GERÇEKTEN çalıştırılarak ölçüldü. `import wmi` → `ImportError:
+No module named 'wmi'`. `_wmic_yolu()`'nun hesapladığı
+`C:\Windows\System32\wbem\wmic.exe` yoluna `subprocess.check_output` →
+`FileNotFoundError`. Fonksiyonun kendisi (`from CORE.usb_manager import
+get_usb_hwid`) doğrudan çağrıldı: `DEV_MODE=False` iken **`None`
+döndürdü** — çıkarım değil, gözlem.
+
+**İddia 2 — `main()`'in koşulsuz açılış kapısı olduğu:** `main.py::
+main()`'in tam akışı okundu — `get_usb_hwid()` `QApplication` kurulur
+kurulmaz, hiçbir try/except ya da özellik bayrağı olmadan çağrılıyor;
+`None` ise `sys.exit(1)`. `--version`/`--selftest` bu noktadan ÖNCE
+döndükleri için ilgisiz. Paketlenmiş derlemede (`sys.frozen`) `DEV_MODE`
+zaten devre dışı. `packaging/linux/smoke-test.sh`'ın kendi yorumu bunu
+bağımsız doğruluyor: GUI açılışının başsız bir koşucuda sonsuza kadar
+bekleyeceğini zaten biliyor, bu yüzden yalnızca `--selftest` test ediyor.
+
+**Sonuç: iki iddia da DOĞRU, yanlış alarm değil.** Ayrıntılı kanıt:
+`docs/hwid-crossplatform.md`, "2026-09-08 — Doğrulama ve düzeltme"
+bölümü.
+
+### Düzeltme
+
+`CORE/usb_manager.py::get_usb_hwid()`'e Yöntem 3 (Linux) ve Yöntem 4
+(macOS) eklendi. İKİNCİ bir ayrıştırıcı YAZILMADI:
+`CORE/hwid_probe.py::read_linux()`/`read_macos()` (K2-24) ZATEN vardı ve
+çalışıyordu, yalnızca üretime bağlı değildi — buradan çağrılıyor,
+dönen `descriptor_serial` Windows yollarıyla AYNI `_sanitize_hwid()`'den
+geçiyor. Windows davranışına DOKUNULMADI (Yöntem 1/2 birebir aynı).
+
+`tests/test_hwid_probe.py::test_the_prototype_is_not_wired_into_the_app`
+— artık YANLIŞ bir iddiayı sabitleyen bu test, `test_okuyucular_
+yalnizca_usb_manager_uzerinden_uretime_bagli`'ye dönüştürüldü: hwid_probe
+üretime BAĞLI olabilir ama YALNIZCA `CORE/usb_manager.py`'den, YALNIZCA
+`read_linux`/`read_macos` adlarıyla — ikinci bir bağlanma yolu (mutasyonla
+doğrulandı: geçici bir sahte dosya `UI/`'a eklenip testin gerçekten
+düştüğü görüldü, sonra kaldırıldı) hâlâ yakalanıyor.
+
+### GERÇEK donanımla doğrulama — sentetik değil
+
+Bu turun ortamında (önceki oturumlardan FARKLI olarak) iki gerçek USB
+depolama aygıtı fiziksel olarak takılıydı. Düzeltmeden sonra:
+
+    >>> from CORE.usb_manager import get_usb_hwid
+    >>> get_usb_hwid()
+    '4C530301470118102554'
+
+Bu, `hwid_probe.read_linux()`'un bağımsız okuduğu gerçek `iSerialNumber`
+ile (VID:PID `0781:5567` — B-016'nın ölçtüğü kayıtlı SanDisk token'ıyla
+AYNI üretici/ürün kodu) birebir eşleşiyor.
+
+### Test (`tests/test_usb_manager.py`, yeni dosya — 8 test)
+
+`get_usb_hwid()`'in daha önce HİÇ doğrudan test edilmediği de bu turda
+fark edildi (yalnızca kardeşi `get_usb_mount_root()` test ediliyordu).
+Sekiz test: gerçek seri → hwid, **USB hiç takılı değilken çökmeden
+`None` (asıl regresyon senaryosu)**, birden fazla aygıtta ilk geçerli
+serinin seçilmesi, `read_linux()` beklenmeyen bir istisna fırlatırsa
+çökmeden bir sonraki yönteme geçilmesi, macOS yolu, iki platformda da
+hiç USB yokken `None`, ve sanitizasyon zincirinin Windows'la tutarlı
+kalması.
+
+### Doğrulama
+
+Tam suite: **3189 passed**, 37 skipped (+8 yeni test, 2 önceden var olan
+alakasız sorun `--deselect`: git-tag/versiyon uyuşmazlığı ve bu
+oturumdaki taşınmış test venv'inin shebang artifaktı — ikisi de bu
+değişiklikle ilgisiz). ruff/mypy/bandit temiz (bandit `python -m bandit`
+ile doğrudan doğrulandı — aynı shebang artifaktı `test_bandit_*` iki
+testi de pytest alt-süreci düzeyinde etkiliyordu, gerçek tarama sonucu
+etkilenmedi).
