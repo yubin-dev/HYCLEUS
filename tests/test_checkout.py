@@ -28,6 +28,7 @@ from CORE.checkout import (
     CheckoutError,
     CheckoutRegistry,
     FileLockedError,
+    _pid_alive,
     acquire_lock,
     apply_checkin,
     check_in,
@@ -796,3 +797,102 @@ def test_sweep_with_nothing_stale_is_a_clean_report(db) -> None:
     assert rapor.released == 0
     assert rapor.had_stale is False
     assert "temiz" in rapor.summary()
+
+
+# ── _pid_alive() — platforma özgü iki dal, ikisi de doğrudan sınanmıyordu ──────
+#
+# `release_stale_locks()`'un yukarıdaki testleri `_pid_alive()`'ı yalnızca
+# POSIX'in `try: os.kill(...)` başarı/`ProcessLookupError` uçlarından
+# dolaylı geçiriyordu (bu makine Linux). Windows dalı (`ctypes.windll.
+# kernel32.OpenProcess`) hiçbir testte hiç ÇALIŞTIRILMIYORDU — CI'ın Linux/
+# macOS ayaklarında zaten çalışamaz (`ctypes.windll` yalnızca Windows'ta
+# var), ama Windows ayağında da onu doğrudan sınayan bir test yoktu, yalnızca
+# aynı dolaylı `release_stale_locks()` testleri (orada gerçek `os.kill`
+# değil gerçek `OpenProcess` çalışıyordu, testin niyeti aynı kalıyordu).
+# `PermissionError` ucu (docstring'in kendi notu: "var ama başka kullanıcıya
+# ait — yine de ÇALIŞIYOR") hiçbir platformda hiç tetiklenmiyordu.
+
+
+def test_pid_alive_windows_dalı_gercek_bir_tutamacta_true_donuyor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Windows dalı: `OpenProcess` gerçek bir tutamaç (sıfırdan farklı) verirse
+    süreç canlı sayılmalı VE tutamaç `CloseHandle` ile kapatılmalı — açık
+    bırakılan bir tutamaç, üzerinde `release_stale_locks()` her açılışta
+    çalıştığı için birikimli bir kaynak sızıntısı olurdu.
+    """
+    import ctypes
+
+    monkeypatch.setattr("CORE.checkout.sys.platform", "win32")
+    kapatilanlar: list[int] = []
+
+    class SahteKernel32:
+        def OpenProcess(self, erisim: int, devral: bool, pid: int) -> int:
+            return 4242  # gerçek olmayan ama sıfırdan farklı bir tutamaç
+
+        def CloseHandle(self, handle: int) -> int:
+            kapatilanlar.append(handle)
+            return 1
+
+    class SahteWindll:
+        kernel32 = SahteKernel32()
+
+    monkeypatch.setattr(ctypes, "windll", SahteWindll(), raising=False)
+
+    assert _pid_alive(1234) is True
+    assert kapatilanlar == [4242]
+
+
+def test_pid_alive_windows_dalı_bos_tutamacta_false_donuyor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`OpenProcess` `0` (NULL) dönerse süreç ölü sayılmalı — tutamaç hiç
+    açılmadığı için `CloseHandle` hiç çağrılmamalı."""
+    import ctypes
+
+    monkeypatch.setattr("CORE.checkout.sys.platform", "win32")
+    kapatilanlar: list[int] = []
+
+    class SahteKernel32:
+        def OpenProcess(self, erisim: int, devral: bool, pid: int) -> int:
+            return 0
+
+        def CloseHandle(self, handle: int) -> int:
+            kapatilanlar.append(handle)
+            return 1
+
+    class SahteWindll:
+        kernel32 = SahteKernel32()
+
+    monkeypatch.setattr(ctypes, "windll", SahteWindll(), raising=False)
+
+    assert _pid_alive(1234) is False
+    assert kapatilanlar == []
+
+
+def test_pid_alive_posix_baska_kullaniciya_ait_surec_canli_sayılıyor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    POSIX dalı, `PermissionError` ucu: `os.kill()` "süreç var ama bize ait
+    değil" derse (`EPERM`) bu bir "ölü" değil — modülün kendi gerekçesi
+    ("var ama başka kullanıcıya ait — yine de ÇALIŞIYOR"): sahipsiz kilit
+    süpürmesi, salt başka bir kullanıcıya ait olduğu için hâlâ çalışan bir
+    sürecin kilidini YANLIŞLIKLA serbest bırakmamalı.
+    """
+    monkeypatch.setattr("CORE.checkout.sys.platform", "linux")
+
+    def _sahte_kill(pid: int, sig: int) -> None:
+        raise PermissionError("İşlem izni reddedildi")
+
+    monkeypatch.setattr("CORE.checkout.os.kill", _sahte_kill)
+
+    assert _pid_alive(1234) is True
+
+
+def test_pid_alive_sifir_ve_negatif_pid_daima_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`pid <= 0` erken çıkışı — hiçbir platform dalına hiç girmemeli."""
+    monkeypatch.setattr("CORE.checkout.sys.platform", "win32")
+    assert _pid_alive(0) is False
+    assert _pid_alive(-1) is False
