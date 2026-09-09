@@ -227,6 +227,18 @@ def compute_entry_hash(prev_hash: str, entry: Mapping[str, Any]) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def audit_log_entry_count(source: Any) -> int:
+    """Denetim kaydındaki TOPLAM satır sayısı — durum çubuğu özeti için (B-1xx).
+
+    Hash'li/hash'siz ayrımı yok — `write_anchor()`'ın yalnızca hash'li
+    kayıtları sayan `entry_count`'unun aksine, burada istenen kullanıcıya
+    gösterilecek HAM toplam.
+    """
+    conn = _connection(source)
+    row = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()
+    return int(row[0]) if row else 0
+
+
 def _connection(source: Any) -> sqlite3.Connection:
     """DBManager ya da ham sqlite3.Connection kabul eder."""
     if isinstance(source, sqlite3.Connection):

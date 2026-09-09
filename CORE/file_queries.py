@@ -112,6 +112,40 @@ def files_by_label(
     )
 
 
+def count_files_by_label(
+    db: Any, label: str, *, include_private: bool = True
+) -> int:
+    """Bir etikete (`Genel`/`Kritik`/`Karantina`/`Imha`) ait dosya SAYISI.
+
+    `files_by_label()` ile AYNI filtre (`_EXCLUDE_PRIVATE`) — kenar
+    çubuğu rozetleri satırların kendisini değil yalnızca sayısını
+    istiyor, tüm sütunları çekmek gereksiz.
+    """
+    gizle = "" if include_private else _EXCLUDE_PRIVATE
+    row = db.fetchone(
+        f"SELECT COUNT(*) AS n FROM files f WHERE f.label = ? {gizle}", (label,)
+    )
+    return int(row["n"]) if row else 0
+
+
+def vault_summary(db: Any, *, include_private: bool = True) -> tuple[int, int]:
+    """Kasadaki TOPLAM dosya sayısı ve toplam boyutu (bayt) — durum çubuğu için.
+
+    `include_private=False` iken `_EXCLUDE_PRIVATE` aynı etiket
+    filtrelerinde olduğu gibi mahrem etiketli dosyaları toplamdan
+    ÇIKARIR — Salt Okunur/Standart rol gördüğü sayıyla TUTARLI kalsın
+    diye (bkz. `files_by_label`'ın aynı gerekçesi).
+    """
+    gizle = "" if include_private else _EXCLUDE_PRIVATE
+    row = db.fetchone(
+        f"SELECT COUNT(*) AS n, COALESCE(SUM(f.size_bytes), 0) AS toplam"
+        f" FROM files f WHERE 1=1 {gizle}"
+    )
+    if row is None:
+        return 0, 0
+    return int(row["n"]), int(row["toplam"])
+
+
 def files_by_tag(
     db: Any, tag_id: int, *, include_private: bool = True
 ) -> list[sqlite3.Row]:

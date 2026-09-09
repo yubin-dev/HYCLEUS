@@ -8,6 +8,7 @@ kelimesi kelimesine taşındı; davranış değişmedi.
 pencerenin kendisi ve çağrı yerleri değişmedi.
 """
 import logging
+from datetime import datetime, timezone
 # timedelta modül seviyesinde artık kullanılmıyor: "şimdi + TTL" hesabı
 # CORE/expiry.py'ye taşındı. _FileRunnable.run() kendi yerel import'unu
 # yapıyor (worker thread'inde çalışıyor, bkz. satır ~218).
@@ -54,6 +55,14 @@ from PySide6.QtWidgets import (
 
 
 
+from CORE.audit_chain import audit_log_entry_count
+from CORE.backup_reminder import yedek_durumu
+from CORE.file_queries import count_files_by_label, vault_summary
+from CORE.idle_lock import get_idle_timeout_minutes
+from CORE.integrity import last_sweep_at
+from CORE.roles import is_admin_role
+from CORE.vault_manager import has_recovery_share
+from DB.db_manager import DBManager
 from UI.AdminSettingsView import SAYFA_ADI as _ADMIN_SETTINGS_SAYFA_ADI
 from UI.AuditLogView import SAYFA_ADI as _AUDIT_SAYFA_ADI
 from UI.GuvenlikView import SAYFA_ADI as _GUVENLIK_SAYFA_ADI
@@ -68,6 +77,23 @@ from UI.main_window_palette import (
 #: `.resize()` hiç çağrılmamışsa, ya da gerçekten dar bir ekranda) panel
 #: pencere genişliğine düşer — bkz. `LayoutMixin._slide_over_genislik()`.
 _SLIDE_OVER_GENISLIK = 440
+
+#: "Doğrulama Merkezi" nav düğmesinin simgesi — `_make_sidebar()`'daki
+#: düğme metniyle VE `_refresh_nav_counts()`'ın yeniden yazdığı metinle
+#: AYNI, tek yerden (mockup envanterinin B-1xx maddesi).
+_GUVENLIK_ICON = "🛡"
+
+
+def _gun_once_metni(zaman: datetime | None) -> str:
+    """`last_sweep_at()`'in döndürdüğü zamanı "N gün önce" biçimine çevirir."""
+    if zaman is None:
+        return "hiç yapılmadı"
+    fark_gun = int((datetime.now(timezone.utc) - zaman).total_seconds() // 86400)
+    if fark_gun <= 0:
+        return "bugün"
+    if fark_gun == 1:
+        return "1 gün önce"
+    return f"{fark_gun} gün önce"
 
 
 class _SlideOverPanel(QFrame):
@@ -541,7 +567,9 @@ class LayoutMixin:
         self._table.setColumnWidth(3, 100)
         self._table.setColumnWidth(4, 120)
         hdr.setFixedHeight(36)
-        self._table.verticalHeader().setDefaultSectionSize(48)
+        # 48 -> 54: sütun 0 artık dosya adının ALTINDA soluk bir SHA-256
+        # alt satırı taşıyor (bkz. `TableMixin._make_name_cell()`, B-1xx).
+        self._table.verticalHeader().setDefaultSectionSize(54)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
         self._table.setSelectionMode(QTableWidget.ExtendedSelection)
@@ -555,6 +583,14 @@ class LayoutMixin:
         # bu yüzden fazladan tetiklenmesi zararsız.
         self._table.itemChanged.connect(self._on_table_item_changed)
         lay.addWidget(self._table, 1)
+
+        # Durum çubuğu — dosya/kayıt/kasa toplamı + bütünlük taraması +
+        # hareketsizlik kilidi özeti (B-1xx, mockup envanteri). `_refresh_
+        # status_bar()` tarafından dolduruluyor; burada yalnızca yer tutucu.
+        self._status_bar = QLabel("")
+        self._status_bar.setObjectName("status_bar")
+        self._status_bar.setFixedHeight(28)
+        lay.addWidget(self._status_bar)
 
         # Drag-drop alanı
         self._drop_hint = QLabel("Dosyaları buraya sürükleyin — otomatik karantinaya alınır")
@@ -618,6 +654,77 @@ class LayoutMixin:
         bh.addWidget(self._btn_bulk_imha)
 
         return cubuk
+
+    # ── Kenar çubuğu rozetleri + durum çubuğu — CANLI sayılar (mockup envanteri) ──
+    #
+    # YENİ bir zamanlayıcı YOK: `_refresh_live_counts()` yalnızca dosya
+    # listesini zaten değiştiren MEVCUT noktalardan çağrılıyor —
+    # `_populate_table()` (her yeniden yükleme), `_on_file_done()` (dosya
+    # eklendi), tekli/toplu taşıma-onay-imha metotları ve süresi dolan
+    # imha temizliği (`_tick_expiry()`, yalnızca gerçekten bir şey
+    # silindiyse). Bkz. bu metotların çağrı yerleri.
+
+    def _refresh_nav_counts(self) -> None:
+        """`_SIDEBAR_NAV` düğmelerine ve Doğrulama Merkezi'ne GERÇEK sayı rozeti yazar.
+
+        "Doğrulama Merkezi" rozetinin sayımı: sayfanın kendisinde (üç
+        doğrulama + kurtarma parçası) doğal bir "bekleyen" kuyruğu YOK —
+        hepsi isteğe bağlı, sıraya girmeyen eylemler (bkz. `UI/
+        GuvenlikView.py` modül docstring'i). Bu yüzden rozet, `main.py`
+        açılışının ZATEN kullandığı iki GERÇEK "dikkat gerektirir"
+        sinyalinin toplamı: yedek hatırlatması gerekiyor mu (`CORE.
+        backup_reminder.yedek_durumu`) ve kurtarma parçası hiç dışa
+        aktarılmamış mı (`CORE.vault_manager.has_recovery_share`) — ikisi
+        de yönetici-only, Standart/Salt Okunur rolde her zaman 0.
+        """
+        try:
+            db = DBManager()
+            can_see_private = is_admin_role(self._role)
+            for icon, display_name, db_label in _SIDEBAR_NAV:
+                btn = self._nav_btns.get(db_label)
+                if btn is None:
+                    continue
+                n = count_files_by_label(db, db_label, include_private=can_see_private)
+                btn.setText(f"   {icon}   {display_name}   ·   {n}")
+
+            bekleyen = 0
+            if can_see_private:
+                try:
+                    if yedek_durumu(db).uyarilmali:
+                        bekleyen += 1
+                except Exception as exc:
+                    _log.warning("yedek_durumu_okunamadi  exc=%s", exc)
+                try:
+                    if not has_recovery_share(self._hwid):
+                        bekleyen += 1
+                except Exception as exc:
+                    _log.warning("recovery_share_durumu_okunamadi  exc=%s", exc)
+            rozet = f"   ·   {bekleyen}" if bekleyen else ""
+            self._guvenlik_btn.setText(f"   {_GUVENLIK_ICON}   {_GUVENLIK_SAYFA_ADI}{rozet}")
+        except Exception as exc:
+            _log.warning("nav_sayaclari_yenilenemedi  exc=%s", exc)
+
+    def _refresh_status_bar(self) -> None:
+        """İçerik alanının altındaki özet çubuğunu GERÇEK verilerle tazeler."""
+        try:
+            db = DBManager()
+            can_see_private = is_admin_role(self._role)
+            toplam_dosya, toplam_bayt = vault_summary(db, include_private=can_see_private)
+            kayit = audit_log_entry_count(db)
+            tarama_metni = _gun_once_metni(last_sweep_at(db))
+            dk = get_idle_timeout_minutes(db)
+            kilit_metni = f"{dk} dk" if dk > 0 else "kapalı"
+            self._status_bar.setText(
+                f"{toplam_dosya} dosya  ·  {kayit} kayıt  ·  kasa {self._fmt_size(toplam_bayt)}"
+                f"  ·  Bütünlük taraması: {tarama_metni}"
+                f"  ·  Hareketsizlik kilidi: {kilit_metni}"
+            )
+        except Exception as exc:
+            _log.warning("durum_cubugu_yenilenemedi  exc=%s", exc)
+
+    def _refresh_live_counts(self) -> None:
+        self._refresh_nav_counts()
+        self._refresh_status_bar()
 
     # ── Slide-over paneli — doğrulama/ayar ekranlarının ORTAK mekanizması ──────
     #

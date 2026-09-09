@@ -186,6 +186,7 @@ class BulkActionsMixin:
             return
         for row in sorted(rows, reverse=True):
             self._table.removeRow(row)
+        self._refresh_live_counts()
         QMessageBox.information(self, "Taşındı",
                                 f"{len(file_ids)} dosya Genel etiketine taşındı.")
 
@@ -218,6 +219,7 @@ class BulkActionsMixin:
             return
         for row in sorted((r for r, _ in to_move), reverse=True):
             self._table.removeRow(row)
+        self._refresh_live_counts()
         QMessageBox.information(self, "Taşındı", f"{moved} dosya Kritik etiketine taşındı.")
 
     def _on_ctx_bulk_move_to_imha(self, rows: list[int], file_ids: list[int]) -> None:
@@ -246,6 +248,7 @@ class BulkActionsMixin:
             return
         for row in sorted(rows, reverse=True):
             self._table.removeRow(row)
+        self._refresh_live_counts()
         QMessageBox.information(self, "İmha Odasına Taşındı",
                                 f"{moved} dosya İmha Odası'na taşındı.")
 

@@ -51,10 +51,12 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QTableWidgetItem,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -224,6 +226,7 @@ class TableMixin:
                 filepath=row["filepath"] or "",
                 expires_at=row["expires_at"] or "",
             )
+        self._refresh_live_counts()
 
     # ── Tablo yardımcıları ────────────────────────────────────────────────────
 
@@ -239,16 +242,18 @@ class TableMixin:
         is_hcl = filepath.endswith(".hcl")
         self._table.insertRow(row)
 
-        # Sütun 0 — dosya adı + çoklu seçim kutucuğu
+        # Sütun 0 — dosya adı + çoklu seçim kutucuğu + SHA-256 alt satırı
         #
-        # Yeni bir sütun AÇILMADI: aynı hücreye `Qt.ItemIsUserCheckable`
-        # bayrağı eklenip `setCheckState()` çağrılınca Qt kutucuğu metnin
-        # SOLUNA otomatik çiziyor. Ayrı bir sütun; `_set_scan_badge()`
-        # dahil sütun indeksine bağlı HER yeri (5'ten 6'ya) değiştirmeyi
-        # gerektirirdi — kozmetik bir eklenti için orantısız bir risk.
-        # `file_id`/`label`/`filepath` zaten BU öğede duruyor (UserRole),
-        # yani kutucuk durumunu okuyan kod aynı öğeden ikisini birden
-        # alabiliyor (bkz. `UI/main_window_bulk.py::_checked_selection`).
+        # Yeni bir sütun AÇILMADI: `name_item` (VERİ katmanı — checkstate,
+        # UserRole'ler) DEĞİŞMEDİ; `_checked_selection()`/`_on_table_item_
+        # changed()` hâlâ onu okuyor (bkz. `UI/main_window_bulk.py`). Bu
+        # itemin ÜSTÜNE `setCellWidget()` ile bir GÖRSEL katman eklendi
+        # (`_make_name_cell()`, B-1xx) — dosya adı + altında soluk,
+        # kısaltılmış SHA-256 (mockup'ın istediği gibi; veri zaten
+        # UserRole+1'de duruyordu, yeni bir DB sorgusu YOK). Kutucuğun
+        # KENDİSİ de o widget'ın içinde, tıklanınca `name_item.
+        # setCheckState()`'i çağırıp AYNI `itemChanged` sinyaline düşüyor
+        # — tek kaynak hâlâ `name_item`.
         display_name = ("🔒  " + name) if is_hcl else name
         name_item    = QTableWidgetItem(display_name)
         name_item.setData(Qt.UserRole,     file_id)
@@ -258,9 +263,10 @@ class TableMixin:
         name_item.setData(Qt.UserRole + 4, expires_at)
         name_item.setFlags(name_item.flags() | Qt.ItemIsUserCheckable)
         name_item.setCheckState(Qt.Unchecked)
-        if is_hcl:
-            name_item.setForeground(QColor(self._T["accent"]))
         self._table.setItem(row, 0, name_item)
+        self._table.setCellWidget(
+            row, 0, self._make_name_cell(name_item, display_name, sha256, is_hcl)
+        )
 
         # Sütun 1 — etiket pill (setCellWidget)
         fg, bg = _LABEL_PILL_STYLE.get(label, ("#6B7280", "#F3F4F6"))
@@ -300,6 +306,57 @@ class TableMixin:
         item.setForeground(QColor(color))
         item.setTextAlignment(Qt.AlignCenter)
         self._table.setItem(row, 4, item)
+
+    def _make_name_cell(
+        self, name_item: QTableWidgetItem, display_name: str,
+        sha256: str | None, is_hcl: bool,
+    ) -> QWidget:
+        """Sütun 0'ın GÖRSEL katmanı — dosya adı + altında soluk kısaltılmış SHA-256.
+
+        `name_item` VERİ katmanı olarak kalıyor (bkz. `_insert_row()`
+        çağrı yerindeki yorum) — bu yalnızca onun üstüne binen bir
+        `QWidget`. Kutucuk burada GERÇEK bir `QCheckBox`; tıklanınca
+        `name_item.setCheckState()`'i çağırıyor, bu da tablonun zaten var
+        olan `itemChanged` bağlantısı üzerinden `_on_table_item_changed()`'i
+        tetikliyor — ikinci bir "seçim durumu" kaynağı AÇILMADI.
+        """
+        sarici = QWidget()
+        sarici.setStyleSheet("background: transparent;")
+        yatay = QHBoxLayout(sarici)
+        yatay.setContentsMargins(4, 2, 4, 2)
+        yatay.setSpacing(8)
+
+        kutucuk = QCheckBox()
+        kutucuk.setCursor(Qt.PointingHandCursor)
+        kutucuk.setChecked(name_item.checkState() == Qt.Checked)
+        kutucuk.toggled.connect(
+            lambda isaretli, it=name_item:
+            it.setCheckState(Qt.Checked if isaretli else Qt.Unchecked)
+        )
+        yatay.addWidget(kutucuk, 0, Qt.AlignVCenter)
+
+        sutun = QVBoxLayout()
+        sutun.setContentsMargins(0, 0, 0, 0)
+        sutun.setSpacing(0)
+
+        ad_etiketi = QLabel(display_name)
+        ad_etiketi.setStyleSheet(
+            f"background:transparent; font-size:13px;"
+            f" color:{self._T['accent'] if is_hcl else self._T['text']};"
+        )
+        sutun.addWidget(ad_etiketi)
+
+        if sha256:
+            kisa = sha256 if len(sha256) <= 12 else sha256[:12] + "…"
+            hash_etiketi = QLabel(f"sha256 {kisa}")
+            hash_etiketi.setObjectName("file_hash_sublabel")
+            hash_etiketi.setStyleSheet(
+                f"background:transparent; font-size:10px; color:{self._T['subtext']};"
+            )
+            sutun.addWidget(hash_etiketi)
+
+        yatay.addLayout(sutun, 1)
+        return sarici
 
     @staticmethod
     def _fmt_size(size_bytes: int) -> str:
@@ -350,6 +407,8 @@ class TableMixin:
         for row, file_id, filepath in sorted(expired_rows, key=lambda t: t[0], reverse=True):
             self._table.removeRow(row)
             self._purge_expired_file(file_id, filepath)
+        if expired_rows:
+            self._refresh_live_counts()
 
         bant = banner_for(kalanlar, row_count=self._table.rowCount())
         aciliyet = bant.urgency()
@@ -649,6 +708,7 @@ class TableMixin:
                 # (bkz. `_handle_dropped_file`/`_handle_dropped_folder`
                 # varsayılanları) — taşımaya gerek yok, zaten orada.
                 self._batch_timeouts += 1
+            self._refresh_live_counts()
         else:
             self._batch_errors += 1
             _log.warning("batch_file_error  file=%s  err=%s",

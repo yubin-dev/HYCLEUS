@@ -9559,3 +9559,99 @@ gerçek USB bu hwid'e sahip olamaz, `has_recovery_share()`/anchor
 kontrollerinden hiçbiri bunu YANLIŞLIKLA tetiklemez), ama veritabanı
 temizliğine ait, düzeltilmesi gereken bir artık. Silinmesi bu turda
 BİLEREK YAPILMADI (kullanıcı talebi) — ayrı bir turda ele alınacak.
+
+## B-122 — Genel/Kasa ekranı: kenar çubuğu rozetleri, SHA-256 alt satırı, durum çubuğu
+
+**Durum:** Kapalı.
+**Öncelik:** Orta (mockup/gerçek kod envanterinden onaylanan 3 madde).
+**Bulundu/Kapatıldı:** 2026-09-10.
+
+### Bulgu
+
+Mockup envanteri (`tasarımlarımız/HYCLEUS Arayuz - standalone.html`,
+repoya HİÇ eklenmedi) üç gerçek eksik ortaya çıkardı:
+1. Kenar çubuğu Genel/Kritik/Karantina/İmha Odası ve Doğrulama Merkezi
+   düğmelerinde dosya/bekleyen sayısı rozeti YOKTU.
+2. Dosya satırında SHA-256 (`Qt.UserRole+1`'de zaten duruyordu)
+   HİÇ gösterilmiyordu.
+3. İçerik alanının altında dosya/kayıt/kasa/bütünlük-taraması/
+   hareketsizlik-kilidi özeti veren bir durum çubuğu yoktu.
+
+### Düzeltme
+
+1. **Rozetler** — `CORE/file_queries.py::count_files_by_label()` (yeni,
+   `files_by_label()`'ın AYNI `_EXCLUDE_PRIVATE` filtresiyle COUNT).
+   `UI/main_window_layout.py::_refresh_nav_counts()` dört dosya
+   düğmesini ve Doğrulama Merkezi'ni yazıyor. Doğrulama Merkezi'nin
+   sayımı: sayfanın kendisinde doğal bir "bekleyen kuyruk" YOK (dördü de
+   isteğe bağlı eylem, bkz. `UI/GuvenlikView.py` docstring'i) — bu
+   yüzden rozet, `main.py` açılışının ZATEN kullandığı iki gerçek
+   "dikkat gerektirir" sinyalinin toplamı: yedek hatırlatması
+   (`CORE.backup_reminder.yedek_durumu`) ve kurtarma parçası hiç dışa
+   aktarılmamış (`CORE.vault_manager.has_recovery_share`) — ikisi de
+   yönetici-only. **YENİ bir zamanlayıcı YOK**: `_refresh_nav_counts()`/
+   `_refresh_status_bar()` (birlikte `_refresh_live_counts()`) yalnızca
+   dosya listesini zaten değiştiren MEVCUT noktalardan çağrılıyor —
+   `_populate_table()`, `_on_file_done()`, tekli/toplu taşıma-onay-imha
+   metotları (`main_window_files.py`/`main_window_bulk.py`) ve süresi
+   dolan imha temizliği (`_tick_expiry()`, yalnızca bir şey silindiyse).
+2. **SHA-256 alt satırı** — `UI/main_window_table.py::_make_name_cell()`
+   (yeni): sütun 0'ın VERİ katmanı (`name_item` — checkstate, UserRole)
+   DEĞİŞMEDİ, `_checked_selection()`/`_on_table_item_changed()` hâlâ onu
+   okuyor; bu yalnızca üstüne binen bir `QCheckBox` + iki `QLabel`
+   (`setCellWidget`) — dosya adı ve altında soluk (`self._T['subtext']`)
+   kısaltılmış hash (ilk 12 karakter + "…"). Kutucuk tıklanınca
+   `name_item.setCheckState()`'i çağırıp tablonun zaten var olan
+   `itemChanged` sinyaline düşüyor — ikinci bir seçim-durumu kaynağı
+   AÇILMADI. Satır yüksekliği 48→54 (iki satır için).
+3. **Durum çubuğu** — `CORE/file_queries.py::vault_summary()` (toplam
+   dosya+bayt), `CORE/audit_chain.py::audit_log_entry_count()` (yeni),
+   `CORE.integrity.last_sweep_at()` + yeni `_gun_once_metni()` yardımcı
+   (main_window_layout.py), `CORE.idle_lock.get_idle_timeout_minutes()`
+   — hepsi zaten var olan fonksiyonlar, sadece `_refresh_status_bar()`
+   içinde birleştirildi.
+
+### Test
+
+`tests/test_kasa_ekrani_ozet_rozetleri.py` (15 test): CORE katmanı saf
+birim testleri (`count_files_by_label`, `vault_summary` + mahrem
+filtresi, `audit_log_entry_count`, `_gun_once_metni` biçimleri) + gerçek
+`HycleusWindow` ile gerçek dosya ekleme/taşıma pipeline'ı (rozetin
+GERÇEKTEN arttığını/azaldığını, tekli VE toplu taşımada, `_tick_expiry()`
+ile GERÇEK silmede, SHA-256 alt satırının gerçek veriyle eşleştiğini,
+durum çubuğunun gerçek toplamları gösterdiğini, Doğrulama Merkezi
+rozetinin iki sinyali doğru topladığını). Mutasyon-kanıtlı: `count_files_
+by_label`'ın filtresi, hash kısaltması, `_gun_once_metni`, idle-dakika
+biçimi, güvenlik rozeti mantığı VE üç ayrı kanca noktası (tekli Kritik'e
+taşıma, toplu İmha'ya atma, `_tick_expiry()` temizliği) tek tek geçici
+bozulup ilgili testlerin GERÇEKTEN düştüğü doğrulandı, sonra geri alındı.
+
+Tam suite: bkz. commit mesajı. ruff temiz.
+
+## B-123 — Klasör hiyerarşisi DB'de var, UI yalnızca kök seviyeyi gösteriyor
+
+**Durum:** Açık (bu turun kapsamı DIŞINDA bırakıldı — kullanıcı talebi).
+**Öncelik:** Orta.
+**Bulundu:** 2026-09-10 (mockup envanteri).
+
+`folders.parent_id` (kendine referans) tam bir hiyerarşiyi destekliyor,
+ama `UI/main_window_tree.py::_refresh_folder_sidebar()` yalnızca
+`WHERE parent_id IS NULL` sorguluyor — alt klasörler kenar çubuğunda HİÇ
+görünmüyor. `_on_create_folder()` de `parent_id` hiç geçirmiyor, yani
+UI'dan bir alt klasör oluşturmanın/taşımanın hiçbir yolu yok. Mockup'taki
+girintili klasör ağacının (`f.pad`) karşılığı bu yüzden UI'da eksik —
+veri modeli hazır, arayüz kullanmıyor. Ayrıca klasör başına dosya sayısı
+(mockup `f.count`) da gösterilmiyor.
+
+## B-124 — USB durum rozeti üst barda değil, kenar çubuğunun en altında
+
+**Durum:** Açık (bu turun kapsamı DIŞINDA bırakıldı — kullanıcı talebi).
+**Öncelik:** Düşük.
+**Bulundu:** 2026-09-10 (mockup envanteri).
+
+Mockup'ta USB bağlantı durumu (renkli nokta) üst bar sağında, tema
+düğmesi ve avatarla aynı satırda, her zaman göz önünde. Gerçek kodda
+`self._usb_badge` (`UI/main_window_layout.py::_make_sidebar()`) kenar
+çubuğunun EN ALTINDA, YÖNETİCİ bölümünün içinde — görmek için kenar
+çubuğunu sonuna kadar kaydırmak/bakmak gerekiyor. `main_window_lock.py`
+mantığı DEĞİŞMEDİ, yalnızca konum farkı.

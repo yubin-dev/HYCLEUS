@@ -442,6 +442,7 @@ class FileActionsMixin:
             QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
             return
         self._table.removeRow(row)
+        self._refresh_live_counts()
         if not auto:
             QMessageBox.information(self, "Taşındı", f"Dosya '{label_display}' etiketine taşındı.")
 
@@ -466,6 +467,7 @@ class FileActionsMixin:
             QMessageBox.warning(self, "Hata", str(exc))
             return
         self._table.removeRow(row)
+        self._refresh_live_counts()
         QMessageBox.information(self, "Taşındı", "Dosya Kritik etiketine taşındı.")
 
     def _on_ctx_move_to_imha(self, row: int, file_id: int | None) -> None:
@@ -493,6 +495,7 @@ class FileActionsMixin:
             QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
             return
         self._table.removeRow(row)
+        self._refresh_live_counts()
         QMessageBox.information(self, "İmha Odasına Taşındı",
                                 "Dosya İmha Odası'na taşındı. 24 saat içinde silinecek.")
 
