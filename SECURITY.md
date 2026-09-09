@@ -505,18 +505,60 @@ paragraph and the two tests above go stale together and need re-deriving —
 they are not a permanent guarantee, just an accurate description of the
 current call graph.
 
-**The full call graph, audited.** `recover_master_key()` has exactly one
-production call site: `CORE/recover_vault.py:146`, inside `_cmd_recover()`
-(`tests/test_recovery_call_graph.py::test_recover_master_key_TEK_uretim_
-cagri_yeri_var` pins this — it fails, visibly, the day a second one is
-added). No GUI flow, no API, no other script calls it; `UI/AdminPanel.py`
-and `UI/main_window_open.py` only point the user at the CLI in prose. That
-one call site does **not** unconditionally reprovision: `_cmd_recover()`
-lets the user decline (`CORE/recover_vault.py:168-174`, the "Atlandı"
-branch) and return with the vault still signed under the old key and
-`token_id` still tampered, if it was. The reprovision-happens-immediately
-story is therefore false as a blanket claim — what actually holds is
-narrower, and it holds regardless of which branch runs:
+**The full call graph, audited.** `recover_master_key()` had exactly one
+production call site through 2026-09-08: `CORE/recover_vault.py:146`,
+inside `_cmd_recover()` (`tests/test_recovery_call_graph.py::
+test_recover_master_key_TEK_uretim_cagri_yeri_var` pinned this — it was
+designed to fail, visibly, the day a second one was added, and it did).
+No GUI flow, no API, no other script called it; `UI/AdminPanel.py` and
+`UI/main_window_open.py` only pointed the user at the CLI in prose — that
+much is still true today.
+
+**A second call site was added 2026-09-09**: `CORE/usb_takeover.py:151`,
+inside `takeover_usb()`. It answers a different question than
+`_cmd_recover()` does. `_cmd_recover()` restores the *same* HWID's vault
+after the local machine's state (vault file or credential-store entry)
+was lost, with the physical USB still in hand. `takeover_usb()` handles
+the case where the physical USB itself is gone for good — a lone approved
+admin locked out has no session to invoke `UsbTokensView`'s "Sil" or
+`PendingRegistrationsView`'s "Reddet" (both require one), and
+`register_new_user()` never produces a second `admin` row by design
+(§4.1's registration invariant) — so the only way back in is to move the
+*existing* row to a fresh HWID using the same recovery share. It:
+
+1. Calls `recover_master_key()` — identical function, identical two
+   branches (`old_pin` given → `share_1`+`share_3`; `old_pin=None` →
+   `share_2`+`share_3`) — no new code path into `_decrypt_vault()` was
+   added, so every guarantee this section derives about that call
+   (the GCM/PIN binding, the unauthenticated-but-unread `token_id` in the
+   `share_2`-less branch) applies **unchanged** to this second caller.
+2. Calls `reprovision_vault()` on the *new* HWID — same as `_cmd_recover()`,
+   master key and polynomial preserved, a fresh `token_id` written.
+3. Additionally updates `users.hwid` for the row that matched `old_hwid`
+   (no new row — one admin in, one admin out) and calls `discard_vault()`
+   on `old_hwid`, which deletes that HWID's vault file, keyring `share_2`,
+   and TOTP secret outright. This is new relative to `_cmd_recover()`,
+   which never touches `users` or invalidates the *old* HWID (there is no
+   "old" HWID in that flow — it is the same one throughout).
+
+`takeover_usb()` also logs its own `usb_devralindi` audit row
+(`old_hwid`, `new_hwid`, `user_id`) in addition to `recover_master_key()`'s
+`vault_recovered` row — neither mentions `token_id`, so the exploitability
+analysis below (built on `vault_recovered` never carrying it) is
+unaffected by the new caller.
+`tests/test_recovery_call_graph.py::test_recover_master_key_TEK_uretim_
+cagri_yeri_var` now pins **both** lines; a third call site will make it
+fail again, visibly, by the same design.
+
+Neither call site unconditionally reprovisions: `_cmd_recover()` lets the
+user decline (`CORE/recover_vault.py:168-174`, the "Atlandı" branch) and
+return with the vault still signed under the old key and `token_id` still
+tampered, if it was; `_cmd_takeover()` similarly asks for confirmation
+before calling `takeover_usb()` and aborts with nothing written if the
+user declines or `recover_master_key()`/`reprovision_vault()` raises. The
+reprovision-happens-immediately story is therefore false as a blanket
+claim — what actually holds is narrower, and it holds regardless of which
+branch runs:
 
 - The one audit-log write in this whole path is `recover_master_key()`'s
   own `db.log("vault_recovered", detail=f"hwid={hwid} kaynak=...")`
@@ -4398,18 +4440,61 @@ hâle getirirse, bu paragraf ve yukarıdaki iki test BİRLİKTE bayatlar ve
 yeniden türetilmeleri gerekir — bunlar kalıcı bir garanti değil, mevcut çağrı
 grafiğinin doğru bir tasviri.
 
-**Denetlenmiş tam çağrı grafiği.** `recover_master_key()`'in TEK bir üretim
-çağrı yeri var: `CORE/recover_vault.py:146`, `_cmd_recover()` içinde
-(`tests/test_recovery_call_graph.py::test_recover_master_key_TEK_uretim_
-cagri_yeri_var` bunu sabitliyor — ikinci bir yer eklenirse görünür biçimde
-kırılır). Hiçbir GUI akışı, hiçbir API, başka hiçbir betik onu çağırmıyor;
-`UI/AdminPanel.py` ve `UI/main_window_open.py` kullanıcıyı yalnızca METİNLE
-CLI'ye yönlendiriyor. O TEK çağrı yeri KOŞULSUZ yeniden kurmuyor:
-`_cmd_recover()` kullanıcının reddetmesine izin veriyor
-(`CORE/recover_vault.py:168-174`, "Atlandı" dalı) ve vault eski anahtarla
-imzalı, `token_id` de kurcalanmışsa kurcalanmış olarak dönüyor. Yani
-"reprovision hemen çalışır" hikâyesi genel bir iddia olarak YANLIŞ —
-gerçekte geçerli olan daha dar, ve hangi dal çalışırsa çalışsın geçerli:
+**Denetlenmiş tam çağrı grafiği.** `recover_master_key()`'in 2026-09-08'e
+kadar TEK bir üretim çağrı yeri vardı: `CORE/recover_vault.py:146`,
+`_cmd_recover()` içinde (`tests/test_recovery_call_graph.py::
+test_recover_master_key_TEK_uretim_cagri_yeri_var` bunu sabitliyordu —
+ikinci bir yer eklenirse görünür biçimde kırılacak şekilde tasarlanmıştı,
+ve kırıldı). Hiçbir GUI akışı, hiçbir API, başka hiçbir betik onu
+çağırmıyordu; `UI/AdminPanel.py` ve `UI/main_window_open.py` kullanıcıyı
+yalnızca METİNLE CLI'ye yönlendiriyordu — bu hâlâ doğru.
+
+**2026-09-09'da İKİNCİ bir çağrı yeri eklendi**: `CORE/usb_takeover.py:151`,
+`takeover_usb()` içinde. Bu, `_cmd_recover()`'dan FARKLI bir soruya cevap
+veriyor. `_cmd_recover()` AYNI HWID'in vault'unu, fiziksel USB hâlâ elde
+dururken, yerel makinenin durumu (vault dosyası ya da anahtar kasası
+kaydı) kaybolduğunda geri getiriyor. `takeover_usb()` ise fiziksel USB'nin
+kendisinin KALICI OLARAK kaybolduğu durumu ele alıyor — tek onaylı
+yöneticisi kilitlenmiş bir sistemde `UsbTokensView`'in "Sil"i ya da
+`PendingRegistrationsView`'in "Reddet"i çağıracak bir oturum yok (ikisi de
+gerektiriyor), ve `register_new_user()` tasarım gereği ikinci bir `admin`
+satırı ASLA üretmiyor (§4.1'in kayıt değişmezi) — yani geri dönüşün tek
+yolu, VAR OLAN satırı aynı kurtarma parçasını kullanarak yeni bir HWID'e
+taşımak. Bu fonksiyon:
+
+1. `recover_master_key()`'i çağırıyor — AYNI fonksiyon, AYNI iki dal
+   (`old_pin` verilirse → `share_1`+`share_3`; `old_pin=None` ise →
+   `share_2`+`share_3`) — `_decrypt_vault()`'a yeni bir kod yolu
+   EKLENMEDİ, yani bu bölümün o çağrı hakkında türettiği her garanti
+   (GCM/PIN bağı, `share_2`-yokluğu dalındaki doğrulanmamış-ama-okunmayan
+   `token_id`) bu ikinci çağıran için de DEĞİŞMEDEN geçerli.
+2. `reprovision_vault()`'u YENİ HWID üzerinde çağırıyor — `_cmd_recover()`
+   ile AYNI, master key ve polinom korunuyor, taze bir `token_id` yazılıyor.
+3. Ayrıca `old_hwid`'e eşleşen satırın `users.hwid`'ini güncelliyor (yeni
+   bir satır YOK — bir admin girer, bir admin çıkar) ve `old_hwid` üzerinde
+   `discard_vault()` çağırıyor — bu, o HWID'in vault dosyasını, kasadaki
+   `share_2`'sini ve TOTP sırrını doğrudan siliyor. Bu, `_cmd_recover()`'a
+   göre YENİ bir davranış — o akış `users`'a hiç dokunmuyor ve "eski"
+   HWID'i geçersiz kılmıyor (o akışta baştan sona TEK bir HWID var).
+
+`takeover_usb()` ayrıca kendi `usb_devralindi` denetim satırını
+(`old_hwid`, `new_hwid`, `user_id`) `recover_master_key()`'in
+`vault_recovered` satırına EK olarak yazıyor — ikisi de `token_id`'den
+bahsetmiyor, yani aşağıdaki istismar-edilebilirlik analizi (`vault_recovered`'ın
+onu hiç taşımadığı üzerine kurulu) bu yeni çağırandan ETKİLENMİYOR.
+`tests/test_recovery_call_graph.py::test_recover_master_key_TEK_uretim_
+cagri_yeri_var` artık HER İKİ satırı da sabitliyor; üçüncü bir çağrı yeri
+AYNI tasarımla yine görünür biçimde kırılacak.
+
+Hiçbir çağrı yeri KOŞULSUZ yeniden kurmuyor: `_cmd_recover()` kullanıcının
+reddetmesine izin veriyor (`CORE/recover_vault.py:168-174`, "Atlandı" dalı)
+ve vault eski anahtarla imzalı, `token_id` de kurcalanmışsa kurcalanmış
+olarak dönüyor; `_cmd_takeover()` de benzer şekilde `takeover_usb()`'ı
+çağırmadan önce onay istiyor ve kullanıcı reddederse ya da
+`recover_master_key()`/`reprovision_vault()` bir hata fırlatırsa hiçbir
+şey yazmadan iptal ediyor. Yani "reprovision hemen çalışır" hikâyesi genel
+bir iddia olarak YANLIŞ — gerçekte geçerli olan daha dar, ve hangi dal
+çalışırsa çalışsın geçerli:
 
 - Bu yolun tamamındaki TEK denetim kaydı yazma işlemi `recover_master_key()`'in
   kendi `db.log("vault_recovered", detail=f"hwid={hwid} kaynak=...")`

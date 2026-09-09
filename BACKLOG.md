@@ -9343,3 +9343,119 @@ platformda birebir karşılaştırılabilir.
 Mutasyon-kanıtlı: satır geçici olarak eski `str()` hâline döndürüldü,
 test gerçekten AYNI `AssertionError`'la düştüğü doğrulandı, sonra geri
 alındı. `pytest tests/test_hwid_probe.py`: 49/49 geçti.
+
+## B-118 — Tek yöneticinin USB'si kaybolursa sistem KALICI kilitleniyordu — reset mekanizması yoktu
+
+**Durum:** Kapalı.
+**Öncelik:** Yüksek (erişilebilirlik — veri kaybı değil ama tüm sisteme
+erişim kaybı).
+**Bulundu/Kapatıldı:** 2026-09-09.
+
+### Doğrulama (düzeltmeden ÖNCE, kanıtla)
+
+Gerçek çalıştırmayla üretildi (`create_vault`+`users` INSERT ile bir
+admin kaydedildi, sonra o USB "kayıp" sayılıp farklı bir USB'yle
+yeniden erişim denendi): `register_new_user()` hiçbir koşulda ikinci
+bir `admin` satırı üretmiyor (`role='Yönetici'` verilirse `RuntimeError`
+— B-058/B-060'ın kasıtlı kısıtı). `UI/UsbTokensView.py`'nin "Sil"i ve
+`UI/PendingRegistrationsView.py`'nin "Reddet"i zaten oturum açmış bir
+admin gerektiriyor. Kod genelinde arandı: `users` satırını silecek/
+admin devredecek üçüncü bir yol (CLI dahil) YOKTU. Sonuç: tek admin'in
+USB'si fiziksel olarak kaybolursa/bozulursa sistem KALICI OLARAK
+kilitleniyordu.
+
+### Düzeltme
+
+Yeni modül `CORE/usb_takeover.py::takeover_usb()` — mevcut Shamir
+kurtarma parçası (share_3) akışını (`CORE.vault_manager.
+recover_master_key()`/`reprovision_vault()`, zaten vardı) temel alıyor:
+
+1. Kurtarma parçası + kalan bir pay (share_1 ya da share_2) ile
+   master_key'i kurtarır, YENİ HWID'e reprovision eder (master_key ve
+   polinom KORUNUR — mevcut `.hcl` dosyaları ve basılı kurtarma parçası
+   geçerliliğini sürdürür).
+2. TOTP sırrını eski HWID'den yeni HWID'e taşır (yeniden kurulum
+   GEREKMEZ, mevcut authenticator girişi çalışmaya devam eder).
+3. Var olan `users` satırının `hwid` sütununu GÜNCELLER — yeni bir
+   kullanıcı OLUŞTURMAZ (`sync_session_user()`'ın "satır yok, uydur"
+   dalını hiç tetiklemez, B-060'ın "bir HWID = bir hesap" ilkesiyle
+   tutarlı).
+4. `discard_vault(eski_hwid)` ile eski HWID'i TAMAMEN geçersiz kılar
+   (vault dosyası + `usb_tokens` + TOTP sırrı silinir) — eski USB
+   bulunsa/onarılsa bile bir daha açılamaz.
+5. Denetim günlüğüne `usb_devralindi` (eski_hwid, yeni_hwid, user_id)
+   açıkça yazar.
+
+CLI'dan erişilebilir: `python CORE/recover_vault.py --takeover` (yeni
+komut, mevcut `--export`/`--recover`/`--status` ile aynı dosyada) —
+GUI DEĞİL, çünkü GUI zaten takılı VE kayıtlı bir USB istiyor (main.py),
+tam da "USB'yi kaybettim" anında açılamaz (bkz. dosyanın kendi
+"NEDEN CLI" gerekçesi, `--recover` ile aynı).
+
+`UsbTokensView`/`PendingRegistrationsView` akışlarına, `register_new_user()`'ın
+ikinci-admin yasağına DOKUNULMADI.
+
+### SECURITY.md güncellendi
+
+`recover_master_key()`'in "TEK üretim çağrı yeri" iddiası artık YANLIŞ —
+`tests/test_recovery_call_graph.py::test_recover_master_key_TEK_uretim_
+cagri_yeri_var` bunu görünür kılacak şekilde tasarlanmıştı ve GERÇEKTEN
+kırıldı (bu, testin kendi amacıydı). §4.2 (EN + TR, ikisi de) ikinci
+çağrı yerini (`CORE/usb_takeover.py:151`) belgeleyecek şekilde
+güncellendi; `token_id`'nin istismar-edilemezlik analizi bu yeni
+çağırandan ETKİLENMEDİĞİ açıkça gösterildi (aynı `recover_master_key()`,
+yeni bir kod yolu `_decrypt_vault()`'a eklenmedi).
+
+### Test
+
+`tests/test_usb_takeover.py` (10 test) + `tests/test_recover_cli.py`'ye
+eklenen 4 CLI testi: temel akış (PIN biliniyor / share_2 yoluyla),
+gerçek `open_vault()` ile yeni USB'de giriş, eski USB'nin GERÇEKTEN
+reddedildiği (`FileNotFoundError`), TOTP taşınması, denetim kaydı,
+reddedilme senaryoları (olmayan hesap, çakışan yeni HWID, yanlış
+parça/PIN — hiçbiri DB'yi değiştirmiyor), iptal senaryosu (hiçbir şey
+değişmiyor). Mutasyon-kanıtlı: `discard_vault(old_hwid)` çağrısı ve
+`UPDATE` satırı ayrı ayrı geçici bozulup ilgili testlerin GERÇEKTEN
+düştüğü doğrulandı, sonra geri alındı.
+
+Tam suite: 3268 passed, 4 skipped, 0 failed. ruff/mypy/bandit temiz.
+`tests/test_belge_dil_paritesi.py` (SECURITY.md EN/TR paralelliği)
+dahil.
+
+## B-119 — İlk Kurulum'da TOTP QR etiketi sabit "admin" idi — kimlikle hiç bağlantısı yoktu
+
+**Durum:** Kapalı.
+**Öncelik:** Düşük (kullanılabilirlik — güvenlik etkisi yok, sır hâlâ
+HWID'e özgü ve rastgele).
+**Bulundu/Kapatıldı:** 2026-09-09.
+
+### Doğrulama
+
+Gerçek çalıştırmayla ölçüldü: İlk Kurulum sihirbazında kullanıcı adı
+HİÇ SORULMUYOR, ve `provisioning_uri(name="admin", ...)` sabit kodlanmış
+— gerçek URI çıktısı: `otpauth://totp/HYCLEUS:admin?...`. DB'ye asıl
+yazılan kimlik (`CORE.session_user.vault_username`) `vault:<hwid>` —
+yani authenticator'daki etiket gerçek kayıtla bile TUTARSIZ. Birden
+fazla HYCLEUS kurulumu authenticator uygulamasında AYIRT EDİLEMİYORDU
+(hepsi "admin").
+
+### Düzeltme
+
+`UI/login_dialog.py::_build_setup_ui()`'ye Rol seçiminden ÖNCE isteğe
+bağlı bir "Görünen Ad" alanı (`_setup_display_name`) eklendi —
+`textChanged` sinyaliyle QR CANLI yeniden çiziliyor (`_yenile_setup_qr()`).
+Boş bırakılırsa `vault:<hwid>` — DB'ye GERÇEKTEN yazılacak kimlikle
+tutarlı bir varsayılana düşüyor, rastgele "admin" değil. Yalnızca
+GÖRÜNTÜLEME: `users.username`/`sync_session_user()` davranışı
+DEĞİŞMEDİ (bilinçli tasarım, o modülün docstring'i). Kayıt Ol
+(self-servis) akışının `name=username` davranışı zaten doğruydu,
+dokunulmadı.
+
+### Test
+
+`tests/test_totp_gorunen_ad.py` (6 test): boş ad → `vault:<hwid>`
+varsayılanı, artık sabit "admin" DEĞİL, girilen ad QR'a gerçekten
+yansıyor, ad değiştikçe QR canlı güncelleniyor (pixmap karşılaştırması),
+boşluklu ad trim ediliyor, Kayıt Ol akışı etkilenmedi. Mutasyon-kanıtlı:
+`_yenile_setup_qr()` geçici olarak eski sabit "admin" davranışına
+döndürülüp 5/6 testin GERÇEKTEN düştüğü doğrulandı, sonra geri alındı.

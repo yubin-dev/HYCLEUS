@@ -129,11 +129,15 @@ def test_recover_master_key_her_cagri_yerinde_reprovision_erisilebilir() -> None
 
 def test_recover_master_key_TEK_uretim_cagri_yeri_var() -> None:
     """
-    Bugün itibariyle TEK üretim çağrı yeri `CORE/recover_vault.py::
-    _cmd_recover`. Bu test o sayıyı sabitliyor — sessizce ikinci bir yol
-    (bir GUI, bir API) eklenirse bu test onu FARK EDER, geçmesini
-    engellemez ama görünür kılar (yukarıdaki test zaten reprovision'ı
-    zorunlu kılıyor).
+    2026-09-09 (B-11X, Madde 2) itibariyle İKİ üretim çağrı yeri var:
+    `CORE/recover_vault.py::_cmd_recover` (AYNI HWID'e kurtarma) ve
+    `CORE/usb_takeover.py::takeover_usb` (FARKLI bir HWID'e devralma —
+    kayıp tek adminin USB'sini yeni bir USB'ye taşımak için, bkz. o
+    modülün docstring'i). Bu test tam da öngördüğü gibi ÇALIŞTI: ikinci
+    çağıran eklenince GÖRÜNÜR oldu (bkz. SECURITY.md §4.2'nin "The full
+    call graph, audited" bölümü — orası da bu turda güncellendi). Bu test
+    artık İKİ satırı sabitliyor; ÜÇÜNCÜ bir yer eklenirse yine aynı
+    şekilde görünür olacak.
     """
     bulunanlar = []
     for dosya in _uretim_dosyalari():
@@ -143,7 +147,9 @@ def test_recover_master_key_TEK_uretim_cagri_yeri_var() -> None:
             if isinstance(d, ast.Call) and _cagri_adi(d) == "recover_master_key":
                 bulunanlar.append(f"{bagil}:{d.lineno}")
 
-    assert bulunanlar == ["CORE/recover_vault.py:146"], (
+    assert bulunanlar == [
+        "CORE/recover_vault.py:155", "CORE/usb_takeover.py:151",
+    ], (
         f"recover_master_key() çağrı yerleri değişti: {bulunanlar}. "
         "Yeni bir yer eklendiyse SECURITY.md §4.2'nin çağrı-grafiği "
         "gerekçesi (ve bu dosyanın diğer testleri) yeniden gözden "

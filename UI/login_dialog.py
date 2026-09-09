@@ -1162,6 +1162,25 @@ class LoginDialog(QDialog):
             lay.addSpacing(6)
         lay.addSpacing(14)
 
+        # ── Görünen Ad (authenticator etiketi) ──────────────────────────────
+        # Eskiden QR'ın provisioning_uri'sindeki `name=` SABİT "admin" idi —
+        # kullanıcıdan hiç ad sorulmuyordu. Birden fazla HYCLEUS kurulumu
+        # yapıldığında (ör. birden fazla makine/USB) authenticator
+        # uygulamasında hepsi "admin" görünüyor, AYIRT EDİLEMİYORDU. Şimdi
+        # isteğe bağlı bir ad soruluyor; boş bırakılırsa DB'ye GERÇEKTEN
+        # yazılacak kimlikle (CORE.session_user.vault_username, "vault:
+        # <hwid>") TUTARLI bir varsayılana düşer — rastgele "admin" yerine.
+        # Yalnızca GÖRÜNTÜLEME amaçlı: `users.username` hâlâ
+        # `sync_session_user()`'ın makine-türevi adını kullanıyor (bilinçli
+        # tasarım, bkz. o modülün docstring'i) — burada DEĞİŞTİRİLMEDİ.
+        ad_lbl = _lbl("Görünen Ad (authenticator etiketi)", size=12, color=_LT["subtext"])
+        lay.addWidget(ad_lbl)
+        lay.addSpacing(10)
+        self._setup_display_name = _make_input("ör. Ahmet Yılmaz (isteğe bağlı)")
+        self._setup_display_name.textChanged.connect(lambda _t: self._yenile_setup_qr())
+        lay.addWidget(self._setup_display_name)
+        lay.addSpacing(14)
+
         # Role selection
         role_lbl = _lbl("Rol", size=12, color=_LT["subtext"])
         lay.addWidget(role_lbl)
@@ -1191,14 +1210,11 @@ class LoginDialog(QDialog):
         lay.addWidget(qr_hint)
         lay.addSpacing(12)
 
-        uri = pyotp.TOTP(self._secret).provisioning_uri(
-            name="admin", issuer_name=_APP_NAME
-        )
-        qr_lbl = QLabel()
-        qr_lbl.setAlignment(Qt.AlignCenter)
-        qr_lbl.setPixmap(_make_qr_pixmap(uri, 160))
-        qr_lbl.setStyleSheet("background:transparent;")
-        lay.addWidget(qr_lbl)
+        self._setup_qr_lbl = QLabel()
+        self._setup_qr_lbl.setAlignment(Qt.AlignCenter)
+        self._setup_qr_lbl.setStyleSheet("background:transparent;")
+        self._yenile_setup_qr()
+        lay.addWidget(self._setup_qr_lbl)
 
         secret_lbl = QLabel(f"Manuel: {self._secret}")
         secret_lbl.setAlignment(Qt.AlignCenter)
@@ -1236,6 +1252,17 @@ class LoginDialog(QDialog):
 
         scroll.setWidget(inner)
         root.addWidget(scroll, 1)
+
+    def _yenile_setup_qr(self) -> None:
+        """Görünen Ad alanı değiştikçe QR'ı canlı yeniden çizer.
+
+        Boş bırakılırsa `vault:<hwid>` — `sync_session_user()`'ın DB'ye
+        GERÇEKTEN yazacağı kimlikle tutarlı bir varsayılan (eskiden sabit
+        "admin" idi, gerçek kayıtla hiç ilgisi yoktu).
+        """
+        ad = self._setup_display_name.text().strip() or f"vault:{self._hwid}"
+        uri = pyotp.TOTP(self._secret).provisioning_uri(name=ad, issuer_name=_APP_NAME)
+        self._setup_qr_lbl.setPixmap(_make_qr_pixmap(uri, 160))
 
     # ── Event handlers (mantık değişmedi) ─────────────────────────────────
 
