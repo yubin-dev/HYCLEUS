@@ -202,6 +202,68 @@ def test_son_yayin_git_etiketiyle_uyusuyor() -> None:
     )
 
 
+# Kaç commit sonra "hâlâ .dev'e dönmedi" sessiz sayılmaktan çıkıp CI'ı
+# kırmızı yaksın. B-116: v2.3.0 etiketinden B-125'e kadar 105+ commit
+# boyunca hiç fark edilmeden birikti — eşik onun bir mertebe altında.
+_ETIKETSIZ_COMMIT_ESIGI = 20
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git yok")
+def test_uzun_suredir_etiketlenmemis_agac_versiyonu_yukseltilmis_olmali() -> None:
+    """
+    B-116: `v{SON_YAYIN}` etiketinden sonra çok commit birikmişse
+    `__version__` hâlâ `SON_YAYIN`'la birebir aynı OLAMAZ.
+
+    `CORE/version.py` docstring'inin 4. adımı ("bir sonraki geliştirme
+    turunda `__version__`'ı yükseltip `.dev` ekle") B-095'ten B-125'e
+    kadar 105+ commit boyunca hiç atılmamamıştı — hiçbir testte ya da
+    CI koşusunda YAKALANMADI, çünkü `__version__ >= SON_YAYIN` testi
+    `"2.3.0" >= "2.3.0"` olduğu için sessizce geçiyordu. Sonuç: paketlenen
+    bir EXE, aslında 105 commit sonrası bir ağaçtan üretiliyordu ama
+    "Hakkında" kutusunda tam olarak etiketlenmiş sürümle AYNI dizeyi
+    gösteriyordu — bir güvenlik bildirimcisi ikisini AYIRT EDEMEZDİ
+    (B-017'nin çözdüğü sorunla aynı sınıf).
+
+    Neden ayrı bir GitHub Actions adımı değil de bir pytest testi: eşik
+    mantığı zaten `test_son_yayin_git_etiketiyle_uyusuyor`'daki git-etiket
+    okuma koduna bindiriliyor (kopya kod yok), CI'ın matrisindeki İKİ
+    işletim sisteminde de otomatik çalışıyor (yeni bir workflow adımı
+    Windows+Linux için ayrı ayrı yazılırdı), ve `pytest` adımı zaten
+    (`ruff`/`mypy`/`bandit` gibi) `continue-on-error` TAŞIMIYOR — yani bu
+    test kırılınca iş SERT başarısız olur, projenin var olan CI
+    felsefesiyle birebir aynı, ayrı bir "uyarı yorumu" mekanizması
+    icat etmeye gerek yok.
+    """
+    try:
+        cikti = subprocess.run(
+            ["git", "rev-list", f"v{SON_YAYIN}..HEAD", "--count"],
+            cwd=KOK, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        pytest.skip(f"git çalıştırılamadı: {exc}")
+
+    if cikti.returncode != 0:
+        pytest.skip(f"v{SON_YAYIN} etiketi bulunamadı (sığ klon olabilir)")
+
+    try:
+        commit_sayisi = int(cikti.stdout.strip())
+    except ValueError:
+        pytest.skip(f"commit sayısı okunamadı: {cikti.stdout!r}")
+
+    if commit_sayisi <= _ETIKETSIZ_COMMIT_ESIGI:
+        pytest.skip(
+            f"v{SON_YAYIN}'den bu yana yalnızca {commit_sayisi} commit "
+            f"(eşik {_ETIKETSIZ_COMMIT_ESIGI})"
+        )
+
+    assert __version__ != SON_YAYIN, (
+        f"v{SON_YAYIN} etiketinden bu yana {commit_sayisi} commit birikmiş "
+        f"({_ETIKETSIZ_COMMIT_ESIGI} eşiğini aştı) ama __version__ hâlâ "
+        f"{SON_YAYIN!r} — CORE/version.py docstring'indeki 4. adım "
+        "(sürümü yükseltip .dev ekleme) atlanmış olabilir (bkz. B-116)."
+    )
+
+
 def test_version_modulu_hicbir_seye_bagimli_degil() -> None:
     """
     `CORE/version.py` import etmemeli.

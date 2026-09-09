@@ -53,11 +53,23 @@ planlamada da "v2.2" olarak anılıyordu. Etiketleme anında kullanıcı
 doğrudan **v2.3**'e geçmeyi seçti; "2.2" hiçbir zaman etiketlenmedi,
 yayınlanmadı ve kullanıcı adına açıkça atlandı — numaralandırma
 sürekliliği bozulmuyor, yalnızca bir ara adım hiç var olmadı.
+
+B-116 — "2.4.0.dev" NEDEN 2026-09-10'da ortaya çıktı
+-----------------------------------------------------
+`v2.3.0` etiketlendikten sonra bu dosyanın 4. adımı ("__version__'ı
+yükseltip `.dev` ekle") B-095'ten B-125'e kadar 105+ commit boyunca hiç
+atılmadı — `__version__` tüm o süre boyunca `SON_YAYIN`'la birebir aynı
+kaldı. `tests/test_version.py::test_uzun_suredir_etiketlenmemis_agac_
+versiyonu_yukseltilmis_olmali` artık bunu otomatik yakalıyor (eşik: 20
+commit). "2.4.0.dev" seçimi MEKANİK bir yer tutucu — v2.2'nin de
+gösterdiği gibi, gerçek etiketleme anında kullanıcı doğrudan farklı bir
+sayıya (ör. v2.5) atlayabilir; bu alan yalnızca "etiketlenmiş sürümle
+AYNI DEĞİL" garantisini taşıyor, nihai sürüm numarasını değil.
 """
 from __future__ import annotations
 
 #: Çalıştırılan kodun sürümü. `.dev` = etiketlenmemiş geliştirme ağacı.
-__version__ = "2.3.0"
+__version__ = "2.4.0.dev"
 
 #: En son yayınlanmış git etiketi — güvenlik düzeltmesi alan sürüm.
 SON_YAYIN = "2.3.0"

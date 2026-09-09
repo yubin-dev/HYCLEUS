@@ -9239,9 +9239,9 @@ bu maddeyle İLGİSİZ, B-114'ten kalma bir Windows path-ayırıcı hatası
 
 ## B-116 — Sürüm/etiket süreci: v2.3.0 etiketinden bu yana 100+ commit, `__version__` hiç ".dev"e dönmedi — KARAR maddesi
 
-**Durum:** Açık — kod değişikliği değil, süreç kararı bekliyor.
+**Durum:** Kapalı.
 **Öncelik:** Düşük.
-**Bulundu:** 2026-09-09.
+**Bulundu:** 2026-09-09. **Kapatıldı:** 2026-09-10.
 
 ### Önce bir düzeltme: orijinal varsayım YANLIŞTI
 
@@ -9306,6 +9306,65 @@ felsefesini (`tests/test_version.py`'nin kendi docstring'i: "asıl iş,
 düzeltmeyi değil DÜZELTMENİN KALICILIĞINI denetlemek") benimsemiş.
 Ama eşik değeri (kaç commit sonra uyarsın) ve otomatik mi elle mi
 tetikleneceği kullanıcı kararı — kod değişikliği bu turda YAPILMADI.
+
+**Durum:** Kapalı. **Kapatıldı:** 2026-09-10.
+
+### Karar: Seçenek 1, eşik 20, ayrı bir workflow adımı DEĞİL — bir pytest testi
+
+`tests/test_version.py::test_uzun_suredir_etiketlenmemis_agac_versiyonu_
+yukseltilmis_olmali` eklendi: `git rev-list v{SON_YAYIN}..HEAD --count`
+20'yi aşıyorsa `__version__ != SON_YAYIN` şartını denetliyor, aksi halde
+skip ediyor (`git yok`/`sığ klon` durumlarında da skip — `test_son_yayin_
+git_etiketiyle_uyusuyor` ile aynı desen).
+
+Yeni bir GitHub Actions adımı yerine mevcut test dosyasına eklenmiş bir
+pytest testi seçildi, üç gerekçeyle: (1) git-etiket okuma kodu zaten
+`test_son_yayin_git_etiketiyle_uyusuyor`'da var, kopyalamaya gerek yok;
+(2) CI matrisinin İKİ ayağında (ubuntu + windows) da otomatik çalışıyor,
+ayrı bir workflow adımı ikisi için ayrı ayrı yazılıp bakımı iki katına
+çıkarırdı; (3) `pytest` adımı `ci.yml`'de `ruff`/`mypy`/`bandit` gibi
+`continue-on-error` TAŞIMIYOR — yani bu test kırılınca iş zaten SERT
+başarısız oluyor, "uyarı yorumu bırak" seçeneğinin projenin var olan
+kapı felsefesine (sert başarısız) göre daha zayıf bir sinyal olacağı
+değerlendirildi ve elenmişti.
+
+Mutasyon-kanıt: `__version__` geçici olarak `SON_YAYIN`'la eşitlenip
+(gerçek durum: `v2.3.0`'dan bu yana 112 commit) yeni test tek başına
+çalıştırıldı → **gerçekten KIRMIZI** ("112 commit birikmiş ama
+__version__ hâlâ '2.3.0'"); orijinal değere geri dönüldü → **yeşil**.
+
+### Fiili durumu düzeltme
+
+`__version__` "2.3.0"tan **"2.4.0.dev"**'e çekildi (yeni testin kendisi
+şu an geçiyor); `SON_YAYIN` **"2.3.0"** olarak KALDI (gerçek en son
+etiket hâlâ bu). Eşlenen belgeler: `README.md` rozeti, `SECURITY.md`
+İngilizce+Türkçe "Applies to/Kapsam" satırları (yalnızca `__version__`
+kullanan satırlar — "Supported version/Desteklenen sürüm" satırları
+`SON_YAYIN`'a bağlı, değişmedi). `CORE/version.py` docstring'ine
+"2.4.0.dev NEDEN 2026-09-10'da ortaya çıktı" bölümü eklendi ("v2.2 NEDEN
+YOK" örneğiyle aynı desen) — bu sayı MEKANİK bir yer tutucu, nihai
+etiketi bağlamıyor.
+
+### Gerçek etiketleme sorusu — öneri, karar kullanıcının
+
+`v2.3.0`'dan bu yana **112 commit** birikti (B-095'ten bugüne, B-125
+dahil — bkz. bu BACKLOG'daki B-118'den B-125'e kadar olan tüm maddeler).
+Bunların çoğu gerçek güvenlik düzeltmesi (B-118 USB devralma, B-120
+çıpa/hwid doğrulaması) ya da kullanıcıya görünen davranış değişikliği
+(B-122/123/124/125 Genel/Kasa ekranı). **Öneri: hemen etiketleme, hafta
+sonuna (v2.5 hedefi) kadar bekle** — üç gerekçe: (1) B-123/B-124/B-125
+henüz yalnızca bir gece önce (`184002b`) commit edildi, gerçek kullanımda
+ısınmadı; (2) SECURITY.md'nin "Applies to" alanı zaten `.dev` ile doğru
+durumu yansıtıyor artık (bu maddenin asıl amacı buydu) — etiketlemeyi
+ERTELEMENİN yeni bir sessiz-ayrışma riski YOK, çünkü B-116'nın kendi
+otomatik kapısı artık bunu koruyor; (3) tek bir hafta sonu etiketlemesi,
+o haftanın TÜM commit'lerini (bugünkünkiler dahil) SECURITY.md'nin resmi
+"desteklenen sürüm" bildirimine tek seferde, tutarlı bir gövde olarak
+sokar — parça parça v2.4/v2.4.1/v2.5 etiketlemek yerine. v2.4 ile v2.5
+arasında ise: numaralandırma sürekliliği açısından fark etmez (v2.2
+örneği zaten "atlanan ara sürüm" için kullanıcı-taraflı bir emsal
+oluşturdu) — kullanıcı hangisini tercih ederse `CORE/version.py`'nin
+"Sürüm yükseltirken" 4 adımı (docstring) doğrudan uygulanabilir.
 
 ## B-117 — `test_okuyucular_yalnizca_usb_manager_uzerinden_uretime_bagli` Windows'ta path-ayırıcı yüzünden düşüyor (B-114'ten kalma, bu turla ilgisiz)
 
@@ -9545,20 +9604,47 @@ Tam suite: bkz. commit mesajı. ruff temiz.
 
 ## B-121 — `usb_tokens` tablosunda test artığı bir satır: `USB-PROBE-TOKEN-ID`
 
-**Durum:** Açık (düşük öncelik — temizlik, davranışı etkilemiyor).
+**Durum:** Kapalı.
 **Öncelik:** Düşük.
-**Bulundu:** 2026-09-09 (B-120 doğrulaması sırasında, gerçek dev
-veritabanı incelenirken fark edildi).
+**Bulundu:** 2026-09-09 (B-120 doğrulaması sırasında). **Kapatıldı:** 2026-09-10.
 
-Gerçek dev veritabanında (`./data/hycleus.db`) `usb_tokens` tablosunda
-`hwid = "USB-PROBE-TOKEN-ID", recovery_issued_at` DOLU bir satır duruyor
-— gerçek bir USB'ye ait değil, `tests/test_hwid_probe.py`'nin kullandığı
-bir sabite benziyor. Muhtemelen izolasyonsuz bir manuel çalıştırma
-sırasında gerçek DB'ye yazılmış. Davranışsal bir etkisi yok (hiçbir
-gerçek USB bu hwid'e sahip olamaz, `has_recovery_share()`/anchor
-kontrollerinden hiçbiri bunu YANLIŞLIKLA tetiklemez), ama veritabanı
-temizliğine ait, düzeltilmesi gereken bir artık. Silinmesi bu turda
-BİLEREK YAPILMADI (kullanıcı talebi) — ayrı bir turda ele alınacak.
+### Önce bir düzeltme: kaynak varsayımı yanlıştı
+
+Açılış kaydı "muhtemelen `tests/test_hwid_probe.py`'nin kullandığı bir
+sabite benziyor" diyordu — bu doğrulanmadı, hatalıydı. Depo genelinde
+(kod + tüm git geçmişi, `git log --all -S"USB-PROBE-TOKEN-ID"`) bu dize
+hiçbir pytest testinde literal olarak GEÇMİYOR; tek geçtiği yer, `5ee81e3`
+commit'inin (B-070 yazım-geçmişi soruşturması, 2026-08-28) kendi commit
+mesajı. O soruşturma sırasında bu hwid, gerçek backend'e (gerçek dev DB +
+gerçek Windows Credential Manager) karşı ELLE, tek seferlik bir problama
+(`reprovision_vault()` çift-yazım/gölge mekanizmasını doğrudan tetiklemek
+için) kullanılmış — otomatik bir test koşusu değil, kayıtlı bir insan
+soruşturması. Ad ("PROBE") bunu zaten ima ediyordu.
+
+### Test suite izolasyonu doğrulandı (kullanıcının ikinci sorusu)
+
+`tests/conftest.py::db` fixture'ı HER testte `tmp_path / "hycleus_test.db"`
+kullanıyor — gerçek `./data/hycleus.db`'ye asla dokunmuyor. Daha genel
+akış (main.py üzerinden ilk kurulum/kayıt) için de ayrı bir katman var:
+`tests/test_first_run_isolation.py` (B-067) tam olarak bu sınıftan bir
+GEÇMİŞ olayı belgeliyor — `--test-data-dir`/`HYCLEUS_TEST_DATA_DIR`
+izolasyon bayrağı eklenmeden ÖNCE, B-058 doğrulama turundaki manuel
+PoC kayıt denemeleri gerçek `data/hycleus.db`'ye `status='approved'`
+satırlar bırakmıştı; düzeltme sonrası `main.py` alt-süreç olarak izole
+bir veri dizinine yönlendirilerek test ediliyor. Yani: **evet, geçmişte
+gerçek DB'ye yazan manuel/izolasyonsuz çalıştırmalar oldu (B-067'nin
+kendisi ve bu B-121 satırı bunun iki örneği) ama bugünkü OTOMATİK pytest
+suite'i (`db` fixture + B-067'nin subprocess izolasyonu) hiçbir testte
+gerçek dev DB'ye yazmıyor** — ayrı bir gerçek boşluk YOK, ikisi de zaten
+kapatılmış/önlenmiş geçmiş olaylar.
+
+### Temizlik
+
+`./data/hycleus.db`'de `usb_tokens` tablosundan `id=4,
+hwid='USB-PROBE-TOKEN-ID'` satırı silindi (hiçbir tablo `usb_tokens.id`'ye
+FK ile bağlı değil — şema taraması ile doğrulandı, silme güvenli).
+`dist/data/hycleus.db` ayrıca kontrol edildi — bu satır orada hiç
+yoktu, dokunulmadı. Kod/test değişikliği yok; bu tamamen veri temizliği.
 
 ## B-122 — Genel/Kasa ekranı: kenar çubuğu rozetleri, SHA-256 alt satırı, durum çubuğu
 

@@ -1,6 +1,6 @@
 # Security Policy — HYCLEUS
 
-**Applies to:** v2.3.0 · Last reviewed: 2026-08-21
+**Applies to:** v2.4.0.dev · Last reviewed: 2026-08-21
 
 This document describes what HYCLEUS actually protects, what it does not, and
 the weaknesses we already know about. It is deliberately blunt: a security
@@ -3948,7 +3948,7 @@ history, not a spec.
 
 # Güvenlik Politikası — HYCLEUS
 
-**Kapsam:** v2.3.0 · Son gözden geçirme: 2026-08-21
+**Kapsam:** v2.4.0.dev · Son gözden geçirme: 2026-08-21
 
 Bu belge HYCLEUS'un neyi koruduğunu, neyi korumadığını ve halihazırda
 bildiğimiz zayıflıkları anlatır. Bilinçli olarak açık sözlüdür: yalnızca
