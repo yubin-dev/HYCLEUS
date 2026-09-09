@@ -1341,6 +1341,108 @@ def test_verify_anchor_replicas_multiple_rows_only_tampered_one_flagged(
     assert "Satır 2" in sonuc.problems[0]
 
 
+# ── verify_anchor_replicas() — OTOMATİK-BULMA modunda hwid-doğrulama (B-120) ──
+#
+# Aşağıdaki iki test, yukarıdakilerin AKSİNE, `usb_path=` VERMEDEN çağırıyor
+# — main.py::main()'in GERÇEK çağrı biçimi (tamamen argümansız). Bu, canlı
+# bir dev veritabanı + gerçek bir fiziksel USB ile şöyle yeniden üretildi:
+# yerel `data/audit_anchor.log` bir kullanıcının (hwid X) zincirine aitken,
+# o an takılı USB BAŞKA bir kimliğe (hwid Y, X'in `usb_tokens` tablosunda
+# hiç kayıtlı olmadığı) ait kendi bağımsız zincirini taşıyordu —
+# `verify_anchor_replicas()` bu ikisini körlemesine karşılaştırıp YANLIŞ
+# POZİTİF "kurcalama" raporluyordu. Düzeltme: otomatik-bulma modunda takılı
+# USB'nin hwid'i önce `usb_tokens`'ta (kayıtlı + kara listede değil)
+# doğrulanıyor; değilse "ölçülmedi" (anchors_checked=0) sayılıyor.
+
+
+def test_verify_anchor_replicas_otomatik_bulma_kayitli_usbde_kurcalamayi_hala_yakaliyor(
+    db, tmp_path: Path, sahte_usb_anchor: Path
+) -> None:
+    """
+    Otomatik-bulma modunda (argümansız) KAYITLI/güvenilir bir USB'nin
+    kurcalanmış kopyası hâlâ YAKALANMALI — B-120 düzeltmesi yalnızca
+    TANINMAYAN USB'leri elemeli, meşru bir USB'nin kurcalamasını
+    GÖRMEZDEN GELMEMELİ.
+    """
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 4)
+    write_anchor(db.conn, "test", path=yerel_capa)
+    usb_capa = _usb_capa_yolu(sahte_usb_anchor)
+    write_anchor(db.conn, "test", path=tmp_path / "atilacak.log", usb_path=usb_capa)
+    _usb_capa_satirini_degistir(usb_capa, 0, last_hash="0" * 64)
+
+    sonuc = verify_anchor_replicas(local_path=yerel_capa)  # usb_path YOK — otomatik bulma
+    assert not sonuc
+    assert sonuc.anchors_checked == 1
+    assert any("last_hash" in p and "Satır 1" in p for p in sonuc.problems)
+
+
+def test_verify_anchor_replicas_otomatik_bulma_kayitsiz_yabanci_usb_olcmedi_sayilir(
+    db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    ASIL B-120 BULGUSU: otomatik-bulma modunda takılı USB'nin hwid'i bu
+    veritabanının `usb_tokens` tablosunda HİÇ KAYITLI DEĞİLSE (başka bir
+    kimliğe ait, terk edilmiş, ya da tesadüfen takılı yabancı bir USB) —
+    onun anchor dosyası TAMAMEN İLGİSİZ bir zincir taşısa bile "ikinci
+    kopya" sayılıp karşılaştırılmamalı; bu bir kurcalama sinyali değil,
+    yanlış-eşleştirilmiş iki bağımsız zincirdir.
+    """
+    from CORE import usb_manager
+
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 4)
+    write_anchor(db.conn, "test", path=yerel_capa)
+
+    yabanci_hwid = "YABANCI-KAYITSIZ-USB"
+    yabanci_kok = tmp_path / "yabanci_usb_koku"
+    yabanci_kok.mkdir()
+    usb_capa = _usb_capa_yolu(yabanci_kok)
+    # Yabancı USB'nin TAMAMEN AYRI/ilgisiz bir zincirin kopyasını taşıdığını
+    # simüle et — içerik kasıtlı olarak yerelinkiyle UYUŞMUYOR.
+    write_anchor(db.conn, "test", path=tmp_path / "atilacak.log", usb_path=usb_capa)
+    _usb_capa_satirini_degistir(usb_capa, 0, last_hash="f" * 64)
+
+    monkeypatch.setattr(usb_manager, "get_usb_hwid", lambda: yabanci_hwid)
+    monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: yabanci_kok)
+    # `yabanci_hwid` BİLEREK usb_tokens'a HİÇ eklenmedi — kayıtsız.
+
+    sonuc = verify_anchor_replicas(local_path=yerel_capa)  # usb_path YOK — otomatik bulma
+    assert sonuc.ok is True
+    assert sonuc.anchors_checked == 0
+    assert sonuc.problems == []
+
+
+def test_verify_anchor_replicas_otomatik_bulma_kara_listedeki_usb_de_olcmedi_sayilir(
+    db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kayıtlı ama KARA LİSTEYE alınmış bir USB de aynı şekilde "ölçülmedi"
+    sayılmalı — kayıtlı olmak tek başına yeterli değil."""
+    from CORE import usb_manager
+
+    yerel_capa = tmp_path / "yerel.log"
+    _log_many(db, 4)
+    write_anchor(db.conn, "test", path=yerel_capa)
+
+    kara_hwid = "KARA-LISTELI-USB"
+    kara_kok = tmp_path / "kara_listeli_usb_koku"
+    kara_kok.mkdir()
+    usb_capa = _usb_capa_yolu(kara_kok)
+    write_anchor(db.conn, "test", path=tmp_path / "atilacak.log", usb_path=usb_capa)
+    _usb_capa_satirini_degistir(usb_capa, 0, last_hash="f" * 64)
+    db.execute(
+        "INSERT INTO usb_tokens (hwid, share_2, blacklisted) VALUES (?, ?, 1)",
+        (kara_hwid, "sahte-share-2-degeri"),
+    )
+
+    monkeypatch.setattr(usb_manager, "get_usb_hwid", lambda: kara_hwid)
+    monkeypatch.setattr(usb_manager, "get_usb_mount_root", lambda hwid: kara_kok)
+
+    sonuc = verify_anchor_replicas(local_path=yerel_capa)
+    assert sonuc.ok is True
+    assert sonuc.anchors_checked == 0
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 11. USB hwid çapraz-doğrulaması — çoklu-USB / yanlış-eşleşme koruması
 #     (B-090 takibi)

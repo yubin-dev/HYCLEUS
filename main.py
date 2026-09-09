@@ -310,6 +310,62 @@ def _dev_key(hwid: str) -> bytes:
     )
 
 
+def _cipa_kopyalari_uyari_dialogu(ozet: str) -> QMessageBox:
+    """
+    "Denetim Çıpası Kopyaları Uyuşmuyor" uyarısının kutusu (B-120).
+
+    Kısa metin ÖNCE kullanıcıyı sakinleştiriyor ("erişim engeli değildir"),
+    SONRA neyin farklı olduğunu söylüyor. `last_hash` gibi teknik alanları
+    taşıyan `ozet` (bkz. `AnchorCheck.summary()`) varsayılan olarak GÖRÜNMEZ
+    — `setDetailedText()` Qt'nin kendi "Ayrıntıları Göster..." düğmesini
+    ekliyor; ayrı bir genişleyen widget kurmaya gerek yok.
+
+    Ayrı bir fonksiyon olmasının nedeni test edilebilirlik: `main()`'in
+    geri kalanı QApplication/USB/login akışını gerektirir, ama bu kutunun
+    METNİ tek başına, bir `qapp` fixture'ıyla doğrulanabilir.
+    """
+    kutu = QMessageBox(None)
+    kutu.setIcon(QMessageBox.Warning)
+    kutu.setWindowTitle("Denetim Çıpası Kopyaları Uyuşmuyor")
+    kutu.setText(
+        "Bu bir erişim engeli değildir — uygulama açılmaya devam ediyor.\n\n"
+        "Yerel diskteki denetim çıpası ile USB token'daki kopyası "
+        "birbirinden farklı; bu bir kurcalama uyarısıdır.\n\n"
+        "Teknik ayrıntılar için aşağıdaki \"Ayrıntıları Göster...\" "
+        "düğmesine bakabilirsiniz."
+    )
+    kutu.setDetailedText(ozet)
+    return kutu
+
+
+def _kurtarma_parcasi_uyari_dialogu() -> QMessageBox:
+    """
+    "Kurtarma Parçası Alınmamış" uyarısının kutusu (B-120).
+
+    Kısa metin ÖNCE kullanıcıyı sakinleştiriyor ("erişim engeli değildir"),
+    SONRA riski ve eylemi anlatıyor. Bu kutuda `_cipa_kopyalari_uyari_
+    dialogu()`'nun aksine gizlenecek teknik/hash bilgisi YOK — "Ayrıntıları
+    Göster..." eklemek burada bilgi saklamaz, gereksiz bir tıklama ekler.
+
+    Ayrı fonksiyon olmasının nedeni `_cipa_kopyalari_uyari_dialogu()` ile
+    AYNI: test edilebilirlik.
+    """
+    kutu = QMessageBox(None)
+    kutu.setIcon(QMessageBox.Warning)
+    kutu.setWindowTitle("Kurtarma Parçası Alınmamış")
+    kutu.setText(
+        "Bu bir erişim engeli değildir; uygulamayı normal şekilde "
+        "kullanabilirsiniz.\n\n"
+        "Bu vault şu an 2-of-2 gibi davranıyor: vault dosyanız veya "
+        "anahtar kasası kaydınız kaybolursa dosyalarınıza bir daha "
+        "erişemezsiniz.\n\n"
+        "Kurtarma parçasını almak için:\n"
+        "    python CORE/recover_vault.py --export\n\n"
+        "Bu işlem vault'unuzu değiştirmez; mevcut paylarınız aynı kalır."
+    )
+    return kutu
+
+
 def main() -> None:
     # QApplication'dan ÖNCE: --version/--selftest başsız çalışmalı, Qt'nin
     # ekran sunucusu araması bile olmadan.
@@ -438,15 +494,7 @@ def main() -> None:
                 "audit_anchor_replica_mismatch",
                 detail=" | ".join(replika_kontrolu.problems),
             )
-            QMessageBox.warning(
-                None,
-                "Denetim Çıpası Kopyaları Uyuşmuyor",
-                "Yerel diskteki denetim çıpası ile USB token'daki kopyası\n"
-                "birbirinden farklı — biri değiştirilmiş olabilir.\n\n"
-                f"{replika_kontrolu.summary()}\n\n"
-                "Uygulama açılmaya devam ediyor; bu bir erişim engeli değil,\n"
-                "bir kurcalama uyarısıdır.",
-            )
+            _cipa_kopyalari_uyari_dialogu(replika_kontrolu.summary()).exec()
     except Exception as exc:  # çıpa karşılaştırması açılışı engellemesin
         _log.warning("Çıpa kopyaları karşılaştırılamadı: %s", exc)
 
@@ -555,16 +603,7 @@ def main() -> None:
     try:
         if not has_recovery_share(hwid):
             _log.warning("Kurtarma parçası alınmamış  hwid=%s", hwid)
-            QMessageBox.warning(
-                None,
-                "Kurtarma Parçası Alınmamış",
-                "Bu vault şu an 2-of-2 gibi davranıyor.\n\n"
-                "Vault dosyanız veya anahtar kasası kaydınız kaybolursa "
-                "dosyalarınıza bir daha erişemezsiniz.\n\n"
-                "Kurtarma parçasını almak için:\n"
-                "    python CORE/recover_vault.py --export\n\n"
-                "Bu işlem vault'unuzu değiştirmez; mevcut paylarınız aynı kalır.",
-            )
+            _kurtarma_parcasi_uyari_dialogu().exec()
     except Exception as exc:  # DB/şema sorunları açılışı engellemesin
         _log.warning("Kurtarma parçası durumu okunamadı: %s", exc)
 

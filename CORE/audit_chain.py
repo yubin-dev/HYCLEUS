@@ -1137,11 +1137,38 @@ _REPLICA_COMPARED_FIELDS: tuple[str, ...] = (
 )
 
 
+def _usb_replika_guvenilir_mi(conn: sqlite3.Connection, hwid: str) -> bool:
+    """
+    `hwid`'in bu veritabanının `usb_tokens` tablosunda KAYITLI ve KARA
+    LİSTEYE ALINMAMIŞ olup olmadığını doğrular — `verify_anchor_replicas()`
+    OTOMATİK-BULMA modunun OKUMA-tarafı çapraz-kontrolü (B-090 takibi).
+
+    `_usb_hwid_dogrulanmis_mi()`'den BİLEREK FARKLI: o fonksiyon YAZMADAN
+    önce "takılı USB, OTURUMUN kendi USB'si mi" diye sorar ve `source`'un
+    `_hwid`'i biliniyorsa DOĞRUDAN onunla karşılaştırır. Burada bu katman
+    İŞE YARAMAZ: `main.py`, DBManager'ı zaten `get_usb_hwid()`'in SONUCUYLA
+    `connect()` ediyor (bkz. `main.py::main()`, DB bağlantısı satırı), yani
+    `verify_anchor_replicas()`'ın kendi `get_usb_hwid()` çağrısı da AYNI
+    değeri döndürür — session-hwid karşılaştırması BURADA hiçbir şeyi
+    ELEMEYEN bir totoloji olurdu (takılı USB'nin KAYITLI olup olmadığından
+    bağımsız olarak her zaman "eşleşir"). Sorulması gereken soru farklı:
+    "takılı bu USB, bu veritabanının TANIDIĞI bir USB mi" — bu yüzden
+    session hwid'e BAKILMAKSIZIN her zaman doğrudan `usb_tokens` tablosuna
+    bakılır (canlı doğrulama: gerçek geliştirme veritabanı + kayıtlı
+    olmayan gerçek bir USB ile yeniden üretildi, bkz. BACKLOG B-120).
+    """
+    row = conn.execute(
+        "SELECT 1 FROM usb_tokens WHERE hwid = ? AND blacklisted = 0", (hwid,)
+    ).fetchone()
+    return row is not None
+
+
 def verify_anchor_replicas(
     *,
     local_path: Path | None = None,
     usb_path: Path | None = None,
     hwid: str | None = None,
+    source: Any = None,
 ) -> AnchorCheck:
     """
     Yerel disk anchor'ıyla USB'deki ikinci kopyayı KARŞILAŞTIRIR (B-090).
@@ -1173,11 +1200,56 @@ def verify_anchor_replicas(
     ya da yerel kopya boşsa `anchors_checked=0` ile `ok=True` döner —
     karşılaştırılacak bir şey yok; bu "tutarlı" değil "ölçülmedi" anlamına
     gelir (bkz. `AnchorCheck.summary()`'nin aynı ayrımı).
+
+    `usb_path` VEYA `hwid` AÇIKÇA verilirse — tıpkı `write_anchor()`'da
+    olduğu gibi — hedef zaten çağıran tarafından seçilmiş sayılır ve
+    `_usb_replika_guvenilir_mi()` doğrulaması ATLANIR. Bu doğrulama YALNIZCA
+    İKİSİ DE verilmediğinde, yani `get_usb_hwid()` ile OTOMATİK bulma
+    yapıldığında devreye girer (B-120): o an takılı USB, bu veritabanının
+    `usb_tokens` tablosunda kayıtlı ve kara listede DEĞİLSE, onun anchor
+    dosyası ikinci kopya SAYILMAZ — karşılaştırma yapılmadan `anchors_
+    checked=0` ile "ölçülmedi" döner. Bunun nedeni: tamamen YABANCI/ilgisiz
+    bir USB (başka bir HWID'e ait, terk edilmiş bir devralma öncesi USB,
+    ya da o an rastlantıyla takılı olan başka bir kullanıcının token'ı)
+    kendi BAĞIMSIZ zincirini taşıyabilir — bu, gerçek bir kurcalama değil,
+    "yanlış ikinci kopya" karşılaştırmasıdır ve `main.py`'nin argümansız
+    çağrısında (girişten ÖNCE, `hwid` henüz login'e bağlı değilken) canlı
+    olarak yeniden üretildi (bkz. BACKLOG B-120).
+
+    `source`: `usb_tokens` sorgusu için DBManager ya da ham
+    `sqlite3.Connection`. Verilmezse `DBManager()` singleton'ı kullanılır —
+    yalnızca yukarıdaki otomatik-bulma dalı gerçekten bir hwid bulduğunda
+    dokunulur, aksi hâlde hiç çağrılmaz.
     """
     local_target = local_path or anchor_path()
     local_records = read_anchors(local_target)
 
-    usb_target = usb_path if usb_path is not None else usb_anchor_path(hwid)
+    if usb_path is not None:
+        usb_target: Path | None = usb_path
+    elif hwid is not None:
+        usb_target = usb_anchor_path(hwid)
+    else:
+        from CORE.usb_manager import get_usb_hwid
+
+        aday_hwid = get_usb_hwid()
+        if aday_hwid is None:
+            usb_target = None
+        else:
+            from DB.db_manager import DBManager
+
+            conn = _connection(source if source is not None else DBManager())
+            if _usb_replika_guvenilir_mi(conn, aday_hwid):
+                usb_target = usb_anchor_path(aday_hwid)
+            else:
+                _log.info(
+                    "Çıpa kopyası karşılaştırması ATLANDI — takılı USB'nin"
+                    " hwid'i (%.12s…) bu veritabanının usb_tokens tablosunda"
+                    " kayıtlı değil (ya da kara listede); YABANCI/tanınmayan"
+                    " bir USB'nin anchor dosyası ikinci kopya sayılmadı.",
+                    aday_hwid,
+                )
+                usb_target = None
+
     usb_records = read_anchors(usb_target) if usb_target is not None else []
 
     if not local_records or not usb_records:

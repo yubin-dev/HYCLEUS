@@ -9459,3 +9459,103 @@ yansıyor, ad değiştikçe QR canlı güncelleniyor (pixmap karşılaştırmas�
 boşluklu ad trim ediliyor, Kayıt Ol akışı etkilenmedi. Mutasyon-kanıtlı:
 `_yenile_setup_qr()` geçici olarak eski sabit "admin" davranışına
 döndürülüp 5/6 testin GERÇEKTEN düştüğü doğrulandı, sonra geri alındı.
+
+## B-120 — "Denetim Çıpası Kopyaları Uyuşmuyor" yanlış pozitif üretiyordu + iki açılış uyarısı gereksiz korkutuyordu
+
+**Durum:** Kapalı.
+**Öncelik:** Orta (yanlış-pozitif güvenlik uyarısı — kullanıcıyı gerçek
+olmayan bir kurcalamaya inandırıp güvenilirliği aşındırıyor; erişimi
+engellemiyor ama "hep çıkıyor" alışkanlığı asıl uyarıyı da değersizleştirir).
+**Bulundu/Kapatıldı:** 2026-09-09.
+
+### Doğrulama (kod değişikliğinden ÖNCE, canlı çalıştırmayla)
+
+Kullanıcı iki tekrarlayan uyarı bildirdi: "Denetim Çıpası Kopyaları
+Uyuşmuyor" ve "Kurtarma Parçası Alınmamış". Her ikisi de `main.py::main()`
+içinde, sırasıyla `CORE.audit_chain.verify_anchor_replicas()` ve
+`CORE.vault_manager.has_recovery_share()` tarafından tetikleniyor.
+
+**Kurtarma parçası uyarısı GERÇEK bir sinyaldi, bug DEĞİL:** `usb_tokens.
+recovery_issued_at` zaten kalıcı bir bayrak, `export_recovery_share()`/
+`reprovision_vault()` tarafından doğru yazılıyor. Gerçek dev veritabanında
+canlı sorgulandı: gerçek admin hesabının (hwid `4C530301470118102554`)
+`has_recovery_share()` değeri `False` — çünkü `--export` GERÇEKTEN hiç
+çalıştırılmamış. Kalıcılaştırma eksik değil; uyarı doğru ve haklı.
+
+**Çıpa kopyası uyarısı GERÇEK bir kod hatasıydı.** Canlı repro: aynı dev
+veritabanına, o an fiziksel olarak takılı ama O VERİTABANINDA HİÇ KAYITLI
+OLMAYAN bir USB'yle (`CE8875F15049` — bu turlarda ayrı bir kimlik için
+kullanılmıştı) `verify_anchor_replicas()` çağrıldı:
+`anchors_checked=2, ok=False` — iki kopya de gerçekte TAMAMEN İLGİSİZ iki
+zincire aitti (biri dev DB'nin Ağustos zinciri, diğeri o USB'nin kendi
+Eylül zinciri), yine de ortak-önek karşılaştırması "farklı" diye
+raporladı. Kök neden: `write_anchor()` USB'ye YAZMADAN önce
+`_usb_hwid_dogrulanmis_mi()` ile "bu USB tanınıyor mu" diye soruyor, ama
+`verify_anchor_replicas()` OKUMA tarafında bu kontrolü HİÇ yapmıyordu —
+o an takılı hangi USB olursa olsun (yabancı, terk edilmiş, B-118
+devralması sonrası eski bir USB) körlemesine "ikinci kopya" sayıyordu.
+
+### Düzeltme
+
+1. `CORE/audit_chain.py::verify_anchor_replicas()`'a yeni bir
+   `_usb_replika_guvenilir_mi()` kontrolü eklendi: OTOMATİK-BULMA modunda
+   (hem `usb_path` hem `hwid` verilmemişse — main.py'nin gerçek çağrı
+   biçimi) takılı USB'nin hwid'i önce bu veritabanının `usb_tokens`
+   tablosunda KAYITLI ve KARA LİSTEYE ALINMAMIŞ mı diye kontrol ediliyor;
+   değilse karşılaştırma yapılmadan `anchors_checked=0` ("ölçülmedi")
+   dönüyor. `usb_path`/`hwid` AÇIKÇA verilirse (mevcut testler, ileride
+   olası başka çağıranlar) bu kontrol ATLANIR — `write_anchor()`'daki
+   "açık yol her zaman kazanır" sözleşmesiyle AYNI. Bilinçli olarak
+   `_usb_hwid_dogrulanmis_mi()` (write tarafının kontrolü) YENİDEN
+   KULLANILMADI: main.py zaten `DBManager().connect(hwid=get_usb_hwid())`
+   ile bağlandığından, o fonksiyonun "session hwid" katmanı burada her
+   zaman totolojik olarak doğru çıkardı (bkz. `_usb_replika_guvenilir_mi()`
+   docstring'i).
+2. `main.py`'de iki uyarı metni de yeniden yazıldı: "Bu bir erişim engeli
+   değildir" cümlesi metnin EN BAŞINA alındı; çıpa uyarısındaki teknik
+   özet (`last_hash` vb.) artık ana metinde değil, `QMessageBox.
+   setDetailedText()` ile Qt'nin kendi "Ayrıntıları Göster..." düğmesi
+   arkasında. Kurtarma parçası uyarısında gizlenecek teknik bilgi
+   olmadığı için `setDetailedText()` KULLANILMADI (gereksiz tıklama
+   eklerdi). İki kutu da test edilebilirlik için `_cipa_kopyalari_uyari_
+   dialogu()`/`_kurtarma_parcasi_uyari_dialogu()` adıyla ayrı fonksiyonlara
+   çıkarıldı.
+
+### Test
+
+`tests/test_audit_chain.py`'ye 3 yeni test: kayıtlı/güvenilir USB'nin
+kurcalanmış kopyası otomatik-bulma modunda HÂLÂ yakalanıyor (regresyon),
+kayıtsız yabancı USB "ölçülmedi" sayılıyor (asıl düzeltme), kara listeye
+alınmış USB de aynı şekilde. Mutasyon-kanıtlı: `_usb_replika_guvenilir_mi()`
+geçici olarak `return True` yapılıp iki testin GERÇEKTEN düştüğü
+doğrulandı, sonra geri alındı. Ayrıca gerçek dev veritabanına karşı
+CANLI yeniden çalıştırıldı: düzeltmeden önce `anchors_checked=2, ok=False`,
+sonra `anchors_checked=0, ok=True`.
+
+`tests/test_baslangic_uyari_dialoglari.py` (yeni, 7 test): her iki
+kutunun başlığı, "erişim engeli değildir" cümlesinin metnin başında
+olduğu, çıpa özetinin ana metinde DEĞİL `detailedText()`'te durduğu,
+kurtarma uyarısında `--export` komutunun hâlâ görünür kaldığı. Mutasyon-
+kanıtlı: sıra kasıtlı bozulup (cümle sona alındı, `setDetailedText()`
+kaldırıldı) ilgili testlerin GERÇEKTEN düştüğü doğrulandı, sonra geri
+alındı. `main.py`'nin geri kalanı gibi tam `main()` akışı ÇALIŞTIRILMADI
+— yalnızca bu iki saf yardımcı fonksiyon doğrudan çağrıldı.
+
+Tam suite: bkz. commit mesajı. ruff temiz.
+
+## B-121 — `usb_tokens` tablosunda test artığı bir satır: `USB-PROBE-TOKEN-ID`
+
+**Durum:** Açık (düşük öncelik — temizlik, davranışı etkilemiyor).
+**Öncelik:** Düşük.
+**Bulundu:** 2026-09-09 (B-120 doğrulaması sırasında, gerçek dev
+veritabanı incelenirken fark edildi).
+
+Gerçek dev veritabanında (`./data/hycleus.db`) `usb_tokens` tablosunda
+`hwid = "USB-PROBE-TOKEN-ID", recovery_issued_at` DOLU bir satır duruyor
+— gerçek bir USB'ye ait değil, `tests/test_hwid_probe.py`'nin kullandığı
+bir sabite benziyor. Muhtemelen izolasyonsuz bir manuel çalıştırma
+sırasında gerçek DB'ye yazılmış. Davranışsal bir etkisi yok (hiçbir
+gerçek USB bu hwid'e sahip olamaz, `has_recovery_share()`/anchor
+kontrollerinden hiçbiri bunu YANLIŞLIKLA tetiklemez), ama veritabanı
+temizliğine ait, düzeltilmesi gereken bir artık. Silinmesi bu turda
+BİLEREK YAPILMADI (kullanıcı talebi) — ayrı bir turda ele alınacak.
