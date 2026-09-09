@@ -299,13 +299,51 @@ class TableMixin:
                 text, color = text + " (m)", "#9CA3AF"
             self._set_scan_badge(row, text, color)
 
+        # Sütun 5 — "⋯" menü düğmesi (B-1xx, keşfedilebilirlik). Sağ tık
+        # menüsünün YERİNE geçmiyor, AYNI `_on_context_menu()` gövdesini
+        # açan ikinci bir giriş noktası (bkz. `_make_more_cell()`).
+        self._table.setCellWidget(row, 5, self._make_more_cell())
+
     def _set_scan_badge(self, row: int, text: str, color: str) -> None:
         if row >= self._table.rowCount():
             return
-        item = QTableWidgetItem(text)
+        # "● " öneki: mockup'taki nokta+metin durum formatı. Tek renk
+        # (dot ve metin AYNI `color`) olduğu için düz bir QTableWidgetItem
+        # yeterli — ayrı bir widget/iki renk gerekmiyor.
+        item = QTableWidgetItem(f"●  {text}")
         item.setForeground(QColor(color))
         item.setTextAlignment(Qt.AlignCenter)
         self._table.setItem(row, 4, item)
+
+    def _make_more_cell(self) -> QWidget:
+        """Satır başı "⋯" — sağ tık menüsüyle AYNI `_on_context_menu()`'yu açar.
+
+        Konumu, satır tabloda YENİDEN SIRALANSA/SİLİNSE bile, `mapToGlobal`
+        → `viewport().mapFromGlobal` ile TIKLAMA ANINDA yeniden hesaplanıyor
+        — sabit bir satır numarası SAKLANMIYOR (bkz. `_on_context_menu()`'nun
+        kendisinin de `pos`'tan `rowAt()` ile satırı bulma deseniyle AYNI).
+        """
+        sarici = QWidget()
+        sarici.setStyleSheet("background: transparent;")
+        yatay = QHBoxLayout(sarici)
+        yatay.setContentsMargins(0, 0, 0, 0)
+        yatay.setAlignment(Qt.AlignCenter)
+
+        dugme = QLabel("⋯")
+        dugme.setObjectName("more_menu_dugmesi")
+        dugme.setAlignment(Qt.AlignCenter)
+        dugme.setCursor(Qt.PointingHandCursor)
+        dugme.setStyleSheet(
+            f"background:transparent; font-size:15px; color:{self._T['subtext']};"
+        )
+        dugme.mousePressEvent = lambda _ev, w=dugme: self._on_more_menu_clicked(w)
+        yatay.addWidget(dugme)
+        return sarici
+
+    def _on_more_menu_clicked(self, widget: QWidget) -> None:
+        merkez_global = widget.mapToGlobal(widget.rect().center())
+        pos = self._table.viewport().mapFromGlobal(merkez_global)
+        self._on_context_menu(pos)
 
     def _make_name_cell(
         self, name_item: QTableWidgetItem, display_name: str,

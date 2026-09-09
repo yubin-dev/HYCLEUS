@@ -9630,28 +9630,136 @@ Tam suite: bkz. commit mesajı. ruff temiz.
 
 ## B-123 — Klasör hiyerarşisi DB'de var, UI yalnızca kök seviyeyi gösteriyor
 
-**Durum:** Açık (bu turun kapsamı DIŞINDA bırakıldı — kullanıcı talebi).
+**Durum:** Kapalı.
 **Öncelik:** Orta.
-**Bulundu:** 2026-09-10 (mockup envanteri).
+**Bulundu/Kapatıldı:** 2026-09-10.
 
-`folders.parent_id` (kendine referans) tam bir hiyerarşiyi destekliyor,
+### Bulgu
+
+`folders.parent_id` (kendine referans) tam bir hiyerarşiyi destekliyordu
 ama `UI/main_window_tree.py::_refresh_folder_sidebar()` yalnızca
-`WHERE parent_id IS NULL` sorguluyor — alt klasörler kenar çubuğunda HİÇ
-görünmüyor. `_on_create_folder()` de `parent_id` hiç geçirmiyor, yani
-UI'dan bir alt klasör oluşturmanın/taşımanın hiçbir yolu yok. Mockup'taki
-girintili klasör ağacının (`f.pad`) karşılığı bu yüzden UI'da eksik —
-veri modeli hazır, arayüz kullanmıyor. Ayrıca klasör başına dosya sayısı
-(mockup `f.count`) da gösterilmiyor.
+`WHERE parent_id IS NULL` sorguluyordu — alt klasörler kenar çubuğunda
+HİÇ görünmüyordu, oluşturma/taşıma yoktu, klasör başına dosya sayısı
+(`CORE/folders.py::list_folders()` zaten hesaplıyordu, test ediliyordu
+ama sidebar'a hiç bağlı değildi) gösterilmiyordu.
+
+### Karar (kullanıcıyla birlikte, kodlamadan önce)
+
+- **Alt klasör oluşturma:** sağ tık "📁 Buraya Alt Klasör Ekle" — yeni bir
+  kalıcı UI durumu (dropdown) gerektirmiyor, bağlam zaten sağ tıklanan
+  klasör.
+- **Taşıma:** sağ tık "➡ Taşı…" dialogu, **drag-drop DEĞİL**. Gerekçe:
+  sidebar özel `QPushButton`lardan oluşan bir `QVBoxLayout`, `QTreeWidget`
+  değil — drag-drop her buton için elle `dragEnter`/`drop` + görsel
+  gösterge + **döngü koruması** gerektirirdi (DB'de `parent_id` düz bir
+  FK, döngüyü kendisi engellemiyor); ayrıca headless testlerde gerçek Qt
+  drag olaylarını simüle etmek kırılgan. Dialog yaklaşımı dosyalar için
+  zaten var olan "Klasöre Taşı" desenine uyuyor ve döngü kontrolü saf bir
+  fonksiyonla (`is_descendant()`) kolayca test edilebiliyor.
+- **Dosya sayısı:** bu turda eklendi — `list_folders()` zaten hesaplıyordu.
+
+### Düzeltme
+
+`CORE/folders.py`: `FolderInfo`/`list_folders()` artık `parent_id`
+taşıyor; `create_folder()` isteğe bağlı `parent_id` alıyor (varsayılan
+`None` — TÜM mevcut çağıranlar değişmeden kök klasör üretmeye devam
+ediyor); yeni `is_descendant(db, hedef_id, tasinan_id)` — `hedef_id`'nin
+`tasinan_id`'nin kendisi ya da alt ağacı olup olmadığını `parent_id`
+zincirinde YUKARI yürüyerek bulur (döngü koruması, kendine-taşıma dahil
+özel durum olarak ele alınıyor); yeni `move_folder()` bunu kullanıp
+uygunsuz taşımayı `ValueError` ile reddediyor; yeni
+`folder_subtree_summary()` silme öncesi kapsamı (klasör+dosya sayısı)
+hesaplıyor; `delete_folder()` artık bu özeti kullanıyor ve elle
+`UPDATE files SET folder_id = NULL` satırını KALDIRDI — **canlı
+doğrulandı**: SQLite'ta `ON DELETE CASCADE` tek seviyede KALMIYOR, üç
+seviye derinlikte bile tüm alt ağacı (VE o ağaçtaki dosyaların
+`folder_id`'sini `ON DELETE SET NULL` ile) otomatik temizliyor.
+
+`UI/main_window_tree.py`: `_refresh_folder_sidebar()` artık `list_folders()`
+ile TÜM hiyerarşiyi özyinelemeli olarak (derinlik/girinti + dosya sayısı)
+çiziyor; yeni `_on_create_subfolder()`/`_on_move_folder()`; sağ tık
+menüsüne "Buraya Alt Klasör Ekle"/"Taşı…" eklendi; `_on_folder_delete()`'in
+onay metni artık alt ağaç varsa kapsamı GÖSTERİYOR (ör. "'X' klasörü ve
+3 alt klasörü, içindeki 12 dosyayla birlikte silinecek") — eskiden büyük
+bir ağaç kullanıcıya kapsamı hiç göstermeden tek "Evet" ile silinebilirdi.
+
+### Test
+
+`tests/test_folders.py`'ye 21 yeni test (hiyerarşi oluşturma, `is_descendant`
+— kendisi/doğrudan çocuk/torun/alakasız/ters yön —, `move_folder` — kök↔
+klasör, kendine/çocuğuna/torununa taşıma REDDİ, torundan üste taşıma
+SERBEST —, `folder_subtree_summary`, çok seviyeli `delete_folder`).
+`tests/test_klasor_hiyerarsisi_ui.py` (yeni, 14 test): sidebar 3 seviyeyi
+de gösteriyor, girinti derinlikle artıyor, dosya sayısı doğru, alt klasör
+oluşturma, taşıma hedef listesi kendini/alt ağacını GERÇEKTEN hariç
+tutuyor, iptal hiçbir şeyi değiştirmiyor, silme onay metni yaprak/alt-ağaçlı
+klasör için doğru ayrışıyor, sağ tık menüsü kablolaması (AST — `QMenu.exec()`
+monkeypatch'e kapalı, canlı denendi).
+
+Mutasyon-kanıtlı (özellikle döngü koruması, göreve göre): `move_folder()`'ın
+reddi, `is_descendant()`'ın kendine-taşıma özel durumu, UI'daki ön-filtre,
+silme onay mesajının dal seçimi, sağ tık kablolaması ve girinti artışı
+TEK TEK geçici bozulup ilgili testlerin GERÇEKTEN düştüğü doğrulandı,
+sonra geri alındı.
 
 ## B-124 — USB durum rozeti üst barda değil, kenar çubuğunun en altında
 
-**Durum:** Açık (bu turun kapsamı DIŞINDA bırakıldı — kullanıcı talebi).
+**Durum:** Kapalı.
 **Öncelik:** Düşük.
-**Bulundu:** 2026-09-10 (mockup envanteri).
+**Bulundu/Kapatıldı:** 2026-09-10.
 
 Mockup'ta USB bağlantı durumu (renkli nokta) üst bar sağında, tema
-düğmesi ve avatarla aynı satırda, her zaman göz önünde. Gerçek kodda
-`self._usb_badge` (`UI/main_window_layout.py::_make_sidebar()`) kenar
-çubuğunun EN ALTINDA, YÖNETİCİ bölümünün içinde — görmek için kenar
-çubuğunu sonuna kadar kaydırmak/bakmak gerekiyor. `main_window_lock.py`
-mantığı DEĞİŞMEDİ, yalnızca konum farkı.
+düğmesi ve avatarla aynı satırda, her zaman göz önündeydi. Gerçek kodda
+`self._usb_badge` kenar çubuğunun EN ALTINDA, YÖNETİCİ bölümünün içindeydi.
+
+`UI/main_window_layout.py::_make_sidebar()`'daki oluşturma bloğu
+kaldırılıp `_make_top_bar()`'a, tema düğmesinden hemen önce taşındı.
+`_refresh_usb_badge()` (`main_window_lock.py`) yalnızca `self._usb_badge.
+setText()` çağırıyor — widget'ın NEREDE durduğuyla ilgilenmiyor,
+dolayısıyla taşımak o fonksiyonu hiç değiştirmedi. `main_window_theme.py`'deki
+`QLabel#usb_badge` QSS kuralı yatay bara uygun margin/padding'e güncellendi.
+
+Test: `tests/test_kasa_ekrani_kozmetik_ve_usb_rozeti.py`'nin 2 testi —
+rozetin `top_bar`'ın çocuğu olduğu, takılı/çıkarılı durumların
+(`sahte_usb` fixture) GERÇEKTEN yansıdığı. Mutasyon-kanıtlı: rozeti
+top_bar'a eklemeyen satır geçici yorum satırına alınıp testin GERÇEKTEN
+düştüğü doğrulandı, sonra geri alındı.
+
+## B-125 — Genel/Kasa ekranı: 4 kozmetik mockup farkı
+
+**Durum:** Kapalı.
+**Öncelik:** Düşük (kozmetik/keşfedilebilirlik).
+**Bulundu/Kapatıldı:** 2026-09-10.
+
+Mockup envanterinin "mavi" (düşük riskli, kozmetik) işaretlediği 4 fark:
+
+1. **"+ Yeni" dropdown** — "Dosya Ekle"/"📁 Klasör Ekle" iki ayrı düğmesi
+   tek "+ Yeni ▾" düğmesi + `QMenu` dropdown'a birleşti
+   (`_on_add_new_menu()`, `UI/main_window_layout.py`). `_on_add_file()`/
+   `_on_add_folder()` DEĞİŞMEDİ, dropdown onları çağırıyor.
+2. **Arama çubuğu konumu** — içerik alanının en üstünden üst eylem barına
+   (mockup'taki gibi, ortada) taşındı (`_make_search_widget()`).
+   `self._search_bar` nesnesi DEĞİŞMEDİ.
+3. **Tarama sütunu nokta** — durum metinlerinin (✓ Temiz, ⟳ Taranıyor…
+   vb.) önüne "●" eklendi (`_set_scan_badge()`, tek renk olduğu için tek
+   `QTableWidgetItem` yeterli, ayrı widget gerekmedi).
+4. **"⋯" satır menüsü** — dosya tablosuna 6. bir sütun (`""` başlıklı,
+   34px) eklendi; her satırda `_make_more_cell()`'in kurduğu tıklanabilir
+   "⋯" — sağ tık menüsüyle AYNI `_on_context_menu()` gövdesini açıyor,
+   konumu her tıklamada `mapToGlobal`/`mapFromGlobal` ile YENİDEN
+   hesaplanıyor (satır silinse/yeniden sıralansa bile doğru satırı bulur).
+
+Test: `tests/test_kasa_ekrani_kozmetik_ve_usb_rozeti.py` (yeni, 10 test).
+`_on_add_new_menu()`/`_on_folder_context_menu()` gibi GERÇEK bir
+`QMenu.exec()` içeren metotlar hiç ÇAĞRILMADI — canlı denendi: PySide6'da
+`QMenu.exec()` (instance metodu) monkeypatch'e KAPALI, statik
+`QMessageBox.information`/`QInputDialog.getText` gibi metotların aksine
+gerçek modal döngüyü offscreen platformda SONSUZA KADAR açık bırakıyor.
+Bunun yerine depo konvansiyonuna uyuldu (`tests/test_backup_reminder.py`'nin
+"GÖSTERİM, AST ile denetleniyor" deseni): dropdown'ın kaynak kodu
+ayrıştırılıp doğru metotlara bağlı olduğu doğrulandı. Mutasyon-kanıtlı:
+dropdown kablolaması, nokta öneki, "⋯"in satır bulma mantığı, arama
+çubuğunun konumu ve rol-kısıtlama listesi TEK TEK geçici bozulup ilgili
+testlerin GERÇEKTEN düştüğü doğrulandı, sonra geri alındı. Ayrıca mevcut
+`test_main_window_smoke.py::test_central_widget_and_table_exist`
+(sütun sayısı 5→6) güncellendi.

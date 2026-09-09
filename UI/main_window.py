@@ -279,7 +279,7 @@ class HycleusWindow(
 
         # ── Yazma/düzenleme işlemleri: Salt Okunur'da tamamen kapalı ─────
         self.setAcceptDrops(can_write)
-        for _w in (self._drop_hint, self._btn_add_file, self._btn_add_folder,
+        for _w in (self._drop_hint, self._btn_add_new,
                    self._btn_scan_all, self._btn_new_tag, self._btn_new_folder):
             _w.setVisible(can_write)
             _w.setEnabled(can_write)

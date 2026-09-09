@@ -54,6 +54,10 @@ import pyotp
 from CORE.folders import (
     create_folder,
     delete_folder,
+    folder_subtree_summary,
+    is_descendant,
+    list_folders,
+    move_folder,
     move_folder_to_imha,
 )
 from CORE.export import export_to_zip
@@ -135,6 +139,19 @@ class TreeMixin:
     # ── Klasör sistemi ────────────────────────────────────────────────────────
 
     def _refresh_folder_sidebar(self) -> None:
+        """
+        Kenar çubuğu klasör ağacını yeniden çizer — TÜM hiyerarşi, tek
+        seviye değil (B-123). Eskiden ham bir `WHERE parent_id IS NULL`
+        sorgusu yalnızca KÖK klasörleri listeliyordu; `folders.parent_id`
+        DB'de zaten hiyerarşiyi destekliyordu ama UI'dan hiç erişilemezdi.
+
+        `list_folders()` (CORE/folders.py) düz, ada göre sıralı bir liste
+        döndürüyor; ebeveyn→çocuk eşlemesi VE girinti burada kuruluyor
+        (`_ekle()`, derinlik-öncelikli özyineleme). Her düğme artık dosya
+        sayısını da gösteriyor (`f.file_count`, `list_folders()` zaten
+        hesaplıyordu — `tests/test_folders.py`'de test ediliyordu ama
+        sidebar'a hiç bağlanmamıştı).
+        """
         while self._folder_container_layout.count():
             item = self._folder_container_layout.takeAt(0)
             w = item.widget()
@@ -143,32 +160,37 @@ class TreeMixin:
         self._folder_btns.clear()
 
         try:
-            folders = DBManager().fetchall(
-                "SELECT id, name FROM folders WHERE parent_id IS NULL ORDER BY name"
-            )
+            klasorler = list_folders(DBManager())
         except Exception:
             return
 
-        for folder in folders:
-            fid   = folder["id"]
-            fname = folder["name"]
-            is_active = (fid == self._current_folder_id)
+        cocuklar: dict[int | None, list] = {}
+        for f in klasorler:
+            cocuklar.setdefault(f.parent_id, []).append(f)
 
-            btn = QPushButton(f"      📂  {fname}")
-            btn.setFixedHeight(34)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(self._folder_btn_style(active=is_active))
-            btn.clicked.connect(
-                lambda checked=False, fid_=fid, fn=fname, b=btn:
-                self._on_folder_click(fid_, fn, b)
-            )
-            btn.setContextMenuPolicy(Qt.CustomContextMenu)
-            btn.customContextMenuRequested.connect(
-                lambda pos, fid_=fid, fn=fname, b=btn:
-                self._on_folder_context_menu(pos, fid_, fn, b)
-            )
-            self._folder_btns[fid] = btn
-            self._folder_container_layout.addWidget(btn)
+        def _ekle(parent_id: int | None, derinlik: int) -> None:
+            for f in cocuklar.get(parent_id, []):
+                is_active = (f.id == self._current_folder_id)
+                girinti = "      " + "    " * derinlik
+
+                btn = QPushButton(f"{girinti}📂  {f.name}   ·   {f.file_count}")
+                btn.setFixedHeight(34)
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.setStyleSheet(self._folder_btn_style(active=is_active))
+                btn.clicked.connect(
+                    lambda checked=False, fid_=f.id, fn=f.name, b=btn:
+                    self._on_folder_click(fid_, fn, b)
+                )
+                btn.setContextMenuPolicy(Qt.CustomContextMenu)
+                btn.customContextMenuRequested.connect(
+                    lambda pos, fid_=f.id, fn=f.name, b=btn:
+                    self._on_folder_context_menu(pos, fid_, fn, b)
+                )
+                self._folder_btns[f.id] = btn
+                self._folder_container_layout.addWidget(btn)
+                _ekle(f.id, derinlik + 1)
+
+        _ekle(None, 0)
 
     def _on_folder_click(self, folder_id: int, folder_name: str, btn: QPushButton) -> None:
         if self._active_tag_btn is not None:
@@ -228,13 +250,19 @@ class TreeMixin:
             f"QMenu::item {{ padding:9px 22px; font-size:13px; }}"
             f"QMenu::item:selected {{ background:{T['accent_tint']}; color:{T['tint_text']}; border-radius:4px; }}"
         )
-        act_dl   = menu.addAction("⬇  Klasörü İndir (ZIP)")
-        act_imha = menu.addAction("🔥  İmha Odasına At")
-        act_del  = menu.addAction("🗑  Klasörü Sil")
+        act_dl     = menu.addAction("⬇  Klasörü İndir (ZIP)")
+        act_alt    = menu.addAction("📁  Buraya Alt Klasör Ekle")
+        act_move   = menu.addAction("➡  Taşı…")
+        act_imha   = menu.addAction("🔥  İmha Odasına At")
+        act_del    = menu.addAction("🗑  Klasörü Sil")
 
         action = menu.exec(btn.mapToGlobal(pos))
         if action == act_dl:
             self._on_folder_download(folder_id, folder_name)
+        elif action == act_alt:
+            self._on_create_subfolder(folder_id, folder_name)
+        elif action == act_move:
+            self._on_move_folder(folder_id, folder_name)
         elif action == act_imha:
             self._on_folder_move_to_imha(folder_id, folder_name)
         elif action == act_del:
@@ -251,6 +279,64 @@ class TreeMixin:
             )
         except Exception as exc:
             QMessageBox.warning(self, "Hata", str(exc))
+            return
+        self._refresh_folder_sidebar()
+
+    def _on_create_subfolder(self, parent_id: int, parent_name: str) -> None:
+        """"Buraya Alt Klasör Ekle" (B-123) — sağ tıklanan klasörün ALTINA
+        yeni bir klasör oluşturur. `_on_create_folder()`'dan tek farkı
+        `parent_id` — DB kaydı, denetim kaydı, yenileme AYNI kod yolu."""
+        name, ok = QInputDialog.getText(
+            self, "Alt Klasör Oluştur", f"'{parent_name}' altında yeni klasör adı:"
+        )
+        if not ok or not name.strip():
+            return
+        try:
+            create_folder(
+                DBManager(), name, owner_id=self._user_id, hwid=self._hwid,
+                parent_id=parent_id,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Hata", str(exc))
+            return
+        self._refresh_folder_sidebar()
+
+    def _on_move_folder(self, folder_id: int, folder_name: str) -> None:
+        """"Taşı…" (B-123) — hedef listesi kendisini VE kendi alt ağacını
+        BAŞTAN eler (`is_descendant()`, CORE/folders.py): döngü oluşturacak
+        bir seçim kullanıcıya hiç GÖSTERİLMİYOR. `move_folder()`'ın kendi
+        `ValueError` koruması yine de duruyor — burası ikinci, ön bir kapı."""
+        db = DBManager()
+        try:
+            tum_klasorler = list_folders(db)
+        except Exception as exc:
+            QMessageBox.warning(self, "Hata", str(exc))
+            return
+
+        KOK_ETIKETI = "— Kök (üst klasör yok) —"
+        secenekler = [KOK_ETIKETI]
+        id_by_secenek: dict[str, int] = {}
+        for f in tum_klasorler:
+            if f.id == folder_id or is_descendant(db, f.id, folder_id):
+                continue
+            secenekler.append(f.name)
+            id_by_secenek[f.name] = f.id
+
+        secim, ok = QInputDialog.getItem(
+            self, "Klasörü Taşı", f"'{folder_name}' nereye taşınsın?",
+            secenekler, 0, False,
+        )
+        if not ok:
+            return
+        hedef_id = id_by_secenek.get(secim)  # KOK_ETIKETI ise None kalır
+
+        try:
+            move_folder(db, folder_id, hedef_id, hwid=self._hwid)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Taşınamadı", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
             return
         self._refresh_folder_sidebar()
 
@@ -283,15 +369,39 @@ class TreeMixin:
         )
 
     def _on_folder_delete(self, folder_id: int, folder_name: str) -> None:
+        """
+        Silme onayı artık ALT AĞACI da hesaba katıyor (B-123): `ON DELETE
+        CASCADE` çok seviyeli kademelendiği için (canlı doğrulandı, bkz.
+        `CORE/folders.py::folder_subtree_summary()` docstring'i) kullanıcı
+        büyük bir ağacı tek "Evet" ile, kapsamını GÖRMEDEN silebiliyordu.
+        """
+        db = DBManager()
+        try:
+            alt_agac_id, dosya_sayisi = folder_subtree_summary(db, folder_id)
+        except Exception:
+            alt_agac_id, dosya_sayisi = [folder_id], 0
+        alt_klasor_sayisi = len(alt_agac_id) - 1  # kendisi hariç
+
+        if alt_klasor_sayisi > 0:
+            mesaj = (
+                f"'{folder_name}' klasörü ve {alt_klasor_sayisi} alt klasörü,"
+                f" içindeki {dosya_sayisi} dosyayla birlikte silinecek.\n\n"
+                "Dosyalar silinmez, klasörden çıkarılır.\nDevam edilsin mi?"
+            )
+        else:
+            mesaj = (
+                f"'{folder_name}' klasörü silinecek.\n\n"
+                f"İçindeki {dosya_sayisi} dosya klasörden çıkarılır ama silinmez."
+                "\nDevam edilsin mi?"
+            )
         confirm = QMessageBox.question(
-            self, "Klasörü Sil",
-            f"'{folder_name}' klasörü silinecek.\n\nDosyalar klasörden çıkarılır ama silinmez.\nDevam edilsin mi?",
+            self, "Klasörü Sil", mesaj,
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if confirm != QMessageBox.Yes:
             return
         try:
-            delete_folder(DBManager(), folder_id, folder_name)
+            delete_folder(db, folder_id, folder_name)
         except Exception as exc:
             QMessageBox.warning(self, "Hata", str(exc))
             return

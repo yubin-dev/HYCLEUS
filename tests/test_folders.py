@@ -20,7 +20,10 @@ from CORE.folders import (
     assign_file_to_folder,
     create_folder,
     delete_folder,
+    folder_subtree_summary,
+    is_descendant,
     list_folders,
+    move_folder,
     move_folder_to_imha,
 )
 
@@ -180,7 +183,7 @@ def test_list_is_empty_without_folders(db):
 def test_folder_info_is_a_value_object(db):
     uid = _add_user(db)
     create_folder(db, "A", owner_id=uid)
-    assert list_folders(db)[0] == FolderInfo(id=1, name="A", file_count=0)
+    assert list_folders(db)[0] == FolderInfo(id=1, name="A", file_count=0, parent_id=None)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -376,3 +379,210 @@ def test_every_folder_operation_stays_in_the_hash_chain(db):
         "SELECT COUNT(*) AS n FROM audit_log WHERE entry_hash IS NULL"
     )["n"]
     assert hashsiz == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. Hiyerarşi — alt klasör oluşturma, taşıma, döngü koruması (B-123)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_create_folder_with_parent_id_nests_it(db):
+    uid = _add_user(db)
+    ust = create_folder(db, "Ust", owner_id=uid)
+    alt = create_folder(db, "Alt", owner_id=uid, parent_id=ust)
+    assert db.fetchone("SELECT parent_id FROM folders WHERE id = ?", (alt,))["parent_id"] == ust
+
+
+def test_create_folder_without_parent_id_is_still_root(db):
+    """Varsayılan davranış DEĞİŞMEDİ — mevcut TÜM çağıranlar kök üretmeye devam ediyor."""
+    uid = _add_user(db)
+    fid = create_folder(db, "Kok", owner_id=uid)
+    assert db.fetchone("SELECT parent_id FROM folders WHERE id = ?", (fid,))["parent_id"] is None
+
+
+def test_create_folder_parent_id_denetim_kaydina_yaziliyor(db):
+    uid = _add_user(db)
+    ust = create_folder(db, "Ust", owner_id=uid)
+    create_folder(db, "Alt", owner_id=uid, hwid=_HWID, parent_id=ust)
+    assert _detail(db, "folder_created") == f"name=Alt hwid={_HWID} parent_id={ust}"
+
+
+def test_create_folder_gecersiz_parent_id_FK_hatasi_verir(db):
+    uid = _add_user(db)
+    with pytest.raises(sqlite3.IntegrityError):
+        create_folder(db, "Yetim", owner_id=uid, parent_id=9999)
+
+
+def test_list_folders_parent_id_alanini_dondurur(db):
+    uid = _add_user(db)
+    ust = create_folder(db, "Ust", owner_id=uid)
+    create_folder(db, "Alt", owner_id=uid, parent_id=ust)
+    eslesme = {f.name: f.parent_id for f in list_folders(db)}
+    assert eslesme == {"Ust": None, "Alt": ust}
+
+
+# ── is_descendant() — döngü koruması ─────────────────────────────────────────
+
+
+def test_is_descendant_kendisi_icin_true(db):
+    uid = _add_user(db)
+    fid = create_folder(db, "A", owner_id=uid)
+    assert is_descendant(db, fid, fid) is True
+
+
+def test_is_descendant_dogrudan_cocuk_icin_true(db):
+    uid = _add_user(db)
+    ust = create_folder(db, "Ust", owner_id=uid)
+    alt = create_folder(db, "Alt", owner_id=uid, parent_id=ust)
+    assert is_descendant(db, alt, ust) is True
+
+
+def test_is_descendant_torun_icin_true(db):
+    """İki seviye atlayarak da (torun) yakalanmalı — sadece bir seviye değil."""
+    uid = _add_user(db)
+    a = create_folder(db, "A", owner_id=uid)
+    b = create_folder(db, "B", owner_id=uid, parent_id=a)
+    c = create_folder(db, "C", owner_id=uid, parent_id=b)
+    assert is_descendant(db, c, a) is True
+
+
+def test_is_descendant_alakasiz_klasorler_icin_false(db):
+    uid = _add_user(db)
+    a = create_folder(db, "A", owner_id=uid)
+    b = create_folder(db, "B", owner_id=uid)
+    assert is_descendant(db, b, a) is False
+
+
+def test_is_descendant_ebeveyn_kendi_cocugunun_alt_agacinda_degil(db):
+    """Yön önemli: üst klasör, kendi alt klasörünün alt ağacında SAYILMAZ."""
+    uid = _add_user(db)
+    ust = create_folder(db, "Ust", owner_id=uid)
+    alt = create_folder(db, "Alt", owner_id=uid, parent_id=ust)
+    assert is_descendant(db, ust, alt) is False
+
+
+# ── move_folder() — döngü koruması GERÇEKTEN reddediyor mu ───────────────────
+
+
+def test_move_folder_kok_klasorlerden_birine_tasir(db):
+    uid = _add_user(db)
+    a = create_folder(db, "A", owner_id=uid)
+    b = create_folder(db, "B", owner_id=uid)
+    move_folder(db, a, b, hwid=_HWID)
+    assert db.fetchone("SELECT parent_id FROM folders WHERE id = ?", (a,))["parent_id"] == b
+
+
+def test_move_folder_koke_tasir(db):
+    uid = _add_user(db)
+    ust = create_folder(db, "Ust", owner_id=uid)
+    alt = create_folder(db, "Alt", owner_id=uid, parent_id=ust)
+    move_folder(db, alt, None)
+    assert db.fetchone("SELECT parent_id FROM folders WHERE id = ?", (alt,))["parent_id"] is None
+
+
+def test_move_folder_kendine_tasima_REDDEDILIYOR(db):
+    """Görevin özel olarak istediği durum: hedef_id == tasinan_id."""
+    uid = _add_user(db)
+    fid = create_folder(db, "A", owner_id=uid)
+    with pytest.raises(ValueError):
+        move_folder(db, fid, fid)
+    assert db.fetchone("SELECT parent_id FROM folders WHERE id = ?", (fid,))["parent_id"] is None
+
+
+def test_move_folder_kendi_dogrudan_cocuguna_tasima_REDDEDILIYOR(db):
+    uid = _add_user(db)
+    ust = create_folder(db, "Ust", owner_id=uid)
+    alt = create_folder(db, "Alt", owner_id=uid, parent_id=ust)
+    with pytest.raises(ValueError):
+        move_folder(db, ust, alt)
+    # DB GERÇEKTEN değişmedi mi — reddin yalnızca görünürde olmadığını kanıtla.
+    assert db.fetchone("SELECT parent_id FROM folders WHERE id = ?", (ust,))["parent_id"] is None
+
+
+def test_move_folder_kendi_torununa_tasima_REDDEDILIYOR(db):
+    """İki seviye atlayarak döngü kurmaya çalışma da yakalanmalı."""
+    uid = _add_user(db)
+    a = create_folder(db, "A", owner_id=uid)
+    b = create_folder(db, "B", owner_id=uid, parent_id=a)
+    c = create_folder(db, "C", owner_id=uid, parent_id=b)
+    with pytest.raises(ValueError):
+        move_folder(db, a, c)
+    assert db.fetchone("SELECT parent_id FROM folders WHERE id = ?", (a,))["parent_id"] is None
+
+
+def test_move_folder_torundan_uste_tasima_SERBEST(db):
+    """Yön önemli: bir alt klasörü kendi üstünün YANINA taşımak döngü DEĞİL."""
+    uid = _add_user(db)
+    a = create_folder(db, "A", owner_id=uid)
+    b = create_folder(db, "B", owner_id=uid, parent_id=a)
+    c = create_folder(db, "C", owner_id=uid, parent_id=b)
+    move_folder(db, c, a)  # C artık A'nın DOĞRUDAN altında, B'nin değil
+    assert db.fetchone("SELECT parent_id FROM folders WHERE id = ?", (c,))["parent_id"] == a
+
+
+def test_move_folder_denetim_kaydina_yaziliyor(db):
+    uid = _add_user(db)
+    a = create_folder(db, "A", owner_id=uid)
+    b = create_folder(db, "B", owner_id=uid)
+    move_folder(db, a, b, hwid=_HWID)
+    assert _detail(db, "folder_moved") == f"yeni_parent_id={b} hwid={_HWID}"
+
+
+# ── folder_subtree_summary() + çok seviyeli silme ────────────────────────────
+
+
+def test_folder_subtree_summary_tek_klasor_dosya_sayar(db):
+    uid = _add_user(db)
+    fid = create_folder(db, "A", owner_id=uid)
+    _add_file(db, "a.pdf", folder_id=fid)
+    _add_file(db, "b.pdf", folder_id=fid)
+    id_listesi, dosya_sayisi = folder_subtree_summary(db, fid)
+    assert id_listesi == [fid]
+    assert dosya_sayisi == 2
+
+
+def test_folder_subtree_summary_alt_agaci_topluyor(db):
+    uid = _add_user(db)
+    ust = create_folder(db, "Ust", owner_id=uid)
+    alt = create_folder(db, "Alt", owner_id=uid, parent_id=ust)
+    torun = create_folder(db, "Torun", owner_id=uid, parent_id=alt)
+    _add_file(db, "u.pdf", folder_id=ust)
+    _add_file(db, "a1.pdf", folder_id=alt)
+    _add_file(db, "a2.pdf", folder_id=alt)
+    _add_file(db, "t.pdf", folder_id=torun)
+    _add_file(db, "koksuz.pdf")  # sayılmamalı
+
+    id_listesi, dosya_sayisi = folder_subtree_summary(db, ust)
+
+    assert set(id_listesi) == {ust, alt, torun}
+    assert dosya_sayisi == 4
+
+
+def test_delete_folder_alt_agaci_da_GERCEKTEN_siliyor(db):
+    """
+    Canlı doğrulanmış SQLite gerçeği: `ON DELETE CASCADE` tek seviyede
+    KALMIYOR — üç seviye derinlikte bile TÜM alt ağaç gidiyor.
+    """
+    uid = _add_user(db)
+    ust = create_folder(db, "Ust", owner_id=uid)
+    alt = create_folder(db, "Alt", owner_id=uid, parent_id=ust)
+    torun = create_folder(db, "Torun", owner_id=uid, parent_id=alt)
+
+    delete_folder(db, ust, "Ust")
+
+    for fid in (ust, alt, torun):
+        assert db.fetchone("SELECT id FROM folders WHERE id = ?", (fid,)) is None
+
+
+def test_delete_folder_alt_agactaki_dosyalari_da_kok_seviyesine_cikarir(db):
+    uid = _add_user(db)
+    ust = create_folder(db, "Ust", owner_id=uid)
+    alt = create_folder(db, "Alt", owner_id=uid, parent_id=ust)
+    torun_dosya = _add_file(db, "derinde.pdf", folder_id=alt)
+
+    tasinan = delete_folder(db, ust, "Ust")
+
+    assert tasinan == 1
+    row = db.fetchone("SELECT folder_id FROM files WHERE id = ?", (torun_dosya,))
+    assert row is not None, "dosya silinmemeli"
+    assert row["folder_id"] is None, "alt ağaçtaki dosya da köke çıkmalı"

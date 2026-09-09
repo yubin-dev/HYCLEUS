@@ -18,6 +18,7 @@ _log = logging.getLogger("hycleus.ui")
 from PySide6.QtCore import (
     QEasingCurve,
     QEvent,
+    QPoint,
     QPropertyAnimation,
     QRect,
     Qt,
@@ -45,6 +46,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -224,6 +226,19 @@ class LayoutMixin:
 
         lay.addStretch()
 
+        # USB durum rozeti — eskiden kenar çubuğunun en altındaydı (B-124),
+        # mockup'taki gibi SÜREKLİ görünür olması için üst bara taşındı.
+        # `_refresh_usb_badge()` (main_window_lock.py) yalnızca `self.
+        # _usb_badge.setText()` çağırıyor — NEREDE durduğuyla ilgilenmiyor,
+        # bu yüzden taşımak o fonksiyonu hiç DEĞİŞTİRMEDİ.
+        self._usb_badge = QLabel()
+        self._usb_badge.setObjectName("usb_badge")
+        self._usb_badge.setAlignment(Qt.AlignCenter)
+        self._usb_badge.setTextFormat(Qt.RichText)
+        lay.addWidget(self._usb_badge)
+
+        lay.addSpacing(12)
+
         self._theme_btn = QPushButton("☀")
         self._theme_btn.setObjectName("theme_btn")
         self._theme_btn.setFixedSize(36, 36)
@@ -255,19 +270,17 @@ class LayoutMixin:
         lay.setContentsMargins(24, 0, 24, 0)
         lay.setSpacing(8)
 
-        self._btn_add_file = QPushButton("Dosya Ekle")
-        self._btn_add_file.setObjectName("btn_primary")
-        self._btn_add_file.setFixedHeight(36)
-        self._btn_add_file.setCursor(Qt.PointingHandCursor)
-        self._btn_add_file.clicked.connect(self._on_add_file)
-        lay.addWidget(self._btn_add_file)
-
-        self._btn_add_folder = QPushButton("📁 Klasör Ekle")
-        self._btn_add_folder.setObjectName("btn_secondary")
-        self._btn_add_folder.setFixedHeight(36)
-        self._btn_add_folder.setCursor(Qt.PointingHandCursor)
-        self._btn_add_folder.clicked.connect(self._on_add_folder)
-        lay.addWidget(self._btn_add_folder)
+        # "+ Yeni" — mockup'taki tek dropdown (B-1xx). Eskiden "Dosya Ekle"/
+        # "📁 Klasör Ekle" iki AYRI düğmeydi; ikisi de KALDI ama artık
+        # `_on_add_new_menu()`'nün açtığı bir `QMenu`'nün eylemleri —
+        # `_on_add_file()`/`_on_add_folder()` DEĞİŞMEDİ, ikinci bir giriş
+        # noktası (mockup'ın "+ Yeni" tıklaması) aynı gövdeleri çağırıyor.
+        self._btn_add_new = QPushButton("+  Yeni  ▾")
+        self._btn_add_new.setObjectName("btn_primary")
+        self._btn_add_new.setFixedHeight(36)
+        self._btn_add_new.setCursor(Qt.PointingHandCursor)
+        self._btn_add_new.clicked.connect(self._on_add_new_menu)
+        lay.addWidget(self._btn_add_new)
 
         self._btn_scan_all = QPushButton("Tümünü Tara")
         self._btn_scan_all.setObjectName("btn_secondary")
@@ -283,7 +296,11 @@ class LayoutMixin:
         self._btn_new_tag.clicked.connect(self._on_new_tag)
         lay.addWidget(self._btn_new_tag)
 
-        lay.addStretch()
+        # Arama çubuğu — eskiden içerik alanının EN ÜSTÜNDEYDİ, mockup'taki
+        # konuma (üst eylem barı, ortada) taşındı (B-1xx). `self._search_
+        # bar` DEĞİŞMEDİ — `_search_files()`/`main_window_tree.py`'nin
+        # temizleme çağrıları aynı nesneyi kullanmaya devam ediyor.
+        lay.addWidget(self._make_search_widget(), 1)
 
         self._btn_view = QPushButton("☰")
         self._btn_view.setObjectName("btn_secondary")
@@ -293,6 +310,47 @@ class LayoutMixin:
         lay.addWidget(self._btn_view)
 
         return bar
+
+    def _make_search_widget(self) -> QWidget:
+        search_container = QWidget()
+        search_container.setObjectName("search_container")
+        search_container.setFixedHeight(36)
+        sch = QHBoxLayout(search_container)
+        sch.setContentsMargins(16, 0, 16, 0)
+        sch.setSpacing(8)
+
+        search_icon = QLabel("🔍")
+        search_icon.setObjectName("search_icon")
+        sch.addWidget(search_icon)
+
+        self._search_bar = QLineEdit()
+        self._search_bar.setObjectName("search_bar")
+        self._search_bar.setPlaceholderText("Dosya adı, SHA-256 veya etiket ile ara...")
+        self._search_bar.textChanged.connect(self._search_files)
+        sch.addWidget(self._search_bar)
+
+        return search_container
+
+    def _on_add_new_menu(self) -> None:
+        """"+ Yeni" düğmesinin dropdown'ı — `_on_add_file()`/`_on_add_folder()`'ı
+        DOĞRUDAN çağırır, yeni bir ekleme mantığı YOK (bkz. `_make_action_bar()`)."""
+        T = self._T
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background:{T['topbar']}; color:{T['text']};"
+            f" border:1px solid {T['border']}; border-radius:8px; padding:4px 0; }}"
+            f"QMenu::item {{ padding:9px 22px; font-size:13px; }}"
+            f"QMenu::item:selected {{ background:{T['accent_tint']}; color:{T['tint_text']}; border-radius:4px; }}"
+        )
+        act_dosya  = menu.addAction("📄  Dosya Ekle…")
+        act_klasor = menu.addAction("📁  Klasör Ekle…")
+        secim = menu.exec(
+            self._btn_add_new.mapToGlobal(QPoint(0, self._btn_add_new.height()))
+        )
+        if secim == act_dosya:
+            self._on_add_file()
+        elif secim == act_klasor:
+            self._on_add_folder()
 
     def _make_sidebar(self) -> QFrame:
         sidebar = QFrame()
@@ -448,11 +506,9 @@ class LayoutMixin:
         self._role_badge.setAlignment(Qt.AlignCenter)
         lay.addWidget(self._role_badge)
 
-        self._usb_badge = QLabel()
-        self._usb_badge.setObjectName("usb_badge")
-        self._usb_badge.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self._usb_badge.setTextFormat(Qt.RichText)
-        lay.addWidget(self._usb_badge)
+        # USB rozeti ARTIK BURADA DEĞİL — üst bara taşındı (bkz.
+        # `_make_top_bar()`, B-124). Kenar çubuğunun en altı, sürekli
+        # görünür olması gereken bir bağlantı durumu için yanlış yerdi.
 
         return sidebar
 
@@ -510,25 +566,8 @@ class LayoutMixin:
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        # Arama çubuğu
-        search_container = QWidget()
-        search_container.setObjectName("search_container")
-        search_container.setFixedHeight(44)
-        sch = QHBoxLayout(search_container)
-        sch.setContentsMargins(16, 0, 16, 0)
-        sch.setSpacing(8)
-
-        search_icon = QLabel("🔍")
-        search_icon.setObjectName("search_icon")
-        sch.addWidget(search_icon)
-
-        self._search_bar = QLineEdit()
-        self._search_bar.setObjectName("search_bar")
-        self._search_bar.setPlaceholderText("Dosya adı, SHA-256 veya etiket ile ara...")
-        self._search_bar.textChanged.connect(self._search_files)
-        sch.addWidget(self._search_bar)
-
-        lay.addWidget(search_container)
+        # Arama çubuğu artık burada DEĞİL — üst eylem barına taşındı
+        # (bkz. `_make_action_bar()` / `_make_search_widget()`, B-1xx).
 
         # İlerleme banner (batch upload)
         self._progress_banner = QLabel()
@@ -553,19 +592,24 @@ class LayoutMixin:
         # DEĞİL, aynı gövdeye giden ikinci bir giriş noktası.
         lay.addWidget(self._make_bulk_toolbar())
 
-        # Tablo
-        self._table = QTableWidget(0, 5)
-        self._table.setHorizontalHeaderLabels(["Dosya Adı", "Etiket", "Boyut", "Tarih", "Tarama"])
+        # Tablo — sütun 5 ("") satır başı "⋯" menü düğmesi, bkz.
+        # `TableMixin._make_more_cell()` (B-1xx, keşfedilebilirlik).
+        self._table = QTableWidget(0, 6)
+        self._table.setHorizontalHeaderLabels(
+            ["Dosya Adı", "Etiket", "Boyut", "Tarih", "Tarama", ""]
+        )
         hdr = self._table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.Stretch)
         hdr.setSectionResizeMode(1, QHeaderView.Fixed)
         hdr.setSectionResizeMode(2, QHeaderView.Fixed)
         hdr.setSectionResizeMode(3, QHeaderView.Fixed)
         hdr.setSectionResizeMode(4, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(5, QHeaderView.Fixed)
         self._table.setColumnWidth(1, 100)
         self._table.setColumnWidth(2, 80)
         self._table.setColumnWidth(3, 100)
         self._table.setColumnWidth(4, 120)
+        self._table.setColumnWidth(5, 34)
         hdr.setFixedHeight(36)
         # 48 -> 54: sütun 0 artık dosya adının ALTINDA soluk bir SHA-256
         # alt satırı taşıyor (bkz. `TableMixin._make_name_cell()`, B-1xx).

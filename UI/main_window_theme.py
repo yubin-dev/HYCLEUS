@@ -373,8 +373,8 @@ class ThemeMixin:
             QPushButton#admin_btn:hover {{ background: {T['hover']}; }}
             QLabel#usb_badge {{
                 background: transparent;
-                margin: 4px 20px 16px;
-                padding: 0;
+                margin: 0;
+                padding: 0 4px;
             }}
             QScrollArea#sidebar_scroll {{
                 background: transparent;

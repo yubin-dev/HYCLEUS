@@ -59,16 +59,26 @@ class FolderInfo:
     id: int
     name: str
     file_count: int
+    parent_id: int | None = None
 
 
 def list_folders(db: Any) -> list[FolderInfo]:
-    """Tüm klasörler, içerdikleri dosya sayısıyla birlikte (ada göre sıralı)."""
+    """Tüm klasörler, içerdikleri dosya sayısı VE üst klasörüyle (ada göre sıralı).
+
+    `parent_id` B-123'te eklendi — kenar çubuğu bunu ağaç olarak
+    (derinlik/girinti) render etmek için kullanıyor. Sıralama hâlâ ada
+    göre, düz liste; hiyerarşiyi kuran (ebeveyn→çocuk eşlemesi) çağıran
+    taraf (`UI/main_window_tree.py::_refresh_folder_sidebar()`).
+    """
     rows = db.fetchall(
-        "SELECT fo.id, fo.name,"
+        "SELECT fo.id, fo.name, fo.parent_id,"
         "       (SELECT COUNT(*) FROM files f WHERE f.folder_id = fo.id) AS n"
         " FROM folders fo ORDER BY fo.name"
     )
-    return [FolderInfo(id=r["id"], name=r["name"], file_count=r["n"]) for r in rows]
+    return [
+        FolderInfo(id=r["id"], name=r["name"], file_count=r["n"], parent_id=r["parent_id"])
+        for r in rows
+    ]
 
 
 def create_folder(
@@ -77,6 +87,7 @@ def create_folder(
     *,
     owner_id: int,
     hwid: str | None = None,
+    parent_id: int | None = None,
     audit_extra: str | None = None,
 ) -> int:
     """
@@ -87,6 +98,10 @@ def create_folder(
     doğrulaması.
 
     Args:
+        parent_id: Verilirse yeni klasör onun ALTINA oluşturulur (B-123).
+            `None` (varsayılan) kök seviyede oluşturur — eski davranış
+            AYNEN korunuyor, mevcut TÜM çağıranlar hiç değişmeden kök
+            klasör üretmeye devam ediyor.
         audit_extra: Denetim kaydı detayının SONUNA eklenecek ek alanlar
             (ör. `"via=drag_drop files=12"`). Sürükle-bırak akışı kendi
             INSERT'ünü yaparken bu bilgiyi yazıyordu; tek uygulamada
@@ -94,37 +109,127 @@ def create_folder(
             mevcut kayıtlarla birebir aynı kalıyor.
 
     Raises:
-        sqlite3.IntegrityError: `owner_id` `users` tablosunda yoksa.
-            Bu hata artık BASTIRILMIYOR (B-011): oturum kullanıcısı
+        sqlite3.IntegrityError: `owner_id` `users` tablosunda yoksa, ya da
+            `parent_id` `folders` tablosunda yoksa.
+            Eksik sahip artık BASTIRILMIYOR (B-011): oturum kullanıcısı
             giriş anında `CORE.session_user.sync_session_user()` ile
             yazılıyor, dolayısıyla eksik sahip bir programlama hatasıdır.
     """
     temiz = name.strip()
     cur = db.execute(
-        "INSERT INTO folders (name, owner_id) VALUES (?, ?)", (temiz, owner_id)
+        "INSERT INTO folders (name, owner_id, parent_id) VALUES (?, ?, ?)",
+        (temiz, owner_id, parent_id),
     )
     detay = f"name={temiz} hwid={hwid}"
+    if parent_id is not None:
+        detay = f"{detay} parent_id={parent_id}"
     if audit_extra:
         detay = f"{detay} {audit_extra}"
     db.log("folder_created", detail=detay)
     return int(cur.lastrowid)
 
 
+def is_descendant(db: Any, hedef_id: int, tasinan_id: int) -> bool:
+    """
+    `hedef_id`, `tasinan_id`'nin KENDİSİ mi ya da ALT AĞACINDA mı (B-123)?
+
+    `move_folder()`'ın döngü koruması burada: bir klasörü kendi alt
+    ağacının içine (ya da kendisine) taşımak `parent_id` zincirinde
+    sonsuz döngü yaratırdı — DB seviyesinde bunu engelleyen bir kısıt
+    YOK (`parent_id` düz bir FK, döngü kontrolü taşımıyor).
+
+    `hedef_id`'den başlayıp `parent_id` zincirinde KÖKE doğru yürüyor;
+    yolda `tasinan_id`'ye rastlarsa `hedef_id` onun alt ağacındadır —
+    yani bu taşıma YASAK. `gorulen` kümesi yalnızca savunma amaçlı:
+    zaten bozulmuş (elle DB düzenlemesiyle oluşmuş) bir döngüye
+    rastlarsa sonsuz döngüye GİRMEDEN `False` döner.
+    """
+    if hedef_id == tasinan_id:
+        return True
+    simdi = hedef_id
+    gorulen = {simdi}
+    while True:
+        row = db.fetchone("SELECT parent_id FROM folders WHERE id = ?", (simdi,))
+        if row is None or row["parent_id"] is None:
+            return False
+        simdi = row["parent_id"]
+        if simdi == tasinan_id:
+            return True
+        if simdi in gorulen:
+            return False
+        gorulen.add(simdi)
+
+
+def move_folder(
+    db: Any, folder_id: int, new_parent_id: int | None, *, hwid: str | None = None
+) -> None:
+    """
+    Klasörü başka bir üst klasörün altına (ya da köke) taşır (B-123).
+
+    Raises:
+        ValueError: `new_parent_id`, `folder_id`'nin kendisi ya da alt
+            ağacındaki bir klasörse — döngü oluştururdu.
+    """
+    if new_parent_id is not None and is_descendant(db, new_parent_id, folder_id):
+        raise ValueError(
+            "Bir klasör kendisinin ya da alt klasörünün içine taşınamaz."
+        )
+    db.execute(
+        "UPDATE folders SET parent_id = ? WHERE id = ?", (new_parent_id, folder_id)
+    )
+    db.log(
+        "folder_moved", target_type="folder", target_id=folder_id,
+        detail=f"yeni_parent_id={new_parent_id} hwid={hwid}",
+    )
+
+
+def folder_subtree_summary(db: Any, folder_id: int) -> tuple[list[int], int]:
+    """
+    `folder_id` VE tüm alt ağacındaki klasör id'leri + bu klasörlerdeki
+    TOPLAM dosya sayısı (B-123) — silme onay diyaloğu için.
+
+    Silme `ON DELETE CASCADE` ile ÇOK SEVİYELİ kademelenir (canlı
+    doğrulandı: torun/torun-torun fark etmeksizin TÜM alt ağaç gider,
+    tek seviye değil) — bu fonksiyon o gerçek kapsamı SİLMEDEN ÖNCE
+    kullanıcıya göstermek için hesaplıyor.
+    """
+    tum_id = [folder_id]
+    kuyruk = [folder_id]
+    while kuyruk:
+        simdi = kuyruk.pop()
+        for cocuk in db.fetchall("SELECT id FROM folders WHERE parent_id = ?", (simdi,)):
+            tum_id.append(cocuk["id"])
+            kuyruk.append(cocuk["id"])
+
+    yer_tutucular = ",".join("?" * len(tum_id))
+    row = db.fetchone(
+        f"SELECT COUNT(*) AS n FROM files WHERE folder_id IN ({yer_tutucular})",
+        tum_id,
+    )
+    return tum_id, (int(row["n"]) if row else 0)
+
+
 def delete_folder(db: Any, folder_id: int, folder_name: str) -> int:
     """
-    Klasörü siler; içindeki dosyalar KALIR, yalnızca klasörden çıkar.
+    Klasörü VE TÜM ALT AĞACINI siler; içindeki (ve alt klasörlerindeki)
+    dosyalar KALIR, yalnızca klasörden çıkar (B-123 — eskiden yalnızca
+    TEK klasör siliniyordu, alt klasör kavramı yoktu).
+
+    Dosyaların `folder_id`'sini `NULL`'a çekme işi artık ELLE
+    yapılmıyor: `files.folder_id` üzerindeki `ON DELETE SET NULL` FK
+    eylemi, silinen HER klasör (kök + tüm alt ağaç) için bunu OTOMATİK
+    yapıyor — canlı doğrulandı (bkz. modül üstü not / BACKLOG B-123).
 
     Returns:
-        Klasörden çıkarılan dosya sayısı.
+        Klasörden çıkarılan (kök + tüm alt ağaçtaki) TOPLAM dosya sayısı.
     """
-    rows = db.fetchall("SELECT id FROM files WHERE folder_id = ?", (folder_id,))
-    db.execute("UPDATE files SET folder_id = NULL WHERE folder_id = ?", (folder_id,))
+    _, dosya_sayisi = folder_subtree_summary(db, folder_id)
     db.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
     db.log(
         "folder_deleted", target_type="folder", target_id=folder_id,
         detail=f"name={folder_name}",
     )
-    return len(rows)
+    return dosya_sayisi
 
 
 def move_folder_to_imha(

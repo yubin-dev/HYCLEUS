@@ -143,7 +143,8 @@ def test_window_constructs(win):
 
 def test_central_widget_and_table_exist(win):
     assert win.centralWidget() is not None
-    assert win._table.columnCount() == 5
+    # 5 -> 6: sütun 5 satır başı "⋯" menü düğmesi (B-1xx, keşfedilebilirlik).
+    assert win._table.columnCount() == 6
 
 
 def test_navigation_buttons_cover_every_label(win):
