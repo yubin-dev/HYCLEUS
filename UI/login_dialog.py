@@ -89,9 +89,11 @@ _SOL_PANEL_W = 380
 _PH = PasswordHasher()
 
 _SETUP_ROLES = [
-    ("Yönetici",    "Tam erişim"),
-    ("Standart",    "Dosya yönetimi"),
-    ("Salt Okunur", "Sadece görüntüleme"),
+    ("Yönetici",    "Tam erişim — bekleyen kayıtlar, USB yönetimi, ayarlar ve "
+                    "kurtarma parçası dışa aktarımı"),
+    ("Standart",    "Dosya ekleme, düzenleme ve etiketleme — yönetim paneline "
+                    "erişim yok"),
+    ("Salt Okunur", "Yalnızca görüntüleme — dosya ekleyemez, silemez, değiştiremez"),
 ]
 
 # ── Shared QSS fragments ───────────────────────────────────────────────────────
@@ -207,7 +209,76 @@ _QSS_RADIO = (
     "}"
 )
 
+_QSS_ROLE_CARD_OFF = (
+    "QFrame#rol_karti {"
+    f"  background: {_LT['search_bg']};"
+    f"  border: 2px solid {_LT['border']};"
+    "  border-radius: 10px;"
+    "}"
+)
+_QSS_ROLE_CARD_ON = (
+    "QFrame#rol_karti {"
+    f"  background: {_LT['accent_tint']};"
+    f"  border: 2px solid {_LT['accent']};"
+    "  border-radius: 10px;"
+    "}"
+)
+
 _PLACEHOLDER_COLOR = QColor(_LT["subtext"])
+
+
+class _RoleCard(QFrame):
+    """Tıklanabilir rol kartı — mockup'ın "İlk Kurulum" adımına uygun.
+
+    Seçim mekanizması DEĞİŞMEDİ: kartın içinde gerçek bir `QRadioButton`
+    var (`self.radio`), `group`'a (`_role_group`) ekleniyor ve
+    `property("role_value")` taşıyor — `_on_setup_confirm()`'in
+    `self._role_group.checkedButton()` / `.property("role_value")`
+    sözleşmesi (bkz. tests/test_b058_ilk_kurulum.py) BİREBİR aynı kaldı.
+    Kart yalnızca bu radio'yu TIKLANABİLİR bir alana (ve seçiliyken
+    vurgulanan bir çerçeveye) sarmalıyor.
+    """
+
+    def __init__(
+        self, name: str, desc: str, group: QButtonGroup, *, checked: bool = False,
+    ) -> None:
+        super().__init__()
+        self.setObjectName("rol_karti")
+        self.setCursor(Qt.PointingHandCursor)
+
+        self.radio = QRadioButton(name)
+        self.radio.setProperty("role_value", name)
+        self.radio.setStyleSheet(_QSS_RADIO)
+        self.radio.toggled.connect(self._restyle)
+        group.addButton(self.radio)
+
+        desc_lbl = _lbl(desc, size=12, color=_LT["subtext"])
+        desc_lbl.setWordWrap(True)
+        desc_lbl.setContentsMargins(24, 0, 0, 0)  # radyo işaretiyle hizalı
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(4)
+        lay.addWidget(self.radio)
+        lay.addWidget(desc_lbl)
+
+        # `setChecked(True)` sinyali `toggled`'ı TETİKLER (stil ilk kurulumda
+        # da doğru uygulanır) — ayrıca `_restyle(False)` ile açık bir
+        # başlangıç durumu da veriliyor, sinyal bağlantısından ÖNCE bir
+        # kart yanlışlıkla "seçili" görünmesin diye.
+        self._restyle(False)
+        if checked:
+            self.radio.setChecked(True)
+
+    def _restyle(self, checked: bool) -> None:
+        self.setStyleSheet(_QSS_ROLE_CARD_ON if checked else _QSS_ROLE_CARD_OFF)
+
+    def mousePressEvent(self, ev) -> None:  # type: ignore[override]
+        # `UI/ThemePickerDialog.py`'nin kart deseniyle AYNI: `ev` kullanılmaz
+        # (tema kartları da `lambda _ev: ...` ile aynı şeyi yapıyor) — hem
+        # sağ hem sol tık kartı seçer, testler `mousePressEvent(None)` ile
+        # çağırabilir (bkz. tests/test_theme_picker.py'nin aynı deseni).
+        self.radio.setChecked(True)
 
 
 # ── Helper functions ──────────────────────────────────────────────────────────
@@ -598,7 +669,13 @@ class LoginDialog(QDialog):
 
     def _init_card(self, w: int, h: int) -> None:
         total_w = w + _SOL_PANEL_W
-        self.setFixedSize(total_w + 20, h + 20)
+        # Eskiden `setFixedSize()` — pencere sabit/küçük boyutta açılıyordu
+        # ve "Kayıt Ol" formunun içeriği taşıyordu (kaydırma çubuğu
+        # gerekiyordu). Artık yalnızca bir ASGARİ boyut: pencere `__init__`
+        # sonunda `showMaximized()` ile açılıyor, kart aşağıdaki `outer`
+        # layout'u sayesinde mevcut ekranı dolduruyor — küçük bir ekranda
+        # (asgari boyutun altında) hâlâ bu ölçüye küçülebilir.
+        self.setMinimumSize(total_w + 20, h + 20)
 
         # NOT: seçiciler `QFrame{...}` DEĞİL, `QFrame#adı{...}` — bare
         # tip seçicisi Qt'de QLabel'a (QFrame'in alt sınıfı) KASKAD EDER
@@ -606,7 +683,6 @@ class LoginDialog(QDialog):
         # Nesne-adı seçicisi bu kaskadı keser (yalnızca bu widget'a bağlar).
         self._card = QFrame(self)
         self._card.setObjectName("hycleus_login_card")
-        self._card.setGeometry(10, 10, total_w, h)
         self._card.setStyleSheet(
             f"QFrame#hycleus_login_card{{background:{_LT['bg']};"
             f"border:1px solid {_LT['border']};border-radius:14px;}}"
@@ -617,6 +693,14 @@ class LoginDialog(QDialog):
         eff.setOffset(0, 6)
         eff.setColor(QColor(0, 0, 0, 30))
         self._card.setGraphicsEffect(eff)
+
+        # `self`in eskiden hiç layout'u yoktu (kart `setGeometry()` ile elle
+        # konumlanıyordu — yalnızca sabit boyutlu pencerede işe yarar).
+        # Gerçek bir layout, kartı pencere büyüdükçe (maksimize) otomatik
+        # olarak yeniden boyutlandırır — elle `resizeEvent` yazmaya gerek yok.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.addWidget(self._card)
 
         card_lay = QHBoxLayout(self._card)
         card_lay.setContentsMargins(0, 0, 0, 0)
@@ -702,7 +786,15 @@ class LoginDialog(QDialog):
             )
 
     def mouseMoveEvent(self, ev) -> None:
-        if self._drag_pos is not None and ev.buttons() & Qt.LeftButton:
+        # Maksimize edilmişken sürüklemenin görünür bir etkisi yok — üstelik
+        # bazı pencere yöneticilerinde `move()` çağrısı maksimize durumunu
+        # sessizce bozar. Pencere artık açılışta maksimize edildiği için
+        # (bkz. main.py) bu kontrol eskiden hiç gerekmiyordu.
+        if (
+            self._drag_pos is not None
+            and ev.buttons() & Qt.LeftButton
+            and not self.isMaximized()
+        ):
             self.move(ev.globalPosition().toPoint() - self._drag_pos)
 
     def mouseReleaseEvent(self, ev) -> None:
@@ -860,10 +952,18 @@ class LoginDialog(QDialog):
         )
 
         # Inner content widget
+        #
+        # Dikey boşluklar (2026-09-09): pencere artık maksimize açılıyor
+        # (bkz. main.py/_init_card) ama Kurumsal moddaki en uzun varyant
+        # (Referans Kodu alanı dahil, 6 alan) ölçüldüğünde tam ekran bir
+        # 1080p ekranda BİLE hâlâ ~54px taşıyordu (`sizeHint().height()`
+        # gerçek viewport'tan büyüktü — QScrollArea GERÇEKTEN gerekiyordu).
+        # Aşağıdaki değerler yalnızca boşluk/margin — hiçbir alan
+        # kaldırılmadı/gizlenmedi, yalnızca aralarındaki mesafe sıkılaştı.
         inner = QWidget()
         inner.setStyleSheet("background:transparent;")
         lay = QVBoxLayout(inner)
-        lay.setContentsMargins(48, 32, 48, 40)
+        lay.setContentsMargins(48, 20, 48, 24)
         lay.setSpacing(0)
 
         # ── Info box ─────────────────────────────────────────────────────
@@ -885,7 +985,7 @@ class LoginDialog(QDialog):
         info_lbl.setWordWrap(True)
         info_lay.addWidget(info_lbl)
         lay.addWidget(info)
-        lay.addSpacing(24)
+        lay.addSpacing(16)
 
         # ── Admin USB status field ────────────────────────────────────────
         current = get_usb_hwid()
@@ -896,22 +996,22 @@ class LoginDialog(QDialog):
         usb_val.setMinimumHeight(48)
         usb_val.setContentsMargins(0, 10, 0, 0)
         lay.addWidget(_field("Yönetici USB", usb_val))
-        lay.addSpacing(20)
+        lay.addSpacing(14)
 
         # ── Kullanıcı Adı ─────────────────────────────────────────────────
         self._reg_username = _make_input("benzersiz bir kullanıcı adı")
         lay.addWidget(_field("Kullanıcı Adı", self._reg_username))
-        lay.addSpacing(20)
+        lay.addSpacing(14)
 
         # ── PIN ───────────────────────────────────────────────────────────
         self._reg_pin = _make_input(f"En az {PIN_MIN_LEN} karakter", password=True)
         lay.addWidget(_field("PIN", self._reg_pin))
-        lay.addSpacing(20)
+        lay.addSpacing(14)
 
         # ── PIN Tekrar ────────────────────────────────────────────────────
         self._reg_pin2 = _make_input("PIN'i tekrar girin", password=True)
         lay.addWidget(_field("PIN Tekrar", self._reg_pin2))
-        lay.addSpacing(20)
+        lay.addSpacing(14)
 
         # ── Talep Edilen Rol ─────────────────────────────────────────────────
         # Etiket 2026-08-29'da "Rol"den değiştirildi (bkz. BACKLOG B-076).
@@ -926,12 +1026,26 @@ class LoginDialog(QDialog):
         # `UI/RegisterDialog.py`nin admin-başlatan akışında etiket KASITLI
         # olarak "Rol" kaldı — orada yöneticinin KENDİSİ seçiyor, "talep"
         # kelimesi kafa karıştırırdı.
+        #
+        # KARAR (mockup'ın 3-kartlı "İlk Kurulum" rol seçicisi BURAYA
+        # taşınmadı, `_build_setup_ui()`'nin `_RoleCard`'ına taşındı):
+        # burada yalnızca 2 seçenek var, "Yönetici" YAPISAL olarak dışlanmış
+        # (bir kullanıcı kendini yönetici olarak ATAYAMAZ — bu satırdaki
+        # kısıtlama güvenlik mantığının parçası, dokunulmadı). 3 seçenekli
+        # bir kart grid'i burada hem YANLIŞ bir izlenim verirdi (üçüncü,
+        # görünmeyen bir "Yönetici" kartı yokmuş gibi göstermek yerine iki
+        # seçeneği büyütmek karışıklık yaratır) hem de gereksiz: bu alan
+        # yalnızca bir TALEP — gerçek rol `register_new_user()` ile
+        # `status='pending'` yazılıyor, yönetici `AdminPanel`'den onaylayana
+        # kadar hiçbir yetki vermiyor. Mockup'ın vurguladığı "bu seçim
+        # kalıcı ve önemli" hissi tam olarak İLK KURULUM'da geçerli (orada
+        # seçilen rol ANINDA ve ONAYSIZ etkin oluyor) — bu form için değil.
         self._reg_role = QComboBox()
         self._reg_role.addItems(["Standart", "Salt Okunur"])
         self._reg_role.setStyleSheet(_QSS_COMBO)
         self._reg_role.setMinimumHeight(48)
         lay.addWidget(_field("Talep Edilen Rol", self._reg_role))
-        lay.addSpacing(20)
+        lay.addSpacing(14)
 
         # ── Referans Kodu — YALNIZCA Kurumsal modda ─────────────────────────
         # Bireysel modda bu alan hiç YOK (widget bile oluşturulmuyor) —
@@ -943,9 +1057,9 @@ class LoginDialog(QDialog):
         if get_app_mode(DBManager()) == KURUMSAL:
             self._reg_referans = _make_input("İlk Kurulum'da üretilen kod (KRM-...)")
             lay.addWidget(_field("Referans Kodu", self._reg_referans))
-            lay.addSpacing(12)
+            lay.addSpacing(8)
 
-        lay.addSpacing(12)
+        lay.addSpacing(8)
 
         # ── Error / pending feedback ──────────────────────────────────────
         self._reg_error = QLabel("")
@@ -1055,15 +1169,10 @@ class LoginDialog(QDialog):
 
         self._role_group = QButtonGroup(self)
         for i, (rname, rdesc) in enumerate(_SETUP_ROLES):
-            rb = QRadioButton(f"{rname}  ·  {rdesc}")
-            rb.setProperty("role_value", rname)
-            rb.setStyleSheet(_QSS_RADIO)
-            if i == 0:
-                rb.setChecked(True)
-            self._role_group.addButton(rb)
-            lay.addWidget(rb)
-            lay.addSpacing(6)
-        lay.addSpacing(14)
+            kart = _RoleCard(rname, rdesc, self._role_group, checked=(i == 0))
+            lay.addWidget(kart)
+            lay.addSpacing(10)
+        lay.addSpacing(8)
 
         # PIN
         self._pin_input = _make_input("••••", password=True)

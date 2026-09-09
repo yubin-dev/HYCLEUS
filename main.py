@@ -526,6 +526,12 @@ def main() -> None:
         _log.info("DEV_MODE aktif — HWID'den deterministik anahtar türetildi  hwid=%s", hwid)
     else:
         dialog = LoginDialog(hwid=hwid, first_run=_first_run, use_vault=_use_vault)
+        # Eskiden sabit/küçük boyutta açılıyordu; "Kayıt Ol" formunun
+        # içeriği bu yüzden taşıyor, kaydırma çubuğu gerekiyordu (bkz.
+        # UI/login_dialog.py::_init_card). `exec()`'ten ÖNCE çağrılması
+        # gerekiyor — `showMaximized()` diyaloğu görünür yapar, `exec()`
+        # zaten görünür bir pencereye modal döngü ekler.
+        dialog.showMaximized()
         if dialog.exec() != LoginDialog.Accepted:
             sys.exit(0)
         _log.info(
