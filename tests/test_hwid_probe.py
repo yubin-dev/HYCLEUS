@@ -720,7 +720,12 @@ def test_okuyucular_yalnizca_usb_manager_uzerinden_uretime_bagli() -> None:
         agac = ast.parse(yol.read_text(encoding="utf-8"))
         for n in ast.walk(agac):
             if isinstance(n, ast.ImportFrom) and (n.module or "").endswith("hwid_probe"):
-                goreli = str(yol.relative_to(kok))
+                # B-117: `str(Path)` Windows'ta `\` ayırıcı kullanır — sabit
+                # kodlanmış `_IZINLI_DOSYA` ("/" ayırıcı) ile birebir string
+                # karşılaştırması Windows'ta HER ZAMAN düşerdi (platformdan
+                # bağımsız tek doğru dosya olsa bile). `.as_posix()` platform
+                # ayırıcısından bağımsız, karşılaştırılabilir bir biçim verir.
+                goreli = yol.relative_to(kok).as_posix()
                 assert goreli == _IZINLI_DOSYA, (
                     f"{goreli} hwid_probe'u import ediyor — TEK yetkili "
                     f"çağıran {_IZINLI_DOSYA} olmalı (ikinci bir bağlanma "

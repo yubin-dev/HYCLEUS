@@ -9309,9 +9309,12 @@ tetikleneceği kullanıcı kararı — kod değişikliği bu turda YAPILMADI.
 
 ## B-117 — `test_okuyucular_yalnizca_usb_manager_uzerinden_uretime_bagli` Windows'ta path-ayırıcı yüzünden düşüyor (B-114'ten kalma, bu turla ilgisiz)
 
-**Durum:** Açık — plan dışı bulgu, bu turda düzeltilmedi.
+**Durum:** Kapalı.
 **Öncelik:** Düşük (test-altyapısı hatası, güvenlik/davranış etkisi yok).
 **Bulundu:** 2026-09-09, B-115'in tam suite doğrulaması sırasında.
+**Kapatıldı:** 2026-09-09 — GitHub Actions'ın gerçek Windows CI koşusu
+(`windows-latest · Python 3.11`) bu hatayı canlı üretince kullanıcı
+tarafından fark edildi, aşağıdaki önerilen düzeltme uygulandı.
 
 ### Bulgu
 
@@ -9330,11 +9333,13 @@ o tur muhtemelen Linux'ta çalıştırılıp doğrulandı (B-114'ün kendisi de
 Linux/macOS HWID desteğiyle ilgiliydi) — bu, testin Windows'ta İLK kez
 çalıştırılışı.
 
-### Düzeltme (uygulanmadı — öneri)
+### Düzeltme — UYGULANDI
 
-`tests/test_hwid_probe.py:724` civarında `goreli == _IZINLI_DOSYA`
-karşılaştırması `Path` nesneleri üzerinden yapılmalı (`yol.relative_to(kok)
-== Path(_IZINLI_DOSYA)`) ya da `_IZINLI_DOSYA`, `.as_posix()` ile normalize
-edilerek karşılaştırılmalı — ikisi de platform ayırıcısından bağımsız hâle
-getirir. Kapsam dışı bırakıldı çünkü bu turun konusu (B-115 tema
-kalıcılığı) değildi.
+`tests/test_hwid_probe.py`'de `goreli = str(yol.relative_to(kok))` →
+`goreli = yol.relative_to(kok).as_posix()` — platform ayırıcısından
+bağımsız bir dize üretir, `_IZINLI_DOSYA`'nın `/` biçimiyle her
+platformda birebir karşılaştırılabilir.
+
+Mutasyon-kanıtlı: satır geçici olarak eski `str()` hâline döndürüldü,
+test gerçekten AYNI `AssertionError`'la düştüğü doğrulandı, sonra geri
+alındı. `pytest tests/test_hwid_probe.py`: 49/49 geçti.
