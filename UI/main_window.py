@@ -64,7 +64,7 @@ from UI.main_window_files import FileActionsMixin
 from UI.main_window_layout import LayoutMixin
 from UI.main_window_lock import LockMixin, _LockOverlay
 from UI.main_window_open import BackupMixin, OpenMixin
-from UI.main_window_palette import _DARK, _SIDEBAR_NAV
+from UI.main_window_palette import _SIDEBAR_NAV
 from UI.main_window_table import TableMixin, _ProcessSignals
 from UI.main_window_theme import ThemeMixin
 from UI.main_window_tree import TreeMixin
@@ -119,8 +119,6 @@ class HycleusWindow(
         self._authenticating     = False
         self._threads: list[QThread]  = []
         self._workers: list[QObject]  = []
-        self._dark: bool         = True
-        self._theme_key: str     = "mavi"
         # Bireysel/Kurumsal — YALNIZCA görünürlük filtresi, bkz. CORE/app_mode.py.
         # DB henüz bağlı değilse (beklenmeyen sıralama) KURUMSAL'a düş:
         # hiçbir şey gizlenmemiş hâl, sessiz bir kısıtlama değil.
@@ -129,6 +127,10 @@ class HycleusWindow(
         except Exception as exc:
             _log.warning("app_mode_okunamadi  exc=%s — varsayilan KURUMSAL", exc)
             self._app_mode = KURUMSAL
+
+        # Kayıtlı tema — DB henüz bağlı değilse yukarıdaki mavi/koyu
+        # varsayılanında kalır (bkz. ThemeMixin._load_saved_theme, B-115).
+        self._load_saved_theme()
 
         self._pool = QThreadPool.globalInstance()
         # Sabit "6" yerine: RAM bol olduğunda AYNI 6'ya çıkar (bkz.
@@ -141,7 +143,6 @@ class HycleusWindow(
         self._batch_has_folder: bool = False
         self._batch_signals = _ProcessSignals()
         self._batch_signals.file_done.connect(self._on_file_done)
-        self._T: dict[str, str]  = _DARK.copy()
         self._current_tag_id: int | None            = None
         self._active_tag_btn: QPushButton | None    = None
         self._tag_btns: dict[int, QPushButton]      = {}

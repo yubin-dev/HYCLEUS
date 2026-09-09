@@ -9183,3 +9183,158 @@ değişiklikle ilgisiz). ruff/mypy/bandit temiz (bandit `python -m bandit`
 ile doğrudan doğrulandı — aynı shebang artifaktı `test_bandit_*` iki
 testi de pytest alt-süreci düzeyinde etkiliyordu, gerçek tarama sonucu
 etkilenmedi).
+
+## B-115 — Tema seçimi kalıcılaştırılmıyordu: her açılışta "Mavi"ye dönüyordu
+
+**Durum:** Kapalı.
+**Öncelik:** Orta (kullanıcı deneyimi — güvenlik etkisi yok).
+**Bulundu/Kapatıldı:** 2026-09-09.
+
+### Bulgu
+
+`ThemeMixin._set_theme()`/`_toggle_theme()` (UI/main_window_theme.py)
+yalnızca `self._T`/`self._theme_key`/`self._dark`'ı BELLEKTE güncelliyordu.
+Tüm depoda (`grep -rn "set_setting" UI/main_window_theme.py`) bir tek
+`db.set_setting()` çağrısı yoktu — `imha_ttl_hours`/`app_mode`/
+`idle_timeout` gibi diğer kullanıcı tercihlerinin hepsi `settings`
+tablosunda kalıcıyken (bkz. `DB/db_manager.py::get_setting`/
+`set_setting`), tema BUNLARDAN farklı davranıyordu: uygulama kapatılıp
+açıldığında `HycleusWindow.__init__`'teki sabit `self._theme_key = "mavi"`
+varsayılanına dönüyordu — kullanıcı 11 temadan hangisini seçmiş olursa
+olsun.
+
+### Düzeltme
+
+`CORE/app_mode.py`'nin `get_app_mode(db)`/`set_app_mode(db, mode)`
+deseniyle AYNI mantık, `UI/main_window_theme.py`'ye eklendi:
+
+- `_THEME_SETTING = "tema"`, `_THEME_DARK_SETTING = "tema_koyu"` — yeni
+  `settings` anahtarları.
+- `ThemeMixin._load_saved_theme()` — DB'den okur; kayıtlı anahtar artık
+  `_THEMES`'te yoksa (ör. eski sürümden kalma) ya da DB henüz bağlı
+  değilse sessizce "mavi/koyu"ya düşer, `KeyError` fırlatmaz.
+- `ThemeMixin._persist_theme()` — `_set_theme()`/`_toggle_theme()`'in
+  ikisi de artık `self._T` güncellendikten hemen sonra bunu çağırıyor.
+- `HycleusWindow.__init__`'te, `self._app_mode`'un okunduğu yerin hemen
+  altına `self._load_saved_theme()` eklendi (aynı try/except-yoksa-
+  varsayılan deseni, aynı yer).
+
+### Test
+
+`tests/test_theme_picker.py`'ye "6. Kalıcılık" bölümü eklendi (6 yeni
+test): `_set_theme`/`_toggle_theme`'in `settings` tablosuna yazdığını,
+DB'de geçersiz bir tema anahtarı varsa "mavi"ye düştüğünü, ve — en
+önemlisi — GERÇEK bir "kapat/aç" simülasyonu (aynı singleton DB üzerinde
+İKİNCİ bir `HycleusWindow` kurup önceki oturumda seçilen temanın geri
+geldiğini doğrulayan `test_yeniden_acilista_kayitli_tema_geri_okunuyor`).
+
+Mutasyon-kanıtlı: `_persist_theme()` çağrıları `_set_theme`/
+`_toggle_theme`'den geçici kaldırıldı → 3 yeni test beklenildiği gibi
+düştü (`AssertionError: assert '' == 'teal_gold'` vb.) → çağrılar geri
+konunca 38/38 geçti.
+
+Tam suite: **3231 passed**, 4 skipped, **1 failed** — tek başarısızlık
+bu maddeyle İLGİSİZ, B-114'ten kalma bir Windows path-ayırıcı hatası
+(bkz. B-117), izole çalıştırılarak doğrulandı.
+
+## B-116 — Sürüm/etiket süreci: v2.3.0 etiketinden bu yana 100+ commit, `__version__` hiç ".dev"e dönmedi — KARAR maddesi
+
+**Durum:** Açık — kod değişikliği değil, süreç kararı bekliyor.
+**Öncelik:** Düşük.
+**Bulundu:** 2026-09-09.
+
+### Önce bir düzeltme: orijinal varsayım YANLIŞTI
+
+Bu madde "en son git etiketi v2.1.2 (2026-08-13), ama `__version__` =
+"2.3.0" hiç etiketlenmemiş" varsayımıyla açılması istendi. Bu varsayım
+**doğrulanmadı, gerçeğin tersiydi**:
+
+    $ git tag --sort=-creatordate | head -5
+    v2.3.0
+    v2.1.2
+    v2.1.1
+    v2.1.0
+    v2.0
+
+`v2.3.0` (commit `cc637e3`, 2026-08-22) `v2.1.2`'den (2026-08-13) SONRA
+etiketlendi — yani en son etiket zaten `v2.3.0`, `v2.1.2` değil.
+`CORE/version.py`: `__version__ = "2.3.0"` ve `SON_YAYIN = "2.3.0"` —
+birebir eşit, `.dev` eki yok, ikisi arasında hiçbir tutarsızlık yok.
+`tests/test_version.py::test_son_yayin_git_etiketiyle_uyusuyor` (git
+etiketini `SON_YAYIN`'la karşılaştıran GERÇEK test) bunu doğruluyor:
+`pytest tests/test_version.py -q` → **17 passed**, hiçbir uyarı yok.
+
+### Gerçek bulgu — farklı, ama ilgili bir sorun
+
+`v2.3.0` etiketinden bu yana **105 commit** (`git log v2.3.0..HEAD
+--oneline | wc -l`) main'e düştü — B-095'ten B-114'e (bugün, 2026-09-08/09)
+kadar tüm bu turun işi dahil. Bu süre boyunca `__version__` bir kez bile
+`.dev` ekiyle güncellenmedi; hâlâ etiketlendiği gündeki gibi "2.3.0"
+yazıyor. `CORE/version.py`'nin kendi docstring'i bunun 4. adımını şöyle
+tarif ediyor: "Bir sonraki geliştirme turunda `__version__`'ı yükseltip
+`.dev` ekle" — bu adım B-095'ten beri hiç atılmamış.
+
+Bunun çalışma zamanına ya da testlere BUGÜN bir etkisi yok (`__version__
+>= SON_YAYIN` testi `"2.3.0" >= "2.3.0"` olduğu için geçiyor) ama B-017'nin
+orijinal gerekçesiyle (bkz. `CORE/version.py` docstring'i, "sürüm
+bildirim akışını kırıyordu") aynı sınıftan sinsi bir risk taşıyor:
+şu an paketlenen bir EXE, gerçekte 105 commit sonrası bir ağaçtan
+üretiliyor ama "Hakkında" kutusunda hâlâ tam olarak etiketlenmiş
+sürümle AYNI dizeyi ("HYCLEUS v2.3.0") gösteriyor — bir güvenlik
+bildirimcisi ya da destek talebi bu ikisini AYIRT EDEMEZ.
+
+### Karar bekliyor — üç seçenek
+
+1. **Otomatik kapı:** `test_son_yayin_git_etiketiyle_uyusuyor`'un yanına,
+   `git rev-list <SON_YAYIN etiketi>..HEAD --count` belli bir eşiği
+   (ör. 10 commit) geçtiğinde `__version__`'ın hâlâ `.dev` eki
+   TAŞIMADIĞINI yakalayan yeni bir test eklenir — CI'da kırmızı yanar,
+   geliştirici sürüm dizesini güncellemek ZORUNDA kalır.
+2. **Elle disiplin + hatırlatma:** Yalnızca `CORE/version.py`
+   docstring'indeki 4 adımlık talimata güvenilir, otomatik bir kapı
+   eklenmez — B-095'ten beri zaten unutulduğu için bu seçenek aynı
+   hatayı tekrarlama riski taşır.
+3. **Etiketlemeyi ertele:** `main`'i sürekli "geliştirme ağacı" kabul
+   edip yalnızca kasıtlı bir yayın anında (kullanıcı açıkça "şimdi
+   yayınla" dediğinde) hem etiket hem `__version__` aynı anda güncellenir
+   — aradaki commit sayısı ne olursa olsun `.dev` eki hiç kullanılmaz,
+   "yayınlanan == HEAD" garantisi yalnızca etiketleme anında tutulur.
+
+Öneri: **Seçenek 1** — B-017'nin çözdüğü sorunla (sessiz, testsiz
+ayrışma) aynı kökten, ve proje zaten "testler kalıcılığı denetlesin"
+felsefesini (`tests/test_version.py`'nin kendi docstring'i: "asıl iş,
+düzeltmeyi değil DÜZELTMENİN KALICILIĞINI denetlemek") benimsemiş.
+Ama eşik değeri (kaç commit sonra uyarsın) ve otomatik mi elle mi
+tetikleneceği kullanıcı kararı — kod değişikliği bu turda YAPILMADI.
+
+## B-117 — `test_okuyucular_yalnizca_usb_manager_uzerinden_uretime_bagli` Windows'ta path-ayırıcı yüzünden düşüyor (B-114'ten kalma, bu turla ilgisiz)
+
+**Durum:** Açık — plan dışı bulgu, bu turda düzeltilmedi.
+**Öncelik:** Düşük (test-altyapısı hatası, güvenlik/davranış etkisi yok).
+**Bulundu:** 2026-09-09, B-115'in tam suite doğrulaması sırasında.
+
+### Bulgu
+
+`pytest` (tam suite, Windows): **1 failed, 3231 passed, 4 skipped**. Tek
+başarısızlık B-115'in dokunduğu hiçbir dosyayla (UI/main_window.py,
+UI/main_window_theme.py, tests/test_theme_picker.py) İLGİLİ DEĞİL —
+izole çalıştırılarak doğrulandı (`pytest tests/test_hwid_probe.py::
+test_okuyucular_yalnizca_usb_manager_uzerinden_uretime_bagli` tek başına
+da aynı şekilde düşüyor).
+
+Kök neden: test, `Path.relative_to(kok)`'un sonucunu `str()`'a çeviriyor
+— Windows'ta bu `\` ayırıcı kullanır (`CORE\usb_manager.py`) — ve sabit
+kodlanmış `_IZINLI_DOSYA = "CORE/usb_manager.py"` (`/` ayırıcı) ile
+birebir string karşılaştırıyor. Test B-114 turunda (2026-09-08) eklendi;
+o tur muhtemelen Linux'ta çalıştırılıp doğrulandı (B-114'ün kendisi de
+Linux/macOS HWID desteğiyle ilgiliydi) — bu, testin Windows'ta İLK kez
+çalıştırılışı.
+
+### Düzeltme (uygulanmadı — öneri)
+
+`tests/test_hwid_probe.py:724` civarında `goreli == _IZINLI_DOSYA`
+karşılaştırması `Path` nesneleri üzerinden yapılmalı (`yol.relative_to(kok)
+== Path(_IZINLI_DOSYA)`) ya da `_IZINLI_DOSYA`, `.as_posix()` ile normalize
+edilerek karşılaştırılmalı — ikisi de platform ayırıcısından bağımsız hâle
+getirir. Kapsam dışı bırakıldı çünkü bu turun konusu (B-115 tema
+kalıcılığı) değildi.

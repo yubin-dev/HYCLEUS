@@ -298,6 +298,71 @@ def test_tema_secici_ACILIS_dogru_kwargs_ile_kuruluyor(win, monkeypatch: pytest.
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. Kalıcılık — seçim DB'ye yazılıyor ve açılışta geri okunuyor (B-115)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_set_theme_settings_tablosuna_yaziyor(win, db):
+    win._set_theme("abyssal_blue")
+    assert db.get_setting("tema") == "abyssal_blue"
+    assert db.get_setting("tema_koyu") == "1"
+
+
+def test_toggle_theme_koyu_bayragini_yaziyor(win, db):
+    win._set_theme("teal_gold")  # hem koyu hem açık varyantı olan preset
+    win._toggle_theme()
+    assert db.get_setting("tema") == "teal_gold"
+    assert db.get_setting("tema_koyu") == ("1" if win._dark else "0")
+
+
+def test_yeniden_acilista_kayitli_tema_geri_okunuyor(win, db, qapp, monkeypatch: pytest.MonkeyPatch):
+    """Uygulamayı 'kapat/aç' simülasyonu: aynı (singleton) DB üzerinde
+    yeni bir `HycleusWindow` kurulunca, önceki oturumda seçilen tema
+    varsayılan 'mavi'ye değil kayıtlı temaya dönmeli."""
+    from UI import main_window as mw
+
+    win._set_theme("teal_gold")
+    win._toggle_theme()  # açık moda geç — ikinci pencerenin bunu da okuduğunu doğrula
+    beklenen_dark = win._dark
+
+    monkeypatch.setattr(mw, "get_usb_hwid", lambda: _HWID)
+    yeni_pencere = HycleusWindow(hwid=_HWID, key=_KEY, role="Yönetici")
+    try:
+        assert yeni_pencere._theme_key == "teal_gold"
+        assert yeni_pencere._dark == beklenen_dark
+        assert yeni_pencere._T == _THEMES["teal_gold"]["dark" if beklenen_dark else "light"]
+    finally:
+        for ad in ("_usb_timer", "_expiry_timer", "_idle_timer"):
+            zamanlayici = getattr(yeni_pencere, ad, None)
+            if zamanlayici is not None:
+                zamanlayici.stop()
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(yeni_pencere)
+        yeni_pencere.close()
+
+
+def test_gecersiz_kayitli_tema_anahtari_mavi_varsayilanina_duser(win, db):
+    """DB'de artık `_THEMES`'te olmayan bir anahtar varsa (ör. eski bir
+    sürümden kalma / elle bozulmuş satır) `_load_saved_theme` sessizce
+    'mavi'ye düşmeli, KeyError fırlatmamalı."""
+    db.set_setting("tema", "artik-var-olmayan-tema")
+    db.set_setting("tema_koyu", "1")
+
+    win._load_saved_theme()
+
+    assert win._theme_key == "mavi"
+    assert win._T == _THEMES["mavi"]["dark"]
+
+
+def test_kayitli_tema_yokken_varsayilan_mavi_koyu(db):
+    """Hiç seçim yapılmamış taze bir DB'de `get_setting` varsayılanları
+    ('mavi', '1') devreye girmeli."""
+    assert db.get_setting("tema", "mavi") == "mavi"
+    assert db.get_setting("tema_koyu", "1") == "1"
+
+
 def test_kucuk_pencerede_TUM_kartlar_scroll_ile_erisilebilir(qapp):
     """Diyalog kendi asgari boyutuna (`setMinimumSize(560, 420)` —
     `ThemePickerDialog.__init__`) küçültülünce 11 kart 3 sütun × 4 satır

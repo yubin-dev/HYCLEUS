@@ -37,6 +37,7 @@ _ACTIVITY_EVENTS = frozenset({
 
 
 from CORE.roles import normalize_role
+from DB.db_manager import DBManager
 
 from UI.main_window_palette import (
     _DARK,
@@ -90,10 +91,53 @@ register_theme("gun_batimi", "Gün Batımı", _GUN_BATIMI)
 register_theme("grafit_cam", "Grafit (Cam)", _GRAFIT_CAM)
 
 
+# ── Tema kalıcılığı (B-115) ────────────────────────────────────────────────────
+# `_set_theme`/`_toggle_theme` eskiden yalnızca `self._T`'yi bellekte
+# güncelliyordu — bir `db.set_setting()` çağrısı hiç yoktu, dolayısıyla her
+# açılışta "mavi/koyu" varsayılanına dönülüyordu. `imha_ttl_hours`/`app_mode`
+# (bkz. CORE/app_mode.py) ile AYNI `settings` tablosu deseni kullanılıyor.
+_THEME_SETTING = "tema"
+_THEME_DARK_SETTING = "tema_koyu"
+
+
 class ThemeMixin:
     """Tema ve stil."""
 
     # ── Tema ──────────────────────────────────────────────────────────────────
+
+    def _load_saved_theme(self) -> None:
+        """Açılışta DB'den kayıtlı temayı okur (B-115).
+
+        `HycleusWindow.__init__`'te `self._app_mode`'un okunduğu yerle AYNI
+        gerekçeyle try/except: DB henüz bağlı değilse ya da kayıtlı anahtar
+        artık `_THEMES`'te yoksa (ör. eski bir sürümden kalma), sessizce
+        "mavi/koyu" varsayılanına düşer — çağrı yerinde (`__init__`) zaten
+        atanmış olan başlangıç değerlerini KORUR, KeyError fırlatmaz.
+        """
+        key, dark = "mavi", True
+        try:
+            db = DBManager()
+            kayitli_key = db.get_setting(_THEME_SETTING, "mavi")
+            if kayitli_key in _THEMES:
+                key = kayitli_key
+            dark = db.get_setting(_THEME_DARK_SETTING, "1") != "0"
+        except Exception as exc:
+            _log.warning("tema_okunamadi  exc=%s — varsayilan mavi/koyu", exc)
+        preset = _THEMES[key]
+        if preset["light"] is None:
+            dark = True
+        self._theme_key = key
+        self._dark = dark
+        self._T = (preset["dark"] if dark else preset["light"]).copy()
+
+    def _persist_theme(self) -> None:
+        """`_set_theme`/`_toggle_theme` sonrası seçimi DB'ye yazar (B-115)."""
+        try:
+            db = DBManager()
+            db.set_setting(_THEME_SETTING, self._theme_key)
+            db.set_setting(_THEME_DARK_SETTING, "1" if self._dark else "0")
+        except Exception as exc:
+            _log.warning("tema_yazilamadi  exc=%s", exc)
 
     def _refresh_after_theme_change(self) -> None:
         """`_toggle_theme` ve `_set_theme` sonrası ortak tazeleme adımı."""
@@ -133,6 +177,7 @@ class ThemeMixin:
             return
         self._dark = not self._dark
         self._T = preset["dark"].copy() if self._dark else preset["light"].copy()
+        self._persist_theme()
         self._refresh_after_theme_change()
 
     def _set_theme(self, key: str) -> None:
@@ -141,6 +186,7 @@ class ThemeMixin:
         if preset["light"] is None:
             self._dark = True
         self._T = preset["dark"].copy() if self._dark else preset["light"].copy()
+        self._persist_theme()
         self._refresh_after_theme_change()
 
     def _on_theme_menu(self) -> None:
