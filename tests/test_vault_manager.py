@@ -903,3 +903,67 @@ def test_rewrite_vault_kesintide_ORIJINAL_vault_dosyasina_dokunmuyor(
 
     # En kritik kanıt: ESKİ PIN hâlâ açıyor — yeni PIN hiç uygulanmamış.
     vault_manager.open_vault(hwid, eski_pin)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-139 — kek/master_key bellek zeroize
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_kek_ve_master_key_gercekten_sifirlaniyor(
+    db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    B-139: `create_vault`/`open_vault`/`read_vault_role`/`change_vault_role`/
+    `change_vault_pin` içindeki KEK'in (ve `create_vault`'taki
+    `master_key`'in) iş bitince GERÇEKTEN sıfırlandığını — kod
+    okumasıyla değil, GERÇEK çağrılar sırasında kullanılan bytearray
+    nesnelerinin KENDİLERİNİ yakalayıp tüm baytlarının 0 olduğunu
+    ölçerek — kanıtlar.
+
+    `CORE.crypto.zero_bytearray` sarmalanıyor: gerçek implementasyonu
+    ÇAĞIRIYOR (davranış değişmiyor), yalnızca HANGİ bytearray'lerin
+    sıfırlandığını (aynı nesne referansı — kopya değil) kaydediyor.
+    Test, tüm vault yaşam döngüsünü (oluştur → aç → rol değiştir →
+    PIN değiştir → rol oku) GERÇEKTEN çalıştırıp, kaydedilen HER
+    bytearray'in çağrı dönüşünden SONRA tamamen sıfır olduğunu
+    doğruluyor.
+
+    Mutasyon-kanıt: `_derive_kek`/`master_key` çağrı noktalarından
+    HERHANGİ birindeki `finally: zero_bytearray(...)` çağrısı
+    kaldırılınca bu test KIRMIZIYA düşüyor (ya çağrı sayısı 7'nin
+    altına düşer, ya da o siteye ait bytearray sıfır olmayan eski KEK/
+    master_key baytlarını taşımaya devam eder).
+    """
+    from CORE import vault_manager as vm
+
+    sifirlanan: list[bytearray] = []
+    gercek_zero = vm.zero_bytearray
+
+    def yakalayan_zero(buf: bytearray) -> None:
+        gercek_zero(buf)
+        sifirlanan.append(buf)
+
+    monkeypatch.setattr(vm, "zero_bytearray", yakalayan_zero)
+    monkeypatch.setattr(vm, "_VAULT_DIR", tmp_path / "vaults")
+    monkeypatch.setattr(vm, "_VAULT_PATH_LEGACY", tmp_path / ".hcl_vault")
+
+    hwid = "USB-ZEROIZE-TEST"
+    pin, yeni_pin = "111111", "222222"
+
+    vm.create_vault(hwid, pin, "admin")              # master_key_ba + kek_ba
+    vm.open_vault(hwid, pin)                          # _decrypt_vault: kek_ba
+    vm.read_vault_role(hwid, pin)                      # kek_ba
+    vm.change_vault_role(hwid, pin, "user")            # kek_ba
+    vm.change_vault_pin(hwid, pin, yeni_pin)           # old_kek_ba + new_kek_ba
+
+    # create_vault(2) + open_vault(1) + read_vault_role(1) +
+    # change_vault_role(1) + change_vault_pin(2) = 7.
+    assert len(sifirlanan) == 7, (
+        f"beklenen 7 zero_bytearray çağrısı, {len(sifirlanan)} yakalandı — "
+        "bir çağrı noktası zeroize eklenmeden mi kaldı?"
+    )
+    for i, buf in enumerate(sifirlanan):
+        assert buf == bytearray(len(buf)), (
+            f"{i}. yakalanan bytearray hâlâ sıfır olmayan bayt içeriyor "
+            "— KEK/master_key bellekte kalmış olabilir"
+        )

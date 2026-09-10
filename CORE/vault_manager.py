@@ -81,6 +81,7 @@ from cryptography.hazmat.primitives.hmac import HMAC
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from CORE import secret_store
+from CORE.crypto import zero_bytearray
 from DB.db_manager import DBManager
 
 # ── Sabitler ──────────────────────────────────────────────────────────────────
@@ -718,25 +719,42 @@ def create_vault(
     token_id_bytes = uuid.uuid4().bytes   # 16 byte UUID
     token_id_hex = token_id_bytes.hex()   # DB'de hex string olarak saklanır
 
-    # ── Shamir 2-of-3 bölme ──────────────────────────────────────────────────
-    # share_3 (kurtarma parçası) BİLEREK saklanmaz ve döndürülmez: aynı
-    # polinomdan geldiği için share_1 + share_2'den her an yeniden türetilebilir
-    # (bkz. export_recovery_share). Böylece kurtarma parçası sistemde hiçbir
-    # yerde durmaz ve yeni/eski vault ayrımı olmadan tek koddan üretilir.
-    share_1, share_2, _share_3_derivable = _sss_split(master_key, anchor=anchor_share)
+    # B-139: master_key/kek burada TAMAMEN yerel — fonksiyon ne birini ne
+    # diğerini döndürüyor (share_1/share_2'ye bölünüp/şifrelenip atılıyorlar).
+    # bytearray'e çevrilip iş bitince zero_bytearray() ile sıfırlanıyor
+    # (bkz. CORE/crypto.py::zero_bytearray, aynı desen decrypt_file
+    # zeroizable=True'da kullanılıyor). Orijinal `bytes` (parametre olarak
+    # verilmiş olabilir) sıfırlanamaz (Python'da değişmez) — bu, çağıranın
+    # sorumluluğunda kalan, kapsam dışı bir sınır.
+    master_key_ba = bytearray(master_key)
+    kek_ba: bytearray | None = None
+    try:
+        # ── Shamir 2-of-3 bölme ──────────────────────────────────────────
+        # share_3 (kurtarma parçası) BİLEREK saklanmaz ve döndürülmez: aynı
+        # polinomdan geldiği için share_1 + share_2'den her an yeniden
+        # türetilebilir (bkz. export_recovery_share). Böylece kurtarma
+        # parçası sistemde hiçbir yerde durmaz ve yeni/eski vault ayrımı
+        # olmadan tek koddan üretilir.
+        share_1, share_2, _share_3_derivable = _sss_split(
+            bytes(master_key_ba), anchor=anchor_share
+        )
 
-    # ── AES-256-GCM şifreleme ────────────────────────────────────────────────
-    salt = os.urandom(_SALT_SIZE)
-    nonce = os.urandom(_NONCE_SIZE)
-    kek = _derive_kek(pin, salt)
+        # ── AES-256-GCM şifreleme ────────────────────────────────────────
+        salt = os.urandom(_SALT_SIZE)
+        nonce = os.urandom(_NONCE_SIZE)
+        kek_ba = bytearray(_derive_kek(pin, salt))
 
-    share_1_bytes = share_1.encode()
-    plaintext = struct.pack(">H", len(share_1_bytes)) + share_1_bytes + role.encode()
+        share_1_bytes = share_1.encode()
+        plaintext = struct.pack(">H", len(share_1_bytes)) + share_1_bytes + role.encode()
 
-    encryptor = Cipher(algorithms.AES(kek), modes.GCM(nonce)).encryptor()
-    encryptor.authenticate_additional_data(hwid.encode())
-    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
-    tag = encryptor.tag  # 16 byte
+        encryptor = Cipher(algorithms.AES(bytes(kek_ba)), modes.GCM(nonce)).encryptor()
+        encryptor.authenticate_additional_data(hwid.encode())
+        ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+        tag = encryptor.tag  # 16 byte
+    finally:
+        zero_bytearray(master_key_ba)
+        if kek_ba is not None:
+            zero_bytearray(kek_ba)
 
     # ── İmzalama + readonly korumalı yazma ──────────────────────────────────
     # token_id şifrelenmemiş ama HMAC kapsamında — değiştirilirse imza bozulur
@@ -1066,17 +1084,20 @@ def read_vault_role(hwid: str, pin: str) -> str:
     tag        = protected[-_TAG_SIZE:]              # protected'in son 16 byte'ı
     ciphertext = protected[_HEADER_SIZE : -_TAG_SIZE]
 
-    kek = _derive_kek(pin, salt)
-
-    decryptor = Cipher(algorithms.AES(kek), modes.GCM(nonce, tag)).decryptor()
-    decryptor.authenticate_additional_data(hwid.encode())
-
+    # B-139: kek yalnızca bu decryptor için var, döndürülmüyor.
+    kek_ba = bytearray(_derive_kek(pin, salt))
     try:
-        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-    except Exception as exc:
-        raise ValueError(
-            "PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız."
-        ) from exc
+        decryptor = Cipher(algorithms.AES(bytes(kek_ba)), modes.GCM(nonce, tag)).decryptor()
+        decryptor.authenticate_additional_data(hwid.encode())
+
+        try:
+            plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+        except Exception as exc:
+            raise ValueError(
+                "PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız."
+            ) from exc
+    finally:
+        zero_bytearray(kek_ba)
 
     # Format: s1_len(2B) || share_1(s1_len B) || role
     if len(plaintext) < 3:
@@ -1130,30 +1151,34 @@ def change_vault_role(hwid: str, pin: str, new_role: str) -> None:
     tag        = protected[-_TAG_SIZE:]
     ciphertext = protected[_HEADER_SIZE:-_TAG_SIZE]
 
-    kek = _derive_kek(pin, salt)
-
-    decryptor = Cipher(algorithms.AES(kek), modes.GCM(nonce, tag)).decryptor()
-    decryptor.authenticate_additional_data(hwid.encode())
+    # B-139: kek yalnızca bu decrypt+re-encrypt çifti için var (aynı KEK,
+    # yeni nonce), döndürülmüyor.
+    kek_ba = bytearray(_derive_kek(pin, salt))
     try:
-        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-    except Exception as exc:
-        raise ValueError(
-            "PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız."
-        ) from exc
+        decryptor = Cipher(algorithms.AES(bytes(kek_ba)), modes.GCM(nonce, tag)).decryptor()
+        decryptor.authenticate_additional_data(hwid.encode())
+        try:
+            plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+        except Exception as exc:
+            raise ValueError(
+                "PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız."
+            ) from exc
 
-    if len(plaintext) < 2:
-        raise ValueError("Vault içeriği çok kısa; bozulmuş.")
+        if len(plaintext) < 2:
+            raise ValueError("Vault içeriği çok kısa; bozulmuş.")
 
-    s1_len = struct.unpack(">H", plaintext[:2])[0]
-    share_1_bytes = plaintext[2 : 2 + s1_len]
+        s1_len = struct.unpack(">H", plaintext[:2])[0]
+        share_1_bytes = plaintext[2 : 2 + s1_len]
 
-    new_plaintext = struct.pack(">H", s1_len) + share_1_bytes + new_role.encode()
+        new_plaintext = struct.pack(">H", s1_len) + share_1_bytes + new_role.encode()
 
-    new_nonce = os.urandom(_NONCE_SIZE)
-    encryptor = Cipher(algorithms.AES(kek), modes.GCM(new_nonce)).encryptor()
-    encryptor.authenticate_additional_data(hwid.encode())
-    new_ct = encryptor.update(new_plaintext) + encryptor.finalize()
-    new_tag = encryptor.tag
+        new_nonce = os.urandom(_NONCE_SIZE)
+        encryptor = Cipher(algorithms.AES(bytes(kek_ba)), modes.GCM(new_nonce)).encryptor()
+        encryptor.authenticate_additional_data(hwid.encode())
+        new_ct = encryptor.update(new_plaintext) + encryptor.finalize()
+        new_tag = encryptor.tag
+    finally:
+        zero_bytearray(kek_ba)
 
     new_protected = (
         _MAGIC + bytes([_VERSION]) + salt + new_nonce
@@ -1195,24 +1220,31 @@ def change_vault_pin(hwid: str, old_pin: str, new_pin: str) -> None:
     tag        = protected[-_TAG_SIZE:]
     ciphertext = protected[_HEADER_SIZE:-_TAG_SIZE]
 
-    old_kek = _derive_kek(old_pin, salt)
-    decryptor = Cipher(algorithms.AES(old_kek), modes.GCM(nonce, tag)).decryptor()
-    decryptor.authenticate_additional_data(hwid.encode())
+    # B-139: old_kek/new_kek ikisi de yalnızca burada var, döndürülmüyor —
+    # ayrı ayrı bytearray'e çevrilip kullanım sonrası sıfırlanıyor.
+    old_kek_ba = bytearray(_derive_kek(old_pin, salt))
     try:
-        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-    except Exception as exc:
-        raise ValueError(
-            "Eski PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız."
-        ) from exc
+        decryptor = Cipher(algorithms.AES(bytes(old_kek_ba)), modes.GCM(nonce, tag)).decryptor()
+        decryptor.authenticate_additional_data(hwid.encode())
+        try:
+            plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+        except Exception as exc:
+            raise ValueError(
+                "Eski PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız."
+            ) from exc
+    finally:
+        zero_bytearray(old_kek_ba)
 
     new_salt  = os.urandom(_SALT_SIZE)
     new_nonce = os.urandom(_NONCE_SIZE)
-    new_kek   = _derive_kek(new_pin, new_salt)
-
-    encryptor = Cipher(algorithms.AES(new_kek), modes.GCM(new_nonce)).encryptor()
-    encryptor.authenticate_additional_data(hwid.encode())
-    new_ct  = encryptor.update(plaintext) + encryptor.finalize()
-    new_tag = encryptor.tag
+    new_kek_ba = bytearray(_derive_kek(new_pin, new_salt))
+    try:
+        encryptor = Cipher(algorithms.AES(bytes(new_kek_ba)), modes.GCM(new_nonce)).encryptor()
+        encryptor.authenticate_additional_data(hwid.encode())
+        new_ct  = encryptor.update(plaintext) + encryptor.finalize()
+        new_tag = encryptor.tag
+    finally:
+        zero_bytearray(new_kek_ba)
 
     new_protected = (
         _MAGIC + bytes([_VERSION]) + new_salt + new_nonce
@@ -1292,13 +1324,18 @@ def _decrypt_vault(hwid: str, pin: str) -> tuple[str, str]:
     tag        = protected[-_TAG_SIZE:]
     ciphertext = protected[_HEADER_SIZE:-_TAG_SIZE]
 
-    kek = _derive_kek(pin, salt)
-    decryptor = Cipher(algorithms.AES(kek), modes.GCM(nonce, tag)).decryptor()
-    decryptor.authenticate_additional_data(hwid.encode())
+    # B-139: kek yalnızca bu decryptor için var (share_1/role döndürülüyor,
+    # kek değil), bytearray'e çevrilip kullanım sonrası sıfırlanıyor.
+    kek_ba = bytearray(_derive_kek(pin, salt))
     try:
-        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-    except Exception as exc:
-        raise ValueError("PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız.") from exc
+        decryptor = Cipher(algorithms.AES(bytes(kek_ba)), modes.GCM(nonce, tag)).decryptor()
+        decryptor.authenticate_additional_data(hwid.encode())
+        try:
+            plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+        except Exception as exc:
+            raise ValueError("PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız.") from exc
+    finally:
+        zero_bytearray(kek_ba)
 
     if len(plaintext) < 3:
         raise ValueError("Vault içeriği çok kısa; bozulmuş.")
