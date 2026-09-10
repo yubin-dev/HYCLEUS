@@ -131,3 +131,60 @@ def test_kayit_ol_akisi_ETKİLENMEDİ(qapp, db):
         totp_enrollment.show_totp_enrollment_dialog(None, "SECRET123", "gercek_kullanici")
 
     assert yakalanan.get("name") == "gercek_kullanici"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-11) — otpauth URI issuer_name (MC-M115)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_ilk_kurulum_qr_issuer_HYCLEUS(kurulum_dlg):
+    """
+    MC-Kataloğu M115: İlk Kurulum'daki `provisioning_uri()` çağrısının
+    `issuer_name="HYCLEUS"` taşıdığını doğrudan kanıtlar. Bu dosyadaki
+    diğer testler yalnızca `name=` parametresini sınıyordu — `issuer_
+    name=` hiçbir testte doğrulanmıyordu.
+
+    Mutasyon-kanıt: `login_dialog.py::_APP_NAME` başka bir değere
+    (ör. "yanlis-uygulama") çevrilince bu paketteki 6 testin HİÇBİRİ
+    fark etmedi.
+    """
+    yakalanan: dict[str, str] = {}
+    gercek = pyotp.TOTP.provisioning_uri
+
+    def _casus(self, *a, **kw):
+        yakalanan["issuer_name"] = kw.get("issuer_name")
+        return gercek(self, *a, **kw)
+
+    import unittest.mock as mock
+    with mock.patch.object(pyotp.TOTP, "provisioning_uri", _casus):
+        kurulum_dlg._yenile_setup_qr()
+
+    assert yakalanan.get("issuer_name") == "HYCLEUS"
+
+
+def test_kayit_ol_akisi_qr_issuer_HYCLEUS(qapp, db) -> None:
+    """
+    MC-Kataloğu M115: `totp_enrollment.show_totp_enrollment_dialog()`'un
+    `provisioning_uri()` çağrısının da `issuer_name="HYCLEUS"` taşıdığını
+    doğrudan kanıtlar.
+
+    Mutasyon-kanıt: `totp_enrollment.py::_APP_NAME` başka bir değere
+    çevrilince `test_kayit_ol_akisi_ETKİLENMEDİ` dahil hiçbir test fark
+    etmedi (o test yalnızca `name=` sınıyordu).
+    """
+    from UI import totp_enrollment
+
+    yakalanan: dict[str, str] = {}
+    gercek = pyotp.TOTP.provisioning_uri
+
+    def _casus(self, *a, **kw):
+        yakalanan["issuer_name"] = kw.get("issuer_name")
+        return gercek(self, *a, **kw)
+
+    import unittest.mock as mock
+    with mock.patch.object(pyotp.TOTP, "provisioning_uri", _casus), \
+         mock.patch.object(totp_enrollment, "QMessageBox") as sahte:
+        sahte.return_value.exec.return_value = None
+        totp_enrollment.show_totp_enrollment_dialog(None, "SECRET123", "gercek_kullanici")
+
+    assert yakalanan.get("issuer_name") == "HYCLEUS"

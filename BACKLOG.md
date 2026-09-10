@@ -11536,3 +11536,29 @@ kontrolünün GERÇEKTEN PIN'den önce olduğu hiçbiri doğrudan
 ölçülmüyordu), Kapsam dışı 1 (M102 — PIN karşılaştırması hiç elle
 yapılmıyor). Yeni testler: `tests/test_pin_giris_kutulari.py` (+3).
 Üretim kodunda değişiklik yok.
+
+### Bölüm 15 (MC-M111–MC-M118) — TOTP / RFC 6238 (`UI/login_dialog.py`, `UI/main_window_bulk.py`, `UI/main_window_files.py`, `UI/main_window_tree.py`, `UI/totp_enrollment.py`)
+
+Test alt kümesi: `tests/test_authz_invariants.py` + `tests/test_bulk_
+download_lock.py` + `tests/test_totp_gorunen_ad.py` + `tests/test_
+kayit_ekrani.py` + `tests/test_pin_rotation_ui.py` + `tests/test_
+b058_ilk_kurulum.py` + `tests/test_kayit_kurumsal_referans.py` +
+`tests/test_usb_weak_binding_ui.py` + `tests/test_secret_store.py` +
+`tests/test_tpm_sealing.py` + `tests/test_secret_migration.py`
+(baseline 173).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M111 | Pencere toleransı ±1 → ±30 adım | **Killed** | `valid_window=1`→`30` (4 dosya, 5 çağrı) yapılınca `test_login_dialog_totp_penceresi_dar_tutuluyor` + `test_dosya_erisimi_totp_kapilari_pencere_ve_algoritma_sertlestirilmis` (M039/M045'ten miras AST testleri) doğrudan yakalıyor |
+| MC-M112 | Replay koruması: aynı adımda aynı kodun ikinci kullanımını kabul et | **Kapsam dışı — zaten bilinen boşluk** | Zaten bilinen B-141'e bağlı (2026-09-10, MC-M040) — kod tabanında hiçbir kullanılmış-kod kaydı/replay-önleme mekanizması yok, tekrar madde açılmadı |
+| MC-M113 | TOTP secret'i şifrelemeden DB'ye yaz | **Killed** | Hedef kod zaten farklı: TOTP secret DB'ye HİÇ yazılmıyor, yalnızca `secret_store.store()` (TPM-mühürlü OS kasası) üzerinden. `belki_muhurle()` çağrısı atlanınca (mühürsüz yazım) `test_muhurleme_patlarsa_MUHURSUZ_yazmaya_dusulmuyor` + `test_share_2_DISI_cagri_yerinde_reseal_TETIKLENMIYOR_TAZE_yazimda` (M046'dan miras) yakalıyor |
+| MC-M114 | Kod karşılaştırması `compare_digest` → `==` | **Kapsam dışı** | Hedef kod yok — TOTP kodu hiçbir yerde elle karşılaştırılmıyor (grep doğrulandı), tamamı `pyotp.TOTP(...).verify()`'e devrediliyor (M043 ile aynı gerekçe, o turda TOTP için zaten doğrulanmıştı) |
+| MC-M115 | otpauth URI: issuer/hesap adını yanlış yaz | **Survived-Fixed** | Gerçek bulgu: `login_dialog.py`/`totp_enrollment.py`'nin `_APP_NAME` sabiti değiştirilince (`issuer_name=` yanlış değer taşır hâle gelince) `test_totp_gorunen_ad.py`'nin 6 testi dahil ilgili 173 testin HİÇBİRİ fark etmedi — hepsi yalnızca `name=` parametresini sınıyordu, `issuer_name=` hiç doğrulanmıyordu. 2 yeni test eklendi (İlk Kurulum + Kayıt Ol akışları) |
+| MC-M116 | Saat kaynağı `time.time()` → sabit | **Kapsam dışı** | Hedef kod yok — hiçbir `.verify()` çağrısı `for_time=` geçmiyor (grep doğrulandı, M042 ile aynı gerekçe) |
+| MC-M117 | 6 hane şartını kaldır (5/7 haneli kabul) | **Eşdeğer mutant** | GERÇEK çalıştırmayla kanıtlandı: uzunluk ön-kontrolü (`len(code) == 6`) 5 dosyada gevşetilip 173 testin hiçbiri fark etmese de, `pyotp.TOTP.verify()`'in KENDİSİ zaten sabit-uzunluklu bir aday üretip tam eşleşme arıyor — canlı bir Python oturumunda doğrulandı: 5/7 haneli (gerçek kodun kırpılmış/uzatılmış hâli) girdiler `pyotp.verify()` tarafından da reddediliyor. Ön-kontrol yalnızca hızlı-red/UX optimizasyonu, GERÇEK güvenlik sınırı `pyotp`'nin kendisi |
+| MC-M118 | Boş girdi → doğrulama `True` | **Kapsam dışı** | Hedef kod yok — "boş girdi → True" üretecek hiçbir kod yolu yok: boş string HEM `code.isdigit()` (Python'da `"".isdigit() == False`) HEM `pyotp.TOTP.verify("")` (canlı doğrulandı, `False` döner) tarafından BAĞIMSIZ olarak reddediliyor — iki katmanlı, kaldırılamaz bir ret |
+
+**Bölüm 15 özet:** Killed 2 (M111,M113), Survived-Fixed 1 (M115),
+Eşdeğer mutant 1 (M117 — gerçek çalıştırmayla kanıtlandı), Kapsam dışı
+4 (M112→B-141, M114/M116/M118 hedef kod yok). Yeni testler: `tests/
+test_totp_gorunen_ad.py` (+2). Üretim kodunda değişiklik yok.
