@@ -386,6 +386,50 @@ def test_QR_yoksa_kullaniciya_SOYLENIYOR(qapp):  # type: ignore[no-untyped-def]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# B-144 — Shoulder surfing: göster/gizle katmanı
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_govde_baslangicta_GIZLI(modal: RecoveryShareDialog):
+    """
+    B-144: pencere açılır açılmaz QR/base32 GÖRÜNMEMELİ — arkadan bakan
+    birine karşı bir katman olmadan doğrudan ekrana gelmemeli.
+
+    `isVisibleTo(modal)` kullanılıyor (`isVisible()` DEĞİL): pencerenin
+    kendisi hiç `.show()` edilmediği için düz `isVisible()` üst pencere
+    ekranda olmadığından HER ZAMAN False döner (bkz. `tests/test_kasa_
+    ekrani_kozmetik_ve_usb_rozeti.py::test_add_new_dugmesi_rol_
+    kisitlamasina_hala_uyuyor`'un aynı gerekçesi) — `isVisibleTo()`
+    yalnızca `modal`'a göreli, yani `setVisible()` ile GERÇEKTEN ne
+    ayarlandığını sorar.
+
+    Mutasyon-kanıt: `_govde_kutusu.setVisible(False)` çağrısı kaldırılınca
+    (eski davranış — içerik pencere açılır açılmaz görünür) bu test
+    KIRMIZIYA düşüyor.
+    """
+    assert modal._govde_kutusu.isVisibleTo(modal) is False
+    assert modal._gizli_kutusu.isVisibleTo(modal) is True
+
+
+def test_goster_dugmesi_ICERIGI_ACIYOR(modal: RecoveryShareDialog):
+    """"Göster"e basınca içerik görünür oluyor, gizli uyarı kapanıyor."""
+    modal._btn_goster.click()
+    assert modal._govde_kutusu.isVisibleTo(modal) is True
+    assert modal._gizli_kutusu.isVisibleTo(modal) is False
+
+
+def test_icerik_GIZLIYKEN_bile_URETILMIS(modal: RecoveryShareDialog,
+                                         disa_aktarim: RecoveryExport):
+    """
+    Görünürlük ertelenir, ÜRETİM ertelenmez — `_metin` "Göster"e
+    basılmadan önce de zaten doğru veriyi taşıyor (TEK ÜRETİM YOLU
+    kuralı, modül docstring'i — ikinci bir "geç üretim" yolu açılmadı).
+    """
+    assert modal._govde_kutusu.isVisibleTo(modal) is False
+    assert modal._metin.toPlainText() == disa_aktarim.base32_text
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 2. Onay kutusu
 # ══════════════════════════════════════════════════════════════════════════════
 

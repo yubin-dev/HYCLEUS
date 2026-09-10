@@ -85,6 +85,25 @@ Sonuç kullanıcıya GÖRÜNÜR biçimde yazılıyor. Sessizce denemek, B-025'in
 tam olarak uyardığı şey olurdu: kapalı bir koruma, hiç olmayan bir
 korumadan kötü — çünkü belge onun varlığını iddia ediyor gibi okunur.
 Windows dışı platformlardaki boşluk B-049 olarak kayıtlı.
+
+
+"Göster" katmanı — shoulder surfing (B-144)
+--------------------------------------------
+Ekran-yakalama koruması dijital sızıntıyı hedefliyor (ekran görüntüsü/
+kaydı); arkadan bakan birine (fiziksel gözlem) karşı bir şey yapmıyor.
+Önceden pay pencere açılır açılmaz doğrudan görünürdü — `WARNING_TEXT`
+"etrafınızda kimse olmadığından emin olun" diyordu ama ekran bunu
+ZATEN varsaymış gibi davranıyordu.
+
+Artık QR + base32 `_govde_kutusu` içinde GİZLİ başlıyor, yerine "🙈
+Parça gizli..." uyarısı + "Göster" düğmesi geliyor. İçerik yine de
+KURULUYOR (`_govde()` çağrılıyor, `self._metin` dolduruluyor) —
+yalnızca görünürlüğü kapalı; TEK ÜRETİM YOLU kuralını bozmuyor,
+göstermeyi iki adıma (kur → görünür kıl) bölüyor. Kullanıcı "Göster"e
+basınca (`_on_goster()`) gizli kutu kapanıp gövde açılıyor — B-003'ün
+dersiyle tutarlı: bu bir ZORUNLU adım değil (onay kutusu gibi
+kapatmayı engellemiyor), yalnızca kazayla değil BİLİNÇLİ bir eylemle
+açığa çıkmasını sağlıyor.
 """
 from __future__ import annotations
 
@@ -211,7 +230,7 @@ class RecoveryShareDialog(QDialog):
 
         yerlesim.addWidget(self._koruma_satiri())
         yerlesim.addWidget(self._uyari_bloku())
-        yerlesim.addLayout(self._govde())
+        yerlesim.addWidget(self._icerik_bloku())
         yerlesim.addWidget(self._yazdir_satiri())
         yerlesim.addWidget(self._onay_satiri())
         yerlesim.addLayout(self._dugmeler())
@@ -251,6 +270,65 @@ class RecoveryShareDialog(QDialog):
         satir.addWidget(self._qr_bloku(), 0)
         satir.addWidget(self._base32_bloku(), 1)
         return satir
+
+    def _icerik_bloku(self) -> QWidget:
+        """
+        B-144: QR + base32 pencere AÇILIR AÇILMAZ değil, kullanıcı
+        "Göster"e basınca görünür oluyor.
+
+        Ekran-yakalama korumasının (`ekran_yakalamayi_engelle`, dijital
+        sızıntıyı hedefler) TAMAMLAYICISI: bu katman fiziksel gözlemi
+        (shoulder surfing) hedefliyor, onun YERİNE geçmiyor.
+
+        İçerik (QR görseli, `self._metin`) burada YİNE DE kuruluyor —
+        yalnızca `_govde_kutusu.setVisible(False)` ile GİZLENİYOR, ÜRETİMİ
+        ertelenmiyor. Böylece `modal._metin.toPlainText()` gibi doğrudan
+        erişimler (bkz. `test_modaldaki_QR_ile_METIN_ayni`) hâlâ çalışıyor
+        — bu pencere zaten TEK ÜRETİM YOLU kuralı gereği veriyi kendi
+        üretmiyor, yalnızca gösteriyor; "göstermeyi" iki adıma bölmek
+        (kur → görünür kıl) o kuralı bozmuyor.
+        """
+        kutu = QWidget()
+        dis_lay = QVBoxLayout(kutu)
+        dis_lay.setContentsMargins(0, 0, 0, 0)
+        dis_lay.setSpacing(0)
+
+        self._govde_kutusu = QWidget()
+        self._govde_kutusu.setObjectName("kurtarma_govde_kutusu")
+        self._govde_kutusu.setLayout(self._govde())
+        self._govde_kutusu.setVisible(False)
+
+        self._gizli_kutusu = self._gizli_bloku()
+
+        dis_lay.addWidget(self._gizli_kutusu)
+        dis_lay.addWidget(self._govde_kutusu)
+        return kutu
+
+    def _gizli_bloku(self) -> QWidget:
+        kutu = QWidget()
+        kutu.setObjectName("kurtarma_gizli_kutusu")
+        lay = QVBoxLayout(kutu)
+        lay.setContentsMargins(0, 24, 0, 24)
+        lay.setSpacing(10)
+        lay.setAlignment(Qt.AlignCenter)
+
+        etiket = QLabel(
+            "🙈  Parça gizli. Göstermeden önce etrafınızda kimse "
+            "olmadığından emin olun."
+        )
+        etiket.setObjectName("kurtarma_gizli_uyari")
+        etiket.setWordWrap(True)
+        etiket.setAlignment(Qt.AlignCenter)
+        etiket.setStyleSheet(f"color:{self._T['subtext']}; font-size:13px;")
+        lay.addWidget(etiket)
+
+        self._btn_goster = QPushButton("👁  Göster")
+        self._btn_goster.setObjectName("kurtarma_btn_goster")
+        self._btn_goster.setCursor(Qt.PointingHandCursor)
+        self._btn_goster.clicked.connect(self._on_goster)
+        lay.addWidget(self._btn_goster, 0, Qt.AlignCenter)
+
+        return kutu
 
     def _qr_bloku(self) -> QWidget:
         kutu = QWidget()
@@ -366,6 +444,11 @@ class RecoveryShareDialog(QDialog):
 
     def _on_onay_degisti(self, isaretli: bool) -> None:
         self._btn_tamam.setEnabled(isaretli)
+
+    def _on_goster(self) -> None:
+        """B-144: kullanıcının açık eylemi — QR/base32'yi görünür kılar."""
+        self._govde_kutusu.setVisible(True)
+        self._gizli_kutusu.setVisible(False)
 
     def _yazdirilabilir_belge(self) -> Any:
         """
