@@ -281,6 +281,7 @@ class _UcTanUcaSahne:
     _unlock = HycleusWindow._unlock
     _poll_usb = HycleusWindow._poll_usb
     _refresh_usb_badge = HycleusWindow._refresh_usb_badge
+    _trigger_usb_reauth = HycleusWindow._trigger_usb_reauth
 
     def __init__(self, hwid: str) -> None:
         self._central = QWidget()
@@ -292,12 +293,20 @@ class _UcTanUcaSahne:
         self._authenticating = False
         self._hwid = hwid
         self._role = "admin"
+        self._username = "sahne-kullanici"
+        self._user_id = 0
         self._usb_badge = QWidget()
         self._usb_badge.setText = lambda *a, **k: None
         self._checkouts = None
 
     def centralWidget(self):
         return self._central
+
+    def _apply_role_restrictions(self) -> None:
+        pass
+
+    def _apply_theme(self) -> None:
+        pass
 
     def size(self):
         return self._central.size()
@@ -370,6 +379,71 @@ def test_gecici_db_hatasi_meşru_oturumu_KILITLEMIYOR(
         "geçici bir DB hatası oturumu kilitledi — B-064/B-066 regresyonu"
     )
     assert "revoked" not in sahne._lock_reasons
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-11) — Yeniden takmada HWID yeniden doğrulanıyor mu (MC-M147)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_trigger_usb_reauth_kara_listedeki_cihazi_DOGRU_pinle_bile_ACMIYOR(
+    qapp, db, tmp_path, monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    MC-Kataloğu M147: `_trigger_usb_reauth()`'un (farklı bir USB takılınca
+    tetiklenen yeniden kimlik doğrulama akışı) GERÇEKTEN `authenticate_
+    usb()`'u çağırıp SONUCUNA göre davrandığını kanıtlar — `_trigger_usb_
+    reauth` bugüne kadar HİÇBİR testte çağrılmamıştı (`test_main_window_
+    smoke.py`'de yalnızca metot ADI bir listede geçiyordu).
+
+    Senaryo: yeni USB'nin (hwid_b) vault'u ve DOĞRU PIN'i var, DB'de
+    onaylı bir kullanıcı satırı da var — TEK fark KARA LİSTEDE olması.
+    Kara liste kontrolü gerçekten çalışıyorsa, doğru PIN'e rağmen oturum
+    AÇILMAMALI ve mevcut oturum (hwid_a) DEĞİŞMEMELİ.
+
+    Mutasyon-kanıt: `_trigger_usb_reauth()`'taki `authenticate_usb(new_hwid)`
+    çağrısı atlanınca (Katman 1-3 — kara liste dahil — hiç çalışmıyor)
+    `read_vault_role()` DOĞRU PIN'i kabul edip akışın geri kalanını
+    (kullanıcı senkronu, `_unlock()`) çalıştırıyor — bu test KIRMIZIYA
+    düşüyor: `sahne._hwid` kara listedeki `hwid_b`'ye değişiyor VE
+    `sahne._locked` False oluyor.
+    """
+    from CORE import vault_manager
+
+    hwid_a = "MC-M147-MEVCUT-OTURUM"
+    hwid_b = "MC-M147-KARA-LISTE-USB"
+    pin_b = "dogru-pin-123456"
+
+    monkeypatch.setattr(vault_manager, "_VAULT_DIR", tmp_path / "vaults")
+    monkeypatch.setattr(vault_manager, "_VAULT_PATH_LEGACY", tmp_path / ".hcl_vault")
+    vault_manager.create_vault(hwid_b, pin_b, "Yönetici")
+    vault_manager.blacklist_usb(hwid_b)
+
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, 'admin', 'approved', ?)",
+        ("mc-m147.kullanici", "x", hwid_b),
+    )
+
+    sahne = _UcTanUcaSahne(hwid_a)
+
+    monkeypatch.setattr(_mwl_modulu.QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(_mwl_modulu.QMessageBox, "critical", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(_mwl_modulu.QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(
+        _mwl_modulu.QInputDialog, "getText",
+        staticmethod(lambda *a, **k: (pin_b, True)),
+    )
+
+    sahne._trigger_usb_reauth(hwid_b)
+
+    assert sahne._locked is True, (
+        "kara listedeki USB için oturum AÇILDI — authenticate_usb() "
+        "atlanmış olabilir"
+    )
+    assert sahne._hwid == hwid_a, (
+        "oturumun HWID'i kara listedeki cihaza değişti — reddedilen bir "
+        "yeniden kimlik doğrulama session state'i değiştirmemeli"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

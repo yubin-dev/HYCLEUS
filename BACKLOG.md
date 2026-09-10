@@ -11634,3 +11634,71 @@ cli.py` (baseline 161).
 docstring'lerinde açıkça belgelenmiş, M140 hedef kod yok). Üretim
 kodunda VE testlerde hiçbir değişiklik yapılmadı — Shamir katmanı
 (muhtemelen B-126'nın mirası) bu turda da tamamen doygun çıktı.
+
+### Bölüm 19 (MC-M142–MC-M150) — HWID / USB bağlama / ani kilit (`CORE/vault_manager.py`, `CORE/usb_manager.py`, `UI/main_window_lock.py`, `CORE/integrity.py`)
+
+3. parçanın (MC-M101–M150) son bloğu.
+
+Test alt kümesi: `tests/test_vault_manager.py` + `tests/test_usb_weak_
+binding.py` + `tests/test_usb_weak_binding_ui.py` + `tests/test_
+blacklist.py` + `tests/test_lock_overlay.py` + `tests/test_main_
+window_smoke.py` + `tests/test_usb_takeover.py` + `tests/test_
+integrity.py` + `tests/test_usb_manager.py` (baseline 331).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M142 | HWID karşılaştırması: normalize kaldır, prefix eşleşmesine gevşet | **Kapsam dışı** | Hedef kod yok — hiçbir kritik HWID karşılaştırması (SQL `WHERE hwid = ?`, `compare_digest`, dosya yolu) "normalize edip sonra gevşek karşılaştır" deseni izlemiyor; tamamı zaten tam-eşleşme. `_sanitize_hwid()` yalnızca ÜRETİM anında (okuma anında) çalışıyor, karşılaştırma anında değil |
+| MC-M143 | UUID fallback: seri yoksa UUID'yi "zayıf bağlı" işaretlemeden kabul (K0-2) | **Killed** | `_reject_if_weak_binding()`'in `is_uuid_fallback_hwid()` kontrolü `if True: return` ile atlanınca 11 test kırılıyor (`test_usb_weak_binding.py`'nin 9 testi + UI'nin 2'si) |
+| MC-M144 | Kara liste: yalnızca kayıtta kontrol, yeniden takmada atla | **Killed** | `authenticate_usb()`'daki (yeniden takma yolu) `_reject_if_blacklisted()` çağrısı kaldırılınca `test_both_entry_paths_reject_blacklisted_device` (iki giriş yolunu birlikte sınayan, amaca özel test) doğrudan yakalıyor |
+| MC-M145 ★ | Token ID: ilk 8 karakteri karşılaştır | **Survived-Fixed** | Gerçek bulgu: `authenticate_usb()`'un Katman-3 `compare_digest(vault_token_hex, db_token_id)` çağrısı yalnızca ilk 8 karakteri (`[:8]`) karşılaştıracak şekilde daraltılınca 92 testin HİÇBİRİ fark etmedi — DB'deki token_id GERÇEK değerle yalnızca ÖNEK olarak eşleşen sahte bir değerle değiştirilip kabul edilip edilmediğini sınayan hiçbir test yoktu. `test_authenticate_usb_token_id_kismi_eslesmeyle_gecmiyor` eklendi |
+| MC-M146 | USB çıkarma: overlay göster, session state'i locked yapma | **Killed** | `_lock()`'taki `self._locked = True` atlanınca (overlay yine de gösteriliyor) 7 test kırılıyor |
+| MC-M147 ★★ | Yeniden takma: HWID'i yeniden doğrulamadan unlock | **Survived-Fixed** | EN ÖNEMLİ bulgu: `_trigger_usb_reauth()` (farklı USB takılınca tetiklenen yeniden kimlik doğrulama akışı) bugüne kadar HİÇBİR testte GERÇEKTEN çağrılmamıştı (`test_main_window_smoke.py`'de yalnızca metot adı bir listede geçiyordu) — `authenticate_usb(new_hwid)` çağrısı tamamen kaldırılınca 181 testin HİÇBİRİ fark etmedi: kara listedeki bir USB, doğru PIN'le `_unlock()`'a kadar ilerleyip oturumu tamamen ele geçirebiliyordu (çünkü `read_vault_role()`'un kendisi kara liste kontrolü YAPMIYOR — yalnızca `authenticate_usb()` yapıyor). `test_trigger_usb_reauth_kara_listedeki_cihazi_DOGRU_pinle_bile_ACMIYOR` eklendi (gerçek vault + gerçek PIN + kara liste ile uçtan uca) |
+| MC-M148 | `usb_ids.json`: bütünlük/imza kontrolünü kaldır | **Kapsam dışı** | Hedef kod yok — dosyanın zaten hiç imza/bütünlük koruması yok (düz `json.loads` + boş `except`), bu BİLİNÇLİ: modülün kendi docstring'i bu kimlik sınıfının (UUID yedeği) zaten "donanıma bağlı değil" sayıldığını ve `_reject_if_weak_binding()` ile kritik işlemlerden reddedildiğini açıklıyor (B-025/K0-2, M143'te ayrıca doğrulandı) — imza eklemek bu zaten-zayıf kimlik kaynağının güvenlik duruşunu değiştirmezdi |
+| MC-M149 | Worker abort: sinyali gönder, döngüde bayrağı kontrol etme | **Killed** | `sweep_integrity()`'nin `for row in rows:` döngüsündeki `should_continue()` kontrolü `if False:` ile devre dışı bırakılınca 3 test kırılıyor |
+| MC-M150 | Abort tamponu: sıfırlama adımını atla | **Killed** | Abort sonrası `_flush_statuses(db, pending)` çağrısı yalnızca `aborted=False` iken çalışacak şekilde daraltılınca `test_aborted_sweep_still_records_what_it_checked` doğrudan yakalıyor — yarıda kesilen taramanın o ana kadar KONTROL EDİLMİŞ dosyaları DB'ye hiç yazılmıyor |
+
+**Bölüm 19 özet:** Killed 6 (M143,M144,M146,M149,M150 — beş tanesi,
+M146 dahil edildi altıya tamamlanıyor), Survived-Fixed 2 (M145★,
+M147★★ — M147 bu 4. parçanın en önemli bulgusu), Kapsam dışı 2
+(M142,M148 — hedef kod yok, ikisi de zaten bilinen B-025/K0-2
+sınırıyla açıklanıyor). Yeni testler: `tests/test_vault_manager.py`
+(+1), `tests/test_lock_overlay.py` (+1, paylaşılan `_UcTanUcaSahne`
+sınıfına `_trigger_usb_reauth` bağlandı). Üretim kodunda değişiklik
+yok.
+
+## MC-Kataloğu — 3. Parça (MC-M101–MC-M150) TAMAMLANDI
+
+150/200 tamamlandı (4 parçalık oturumun 3. parçası bitti). Bu parça
+(M101-M150) toplamı: Killed 28, Survived-Fixed 8, Eşdeğer mutant 2,
+Kapsam dışı 12 (ikisi zaten bilinen B-141'e bağlı).
+
+**En önemli 3 bulgu (bu parça):**
+1. **MC-M147 (HWID/USB, Bölüm 19) ★★** — `_trigger_usb_reauth()`
+   (farklı bir USB takılınca tetiklenen yeniden kimlik doğrulama akışı)
+   bugüne kadar HİÇBİR testte gerçekten çalıştırılmamıştı — kara
+   listedeki bir cihaz, doğru PIN'le oturumu tamamen ele geçirebilirdi,
+   çünkü `authenticate_usb()`'un (kara liste kontrolünü yapan TEK
+   fonksiyon) bu akıştan ÇAĞRILDIĞINI hiçbir test doğrulamıyordu.
+2. **MC-M108 (Kimlik doğrulama, Bölüm 14)** — kilit kontrolünün
+   PIN/TOTP doğrulamasından ÖNCE yapıldığı hiç ölçülmüyordu; kilitliyken
+   bile `open_vault()`'un (Argon2id/AES-GCM maliyeti) çağrılıp
+   çağrılmadığı test edilmemişti.
+3. **MC-M145 (HWID, Bölüm 19) ★** — `authenticate_usb()`'un token_id
+   karşılaştırmasının TAM 16 baytı (32 hex karakter) mi yoksa yalnızca
+   bir öneki mi kontrol ettiği hiç doğrudan sınanmamıştı.
+
+**Diğer gerçek bulgular:** M103/M104 (Bölüm 14, LOGIN_MIN_LEN sınırı
+ve rate-limit sayaç artırımı gerçek gönderim noktasında hiç
+ölçülmüyordu), M115 (Bölüm 15, otpauth URI'nin `issuer_name=`
+parametresi hiç doğrulanmıyordu), M125 (Bölüm 16, `decrypt_file()`'ın
+hata-yolu zeroize garantisi byte-seviyesinde hiç kanıtlanmamıştı).
+
+**Doygunluk notu:** HKDF/K0-1 (Bölüm 17) ve Shamir (Bölüm 18) TAMAMEN
+doygun çıktı — 15 mutasyondan hiçbiri gerçek bir boşluk göstermedi
+(K0-1 SECURITY.md §4.2 düzeltmesinin, Shamir B-126'nın mirası). AES-GCM
+ileri sınırlar (Bölüm 16) da neredeyse tamamen doygun (8'de 7 Killed).
+Bu parçanın en verimli bloğu HWID/USB (Bölüm 19) oldu — 2 gerçek
+bulgu, biri bu OTURUMUN en ciddi bulgusu (M147).
+
+MC-M151–MC-M200 (50 senaryo, son parça): sonraki oturumda devam
+edecek.

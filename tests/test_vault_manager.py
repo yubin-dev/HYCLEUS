@@ -967,3 +967,51 @@ def test_kek_ve_master_key_gercekten_sifirlaniyor(
             f"{i}. yakalanan bytearray hâlâ sıfır olmayan bayt içeriyor "
             "— KEK/master_key bellekte kalmış olabilir"
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-11) — token_id karşılaştırması TAM olmalı (MC-M145)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_authenticate_usb_token_id_kismi_eslesmeyle_gecmiyor(
+    db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    MC-Kataloğu M145: `authenticate_usb()`'un Katman-3 token_id
+    karşılaştırmasının (`compare_digest(vault_token_hex, db_token_id)`)
+    TAM 32 karakteri (16 bayt) karşılaştırdığını — yalnızca bir ÖNEKİ
+    değil — GERÇEK bir DB/vault ayrışmasıyla kanıtlar.
+
+    DB'deki `token_id`, vault dosyasındaki GERÇEK token_id ile İLK 8
+    karakteri AYNI ama SONRASI FARKLI olacak şekilde bozuluyor — tam bir
+    rastgele/çakışmasız değer değil, kasıtlı olarak "kısmi eşleşme"
+    senaryosunu izole ediyor.
+
+    Mutasyon-kanıt: `compare_digest(vault_token_hex[:8], db_token_id[:8])`
+    yapılınca (yalnızca ilk 8 karakter karşılaştırılır) bu test
+    KIRMIZIYA düşüyor — kısmen eşleşen sahte token_id yine de KABUL
+    edilir.
+    """
+    monkeypatch.setattr(vault_manager, "_VAULT_DIR", tmp_path / "vaults")
+    monkeypatch.setattr(vault_manager, "_VAULT_PATH_LEGACY", tmp_path / ".hcl_vault")
+
+    hwid = "USB-TOKEN-KISMI-TEST"
+    vault_manager.create_vault(hwid, "123456", "admin")
+
+    gercek_token_id = vault_manager._read_vault_token_id(hwid).hex()
+    assert len(gercek_token_id) == 32
+
+    # İlk 8 karakter AYNI, geri kalanı FARKLI ("f" ile doldurulmuş; gerçek
+    # değerin son karakteriyle çakışırsa bir karakter kaydırılır).
+    sahte_kuyruk = "f" * 24 if gercek_token_id[8] != "f" else "e" * 24
+    sahte_token_id = gercek_token_id[:8] + sahte_kuyruk
+    assert sahte_token_id != gercek_token_id
+    assert sahte_token_id[:8] == gercek_token_id[:8]
+
+    db.execute(
+        "UPDATE usb_tokens SET token_id = ? WHERE hwid = ?",
+        (sahte_token_id, hwid),
+    )
+
+    with pytest.raises(vault_manager.USBAuthError, match="token_id"):
+        vault_manager.authenticate_usb(hwid)
