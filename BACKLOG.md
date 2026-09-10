@@ -9968,3 +9968,23 @@ diyor ama `CORE/vault_manager.py`'nin kendisi 2-of-3 (`_SSS_THRESHOLD=2`,
 2-of-2'den 2-of-3'e yükseltilirken test dosyasının docstring'i
 güncellenmemiş — Bölüm 3'te (Shamir) daha yakından bakılacak, gerekirse
 ayrı B-NNN açılacak.
+
+### Bölüm 3 — Shamir 2-of-3 & GF(p) (`CORE/vault_manager.py`)
+
+| No | Senaryo (özet) | Sonuç | Kanıt/Not |
+|----|-----------------|-------|-----------|
+| 31 | Eşik k=2→1 | Kanıtlanmış-Eşdeğer | `_SSS_THRESHOLD` YALNIZCA bir hata mesajı metninde kullanılıyor, hiçbir karşılaştırmada değil — gerçek eşik `_sss_recover(a,b)`'nin İKİ argüman alan imzası ve derece-1 polinomun bilgi-teorik güvenliğiyle (tek nokta = sonsuz çözüm) yapısal olarak sağlanıyor. Mutasyon 79 testin hiçbirini etkilemedi (beklenen — davranış gerçekten değişmiyor) |
+| 32 | Eşik k=2→3 | Kanıtlanmış-Eşdeğer | Aynı gerekçe — sabit yine yalnızca metinde |
+| 33 | Asal p→çift (p-1) | Killed | 6 test düştü (`pow(x,-1,mod)` tersinir değil hatası) |
+| 34 | Pay indeksi x=0 | Killed | `_SSS_INDEXES`'e 0 eklenince (üste ekleme, 3'ü kaldırmadan) `_sss_split()`'in 4 pay döndürmesi mevcut 3'lü unpack'i kırdı — 23 failed + 34 error |
+| 35 | Kopya indeksli pay birleştirme | Killed | Mevcut `test_shamir_single_share_cannot_recover_secret`; ilginç detay — üst katman kontrolü kaldırılsa bile matematiğin kendisi (`pow(0,-1,p)`) ayrı bir hata ile kendini savunuyor (mesaj metni değişiyor, test yine düşüyor) |
+| 36 | Negatif pay koordinatı | Killed | Mevcut `test_sifir_dejenere_pay_reddediliyor` (y=0 sınırı, hex negatif üretemediği için en yakın gerçek karşılık) |
+| 37 | Lagrange paydası sıfırsa sessizce 0 dön | **Survived-Fixed** | `_lagrange_at`'ın KENDİ savunması test edilmiyordu (yalnızca üst katmanın erken reddi test ediliyordu); yeni test `_lagrange_at`'ı doğrudan, kontrolsüz çağırarak kendi savunmasını sınıyor |
+| 38 | Bozuk pay baytı (son karakter) | Kanıtlanmış / bilinen sınır | HYCLEUS'ta base32 kodlamasında sağlama (checksum) YOK — bilerek (bkz. `_parse_share` docstring'i, B-021: "%95,3'ü matematiksel olarak meşru bir başka paydan ayırt edilemez"). 2000 denemelik gerçek deneyle doğrulandı: 1874/2000 (%93,7) tek karakter bozulması SESSİZCE farklı bir geçerli değer üretti — belgelenen mimari sınırla tutarlı, yeni bulgu değil |
+| 39 | Polinom derecesi k yerine k-1+1 (fazladan a2) | Killed | 8 test düştü (round-trip / 2-nokta kurtarma derece-2 polinomda başarısız) |
+| 40 | Sabit polinom katsayısı (a1=1) | Killed | Mevcut `test_shamir_share_1_is_information_theoretically_hiding` |
+
+**Özet Bölüm 3:** 10 senaryo → 7 Killed, 1 Survived-Fixed (yeni test:
+`test_lagrange_ayni_x_koordinatiyla_sessizce_sifir_donmuyor`), 2
+Kanıtlanmış-Eşdeğer (eşik sabitleri kozmetik), 1 zaten belgelenmiş bilinen
+sınır (checksum yok, B-021). `tests/test_vault_manager.py`: 47 → 48 test.

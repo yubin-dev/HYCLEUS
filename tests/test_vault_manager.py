@@ -615,3 +615,31 @@ def test_iki_farkli_registration_farkli_salt_ve_farkli_kek_uretir(
     kek1 = vault_manager._derive_kek("123456", salt1)
     kek2 = vault_manager._derive_kek("123456", salt2)
     assert kek1 != kek2, "Aynı PIN + farklı salt aynı KEK'i üretti"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-126 Bölüm 3 (2026-09-10) — Shamir 2-of-3 / GF(p)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_lagrange_ayni_x_koordinatiyla_sessizce_sifir_donmuyor() -> None:
+    """
+    B-126 senaryo 37: interpolasyon paydası sıfırlandığında (iki nokta AYNI
+    x'te) `_lagrange_at` GÜRÜLTÜLÜ patlamalı — sessizce 0 dönmemeli.
+
+    Bugün `_sss_recover()` aynı indisli iki payı `_lagrange_at`'a hiç
+    ULAŞTIRMIYOR (kendi `idx_a == idx_b` kontrolüyle daha erken reddediyor)
+    — yani bu, `_lagrange_at`'ın KENDİ savunması, üst katmanın DEĞİL.
+
+    Mutasyon-kanıt: `pow(den, -1, p)`'nin etrafına `except (ValueError,
+    ZeroDivisionError): inv = 0` eklenip payda-sıfır durumu yutulunca
+    tests/test_vault_manager.py + test_recovery_share*.py + test_pin_
+    rotation.py (110 test) HİÇBİRİ fark etmedi — gerçek pratikte payda hiç
+    sıfırlanmıyor (üst katman zaten engelliyor), ama bu `_lagrange_at`'ın
+    KENDİSİNİN savunmasız olduğu, yalnızca ÇAĞIRANIN dikkatli davrandığı
+    anlamına geliyor. Üst katmandaki kontrol yarın kaldırılırsa (ör. yeni
+    bir çağıran `_lagrange_at`'ı doğrudan, kontrolsüz çağırırsa) bu sessiz
+    0 dönüşü YANLIŞ bir "kurtarılmış anahtar" üretirdi — hatasız ama
+    tamamen anlamsız bir değer.
+    """
+    with pytest.raises((ValueError, ZeroDivisionError)):
+        vault_manager._lagrange_at([(1, 111), (1, 222)], 0)
