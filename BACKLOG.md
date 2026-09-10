@@ -11224,3 +11224,21 @@ yeni testler. Yeni testler: `tests/test_hwid_probe.py` (+2, ayrıca yeni
 `sahte_linux_pyudev` fixture'ı), `tests/test_usb_manager.py` (+4),
 `tests/test_vault_manager.py` (+1). Tam blok: 128 passed (49+12+10+151→
 51+18+10+153, TPM/AAD birikimiyle).
+
+### Bölüm 8 (MC-M066–MC-M069) — Keychain / OS (`CORE/secret_store.py`)
+
+Test alt kümesi: `tests/test_secret_store.py` (baseline 15) + `tests/
+test_tpm_sealing.py` (56).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M066 ★ | Keychain izin hatası → plaintext `~/.hycleus/key` (sessiz) | **Kapsam dışı** | Hedef kod yok — `secret_store.py` hiçbir yerde bir dosyaya (`~/.hycleus/...` ya da başka) yazmıyor (grep doğrulandı); her erişim hatası `KeyringUnavailableError` fırlatıyor, dosya fallback'i mimaride hiç yok (modülün kendi docstring'i: "ESKİ DAVRANIŞA SESSİZCE DÜŞÜLMEZ") |
+| MC-M067 | Keychain ACL: herhangi bir uygulama okur | **Kapsam dışı** | Hedef kod yok — HYCLEUS hiçbir ACL/izin yapılandırması yapmıyor (grep doğrulandı), OS'un/`keyring` kütüphanesinin varsayılan erişim denetimine bırakılıyor; uygulama kodunda mutasyona uğrayacak bir ACL ayarı yok |
+| MC-M068 ★ | Keychain okuma hatası → yeni pay üret ve üzerine yaz (sessiz veri kaybı) | **Killed** | `load()`'un erişim-hatası dalı `except Exception: return None` yapılınca (hata ile "kayıt yok"u karıştırıp çağıranı yeniden üretmeye itmek) `test_all_operations_raise_on_broken_backend[load]` doğrudan yakalıyor. Ayrıca kod incelemesiyle doğrulandı: `KeyringUnavailableError`'ı yakalayan TEK yer (`secret_migration.py`) onu YENİDEN fırlatıyor, asla yutup yeni pay üretmiyor |
+| MC-M069 | Keychain yazımı doğrulanmaz (exception yoksa başarılı say) | **Killed** | `store()`'daki geri-okuma doğrulaması (`if load(username) != value: raise ...`) kaldırılınca `test_store_verifies_readback` doğrudan yakalıyor |
+
+**Bölüm 8 özet:** Killed 2 (M068★,M069), Kapsam dışı 2 (M066★,M067).
+Üretim kodunda VE testlerde hiçbir değişiklik yapılmadı — bu modül
+(muhtemelen B-025/B-070'in mirası) zaten sıkı: erişilemezlik politikası
+("sessizce eski davranışa düşülmez") ve yazım doğrulaması ikisi de
+kataloğun hedeflediği tam noktalarda önceden test edilmiş durumda.
