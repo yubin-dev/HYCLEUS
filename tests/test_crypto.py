@@ -293,6 +293,36 @@ def test_nonce_is_unique_across_encryptions(tmp_path: Path, key: bytes) -> None:
     assert len(set(ciphertexts)) == _NONCE_SAMPLES, "Şifreleme deterministik — nonce ciphertext'e karışmıyor"
 
 
+def test_nonce_her_bayt_pozisyonu_bagimsiz_rastgele(tmp_path: Path, key: bytes) -> None:
+    """
+    MC-Kataloğu M023: `test_nonce_is_unique_across_encryptions` yalnızca
+    nonce'ların TOPLAM olarak benzersiz olduğunu kanıtlıyor — nonce'un
+    yalnızca SON 8 baytı rastgele üretilip ilk 4 baytı sabit (ör. sıfır)
+    bırakılsa bile 200 örneklemde tekrar olasılığı ihmal edilebilir
+    düzeyde kalır, yani o test bu zayıflamayı YAKALAMAZ. Bu test her bayt
+    POZİSYONUNUN ayrı ayrı gerçekten değiştiğini doğrular.
+
+    Mutasyon-kanıt: `nonce = bytes(4) + os.urandom(_NONCE_SIZE - 4)` (ilk 4
+    bayt sabit sıfır) yapılınca test_crypto.py'nin TAMAMI (49 test,
+    `test_nonce_is_unique_across_encryptions` dahil) fark etmedi.
+    """
+    src = tmp_path / "bayt_pozisyon.bin"
+    src.write_bytes(b"HYCLEUS nonce bayt pozisyonu testi\n" * 8)
+
+    nonces: list[bytes] = []
+    for _ in range(_NONCE_SAMPLES):
+        hcl_path, _sha, _aad = encrypt_file(src, key, _USER_ID, hwid=_HWID)
+        nonce, _aad_b, _ciphertext, _tag = _parse_hcl(hcl_path)
+        nonces.append(nonce)
+
+    for pos in range(12):
+        degerler = {n[pos] for n in nonces}
+        assert len(degerler) > 1, (
+            f"nonce'un {pos}. baytı 200 örnekte hep aynı değer — o bayt "
+            "aralığı rastgele üretilmiyor olabilir."
+        )
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Kesik / bozuk başlık — B-012
 # ══════════════════════════════════════════════════════════════════════════════

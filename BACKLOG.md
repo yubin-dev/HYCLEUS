@@ -10952,3 +10952,60 @@ sıfırlamak — `crypto.py`'deki mevcut desenle tutarlı. Kapsamı: 6 çağrı
 noktası (`create_vault`, `open_vault`, `rotate_pin` ×2, `recover_vault`
 benzeri, `_derive_kek` çağıran her yer). Bu turun kapsamı (test yazmak)
 dışında olduğu için burada BIRAKILDI, ayrı bir görev olarak ele alınmalı.
+
+### Bölüm 2 (MC-M013–MC-M026) — AES-256-GCM (`CORE/crypto.py::encrypt_file`/`decrypt_file`)
+
+Test alt kümesi: `tests/test_crypto.py` (baseline 49 test, blok sonunda 50).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M013 | Nonce sabit (`bytes(_NONCE_SIZE)`, tüm dosyalarda aynı) | **Killed** | `test_nonce_is_unique_across_encryptions` |
+| MC-M014 | Nonce = `SHA256(plaintext)[:12]` | **Killed** | Aynı test — 199 nonce tekrarı |
+| MC-M015 | Nonce sayacı restart'ta 0'a döner | **Kapsam dışı** | Hedef kod yok: `crypto.py` nonce için sayaç TUTMUYOR, saf `os.urandom(12)` kullanıyor (grep doğrulandı) — "persist edilmeyen sayaç" mutasyonunun uygulanacağı bir sayaç mekanizması hiç yok |
+| MC-M016 | `_TAG_SIZE` 16→8 | **Killed** | Format hizası bozuluyor, 16 test kırılıyor (tamperlama/AAD/çok-bloklu testler) |
+| MC-M017 | Anahtar kontrolü 32→16 bayt (AES-128'e sessiz düşüş) | **Killed** | `test_anahtar_uzunlugu_tam_32_byte_disinda_reddedilir` — 16 baytlık anahtarlar zaten parametrize edilmiş test verisinde var |
+| MC-M018 | GCM→CTR (auth düşür) | **Killed** | Tamperlama/AAD/anahtar-uzunluğu testleri (21 test) hepsi fark ediyor |
+| MC-M019 | AAD boş | **Killed** | Round-trip + AAD tamperlama testleri (7 test) fark ediyor |
+| MC-M020 | AAD'e değişken alan (dosya boyutu) ekle → meşru rename'de auth patlar | **Kapsam dışı** | Mimari uyuşmuyor: AAD şifreleme anında dosyaya yazılıyor ve decrypt'te AYNEN geri okunuyor — CANLI dosya metadata'sından yeniden HESAPLANMIYOR, yani "meşru rename auth'u patlatır" senaryosu bu tasarımda oluşamaz. `encrypt_file()`'ın `filename`/`dst` parametreleri zaten tam bu sınıf sorunu önlemek için var (bkz. fonksiyon docstring'i) |
+| MC-M021 | Önce decrypt, sonra tag doğrula (plaintext auth'tan önce salınır) | **Kapsam dışı** | Kod okumasıyla doğrulandı: `decrypt_file()` ara tamponu (`buf`) YALNIZCA `decryptor.finalize()` (tag doğrulama) BAŞARILI olduktan SONRA döndürüyor (satır ~672-691) — plaintext hiçbir yolda tag doğrulanmadan çağırana/diske sızmıyor. Bu deseni tersine çevirmek 1 satırlık bir mutasyon değil, akışı yeniden yazmak gerektirir |
+| MC-M022 | `InvalidTag` yutuluyor (`except: pass`) | **Killed** | Tamperlama/AAD/anahtar testleri (11 test) fark ediyor |
+| MC-M023 | Nonce'un ilk 4 baytı sıfır | **Survived-Fixed** | Var olan nonce testi yalnızca TOPLAM benzersizliği kontrol ediyordu — 8 bayt hâlâ rastgele olduğu için 200 örneklemde çakışma olasılığı ihmal edilebilir kaldı. `test_nonce_her_bayt_pozisyonu_bagimsiz_rastgele` eklendi (her 12 bayt pozisyonunu ayrı ayrı kontrol eder) |
+| MC-M024 | Dosya başına subkey yok: `master_key` doğrudan kullanılır | **Kapsam dışı** | Bu ZATEN mevcut tasarım — per-file HKDF subkey şeması hiç yok; `checkout.py`/`backup.py`/`hclx.py` hepsi `master_key`'i `encrypt_file()`/`decrypt_file()`'a DOĞRUDAN geçiriyor. `vault_manager.py` docstring'i: "Kodda HKDF çağıran TEK yer burası" (imza anahtarı için, dosya şifreleme için DEĞİL) |
+| MC-M025 | HKDF info'da `file_id` yok | **Kapsam dışı** | Aynı gerekçe — dosya şifrelemede HKDF hiç kullanılmıyor, mutasyonun hedeflediği kod yolu yok |
+| MC-M026 ★ | HKDF salt/info yer değiştir | **Kapsam dışı (bu tur için)** | Aynı gerekçe — dosya şifreleme HKDF kullanmıyor. Ama ★ olduğu için mimari bir öneri olarak not edildi → B-140 (per-file subkey ile savunma derinliği, acil değil) |
+
+**Bölüm 2 özet:** Killed 7 (M013,M014,M016,M017,M018,M019,M022),
+Survived-Fixed 1 (M023), Kapsam dışı 6 (M015,M020,M021,M024,M025,M026★).
+Üretim kodunda net değişiklik YOK. Yeni test: `tests/test_crypto.py`
+(+1: `test_nonce_her_bayt_pozisyonu_bagimsiz_rastgele`). Tam test_crypto.py:
+50 passed.
+
+**Not — doygunluk:** `CORE/crypto.py` daha önceki turlarda (B-126 Bölüm 1,
+bu oturumdaki B-135'in kapsamadığı bir dosya) zaten AAD/nonce/tag
+sertleştirmesinden geçmiş görünüyor — bu blokta 14 mutasyondan yalnızca
+1'i gerçek boşluktu (M023, düşük şiddet: 96 bit → 64 bit nonce entropisi,
+hâlâ pratikte çakışmaz ama savunma derinliği eksikti), 6'sı zaten var
+olmayan bir kod desenini hedefliyordu (mimari farklı). Argon2/AES-GCM
+katmanı büyük ölçüde doygun; sonraki bölümlerde (Shamir, TOTP, TPM) daha
+taze bir zeminde daha fazla gerçek bulgu beklenebilir.
+
+## B-140 ★ — Dosya şifreleme tek bir `master_key` kullanıyor, per-file HKDF subkey yok (`CORE/crypto.py`)
+
+**Durum:** Açık — düşük öncelik (savunma derinliği önerisi, acil değil).
+**Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M024/M025/M026 ★) — mutasyona
+gerek kalmadan, kod okumasıyla: bu ZATEN mevcut mimari.
+
+`CORE/crypto.py::encrypt_file()`/`decrypt_file()` vault'un `master_key`'ini
+(Shamir'den kurtarılan 32 bayt) HER dosya için DOĞRUDAN AES-256-GCM
+anahtarı olarak kullanıyor — dosyaya/oturuma özgü bir HKDF alt-anahtarı
+türetilmiyor. Tekilliği yalnızca `os.urandom(12)` nonce sağlıyor (96 bit
+rastgelelik — pratikte yeterli, ama TEK savunma katmanı).
+
+**Öneri:** İleride her `encrypt_file()` çağrısında `master_key`'den
+HKDF-SHA256 ile (info=file_id/hwid/context) bir alt-anahtar türetip AES
+anahtarı olarak KULLANMAK, `master_key`'in kendisini asla doğrudan
+dosya şifrelemede kullanmamak — nonce-çakışması senaryosunda bile blast
+radius'u tek dosyayla sınırlar. Kapsamı geniş (tüm `encrypt_file`/
+`decrypt_file` çağıranları, dosya formatı değişir — geriye dönük uyumluluk
+gerektirir). Bu turun kapsamı (test yazmak) dışında, acil değil (96 bit
+nonce zaten endüstri standardı).
