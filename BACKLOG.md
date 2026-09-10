@@ -11386,3 +11386,91 @@ Test alt kümesi: `tests/test_timestamp_verify.py` (baseline 29).
 Üretim kodunda VE testlerde hiçbir değişiklik yapılmadı — bu modül
 (imza, EKU, geçerlilik penceresi, message-digest, sertifika zinciri
 hepsi ayrı ayrı test edilmiş) kataloğun bu bloğunda tamamen doygun.
+
+### Bölüm 13 (MC-M094–MC-M100) — Auth Akışı / UI / Lockout (`CORE/rate_limit.py`, `UI/main_window.py`, `UI/RecoveryShareDialog.py`)
+
+2. parçanın (MC-M051–M100) son bloğu.
+
+Test alt kümesi: `tests/test_rate_limit.py` (baseline 24) + `tests/
+test_kasa_ekrani_kozmetik_ve_usb_rozeti.py` (baseline 12).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M094 ★ | Başarısız sayaç persist edilmez (restart lockout'u sıfırlar) | **Kapsam dışı — mimari zaten güvenli** | `CORE/rate_limit.py`'nin kendi docstring'i bunu BİRİNCİL tasarım gerekçesi olarak açıklıyor ("Sayaç neden bellekte değil, veritabanında"): modülde hiçbir process-local/bellek-içi durum yok, `check()`/`record_failure()` HER ZAMAN `login_attempts` tablosundan okuyup yazıyor — mutasyonla "kaldırılacak" bir bellek-içi kısayol hiç yok |
+| MC-M095 | Lockout gecikmesi sabit (exponential yok) | **Killed** | `BACKOFF_SECONDS = (30,60,120,300)` → `(30,30,30,30)` yapılınca 3 test (tam sırayı ve tavanı pinleyen) doğrudan yakalıyor |
+| MC-M096 | Hata mesajı PIN uzunluğunu sızdırır ("4 karakter bekleniyordu") | **Kapsam dışı** | Hedef kod yok — tek uzunluk mesajı (`"PIN en az {LOGIN_MIN_LEN} karakter olmalı"`) uygulama-geneli SABİT bir politika alt sınırı, kullanıcının GERÇEK PIN'inin uzunluğuyla ilgisi yok; PIN doğrulaması (AES-GCM AAD) her zaman jenerik "PIN yanlış" mesajı veriyor |
+| MC-M097 | Recovery share paste sonrası clipboard temizlenmez | **Kapsam dışı** | Hedef kod yok — kurtarma parçası GİRİŞİ bu kod tabanında CLI tabanlı (`recover_vault.py --recover`, terminal `input()`), GUI clipboard'dan hiç geçmiyor. Tek GUI clipboard kullanımı `_PinBoxInput`'un PIN yapıştırma desteği (daha az hassas, okuma yönünde) ve bir referans-ID KOPYALAMA düğmesi — ikisi de "kurtarma parçası" değil. Ayrıca B-091 (`RecoveryShareDialog.py` docstring'i) panoyu BİLEREK tamamen KALDIRDIĞINI belgeliyor |
+| MC-M098 ★ | Auto-relock timer kaldırılır (tray'de sonsuz açık kasa) | **Survived-Fixed** | Gerçek ve önemli bulgu: `HycleusWindow.__init__`'teki `self._idle_timer.start()` kaldırılınca (zamanlayıcı kurulur ama hiç çalışmaz) 180 testin HİÇBİRİ fark etmedi — `test_idle_lock.py`'nin 39 testi yalnızca saf-Python deadline mantığını izole sınıyordu, QTimer'ın GERÇEKTEN başlatıldığını hiçbiri kontrol etmiyordu. `test_idle_timer_gercekten_baslatiliyor` eklendi |
+| MC-M099 | Yanlış PIN denemeleri log'a PIN değeriyle yazılır | **Kapsam dışı** | Hedef kod yok — `record_failure()`'a geçen HER `detail` ya sabit bir dize (`"referans_kodu_hatali"`) ya da yalnızca boolean bayraklar (`f"pin_ok={pin_ok} totp_ok={totp_ok}"`); grep + kod incelemesi: hiçbir log/detail dizesine ham PIN değeri enterpole edilmiyor |
+| MC-M100 | Kağıt payı ekranda onay/blur olmadan gösterilir (shoulder surfing) | **Kapsam dışı (bu tur için)** | Gerçek, önceden var olan boşluk — `RecoveryShareDialog.py` ekran-YAKALAMA korumasını (Windows `WDA_EXCLUDEFROMCAPTURE`, zaten test edilmiş) ve "kazayla kapatma" korumasını (onay kutusu) BİLİNÇLİ olarak uyguluyor, ama pay dialog açılır açılmaz DOĞRUDAN gösteriliyor — omuz üstünden bakma (shoulder surfing) için bir blur/"tıkla-göster" katmanı yok. Bu, YENİ bir UI davranışı (üretim kodu) gerektiriyor → B-144 |
+
+**Bölüm 13 özet:** Killed 1 (M095), Survived-Fixed 1 (M098★), Kapsam
+dışı 5 (M094★ mimari, M096,M097,M099 hedef kod yok, M100→B-144). Yeni
+test: `tests/test_kasa_ekrani_kozmetik_ve_usb_rozeti.py` (+1). Üretim
+kodunda net değişiklik yok.
+
+## B-144 — Kurtarma parçası ekranı shoulder-surfing'e karşı blur/"tıkla-göster" katmanı yok
+
+**Durum:** Açık — düşük öncelik (öneri niteliğinde, üretim kodu — yeni
+bir UI davranışı — gerektiriyor, bu mutasyon turunun kapsamı dışında).
+**Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M100) — kod incelemesiyle,
+mutasyona gerek kalmadan: şu anki kod ZATEN bu durumda.
+
+`UI/RecoveryShareDialog.py` zaten iki bilinçli koruma katmanı taşıyor:
+ekran-yakalama dışlama (`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`,
+Win10 2004+) ve "kazayla Tamam'a basma" onay kutusu (docstring'in kendi
+ifadesiyle bir GÜVENLİK kontrolü değil, bir DİKKAT kontrolü). Pencere
+AÇILIR AÇILMAZ pay (QR + base32) doğrudan, tam görünür şekilde ekrana
+geliyor — arkadan bakan birine (shoulder surfing) karşı bir katman yok.
+
+**Öneri:** Diyalog ilk açıldığında içerik BULANIKLAŞTIRILMIŞ/gizli
+başlasın, kullanıcı "Göster" gibi açık bir eylemle (tıklama/basılı
+tutma) ortaya çıkarsın — WARNING_TEXT zaten "etrafınızda kimse olmadığından
+emin olun" ruhunda bir uyarı taşıyor, bu öneri onu pasif metinden aktif
+bir UI davranışına taşır. Ekran-yakalama korumasıyla ÇAKIŞMAZ, onu
+TAMAMLAR (biri dijital sızıntıyı, diğeri fiziksel gözlemi hedefler). Bu
+turun kapsamı (test yazmak) dışında, ayrı bir görev olarak ele alınmalı.
+
+## MC-Kataloğu — Bölüm 6-13 (MC-M051–MC-M100) ARA DURUM ÖZETİ (2. parça TAMAMLANDI)
+
+100/200 tamamlandı (4 parçalık oturumun 2. parçası bitti). Bu parça
+(M051-M100) toplamı: Killed 6, Survived-Fixed 11 (6'sı ★), Eşdeğer
+mutant 1, Kapsam dışı 32 (5'i gerçek ama üretim-kodu-gerektiren
+boşluklar → B-142/B-143/B-144, geri kalanı hedef kod hiç yok ya da
+mimari zaten güvenli).
+
+**En önemli 3 bulgu (bu parça):**
+1. **MC-M058/M059/M064 (HWID, Bölüm 7)** — `get_usb_hwid()`'in Windows
+   dalı (Yöntem 1, `wmi`) test paketinde BUGÜNE KADAR HİÇ
+   ÇALIŞTIRILMAMIŞTI (`test_usb_manager.py`'nin kendi autouse fixture'ı
+   `wmi`'yi her testte ImportError'a düşürüyordu) — gerçek USB serisi
+   mi okunuyor, harf büyüklüğü korunuyor mu, boş seri ikinci gerçek
+   seriye öncelik kaybettiriyor mu, hiçbiri sınanmıyordu.
+2. **MC-M061 (HWID/AAD, Bölüm 7) ★** — vault dosyasının hwid'e
+   kriptografik bağlaması (`authenticate_additional_data(hwid.encode())`)
+   hiç izole test edilmemişti; tüm testler "yanlış hwid" senaryosunu
+   dosya-yolu ayrımı üzerinden sınıyordu, AAD'nin kendisi değil.
+3. **MC-M088/M098 (Eşzamanlılık/Auth, Bölüm 11+13) ★★** — toplu yükleme
+   sırasında GERÇEK bir şifreleme hatası hiçbir testte simüle
+   edilmemişti (yutulup "başarılı" işaretlenmesi fark edilmezdi); ve
+   auto-relock `QTimer`'ının GERÇEKTEN başlatıldığı hiç kanıtlanmamıştı
+   (39 testlik `test_idle_lock.py` yalnızca saf-Python mantığı sınıyordu).
+
+**Mimari bulgular (üretim kodu gerektiren, bu turun kapsamı dışında):**
+B-142 (vault dosyası `_rewrite_vault()` atomic/dayanıklı yazılmıyor —
+temp dosya/fsync/`os.replace()` yok, aynı kod tabanında `checkout.py`
+bu deseni zaten kullanıyor ama vault'un kendisine uygulanmamış — orta
+öncelik), B-143 (kapanışta bekleyen toplu-yükleme worker'ları için
+`waitForDone()` yok — düşük-orta öncelik), B-144 (kurtarma parçası
+ekranında shoulder-surfing'e karşı blur katmanı yok — düşük öncelik,
+öneri niteliğinde).
+
+**Doygunluk notu:** TPM+Fallback (Bölüm 6), Keychain/OS (Bölüm 8),
+RFC 3161 (Bölüm 12) tamamen doygun çıktı (kataloğun varsaydığı kod
+desenleri ya hiç yok ya da zaten test edilmiş). Kasa Dosyası/Atomic
+(Bölüm 9) ve Auth/Lockout (Bölüm 13) en çok "kapsam dışı — mimari
+zaten güvenli/farklı" sınıfı bulguyu verdi — bu parçanın en verimli
+blokları HWID (Bölüm 7) ve SQLite (Bölüm 10) oldu.
+
+MC-M101–MC-M200 (100 senaryo, 2 parça): sonraki oturumlarda devam
+edecek.

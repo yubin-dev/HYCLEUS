@@ -333,3 +333,26 @@ def test_sifreleme_hatasi_basarili_olarak_isaretlenmiyor(
     win._on_sidebar_click("Genel", win._nav_btns["Genel"])
     assert win._table.rowCount() == 0, "şifrelemesi başarısız dosya tabloya eklenmiş"
     assert win._batch_errors == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-10) — Auto-relock zamanlayıcısı (MC-M098 ★)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_idle_timer_gercekten_baslatiliyor(win) -> None:
+    """
+    MC-Kataloğu M098 ★: `HycleusWindow.__init__`'in `self._idle_timer.
+    start()` çağırdığını doğrudan doğrular. `tests/test_idle_lock.py`'nin
+    39 testi yalnızca `CORE/idle_lock.py`'nin saf-Python durum makinesini
+    (deadline hesaplama) izole sınıyor — QTimer'ın GERÇEKTEN başlatılıp
+    başlatılmadığını hiçbiri kontrol etmiyordu.
+
+    Mutasyon-kanıt: `self._idle_timer.start()` satırı kaldırılınca
+    (zamanlayıcı kurulur ama hiç ÇALIŞMAZ — "tray'de sonsuz açık kasa")
+    test paketinin (180 test: idle_lock + bu dosya + smoke) HİÇBİRİ fark
+    etmedi.
+    """
+    assert win._idle_timer.isActive(), (
+        "auto-relock QTimer'ı başlatılmamış — boşta kalan bir oturum "
+        "asla otomatik kilitlenmez"
+    )
