@@ -530,3 +530,107 @@ def test_cok_bloklu_dosyada_ciphertext_seviyesi_saldirilar_reddedilir(
     hcl_path.write_bytes(mutated)
     with pytest.raises(AuthenticationError):
         decrypt_file(hcl_path, key, hwid=_HWID)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-140 — dosya başına HKDF alt-anahtarı (master_key artık DOĞRUDAN kullanılmıyor)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_ciphertext_master_key_ile_DOGRUDAN_cozulemiyor(
+    plain_file: Path, key: bytes
+) -> None:
+    """
+    B-140: v3 dosyaların GCM anahtarı `key`'in (master_key) KENDİSİ
+    DEĞİL — GERÇEK bir `encrypt_file()` çıktısını, `key`'i DOĞRUDAN AES-
+    GCM anahtarı olarak kullanan elle kurulmuş bir decryptor'a vererek
+    kanıtlar.
+
+    Mutasyon-kanıt: `CORE.crypto._derive_file_key()` v3 dalı `return key`
+    olarak (yani hiç HKDF türetmeden) değiştirilirse bu test KIRMIZIYA
+    düşer — `pytest.raises(InvalidTag)` "DID NOT RAISE" ile başarısız
+    olur, çünkü ciphertext gerçekten `key` ile şifrelenmiş olur ve elle
+    kurulan decryptor doğru anahtarla başarıyla çözer.
+    """
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    hcl_path, _sha, _aad = encrypt_file(plain_file, key, _USER_ID, hwid=_HWID)
+    nonce, aad_bytes, ciphertext, tag = _parse_hcl(hcl_path)
+
+    # AAD DOĞRU veriliyor — tek değişken anahtar olsun. AAD atlanırsa GCM
+    # tag'i her koşulda (doğru anahtarla bile) reddeder ve test yanlış
+    # sebeple "geçer" (bkz. bu testin ilk, hatalı sürümü).
+    decryptor = Cipher(algorithms.AES(key), modes.GCM(nonce, tag)).decryptor()
+    decryptor.authenticate_additional_data(aad_bytes)
+    with pytest.raises(InvalidTag):
+        decryptor.update(ciphertext) + decryptor.finalize()
+
+
+def test_ayni_master_key_farkli_dosyalarda_farkli_alt_anahtar_uretir(
+    tmp_path: Path, key: bytes
+) -> None:
+    """
+    B-140: aynı vault'un (aynı `master_key`) iki farklı dosyası FARKLI
+    fiili AES anahtarlarıyla şifreleniyor — nonce farklı olduğu için HKDF
+    çıktısı da farklı. Bir nonce çakışması artık en fazla İKİ dosyayı
+    etkiler, `master_key`'in kendisini asla açığa çıkarmaz.
+    """
+    f1 = tmp_path / "a.bin"
+    f2 = tmp_path / "b.bin"
+    f1.write_bytes(b"birinci dosya" * 50)
+    f2.write_bytes(b"ikinci dosya" * 50)
+
+    h1, _s1, _a1 = encrypt_file(f1, key, _USER_ID, hwid=_HWID)
+    h2, _s2, _a2 = encrypt_file(f2, key, _USER_ID, hwid=_HWID)
+
+    nonce1, *_ = _parse_hcl(h1)
+    nonce2, *_ = _parse_hcl(h2)
+    assert nonce1 != nonce2, "test kurulumu hatalı — nonce'lar aynı çıktı"
+
+    subkey1 = crypto._derive_file_key(key, nonce1, crypto.VERSION_PERFILE_SUBKEY)
+    subkey2 = crypto._derive_file_key(key, nonce2, crypto.VERSION_PERFILE_SUBKEY)
+
+    assert subkey1 != subkey2
+    assert subkey1 != key
+    assert subkey2 != key
+
+
+def test_v1_dosya_crypto_seviyesinde_hala_master_key_ile_dogrudan_coziliyor(
+    tmp_path: Path, key: bytes
+) -> None:
+    """
+    B-140 GERİYE UYUMLULUK: `_derive_file_key()` v1/v2 için `key`'i
+    OLDUĞU GİBİ döndürüyor — elle kurulmuş, GERÇEKTEN `key` ile
+    şifrelenmiş bir v1 dosya `decrypt_file()` ile sorunsuz açılmalı
+    (bkz. `tests/test_timestamp.py`'nin aynı iddiayı damgalama akışı
+    üzerinden sınayan testleri — burası yalnızca crypto.py çekirdeğini,
+    damgalama katmanı olmadan izole ediyor).
+    """
+    import json
+    import os
+    import struct as _struct
+
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    plaintext = b"eski sema, dogrudan master_key" * 30
+    metadata = {
+        "filename": "eski.bin", "created_at": "2020-01-01T00:00:00Z",
+        "uploaded_at": "2020-01-01T00:00:00Z", "last_modified": "2020-01-01T00:00:00Z",
+        "user_id": _USER_ID, "hwid": _HWID,
+    }
+    nonce = os.urandom(12)
+    aad = json.dumps(metadata, ensure_ascii=False, sort_keys=True).encode()
+
+    encryptor = Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
+    encryptor.authenticate_additional_data(aad)
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+
+    v1_path = tmp_path / "eski.bin.hcl"
+    v1_path.write_bytes(
+        crypto._MAGIC + bytes([crypto.VERSION_LEGACY]) + nonce
+        + _struct.pack(">I", len(aad)) + aad + ciphertext + encryptor.tag
+    )
+
+    content, meta = decrypt_file(v1_path, key, hwid=_HWID)
+    assert content == plaintext
+    assert meta["filename"] == "eski.bin"

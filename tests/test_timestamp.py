@@ -22,6 +22,7 @@ kırmamalı. Çalıştırmak için HYCLEUS_TSA_NETWORK=1.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import struct
 from pathlib import Path
@@ -33,6 +34,7 @@ from tsa_fixtures import FakeTSA, build_response
 from CORE import crypto, timestamp
 from CORE.crypto import (
     VERSION_LEGACY,
+    VERSION_PERFILE_SUBKEY,
     VERSION_TIMESTAMPED,
     AuthenticationError,
     decrypt_file,
@@ -106,15 +108,45 @@ def fake_tsa() -> FakeTSA:
     return FakeTSA()
 
 
-def _downgrade_to_v1(path: Path) -> None:
-    """Sürüm byte'ını 0x01 yapar — eski dosya taklidi.
-
-    Sürüm byte'ı GCM tag'inin kapsamında olmadığı için bu, dosyayı
-    bozmadan gerçek bir v1 dosyası üretiyor.
+def _downgrade_to_v1(path: Path, key: bytes) -> None:
     """
-    raw = bytearray(path.read_bytes())
-    raw[4] = VERSION_LEGACY
-    path.write_bytes(bytes(raw))
+    Dosyayı GERÇEK bir v1 dosyasıymış gibi yeniden kurar — eski dosya taklidi.
+
+    B-140 ÖNCESİ (v1/v2), sürüm byte'ı GCM tag'inin kapsamında olmadığı
+    için yalnızca `raw[4] = VERSION_LEGACY` yapmak yeterliydi: anahtar
+    HER sürümde aynı şekilde (`key` doğrudan) kullanılıyordu. B-140
+    SONRASI artık DEĞİL — v3 dosyalar `key`'in kendisiyle değil,
+    nonce'tan türetilmiş bir ALT-ANAHTARLA şifreleniyor (bkz. CORE/
+    crypto.py `_derive_file_key`). Yalnızca byte flip'lemek, v1 etiketli
+    ama v3 şemasıyla şifrelenmiş TUTARSIZ bir dosya üretir — gerçek bir
+    v1 dosyanın simüle etmesi gereken şey (anahtar DOĞRUDAN kullanılmış)
+    değil.
+
+    Bu yüzden: gerçek plaintext/AAD `decrypt_file()` ile (mevcut v3
+    şemasıyla) okunuyor, sonra `key` DOĞRUDAN kullanılarak v1 formatında
+    YENİDEN yazılıyor — B-140 öncesi `encrypt_file()`'ın ürettiği ile
+    bit-bit aynı şema.
+    """
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    from CORE.crypto import _MAGIC, _NONCE_SIZE
+
+    content, meta = decrypt_file(path, key, hwid=_HWID)
+    aad = json.dumps(meta, ensure_ascii=False, sort_keys=True).encode()
+
+    nonce = os.urandom(_NONCE_SIZE)
+    encryptor = Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
+    encryptor.authenticate_additional_data(aad)
+    ciphertext = encryptor.update(content) + encryptor.finalize()
+
+    with open(path, "wb") as fout:
+        fout.write(_MAGIC)
+        fout.write(bytes([VERSION_LEGACY]))
+        fout.write(nonce)
+        fout.write(struct.pack(">I", len(aad)))
+        fout.write(aad)
+        fout.write(ciphertext)
+        fout.write(encryptor.tag)
 
 
 def _info(token: bytes = b"TOKEN", **kw) -> TimestampInfo:
@@ -133,15 +165,16 @@ def _info(token: bytes = b"TOKEN", **kw) -> TimestampInfo:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_new_files_are_written_as_version_2(hcl: Path) -> None:
-    assert hcl.read_bytes()[4] == VERSION_TIMESTAMPED
+def test_new_files_are_written_as_the_current_version(hcl: Path) -> None:
+    """B-140: yeni yazımlar artık v3 (per-file HKDF alt-anahtarı)."""
+    assert hcl.read_bytes()[4] == VERSION_PERFILE_SUBKEY
 
 
 def test_v1_file_still_decrypts_byte_identically(
     hcl: Path, key: bytes, plain_bytes: bytes
 ) -> None:
     """ASIL GERİYE UYUMLULUK TESTİ: 0x02 öncesi kasalar açılmaya devam etmeli."""
-    _downgrade_to_v1(hcl)
+    _downgrade_to_v1(hcl, key)
     assert hcl.read_bytes()[4] == VERSION_LEGACY
 
     content, meta = decrypt_file(hcl, key, hwid=_HWID)
@@ -150,7 +183,7 @@ def test_v1_file_still_decrypts_byte_identically(
 
 
 def test_v1_file_still_passes_verify_file(hcl: Path, key: bytes) -> None:
-    _downgrade_to_v1(hcl)
+    _downgrade_to_v1(hcl, key)
     _meta, sha256_hex = verify_file(hcl, key, hwid=_HWID, return_sha256=True)
     assert sha256_hex == hashlib.sha256(
         (hcl.parent.parent / "rapor.bin").read_bytes()
@@ -175,12 +208,12 @@ def test_unknown_version_is_still_rejected(hcl: Path, key: bytes) -> None:
         verify_file(hcl, key)
 
 
-def test_v1_file_is_never_scanned_for_a_trailer(hcl: Path) -> None:
+def test_v1_file_is_never_scanned_for_a_trailer(hcl: Path, key: bytes) -> None:
     """
     v1'de fragman aranmamalı — aranırsa ciphertext'in son byte'ları
     yanlışlıkla fragman sanılabilir ve gövde kırpılırdı.
     """
-    _downgrade_to_v1(hcl)
+    _downgrade_to_v1(hcl, key)
     assert read_trailer(hcl) is None
 
 
@@ -320,7 +353,7 @@ def test_stamping_upgrades_a_v1_file_to_v2(
     v1 dosya damgalanırsa sürüm byte'ı da yükselmeli; yoksa okuyucu
     fragmanı hiç aramaz ve artık byte'lar ciphertext sanılırdı.
     """
-    _downgrade_to_v1(hcl)
+    _downgrade_to_v1(hcl, key)
     timestamp_file(hcl, key, transport=fake_tsa)
 
     assert hcl.read_bytes()[4] == VERSION_TIMESTAMPED
@@ -927,12 +960,13 @@ def _eski_format_hcl(
     taşır — "eski alan artık okunmuyor" iddiasını, alan YANLIŞ olsa bile
     doğrulamanın hâlâ doğru sonuç verdiğini göstererek kanıtlamak için.
     """
-    import json
-
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-    from CORE.crypto import _MAGIC, _NONCE_SIZE, _VERSION
+    from CORE.crypto import _MAGIC, _NONCE_SIZE
 
+    # B-140: `_VERSION` artık 3 (per-file HKDF alt-anahtarı) — bu yardımcı
+    # `key`'i DOĞRUDAN kullanıyor (B-099 öncesi/v2-dönemi şema), o yüzden
+    # sabit VERSION_TIMESTAMPED (2) yazılıyor, akan `_VERSION` DEĞİL.
     gercek_sha256 = hashlib.sha256(plaintext).hexdigest()
     metadata = {
         "filename": dst.name,
@@ -953,7 +987,7 @@ def _eski_format_hcl(
     dst.parent.mkdir(parents=True, exist_ok=True)
     with open(dst, "wb") as fout:
         fout.write(_MAGIC)
-        fout.write(bytes([_VERSION]))
+        fout.write(bytes([VERSION_TIMESTAMPED]))
         fout.write(nonce)
         fout.write(struct.pack(">I", len(aad)))
         fout.write(aad)

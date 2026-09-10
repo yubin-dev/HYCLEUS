@@ -3,13 +3,13 @@ HYCLEUS — AES-256-GCM dosya şifreleme modülü
 
 Dosya formatı (ikili):
   [4B ] magic     = b'HYCL'
-  [1B ] version   = 0x01 (eski) | 0x02 (güncel)
+  [1B ] version   = 0x01 (eski) | 0x02 (eski) | 0x03 (güncel)
   [12B] nonce     (rastgele, her şifrelemede yeni)
   [4B ] aad_len   (big-endian uint32)
   [xB ] aad       = JSON(metadata)  — şifrelenmez, bütünlük koruması altında
   [nB ] ciphertext (64 KB bloklarla akış)
   [16B] GCM authentication tag
-  [?B ] TS_TRAILER — OPSİYONEL, yalnızca v2; bkz. CORE/timestamp.py
+  [?B ] TS_TRAILER — OPSİYONEL, v2+; bkz. CORE/timestamp.py
 
 AAD alanları (tek karakter değişse decrypt_file() AuthenticationError fırlatır):
   filename, created_at, uploaded_at, last_modified, user_id, hwid
@@ -75,6 +75,41 @@ fragman kapsam dışında. Sonuç:
 Yani damga, denetim zinciriyle aynı sınıfta: kurcalamayı ENGELLEMİYOR,
 KANIT bırakıyor. Silinmeye karşı koruma, damga kaydının dosyadan bağımsız
 bir yerde de tutulmasını gerektirir — bu, sonraki adımların işi.
+
+
+Versiyon 0x03 — dosya başına HKDF alt-anahtarı (B-140)
+-------------------------------------------------------
+v1/v2'de her dosya AYNI `master_key`'i (vault'un Shamir'den kurtarılan
+32 baytı) DOĞRUDAN AES-256-GCM anahtarı olarak kullanıyordu — tekilliği
+yalnızca nonce (`os.urandom(12)`) sağlıyordu. v3'te her `encrypt_file()`
+çağrısı önce nonce'tan (zaten her dosyada benzersiz ve başlıkta açık
+duruyor) HKDF-SHA256 ile 32 baytlık bir ALT-ANAHTAR türetiyor
+(`_derive_file_key`) ve GCM'e `master_key` yerine BUNU veriyor.
+
+Neden nonce salt, file_id/hwid DEĞİL
+-------------------------------------
+İlk akla gelen bağlam `file_id` olurdu, ama `encrypt_file()` çoğu
+çağrı yerinde (ör. `UI/main_window_table.py::_FileRunnable.run()`)
+DB kaydından — dolayısıyla `file_id`'den — ÖNCE çalışıyor: o an henüz
+yok. Nonce zaten (a) HER şifrelemede taze rastgele üretiliyor, (b)
+başlıkta duruyor (decrypt_file() zaten okumak ZORUNDA), (c) hiçbir
+çağıranın DEĞİŞMESİNİ gerektirmiyor — alt-anahtar türetimi tamamen bu
+modülün içinde, şeffaf kalıyor.
+
+Neden geriye dönük SORUN DEĞİL — gerçek bir migrasyon YOK
+-----------------------------------------------------------
+v1/v2 dosyalar YENİDEN ŞİFRELENMİYOR/taşınmıyor. `_derive_file_key()`
+sürüm < 3 ise `master_key`'i OLDUĞU GİBİ döndürüyor — yani eski
+dosyalar hâlâ eski (doğrudan master_key) şemasıyla okunuyor, bugünden
+sonra yazılan dosyalar yeni (subkey) şemasını kullanıyor. Aynı `v1
+dosyalar okunmaya devam eder` ilkesi (yukarıdaki "Versiyon 0x02" bölümü)
+burada da geçerli.
+
+Kazanım: master_key artık HİÇBİR ciphertext'in şifreleme anahtarı
+DEĞİL — bir nonce çakışması (96 bit, pratikte ihmal edilebilir ama tek
+savunma katmanıydı) bile artık en fazla İKİ dosyayı (aynı subkey'i
+üreten aynı nonce) etkiler, master_key'in kendisini değil. bkz.
+BACKLOG.md B-140.
 """
 from __future__ import annotations
 
@@ -88,7 +123,9 @@ from pathlib import Path
 from typing import IO, Literal, overload
 
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 _MAGIC = b"HYCL"
 
@@ -99,12 +136,21 @@ VERSION_LEGACY = 1
 #: Fragman taşıyabilen format. Fragmanın VARLIĞINI değil, İHTİMALİNİ belirtir.
 VERSION_TIMESTAMPED = 2
 
+#: B-140: dosya anahtarı artık master_key'in KENDİSİ değil, nonce'tan HKDF
+#: ile türetilmiş bir alt-anahtar (bkz. modül docstring'i, "Versiyon 0x03").
+VERSION_PERFILE_SUBKEY = 3
+
 #: Yeni şifrelemelerde yazılan sürüm.
-_VERSION = VERSION_TIMESTAMPED
+_VERSION = VERSION_PERFILE_SUBKEY
 
 #: Okunabilen sürümler. Yeni bir sürüm eklendiğinde buraya da girmeli;
 #: tek bir `!= _VERSION` karşılaştırması eski dosyaları kilitlerdi.
-_SUPPORTED_VERSIONS = frozenset({VERSION_LEGACY, VERSION_TIMESTAMPED})
+_SUPPORTED_VERSIONS = frozenset({VERSION_LEGACY, VERSION_TIMESTAMPED, VERSION_PERFILE_SUBKEY})
+
+#: HKDF'nin `info` parametresi — anahtar MATERYALİ değil, yalnızca domain
+#: separation bağlamı (bkz. CORE/vault_manager.py'deki _HKDF_LABEL ile aynı
+#: ilke). Sürümlü: format değişirse yeni bir etiket kullanılmalı.
+_FILE_SUBKEY_INFO = b"hycleus-file-subkey-v1"
 
 _NONCE_SIZE = 12
 _TAG_SIZE = 16
@@ -293,6 +339,31 @@ def _body_end(fin: IO[bytes], file_size: int, version: int, body_start: int) -> 
     return file_size if offset is None else offset
 
 
+def _derive_file_key(key: bytes, nonce: bytes, version: int) -> bytes:
+    """
+    B-140: v3+ dosyalar için nonce'tan HKDF-SHA256 ile 32 baytlık bir
+    dosya alt-anahtarı türetir — `key` (vault master_key'i) artık hiçbir
+    ciphertext'in DOĞRUDAN AES-GCM anahtarı olmuyor.
+
+    v1/v2 dosyalar `key`'i OLDUĞU GİBİ döndürür — GERİYE DÖNÜK: mevcut
+    dosyalar yeniden şifrelenmeden eski şemayla okunmaya devam eder
+    (bkz. modül docstring'i, "Versiyon 0x03").
+
+    Nonce salt olarak kullanılıyor: her `encrypt_file()` çağrısında taze
+    rastgele üretiliyor, başlıkta açık duruyor (decrypt_file() zaten
+    okumak ZORUNDA) ve `file_id` gibi şifreleme anı itibariyle henüz var
+    olmayabilecek bir bağlama ihtiyaç duymuyor.
+    """
+    if version < VERSION_PERFILE_SUBKEY:
+        return key
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=nonce,
+        info=_FILE_SUBKEY_INFO,
+    ).derive(key)
+
+
 def encrypt_file(
     src: Path | str,
     key: bytes,
@@ -372,20 +443,25 @@ def encrypt_file(
     nonce = os.urandom(_NONCE_SIZE)
     aad = json.dumps(metadata, ensure_ascii=False, sort_keys=True).encode()
 
-    encryptor = Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
-    encryptor.authenticate_additional_data(aad)
+    # B-140: master_key değil, nonce'tan türetilmiş dosyaya özgü alt-anahtar.
+    file_key_ba = bytearray(_derive_file_key(key, nonce, _VERSION))
+    try:
+        encryptor = Cipher(algorithms.AES(bytes(file_key_ba)), modes.GCM(nonce)).encryptor()
+        encryptor.authenticate_additional_data(aad)
 
-    with open(src, "rb") as fin, open(dst, "wb") as fout:
-        fout.write(_MAGIC)
-        fout.write(bytes([_VERSION]))
-        fout.write(nonce)
-        fout.write(struct.pack(">I", len(aad)))
-        fout.write(aad)
+        with open(src, "rb") as fin, open(dst, "wb") as fout:
+            fout.write(_MAGIC)
+            fout.write(bytes([_VERSION]))
+            fout.write(nonce)
+            fout.write(struct.pack(">I", len(aad)))
+            fout.write(aad)
 
-        while chunk := fin.read(_CHUNK):
-            fout.write(encryptor.update(chunk))
-        fout.write(encryptor.finalize())
-        fout.write(encryptor.tag)
+            while chunk := fin.read(_CHUNK):
+                fout.write(encryptor.update(chunk))
+            fout.write(encryptor.finalize())
+            fout.write(encryptor.tag)
+    finally:
+        zero_bytearray(file_key_ba)
 
     return dst, sha256_hex, aad.decode()
 
@@ -506,7 +582,15 @@ def verify_file(
         tag = fin.read(_TAG_SIZE)
         fin.seek(body_start)
 
-        decryptor = Cipher(algorithms.AES(key), modes.GCM(nonce, tag)).decryptor()
+        # B-140: master_key değil, dosyanın KENDİ nonce'undan türetilmiş
+        # alt-anahtar (v1/v2 dosyalarda _derive_file_key key'i olduğu gibi
+        # döndürür — geriye dönük). Cipher inşa edilir edilmez artık bu
+        # fonksiyonda gerekmiyor, hemen sıfırlanıyor.
+        file_key_ba = bytearray(_derive_file_key(key, nonce, version))
+        try:
+            decryptor = Cipher(algorithms.AES(bytes(file_key_ba)), modes.GCM(nonce, tag)).decryptor()
+        finally:
+            zero_bytearray(file_key_ba)
         decryptor.authenticate_additional_data(aad)
 
         # Tek, yeniden kullanılan tampon. update_into() düz metni buraya
@@ -647,9 +731,16 @@ def decrypt_file(
         tag = fin.read(_TAG_SIZE)
         fin.seek(body_start)
 
-        decryptor = Cipher(
-            algorithms.AES(key), modes.GCM(nonce, tag)
-        ).decryptor()
+        # B-140: master_key değil, dosyanın KENDİ nonce'undan türetilmiş
+        # alt-anahtar (v1/v2 dosyalarda _derive_file_key key'i olduğu gibi
+        # döndürür — geriye dönük).
+        file_key_ba = bytearray(_derive_file_key(key, nonce, version))
+        try:
+            decryptor = Cipher(
+                algorithms.AES(bytes(file_key_ba)), modes.GCM(nonce, tag)
+            ).decryptor()
+        finally:
+            zero_bytearray(file_key_ba)
         decryptor.authenticate_additional_data(aad)
 
         # bytearray: mutable — finally bloğunda ctypes.memset ile sıfırlanabilir

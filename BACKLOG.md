@@ -10930,8 +10930,13 @@ zorlanmadı.
 
 ## B-139 ★ — `kek`/`master_key` bellek zeroize edilmiyor (`CORE/vault_manager.py`)
 
-**Durum:** Açık — orta öncelik (gerçek tasarım boşluğu, üretim kodu
-değişikliği gerektiriyor — bu mutasyon turunun kapsamı dışında).
+**Durum:** KAPANDI (2026-09-10) — 6 çağrı noktasında (`create_vault`,
+`open_vault`/`_decrypt_vault`, `read_vault_role`, `change_vault_role`,
+`change_vault_pin` ×2) kek bytearray'e çevrilip `try/finally` içinde
+`CORE.crypto.zero_bytearray()` ile sıfırlanıyor. `open_vault()`'un
+`master_key` DÖNÜŞ DEĞERİ bilerek dokunulmadı (çağırana canlı geçiyor).
+Mutasyon-kanıtlı test: `tests/test_vault_manager.py::test_kek_ve_
+master_key_gercekten_sifirlaniyor`.
 **Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M012 ★) — kod incelemesiyle,
 mutasyona gerek kalmadan: şu anki kod ZATEN bu durumda.
 
@@ -10991,7 +10996,15 @@ taze bir zeminde daha fazla gerçek bulgu beklenebilir.
 
 ## B-140 ★ — Dosya şifreleme tek bir `master_key` kullanıyor, per-file HKDF subkey yok (`CORE/crypto.py`)
 
-**Durum:** Açık — düşük öncelik (savunma derinliği önerisi, acil değil).
+**Durum:** KAPANDI (2026-09-10) — `CORE/crypto.py::_derive_file_key()`
+eklendi: v3 dosyalar artık nonce'tan HKDF-SHA256 ile türetilmiş bir
+alt-anahtar kullanıyor, `master_key` hiçbir ciphertext'in DOĞRUDAN
+anahtarı değil. Version-gated (`VERSION_PERFILE_SUBKEY = 3`): v1/v2
+dosyalar YENİDEN ŞİFRELENMEDEN eski şemayla okunmaya devam ediyor —
+gerçek bir migrasyon YOK. Mutasyon-kanıtlı testler `tests/test_crypto.py`
+(+3) ve `tests/test_timestamp.py` (geriye uyumluluk yardımcıları
+güncellendi). Kullanıcı onayıyla (nonce-bazlı tasarım, file_id BAĞLAMI
+DEĞİL — encrypt_file() çoğu çağrı yerinde DB kaydından ÖNCE çalışıyor).
 **Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M024/M025/M026 ★) — mutasyona
 gerek kalmadan, kod okumasıyla: bu ZATEN mevcut mimari.
 
@@ -11277,8 +11290,12 @@ manager.py` (+1). Tam KDF/vault alt kümesi: 153 passed.
 
 ## B-142 — Vault dosyası (`_rewrite_vault()`) atomic/dayanıklı yazılmıyor
 
-**Durum:** Açık — orta öncelik (gerçek tasarım boşluğu, üretim kodu
-değişikliği gerektiriyor — bu mutasyon turunun kapsamı dışında).
+**Durum:** KAPANDI (2026-09-10) — `_rewrite_vault()` artık `checkout.py`/
+`timestamp.py`'nin deseniyle hizalı: aynı dizinde geçici dosya (0o600) →
+flush + fsync → `os.replace()`. Mutasyon-kanıtlı test (`os.replace()`'i
+yalnızca hedef tmp dosyası için hata fırlatacak şekilde yamalayıp GERÇEK
+bir `change_vault_pin()` çağrısı yapıyor): `tests/test_vault_manager.py::
+test_rewrite_vault_kesintide_ORIJINAL_vault_dosyasina_dokunmuyor`.
 **Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M070/073/074/075★/076/077/078)
 — mutasyona gerek kalmadan, kod okumasıyla: bu ZATEN mevcut kod.
 
@@ -11344,8 +11361,13 @@ ve_usb_rozeti.py` (+1). Üretim kodunda net değişiklik yok.
 
 ## B-143 — Pencere kapanırken bekleyen toplu-yükleme worker'ları için `waitForDone()` yok
 
-**Durum:** Açık — düşük-orta öncelik (gerçek tasarım boşluğu, üretim
-kodu değişikliği gerektiriyor — bu mutasyon turunun kapsamı dışında).
+**Durum:** KAPANDI (2026-09-10) — `closeEvent()` artık bekleyen iş varsa
+`self._pool.waitForDone(30s)` çağırıyor, zaman aşımında loud-not-silent
+bir ERROR log'u düşüyor. Mutasyon-kanıtlı test (gerçek bir yavaşlatılmış
+worker ile GERÇEK `closeEvent()` tetiklenip `activeThreadCount()`'un
+0'a döndüğü doğrulanıyor): `tests/test_kasa_ekrani_kozmetik_ve_usb_
+rozeti.py::test_kapanista_bekleyen_toplu_yukleme_isi_terk_edilmeden_
+bitiriliyor`.
 **Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M089) — kod incelemesiyle,
 mutasyona gerek kalmadan: şu anki kod ZATEN bu durumda.
 
@@ -11411,8 +11433,13 @@ kodunda net değişiklik yok.
 
 ## B-144 — Kurtarma parçası ekranı shoulder-surfing'e karşı blur/"tıkla-göster" katmanı yok
 
-**Durum:** Açık — düşük öncelik (öneri niteliğinde, üretim kodu — yeni
-bir UI davranışı — gerektiriyor, bu mutasyon turunun kapsamı dışında).
+**Durum:** KAPANDI (2026-09-10) — QR/base32 artık "🙈 Parça gizli..." +
+"Göster" düğmesi arkasında başlıyor (`_icerik_bloku`/`_gizli_bloku`/
+`_on_goster`); içerik yine de kuruluyor (TEK ÜRETİM YOLU kuralı
+bozulmuyor), yalnızca görünürlüğü kullanıcının eylemine bağlı. Onay
+kutusu gibi bir kapatma engeli değil (B-003 dersi). Mutasyon-kanıtlı
+testler: `tests/test_recovery_share_ui.py` (+3, `test_govde_
+baslangicta_GIZLI` ve ikisi).
 **Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M100) — kod incelemesiyle,
 mutasyona gerek kalmadan: şu anki kod ZATEN bu durumda.
 
