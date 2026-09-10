@@ -11152,3 +11152,37 @@ subkey yok, düşük öncelik), B-141 (TOTP replay-önleme yok, düşük-orta
 
 MC-M051–MC-M200 (150 senaryo, 3 parça): sonraki oturumlarda devam
 edecek.
+
+## MC-Kataloğu — 2. Parça (MC-M051–MC-M100)
+
+Aynı katalog, aynı yöntem — B-135'ten bağımsız, `MC-` önekiyle devam.
+Bu parça: TPM+Fallback (M051-055), HWID (M056-065), Keychain/OS
+(M066-069), Kasa Dosyası/Temp/Atomic (M070-079), SQLite (M080-084),
+Eşzamanlılık (M085-089), RFC 3161 (M090-093), Auth Akışı/UI/Lockout
+(M094-100).
+
+### Bölüm 6 (MC-M051–MC-M055) — TPM + Fallback (`CORE/tpm_sealing.py`)
+
+`CORE/tpm_sealing.py` PCR-tabanlı bir TPM2 "sealed data" şeması
+UYGULAMIYOR — Windows CNG'nin "Microsoft Platform Crypto Provider"
+sağlayıcısıyla dışa AKTARILAMAYAN bir RSA-2048 anahtarı üretiyor (yalnızca
+decrypt yetkili) ve bir DEK'i bu anahtarla PKCS#1 v1.5 sarmalıyor; sır
+DEK ile AES-256-GCM'leniyor. PCR kümesi, policy AND/OR, TPM meşgul/yok
+ayrımı, retry döngüsü, env var üzerinden anahtar aktarımı — bunların
+HİÇBİRİ bu mimaride yok (grep + tam dosya okuması doğrulandı: "PCR",
+"policy", "environ", "subprocess", "while"/"retry" döngüsü sıfır
+eşleşme). Bu yüzden 5 mutasyonun 5'i de kapsam dışı.
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M051 | Sealing PCR kümesi boş | **Kapsam dışı** | Hedef kod yok — PCR-tabanlı mühürleme hiç yok |
+| MC-M052 | "TPM meşgul" → "TPM yok" branch'ine düş | **Kapsam dışı** | Hedef kod yok — `durum()` zaten TEK bir catch-all: `_saglayici_ac()`'tan gelen HERHANGİ bir `TpmSealingError` "kullanılamıyor" sayılıyor (süreç ömrü boyunca önbellekli). "Meşgul" ile "hiç yok"u ayıran, mutasyonla kaldırılabilecek ayrı bir dal hiç yok |
+| MC-M053 | Policy AND yerine OR (tek PCR yeter) | **Kapsam dışı** | Hedef kod yok — PCR policy hiç yok |
+| MC-M054 | Unsealed anahtar env var'da (child process görür) | **Kapsam dışı** | Hedef kod yok — `tpm_sealing.py`/`secret_store.py`'de `environ`/`subprocess`/`Popen` sıfır eşleşme; tamamen in-process ctypes çağrıları |
+| MC-M055 | TPM hatasında sonsuz retry (hang) | **Kapsam dışı** | Hedef kod yok — hiçbir yerde retry döngüsü yok; `durum()` TEK deneme yapıp sonucu süreç ömrü boyunca önbelliğe alıyor (`sifirla_onbellek()`/`zorla_durum()` yalnızca testler için) |
+
+**Bölüm 6 özet:** Kapsam dışı 5/5. Üretim kodunda VE testlerde hiçbir
+değişiklik yapılmadı — bu blok, kataloğun PCR-tabanlı TPM2 sealing
+varsayan bir referans mimariye göre yazıldığını, HYCLEUS'un ise daha
+sade bir CNG-anahtarı şemasına dayandığını doğruladı. `belki_muhurle()`
+zaten Loud-fallback (MC-M049, Bölüm 5) için ayrı test kapsamı altında.
