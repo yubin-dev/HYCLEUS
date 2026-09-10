@@ -11366,3 +11366,23 @@ total`) kullanıcıya bilgi verip `self._pool.waitForDone(makul_bir_
 zaman_asimi)` çağıran bir adım eklemek — checkout check-in'inin zaten
 izlediği "kapanışta bekleyen işi bitir" deseniyle tutarlı. Bu turun
 kapsamı (test yazmak) dışında, ayrı bir görev olarak ele alınmalı.
+
+### Bölüm 12 (MC-M090–MC-M093) — RFC 3161 (`CORE/timestamp_verify.py`)
+
+Bu katman zaten sıkı — 4 mutasyondan 2'si mevcut, adanmış testlerce
+doğrudan yakalandı, kalan 2'si hedeflediği kod deseninin bu
+uygulamada hiç var olmadığını ortaya çıkardı.
+
+Test alt kümesi: `tests/test_timestamp_verify.py` (baseline 29).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M090 | Offline doğrulama imza kontrolünü atlar (sadece parse) | **Killed** | `_verify_signature(...)` çağrısı kaldırılınca `test_a_tampered_token_is_rejected` doğrudan yakalıyor |
+| MC-M091 | TSA sertifikası EKU (amaç) kontrolü yok | **Killed** | EKU bloğu kaldırılınca `test_a_certificate_without_the_timestamping_eku_is_rejected` + `test_a_certificate_with_a_DIFFERENT_eku_purpose_is_rejected` (2 test) doğrudan yakalıyor |
+| MC-M092 | messageImprint hash algo'su dosya hash algo'suyla karşılaştırılmaz | **Kapsam dışı** | Hedef kod yok — `message_imprint["hash_algorithm"]` hiçbir yerde OKUNMUYOR bile (yalnızca `["hashed_message"]`), yani "kaldırılacak" bir kontrol yok. Pratikte risk düşük: `verify_timestamp()` `expected_digest`'i HER ZAMAN sabit, güçlü bir algoritmayla (`CORE.timestamp.file_digest`, SHA-256) hesaplayıp ham bayt karşılaştırması yapıyor — algoritma karışıklığı ancak SHA-256'nın kendisi kırılırsa (ya da saldırgan hedef 32 baytı ÖNCEDEN biliyorsa) bir kazanç sağlardı |
+| MC-M093 | Serial number kontrolü kaldır (aynı TSA'den herhangi bir TST geçer) | **Kapsam dışı** | Hedef kod yok — `serial_number` yalnızca sonuç nesnesine (`TimestampVerification.serial_number`) BİLGİ amaçlı yazılıyor, hiçbir zaman beklenen bir değerle KARŞILAŞTIRILMIYOR. RFC 3161'de serial number TSA'nin kendi defter tutma alanı — imza/EKU/geçerlilik-penceresi/message-digest zaten ayrı ayrı doğrulanıyor, serial number'ı doğrulayıcının karşılaştırması gereken bir güvenlik alanı değil |
+
+**Bölüm 12 özet:** Killed 2 (M090,M091), Kapsam dışı 2 (M092,M093).
+Üretim kodunda VE testlerde hiçbir değişiklik yapılmadı — bu modül
+(imza, EKU, geçerlilik penceresi, message-digest, sertifika zinciri
+hepsi ayrı ayrı test edilmiş) kataloğun bu bloğunda tamamen doygun.
