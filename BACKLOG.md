@@ -10702,4 +10702,32 @@ Yeni/güncellenen test dosyaları: `tests/test_integrity.py` (+2),
 Üretim kodunda net değişiklik YOK (B-137 hariç, kasıtlı olarak
 değiştirilmedi).
 
-M028–M040: devam edecek.
+### Bölüm 4 (M028–M033) — özet
+
+En önemli bulgu bu bölümde: **M028**, `recover_vault.py`'nin CLI
+testlerinin `input()`'u öyle bir yamalıyordu ki (`"1"`/`"2"` — seçenek
+sorusuna cevap) yeniden-kurulum onay sorusuna da AYNI cevap gidiyor ve
+`("e","evet")` kümesinde olmadığı için akış HER ZAMAN erken çıkıyordu.
+Sonuç: B-028'in kendisinin düzeltmesi olan `role = display_role(ham_rol)`
+satırı bu CLI'da HİÇ çalıştırılmadan test suite'i yeşildi — B-028
+regresyonunun (ham/normalize edilmemiş rolün kasaya yazılması) TAM
+AYNISI hiçbir test kırılmadan geri gelebilirdi.
+
+| # | Hedef | Bulgu/Mutasyon | Sonuç |
+|---|-------|-----------------|-------|
+| M028 | `CORE/recover_vault.py::_cmd_recover()` — `role = display_role(ham_rol)` | `role = ham_rol`'e döndürüldü (B-028'in TAM AYNI regresyonu) | **Survived-Fixed** — `_cmd_recover`'ın yeniden-kurulum dalı hiçbir testte gerçekten çalışmıyordu; yeni uçtan uca test "e" cevabıyla akışın sonuna kadar gidip kasadaki rolün kanonik olduğunu doğruluyor |
+| M029 | `CORE/inventory.py::_row_status_and_date()` — İmha Odası + hesaplanamayan durum kombinasyonu | `LABEL_IMHA` dalı kaldırıldı | **Survived-Fixed** — fiziksel olarak imha odasında duran bir dosya "hesaplanamadı" diye yanlış raporlanabilirdi |
+| M030 | `CORE/verify_timestamp_cli.py` — anahtar dosyası boyut kontrolü | `!= 32` → `< 32` (büyük dosyaları kabul eder) | **Survived-Fixed** — yalnızca "çok kısa" test ediliyordu; mutasyon altında CLI'ın kendi temiz hatası yerine yanlış boyuttaki "anahtar" kripto katmanına kadar ilerleyip "SONUC: GECERSIZ" ile karışık bir sonuç üretiyordu |
+| M031 | `CORE/recover_vault.py::_cmd_export()` — yeniden-gösterme onay kapısı | Onay kontrolü kaldırıldı | **Survived-Fixed** — düşük önem (PIN yine de gerekiyor, gerçek erişim kapısı değil) ama hiç test edilmemişti |
+| M032 | `CORE/verify_report_seal_cli.py::_load_roots()` — bozuk güvenilir kök istisnası | `TrustedRootError` sessizce yutuldu | **Survived-Fixed** — mutasyon altında araç boş kök listesiyle devam edip "SONUC: GECERLI (kök doğrulanmadı uyarısıyla)" veriyordu; kardeş CLI'nin (`verify_timestamp_cli.py`) aynı sınıf testi bu dosyayı KAPSAMIYORDU |
+| M033 | `CORE/inventory.py` — imha tarihi aralığı tam sınır | `<`/`>` → `<=`/`>=` | **Survived-Fixed** — `added_from`/`added_to` için eşdeğer tam-sınır testi vardı, `destruction_from`/`destruction_to` için yoktu |
+
+6/6 Survived-Fixed — bu bölümde BACKLOG'a giden gerçek bir bulgu olmadı
+(hepsi zaten doğru davranan ama test edilmemiş yollardı). Üretim kodunda
+net değişiklik YOK.
+
+Yeni/güncellenen test dosyaları: `tests/test_recover_cli.py` (+2),
+`tests/test_inventory.py` (+2), `tests/test_verify_timestamp_cli.py` (+1),
+`tests/test_report_seal.py` (+1).
+
+M034–M045: devam edecek.

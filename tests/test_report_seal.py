@@ -212,6 +212,30 @@ def test_cli_verifies_with_an_explicit_trusted_root(
     assert "GUVENILIR" in cikti
 
 
+def test_cli_malformed_trusted_root_exits_one(
+    rapor_saglam, tmp_path: Path, capsys: pytest.CaptureFixture,
+) -> None:
+    """
+    `--trusted-root` OKUNABİLİR ama GEÇERLİ bir sertifika DEĞİLSE
+    (`CORE.trusted_roots.der_coz()`'un `TrustedRootError`'ı) sessizce
+    yutulup boş/eksik bir kök listesiyle devam EDİLMEMELİ — açıkça
+    durmalı. Bu, "dosya hiç yok" (`test_...unreadable...`, sibling
+    `verify_timestamp_cli.py`'de) durumundan FARKLI bir kod yolu.
+    """
+    out_path, info = export_sealed_pdf(
+        [_satir()], rapor_saglam, tmp_path / "r.pdf",
+        transport=FakeTSA(authority=default_authority()),
+    )
+    assert info is not None
+    bozuk = tmp_path / "bozuk.der"
+    bozuk.write_bytes(b"bu bir sertifika degil")
+
+    with pytest.raises(SystemExit) as exc:
+        cli_main(["--pdf", str(out_path), "--trusted-root", str(bozuk)])
+    assert exc.value.code == 1
+    assert "Hata:" in capsys.readouterr().err
+
+
 def test_cli_default_root_is_ENFORCED_not_merely_advisory(
     rapor_saglam, tmp_path: Path, capsys: pytest.CaptureFixture,
 ) -> None:

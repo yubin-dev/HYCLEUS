@@ -270,6 +270,25 @@ class TestTutarlilik:
         assert row.destruction_date_text == "hesaplanamadı"
         assert "elle girilmeli" in row.note
 
+    def test_imha_odasindaki_hesaplanamayan_satir_yine_de_imha_odasinda_gorunuyor(
+        self, db, tmp_path
+    ):
+        """
+        `test_hesaplanamayan_satir_raporda_kaliyor` ile AYNI kurulum ama
+        dosya İmha Odası'nda (`label=LABEL_IMHA`). `check_disposal()` yine
+        RetentionError fırlatıyor ama bu sefer satır `STATUS_UNKNOWN`
+        DEĞİL, `STATUS_IN_IMHA` olarak raporlanmalı — fiziksel olarak imha
+        odasında duran bir dosyayı "hesaplanamadı" diye göstermek, KVKK
+        denetimini yanlış yönlendirir (dosya aslında GÖRÜNÜR ve
+        işaretlenmiş durumda, kayıp değil).
+        """
+        fid, _ = _mk_file(db, tmp_path, filename="imhadaki-bozuk.pdf", label=LABEL_IMHA)
+        pid = _profile(db, years=5, start_type=START_DOCUMENT)
+        db.execute("UPDATE files SET retention_profile_id = ? WHERE id = ?", (pid, fid))
+
+        row = generate_retention_inventory(db)[0]
+        assert row.status == STATUS_IN_IMHA
+
     def test_profil_uzatilinca_rapor_guncelleniyor(self, db, tmp_path):
         """İmha tarihi türetilmiş — DB'de saklanmadığı için bayatlayamaz."""
         from CORE.retention import update_profile
@@ -346,6 +365,22 @@ class TestFiltreler:
     def test_imha_tarihi_araligi(self, db, veri):
         rows = generate_retention_inventory(
             db, destruction_from="2036-01-01", destruction_to="2036-12-31"
+        )
+        assert [r.filename for r in rows] == ["aktif.pdf"]
+
+    def test_imha_tarihi_araligi_tam_sinirda_dahil(self, db, veri):
+        """
+        `test_yukleme_tarihi_uc_degerler_dahil` (added_from/added_to için)
+        ile AYNI iddia ama imha tarihi filtresi için — aralık KAPALI
+        (`<`/`>`, `<=`/`>=` değil): tam sınır tarihinde arama yapılırsa
+        satır DIŞLANMAMALI. Mevcut `test_imha_tarihi_araligi` sınırın
+        İÇİNDE geniş bir aralık kullanıyordu, tam sınırı hiç sınamıyordu.
+        """
+        tam_tarih = generate_retention_inventory(db)[
+            [r.filename for r in generate_retention_inventory(db)].index("aktif.pdf")
+        ].destruction_date_text
+        rows = generate_retention_inventory(
+            db, destruction_from=tam_tarih, destruction_to=tam_tarih
         )
         assert [r.filename for r in rows] == ["aktif.pdf"]
 

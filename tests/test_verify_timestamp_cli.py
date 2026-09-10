@@ -133,7 +133,24 @@ def test_key_file_of_the_wrong_size_is_refused(
     with pytest.raises(SystemExit) as exc:
         main(["--verify-timestamp", str(stamped), "--key-file", str(yanlis)])
     assert exc.value.code == 1
-    assert "32 bayt olmalı" in capsys.readouterr().err
+
+
+def test_key_file_too_LONG_is_also_refused(
+    stamped: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """
+    Yalnızca "çok kısa" değil "çok uzun" da reddedilmeli — tam 32 bayt
+    bekleniyor, `< 32` gibi tek yönlü bir kontrol 33+ baytlık bir dosyayı
+    sessizce kabul edip anahtar olarak kullanmaya çalışırdı.
+    """
+    cok_uzun = tmp_path / "cok-uzun.bin"
+    cok_uzun.write_bytes(b"x" * 33)
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--verify-timestamp", str(stamped), "--key-file", str(cok_uzun)])
+    assert exc.value.code == 1
+    hata = capsys.readouterr().err
+    assert "32 bayt olmalı" in hata
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -105,6 +105,34 @@ def test_export_aborts_on_wrong_pin(vault, db, monkeypatch) -> None:
         recover_vault._cmd_export(_args())
 
 
+def test_export_declining_reexport_confirmation_shows_nothing(
+    vault, db, capsys, monkeypatch
+) -> None:
+    """
+    Parça daha önce alınmışsa yeniden gösterme onayı isteniyor.
+    "H" (Hayır) cevabı GERÇEKTEN durdurmalı — PIN hiç sorulmamalı, parça
+    hiç ekrana basılmamalı.
+    """
+    from CORE.recover_vault import has_recovery_share
+
+    export_recovery_share(vault, _PIN)
+    assert has_recovery_share(vault)
+
+    pin_cagrildi = []
+    monkeypatch.setattr(
+        recover_vault, "_prompt_pin",
+        lambda *_a, **_k: pin_cagrildi.append(1) or _PIN,
+    )
+    monkeypatch.setattr("builtins.input", lambda *_a: "H")
+
+    recover_vault._cmd_export(_args())
+
+    cikti = capsys.readouterr().out
+    assert "Iptal edildi" in cikti
+    assert "HYCLEUS-R3-" not in cikti
+    assert not pin_cagrildi, "onay reddedildiği hâlde PIN yine de soruldu"
+
+
 # ── --recover ─────────────────────────────────────────────────────────────────
 
 def test_recover_with_vault_and_pin(vault, db, capsys, monkeypatch) -> None:
@@ -127,6 +155,40 @@ def test_recover_with_vault_and_pin(vault, db, capsys, monkeypatch) -> None:
     # Anahtarın kendisi değil yalnızca özeti gösterilmeli
     assert beklenen.hex() not in cikti
     assert hashlib.sha256(beklenen).hexdigest() in cikti
+
+
+def test_recover_reprovisions_vault_with_canonical_role(
+    vault, db, capsys, monkeypatch
+) -> None:
+    """
+    Uçtan uca yeniden kurulum yolu (B-028): önceki iki test `input()`'u hep
+    "1"/"2" ile yamalıyor — bu SEÇENEK sorusuna cevap, ama "Vault yeniden
+    kurulsun mu? [e/H]" sorusuna da AYNI "1" cevabı gidiyor, ki bu ("e",
+    "evet") kümesinde OLMADIĞI için akış hep "Atlandı" dalına düşüyor.
+    Yani `role = display_role(ham_rol)` satırı (B-028'in asıl düzeltmesi)
+    hiçbir testte GERÇEKTEN çalışmıyordu. Burada "e" cevabıyla akışın
+    SONUNA kadar gidiyoruz ve ASCII (Türkçe karaktersiz) "yonetici"
+    girdisinin kanonik "Yönetici"ye normalize edildiğini, ham hâliyle
+    KASAYA YAZILMADIĞINI doğruluyoruz.
+    """
+    from CORE.recovery_share import encode_share
+
+    share_3 = export_recovery_share(vault, _PIN)
+
+    girdiler = iter([encode_share(share_3), _PIN, "yeni-pin-98765", "yeni-pin-98765"])
+    monkeypatch.setattr(recover_vault, "_prompt_pin", lambda *_a, **_k: next(girdiler))
+    cevaplar = iter(["1", "e", "yonetici"])
+    monkeypatch.setattr("builtins.input", lambda *_a: next(cevaplar))
+
+    recover_vault._cmd_recover(_args())
+
+    cikti = capsys.readouterr().out
+    assert "VAULT YENIDEN KURULDU" in cikti
+
+    role, _key = open_vault(vault, "yeni-pin-98765")
+    assert role == "Yönetici", (
+        f"rol kanonik hâle getirilmemiş: {role!r} — B-028 regresyonu geri gelmiş olabilir"
+    )
 
 
 def test_recover_without_pin_uses_keyring_share(vault, db, capsys, monkeypatch) -> None:
