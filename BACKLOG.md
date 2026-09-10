@@ -11033,7 +11033,7 @@ share2.py` (baseline 181 test).
 | MC-M037 | Üretim GF(2^8), reconstruct GF(p) (alan uyuşmazlığı) | **Kapsam dışı** | Mimari uyuşmuyor: kod TEK bir alan (GF(p), `_SSS_PRIME = 2**256+297`) kullanıyor, hem `_sss_split` hem `_lagrange_at`'ta aynı sabit — GF(2^8) (klasik bayt-bazlı SSSS) hiç yok, grep doğrulandı |
 | MC-M038 | Kağıt/USB payı (`share_1`) plaintext metadata'ya yazılır (şifrelenmeden) | **Killed** | 17 test kırılıyor — `open_vault()` share_1'i şifreli `plaintext`'ten okumayı bekliyor, format uyuşmazlığı geniş çaplı kırılmaya yol açıyor |
 
-**Bölüm 3 özet:** Killed 10 (M029,M030,M031,M032,M033,M034,M035,M036,
+**Bölüm 3 özet:** Killed 9 (M029,M030,M031,M032,M033,M034,M035,M036,
 M038 — ★ yok bu blokta), Eşdeğer mutant 2 (M027,M028), Kapsam dışı 1
 (M037). Üretim kodunda VE testlerde hiçbir değişiklik yapılmadı — Shamir
 katmanı (muhtemelen B-126 Bölüm 3'ün mirası) bu 12 mutasyonun hiçbirinde
@@ -11102,3 +11102,53 @@ paylaşılan bir yardımcı fonksiyon (`CORE`'a taşınmış, tek bir
 yükünü azaltır — MC-M039/M045'in de gösterdiği gibi kopyalar birbirinden
 sessizce sapabiliyor. Bu turun kapsamı (test yazmak) dışında, ayrı bir
 görev olarak ele alınmalı.
+
+### Bölüm 5 (MC-M049–MC-M050) — TPM + Fallback (`CORE/tpm_sealing.py`)
+
+Test alt kümesi: `tests/test_tpm_sealing.py` (baseline 56 test).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M049 ★ | Loud fallback → silent (TPM yoksa uyarı log'u kaldırılır) | **Killed** | `test_dusus_LOG_A_yaziliyor` — `belki_muhurle()`'deki `_log.warning("tpm_muhur_atlandi"...)` çağrısı kaldırılınca doğrudan fark ediyor |
+| MC-M050 | Fallback blob'u plaintext dosyaya yaz | **Kapsam dışı** | Hedef kod yok: mühürlü VE mühürsüz (düşüş) yol AYNI tek yazma çağrısını (`secret_store.store()`'daki `_keyring.set_password()`) paylaşıyor — ayrı bir "plaintext dosyaya yaz" kod yolu hiç yok, düşüşte fark eden TEK şey payload'ın mühürlü olup olmaması |
+
+**Bölüm 5 özet:** Killed 1 (M049★), Kapsam dışı 1 (M050). Üretim
+kodunda VE testlerde hiçbir değişiklik yapılmadı — bu köşe (B-025'in
+mirası: "sessizce zayıflayan bir katman hiç olmamasından kötüdür") zaten
+sıkı.
+
+## MC-Kataloğu — Bölüm 1-5 (MC-M001–MC-M050) ARA DURUM ÖZETİ
+
+50/200 tamamlandı (4 parçalık oturumun 1. parçası). Toplam: Killed 26,
+Survived-Fixed 6 (5 gerçek/orta-yüksek şiddetli bulgu + genel sertleşme),
+Eşdeğer mutant 2, Kapsam dışı 15 (bunlardan 3'ü gerçek ama önceden var
+olan, üretim kodu gerektiren tasarım boşlukları → B-139/B-140/B-141),
+Kontrol yok 1 (→ B-138).
+
+**En önemli 3 bulgu:**
+1. **MC-M004** — `_derive_kek()`'in `hash_len`'i (AES-256 anahtar
+   uzunluğu) hiçbir testte doğrudan sabitlenmemişti; 16 bayta inseydi
+   şifreleme sessizce AES-128'e düşerdi ve HİÇBİR round-trip testi fark
+   etmezdi.
+2. **MC-M039/MC-M045** — 4 TOTP kapısından yalnızca 1'i (`login_dialog.
+   py`) kaynaktan sertleştirilmişti; diğer 3'ünde (`main_window_bulk/
+   tree/files.py`) ne pencere genişlemesi ne de ikinci bir SHA256-digest
+   kabul yolu hiçbir testte fark edilmiyordu.
+3. **MC-M023** — GCM nonce'unun yalnızca TOPLAM benzersizliği test
+   ediliyordu; ilk 4 baytı sabit olsa (96→64 bit entropi) mevcut test
+   bunu YAKALAMAZDI.
+
+**Doygunluk notu:** Shamir katmanı (Bölüm 3, muhtemelen B-126'nın
+mirası) 12 mutasyonun hiçbirinde gerçek boşluk göstermedi — tamamen
+doygun. AES-GCM (Bölüm 2) da büyük ölçüde doygun (14'te 1 gerçek bulgu,
+düşük şiddet). KDF/PIN (Bölüm 1) ve TOTP (Bölüm 4) en verimli bloklardı.
+
+**Kapsam dışı bırakılan üretim-kodu boşlukları (ayrı görev olmalı):**
+B-138 (metadata'da hash yazılmadığını garanti eden yapısal test yok,
+düşük öncelik), B-139★ (kek/master_key zeroize edilmiyor, orta öncelik),
+B-140★ (dosya şifreleme master_key'i doğrudan kullanıyor, per-file HKDF
+subkey yok, düşük öncelik), B-141 (TOTP replay-önleme yok, düşük-orta
+öncelik).
+
+MC-M051–MC-M200 (150 senaryo, 3 parça): sonraki oturumlarda devam
+edecek.
