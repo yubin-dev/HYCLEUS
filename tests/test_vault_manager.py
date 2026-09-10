@@ -837,3 +837,69 @@ def test_magic_byte_bozuk_vault_acilmadan_reddediliyor(
 
     with pytest.raises(vault_manager.VaultTamperedError, match="magic"):
         vault_manager.open_vault(hwid, pin)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-142 — _rewrite_vault() atomic yazım
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_rewrite_vault_kesintide_ORIJINAL_vault_dosyasina_dokunmuyor(
+    db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    B-142: `_rewrite_vault()`'un ATOMİK olduğunu — yazma bitmeden
+    (`os.replace()`'a ulaşmadan) bir kesinti (çökme/güç kaybı) olursa
+    ORİJİNAL vault dosyasının el DEĞMEMİŞ kaldığını — GERÇEK bir
+    `change_vault_pin()` çağrısıyla, gerçek bir kesinti simüle edilerek
+    kanıtlar.
+
+    `os.replace()` yalnızca `_VAULT_TMP_SUFFIX` uzantılı geçici dosya
+    için (yani yalnızca `_rewrite_vault()`'un kendi çağrısı için) hata
+    fırlatacak şekilde yamalanıyor — başka hiçbir `os.replace()`
+    çağrısını (ör. pytest/DB dahili) etkilemiyor.
+
+    Mutasyon-kanıt: `_rewrite_vault()` eski davranışına (`path.
+    write_bytes(protected + signature)` — geçici dosya/fsync/os.replace()
+    YOK) döndürülünce bu test KIRMIZIYA düşüyor: eski kodda `os.replace()`
+    HİÇ ÇAĞRILMADIĞI için yukarıdaki yama hiç devreye girmiyor, "kesinti"
+    simülasyonu koda hiç ulaşmadan `change_vault_pin()` SESSİZCE başarılı
+    oluyor — vault dosyası DOĞRUDAN üzerine yazılıyor ve eski PIN kalıcı
+    olarak kayboluyor (aşağıdaki son assert — `open_vault(hwid, eski_pin)`
+    — eski kodda `ValueError` ile patlar).
+    """
+    import os as _os
+
+    monkeypatch.setattr(vault_manager, "_VAULT_DIR", tmp_path / "vaults")
+    monkeypatch.setattr(vault_manager, "_VAULT_PATH_LEGACY", tmp_path / ".hcl_vault")
+
+    hwid = "USB-ATOMIC-WRITE-TEST"
+    eski_pin = "111111"
+    yeni_pin = "222222"
+    vault_manager.create_vault(hwid, eski_pin, "admin")
+
+    yol = vault_manager._read_vault_path(hwid)
+    orijinal_bytes = yol.read_bytes()
+
+    gercek_replace = _os.replace
+
+    def patlayan_replace(src, dst, *a, **k):
+        if str(src).endswith(vault_manager._VAULT_TMP_SUFFIX):
+            raise OSError("güç kaybı simülasyonu (test)")
+        return gercek_replace(src, dst, *a, **k)
+
+    monkeypatch.setattr(_os, "replace", patlayan_replace)
+
+    with pytest.raises(OSError, match="güç kaybı"):
+        vault_manager.change_vault_pin(hwid, eski_pin, yeni_pin)
+
+    # Kesintiden SONRA dosya byte-byte AYNI kalmalı.
+    assert yol.read_bytes() == orijinal_bytes
+
+    # Geçici dosya artık kalmamalı (temizlendi).
+    tmp = yol.with_suffix(yol.suffix + vault_manager._VAULT_TMP_SUFFIX)
+    assert not tmp.exists(), "kesinti sonrası geçici dosya temizlenmemiş"
+
+    monkeypatch.setattr(_os, "replace", gercek_replace)
+
+    # En kritik kanıt: ESKİ PIN hâlâ açıyor — yeni PIN hiç uygulanmamış.
+    vault_manager.open_vault(hwid, eski_pin)

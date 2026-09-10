@@ -139,6 +139,11 @@ from CORE.paths import data_dir as _data_dir
 _VAULT_PATH_LEGACY = _data_dir() / ".hcl_vault"
 _VAULT_DIR         = _data_dir() / "vaults"
 
+# B-142: _rewrite_vault() geçici dosyası — AYNI dizinde (os.replace()
+# farklı dosya sistemleri arasında atomik değil), CORE/checkout.py'nin
+# _TMP_SUFFIX deseniyle aynı isimlendirme.
+_VAULT_TMP_SUFFIX = ".hclv-rewrite-tmp"
+
 
 def _read_vault_path(hwid: str) -> Path:
     """Per-HWID vault dosya yolunu döndürür; yoksa eski tek-dosya yoluna düşer."""
@@ -588,8 +593,28 @@ def _rewrite_vault(
     Vault dosyasını güvenli biçimde yeniden yazar:
       1. Readonly korumasını geçici olarak kaldırır
       2. HMAC-SHA256 imzası hesaplar (share_2-bazlı anahtarla)
-      3. protected + signature'ı diske yazar
+      3. protected + signature'ı AYNI dizindeki bir geçici dosyaya yazar,
+         flush + fsync eder, sonra os.replace() ile ATOMİK olarak
+         `path`'in yerine koyar
       4. Readonly bitini geri uygular
+
+    B-142: önceden doğrudan `path.write_bytes(...)` yapıyordu — ne geçici
+    dosya, ne fsync, ne atomic rename vardı; yazma ORTASINDA kesinti
+    (çökme, güç kaybı) olursa vault dosyası (anahtar materyalini taşıyan
+    EN KRİTİK dosya) yarım/bozuk kalabilirdi. Aynı kod tabanında
+    `CORE/timestamp.py::attach_trailer()` ve `CORE/checkout.py::
+    rewrite_encrypted()` ZATEN bu sınıf sorunu aynı desenle (geçici
+    dosya → os.replace()) çözüyordu — burada da o desen uygulandı,
+    `timestamp.py`'deki gibi fsync dahil (aynı dizin şartı korunuyor:
+    os.replace() farklı dosya sistemleri arasında atomik değil).
+
+    Yarıda kesilme durumunda ORİJİNAL vault dosyasına hiç dokunulmamış
+    olur — geriye yalnızca artık bir `_VAULT_TMP_SUFFIX` uzantılı dosya
+    kalır.
+
+    Geçici dosya `0o600` izniyle açılıyor (POSIX'te anlamlı; Windows'ta
+    asıl koruma zaten `_writable()`'ın uyguladığı readonly bit + NTFS
+    ACL'leri).
 
     share_2 çağıran tarafından verilir, burada kasadan OKUNMAZ: create_vault()
     çağrıldığı anda share_2 henüz kasaya yazılmamış olabilir (bkz. o
@@ -600,8 +625,20 @@ def _rewrite_vault(
     """
     path = target if target is not None else _read_vault_path(hwid)
     signature = _sign(_derive_signing_key(hwid, share_2), protected)
+    tmp = path.with_suffix(path.suffix + _VAULT_TMP_SUFFIX)
     with _writable(path=path):
-        path.write_bytes(protected + signature)
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as fout:
+                fout.write(protected + signature)
+                fout.flush()
+                os.fsync(fout.fileno())
+            # Atomik: aynı dizin, dolayısıyla aynı dosya sistemi. Yarıda
+            # kesilirse orijinal vault dosyasına hiç dokunulmamış olur.
+            os.replace(tmp, path)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def _read_vault_token_id(hwid: str) -> bytes:
