@@ -11501,3 +11501,38 @@ blokları HWID (Bölüm 7) ve SQLite (Bölüm 10) oldu.
 
 MC-M101–MC-M200 (100 senaryo, 2 parça): sonraki oturumlarda devam
 edecek.
+
+## MC-Kataloğu — 3. Parça (MC-M101–MC-M150)
+
+MC-M001–M100 tamamlandı ve push edildi. Bu parça MC-M101–M150 işliyor,
+aynı yöntem ve başlık altında devam ediyor.
+
+### Bölüm 14 (MC-M101–MC-M110) — Kimlik doğrulama / PIN / kilitleme (`CORE/vault_manager.py`, `CORE/pin_policy.py`, `CORE/rate_limit.py`, `UI/login_dialog.py`)
+
+Test alt kümesi: `tests/test_pin_policy.py` + `tests/test_pin_giris_
+kutulari.py` + `tests/test_pin_rotation.py` + `tests/test_pin_rotation_
+ui.py` + `tests/test_rate_limit.py` + `tests/test_authz_invariants.py`
++ `tests/test_kayit_kurumsal_referans.py` + `tests/test_usb_weak_
+binding_ui.py` + `tests/test_vault_manager.py` + `tests/test_kayit_
+ekrani.py` (baseline 214).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M101 | Argon2id parametreleri (time_cost/memory_cost/parallelism → minimuma) | **Killed** | `test_argon2_zaman_maliyeti_owasp_minimumunun_altina_dusurulmez`, `test_argon2_bellek_maliyeti_owasp_minimumunun_altina_dusurulmez`, `test_argon2_paralellik_beklenen_degerden_sapmaz` (B-126 senaryo 3'ten miras) üçü birden düşüyor |
+| MC-M102 | PIN karşılaştırması `hmac.compare_digest` → `==` | **Kapsam dışı** | Hedef kod yok — PIN doğruluğu hiçbir yerde ELLE karşılaştırılmıyor (`==` ya da `compare_digest` ile); Argon2id→AES-256-GCM ile KRİPTOGRAFİK olarak doğrulanıyor (GCM tag'i zaten sabit-zamanlı, `cryptography`/OpenSSL'in kendi implementasyonunda). `vault_manager.py`'deki 4 `compare_digest` çağrısı PIN değil, HMAC İMZA doğrulaması için |
+| MC-M103 | PIN min uzunluk `>= 6` → `> 6` ve `>= 4` | **Survived-Fixed** | `PIN_MIN_LEN` (6) sınırı ZATEN Killed (`test_boundary_five_rejected_six_accepted` vb., B-126 mirası). Ama `LOGIN_MIN_LEN` (4) sınırının GERÇEK `_on_login()` gönderiminde nasıl davrandığı hiç test edilmiyordu — `test_yapistirma_kisa_pin_eski_kullanicilari_bozmuyor` yalnızca `_PinBoxInput` WIDGET'ını sınıyordu. `test_on_login_tam_4_haneli_pin_uzunluk_kontrolunu_geciyor` eklendi |
+| MC-M104 | `login_attempts`: başarısız girişte sayaç artırımını atla | **Survived-Fixed** | Gerçek bulgu: `_on_login()`'deki `rate_limit.record_failure(...)` çağrısı `rate_limit.check(...)` (salt okuma) ile değiştirilince `test_rate_limit.py`'nin 24 testi dahil 95 testin HİÇBİRİ fark etmedi — hepsi `rate_limit.py`'yi İZOLE sınıyordu, `login_dialog.py`'nin GERÇEKTEN bu fonksiyonu çağırdığını hiçbiri doğrulamıyordu. `test_basarisiz_giris_gercekten_rate_limit_sayacini_artiriyor` eklendi |
+| MC-M105 | Kilit eşiği `>= 5` → `> 5` | **Killed** | `backoff_for()`'daki `fail_count < MAX_ATTEMPTS` → `<=` yapılınca 10 test kırılıyor |
+| MC-M106 | Kilit süresi hesabı → 0 saniye | **Killed** | `backoff_for()` sabit `0` dönünce aynı 10 test kırılıyor |
+| MC-M107 | Sayaç sıfırlama: her başarısız denemede sıfırla | **Killed** | `record_failure()`'da `fail_count` her zaman 1'e sabitlenince 9 test kırılıyor |
+| MC-M108 | Kilit kontrolünü PIN doğrulamasından SONRA yap | **Survived-Fixed** | Gerçek ve önemli bulgu: kilit kontrolü bloğu `_on_login()`'in başından `pin_ok`/`totp_ok` hesaplandıktan SONRAYA taşınınca (yani `open_vault()` ÇAĞRILDIKTAN sonra kilit kontrol edilir hâle gelince) ilgili 96 testin HİÇBİRİ fark etmedi — kilitliyken bile DOĞRU pin'in Argon2id/AES-GCM maliyetine girip girmediğini hiçbir test doğrudan ölçmüyordu. `test_kilitliyken_dogru_pin_ile_bile_vault_acilmaya_calisilmiyor` eklendi (`open_vault()` çağrı SAYISINI izliyor) |
+| MC-M109 | `PinRotationDialog`: 4 haneli PIN'de zorunlu geçişi atla (K2-26) | **Killed** | `_on_login()`'deki `if not self._zorunlu_pin_yenileme(pin): return` çağrısı atlanınca `test_pin_rotation_ui.py`'nin 5 testi (zaten var olan, K2-26 için yazılmış) doğrudan yakalıyor |
+| MC-M110 | PIN hash salt → sabit değer | **Killed** | `create_vault()`'taki `salt = os.urandom(_SALT_SIZE)` sabit `bytes(_SALT_SIZE)` yapılınca `test_iki_farkli_registration_farkli_salt_ve_farkli_kek_uretir` (B-126 senaryo 25 mirası) doğrudan yakalıyor |
+
+**Bölüm 14 özet:** Killed 6 (M101,M105,M106,M107,M109,M110), Survived-Fixed
+3 (M103,M104,M108 — üçü de gerçek entegrasyon boşlukları: alt sınır
+gönderim noktasında, sayaç artırımının GERÇEKTEN çağrıldığı, kilit
+kontrolünün GERÇEKTEN PIN'den önce olduğu hiçbiri doğrudan
+ölçülmüyordu), Kapsam dışı 1 (M102 — PIN karşılaştırması hiç elle
+yapılmıyor). Yeni testler: `tests/test_pin_giris_kutulari.py` (+3).
+Üretim kodunda değişiklik yok.

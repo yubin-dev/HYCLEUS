@@ -296,3 +296,160 @@ def test_giris_ekrani_pin_alani_6_kutulu_widget(
         assert dlg._pin_input.text() == "246810"
     finally:
         dlg.deleteLater()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-11) — LOGIN_MIN_LEN sınırı gerçek _on_login() gönderiminde
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_on_login_tam_4_haneli_pin_uzunluk_kontrolunu_geciyor(
+    qapp, db, kasa_dizini, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    MC-Kataloğu M103: `_on_login()`'deki `len(pin) < LOGIN_MIN_LEN` (4)
+    kontrolünün TAM SINIRDA (4 karakter) doğru davrandığını GERÇEK bir
+    giriş denemesiyle kanıtlar. `test_yapistirma_kisa_pin_eski_
+    kullanicilari_bozmuyor` yalnızca `_PinBoxInput` WIDGET'ının 4 haneyi
+    kabul ettiğini sınıyor — gerçek `_on_login()` gönderiminde bu sınırın
+    nasıl davrandığını hiç test etmiyordu.
+
+    Mutasyon-kanıt: `len(pin) < LOGIN_MIN_LEN` → `len(pin) <= LOGIN_MIN_LEN`
+    (off-by-one, tam 4 haneli bir PIN'i "çok kısa" diye reddeder) yapılınca
+    bu test KIRMIZIYA düşüyor — `_show_error("PIN en az 4 karakter
+    olmalı")` çağrılır, giriş TOTP/vault aşamasına hiç ilerlemez.
+    """
+    import pyotp
+
+    from CORE.secret_store import store_totp_secret_for_hwid
+
+    hwid = "PIN-4-HANE-TEST"
+    pin = "7331"  # LOGIN_MIN_LEN sınırında, tam 4 hane — eski kullanıcı
+    vault_manager.create_vault(hwid, pin, "admin")
+    secret = pyotp.random_base32()
+    store_totp_secret_for_hwid(hwid, secret)
+
+    dlg = LoginDialog(hwid=hwid, first_run=False, use_vault=True)
+    try:
+        dlg._pin_input.setText(pin)
+        dlg._totp_input.setText(pyotp.TOTP(dlg._secret).now())
+
+        yakalanan: dict = {}
+        monkeypatch.setattr(dlg, "_show_error", lambda msg: yakalanan.setdefault("msg", msg))
+        # MC-M109 (ayrı bir mutasyon) burada İZOLE ediliyor: 4 haneli bir
+        # PIN normalde zorunlu-yenileme diyaloğunu (gerçek bir modal
+        # QDialog.exec(), offscreen'de sonsuza dek bloklar) tetikler —
+        # bu test YALNIZCA LOGIN_MIN_LEN uzunluk kontrolünü sınıyor.
+        monkeypatch.setattr(dlg, "_zorunlu_pin_yenileme", lambda pin: True)
+
+        dlg._on_login()
+
+        assert "msg" not in yakalanan, (
+            f"4 haneli PIN uzunluk kontrolünde reddedildi: {yakalanan.get('msg')!r}"
+        )
+    finally:
+        dlg.deleteLater()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-11) — Başarısız girişte rate-limit sayacı (MC-M104)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_basarisiz_giris_gercekten_rate_limit_sayacini_artiriyor(
+    qapp, db, kasa_dizini, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    MC-Kataloğu M104: `_on_login()`'in yanlış PIN/TOTP denemesinde
+    GERÇEKTEN `rate_limit.record_failure()`'ı çağırdığını GERÇEK bir
+    `_on_login()` gönderimiyle kanıtlar. `tests/test_rate_limit.py`'nin
+    24 testi yalnızca `CORE/rate_limit.py`'yi İZOLE sınıyor —
+    `login_dialog.py`'nin bu fonksiyonu GERÇEKTEN çağırdığını hiçbiri
+    doğrulamıyor.
+
+    Mutasyon-kanıt: `_on_login()`'deki `rate_limit.record_failure(...)`
+    çağrısı `rate_limit.check(...)` (sayaç artırılmadan salt okuma) ile
+    değiştirilince ilgili tüm test dosyalarının (95 test) HİÇBİRİ fark
+    etmedi — bu test KIRMIZIYA düşüyor.
+    """
+    from CORE import rate_limit
+
+    hwid = "PIN-SAYAC-TEST"
+    pin = "111111"
+    vault_manager.create_vault(hwid, pin, "admin")
+
+    dlg = LoginDialog(hwid=hwid, first_run=False, use_vault=True)
+    try:
+        assert rate_limit.check(db, hwid).fail_count == 0
+
+        dlg._pin_input.setText("yanlis-pin-deneme")
+        dlg._totp_input.setText("000000")
+        monkeypatch.setattr(dlg, "_show_error", lambda msg: None)
+
+        dlg._on_login()
+
+        assert rate_limit.check(db, hwid).fail_count == 1, (
+            "yanlış PIN/TOTP denemesi rate-limit sayacını artırmadı"
+        )
+    finally:
+        dlg.deleteLater()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-11) — Kilit kontrolü PIN'den ÖNCE (MC-M108)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_kilitliyken_dogru_pin_ile_bile_vault_acilmaya_calisilmiyor(
+    qapp, db, kasa_dizini, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    MC-Kataloğu M108: `_on_login()`'in kilit kontrolünü PIN/TOTP
+    doğrulamasından ÖNCE yaptığını GERÇEK bir kilitli-hesap denemesiyle
+    kanıtlar — hesap kilitliyken DOĞRU PIN/TOTP verilse bile
+    `open_vault()` hiç ÇAĞRILMAMALI (Argon2id/AES-GCM maliyetine hiç
+    girilmemeli — hem gereksiz iş hem zamanlama yüzeyi).
+
+    Mutasyon-kanıt: kilit kontrolü PIN/TOTP doğrulamasından SONRAYA
+    taşınınca `open_vault()` DOĞRU pin ile ZATEN çağrılmış oluyor — bu
+    test KIRMIZIYA düşüyor (`cagrildi["n"] == 0` başarısız).
+    """
+    import pyotp
+
+    from CORE import rate_limit
+    from CORE.secret_store import store_totp_secret_for_hwid
+    import UI.login_dialog as ld
+
+    hwid = "PIN-KILIT-ONCE-TEST"
+    pin = "111111"
+    vault_manager.create_vault(hwid, pin, "admin")
+    secret = pyotp.random_base32()
+    store_totp_secret_for_hwid(hwid, secret)
+
+    for _ in range(rate_limit.MAX_ATTEMPTS):
+        rate_limit.record_failure(db, hwid)
+    assert rate_limit.check(db, hwid).locked is True, "test kurulumu: hesap kilitlenmedi"
+
+    dlg = LoginDialog(hwid=hwid, first_run=False, use_vault=True)
+    try:
+        dlg._pin_input.setText(pin)  # DOĞRU pin
+        dlg._totp_input.setText(pyotp.TOTP(secret).now())  # DOĞRU kod
+
+        cagrildi = {"n": 0}
+        gercek_open_vault = ld.open_vault
+
+        def izlenen_open_vault(*a, **k):
+            cagrildi["n"] += 1
+            return gercek_open_vault(*a, **k)
+
+        monkeypatch.setattr(ld, "open_vault", izlenen_open_vault)
+
+        dlg._on_login()
+
+        assert cagrildi["n"] == 0, (
+            "kilitliyken open_vault() ÇAĞRILDI — kilit kontrolü PIN "
+            "doğrulamasından SONRA yapılıyor olabilir"
+        )
+
+        from PySide6.QtWidgets import QDialog
+
+        assert dlg.result() != QDialog.Accepted
+    finally:
+        dlg.deleteLater()
