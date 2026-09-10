@@ -174,6 +174,60 @@ def test_zeroizable_true_hata_yolunda_da_tamponu_sifirliyor(
         decrypt_file(hcl_path, key, hwid=_HWID)
 
 
+def test_decrypt_file_buf_gercekten_sifirlaniyor_hata_yolunda(
+    plain_file: Path, key: bytes, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    MC-Kataloğu M125: `decrypt_file()`'ın (varsayılan `zeroizable=False`)
+    `AuthenticationError` fırlattığı yolda, ara tampon `buf`'ın (kısmen
+    ya da tamamen çözülmüş DÜZ METİN) GERÇEKTEN sıfırlandığını —
+    yalnızca "hata fırlıyor mu" diye değil, `bytearray`'i yakalayıp
+    baytlarını ölçerek — kanıtlar.
+
+    `test_zeroizable_true_hata_yolunda_da_tamponu_sifirliyor` yalnızca
+    `AuthenticationError`'ın İKİ modda da (zeroizable=True/False)
+    fırladığını doğruluyor — `finally` bloğunun GERÇEKTEN
+    `zero_bytearray(buf)` çağırdığını hiç ÖLÇMÜYOR. `tests/test_
+    integrity.py::test_verify_file_buffer_is_zeroed_even_when_the_tag_
+    fails`'in AYNI deseni burada (decrypt_file'ın kendi `buf`'ı için)
+    hiç uygulanmamıştı.
+
+    Mutasyon-kanıt: `decrypt_file()`'daki `finally: zero_bytearray(buf)`
+    çağrısı kaldırılıp sıfırlama yalnızca BAŞARI yoluna taşınınca (hata
+    yolunda hiç çalışmayacak şekilde) bu test KIRMIZIYA düşüyor —
+    `AuthenticationError` yine fırlıyor (yakalanmıyor), ama `buf` sıfır
+    olmayan düz metin baytlarıyla bellekte kalıyor.
+    """
+    hcl_path, _sha, _aad = encrypt_file(plain_file, key, _USER_ID, hwid=_HWID)
+    nonce, aad, ciphertext, tag = _parse_hcl(hcl_path)
+    bozuk_tag = tag[:-1] + bytes([tag[-1] ^ 0xFF])
+    _rebuild_hcl(hcl_path, aad=aad, ciphertext=ciphertext, tag=bozuk_tag)
+
+    yakalanan: list[bytearray] = []
+    gercek_bytearray = bytearray
+
+    def izleyen_bytearray(*a, **kw):
+        buf = gercek_bytearray(*a, **kw)
+        yakalanan.append(buf)
+        return buf
+
+    monkeypatch.setattr(crypto, "bytearray", izleyen_bytearray, raising=False)
+    with pytest.raises(AuthenticationError):
+        decrypt_file(hcl_path, key, hwid=_HWID)
+    monkeypatch.undo()
+
+    # `_read_header`/`verify_file` gibi başka `bytearray()` çağrıları da
+    # yakalanmış olabilir (hepsi boş, `_CHUNK` tamponu vb. değil) — asıl
+    # ilgilenilen, İÇERİĞİ OLAN (decrypt edilmiş plaintext taşıyan) tampon.
+    icerikli = [b for b in yakalanan if len(b) > 0]
+    assert icerikli, "hiçbir dolu bytearray yakalanmadı — test kurulumu hatalı"
+    for buf in icerikli:
+        assert bytes(buf) == b"\x00" * len(buf), (
+            "decrypt_file()'ın hata yolunda ara tampon sıfırlanmamış — "
+            "düz metin baytları bellekte kalmış olabilir"
+        )
+
+
 # ── 2. Ciphertext / tag kurcalama ─────────────────────────────────────────────
 
 @pytest.mark.parametrize("region", ["tag", "ciphertext_last", "ciphertext_first"])

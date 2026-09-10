@@ -11562,3 +11562,29 @@ b058_ilk_kurulum.py` + `tests/test_kayit_kurumsal_referans.py` +
 Eşdeğer mutant 1 (M117 — gerçek çalıştırmayla kanıtlandı), Kapsam dışı
 4 (M112→B-141, M114/M116/M118 hedef kod yok). Yeni testler: `tests/
 test_totp_gorunen_ad.py` (+2). Üretim kodunda değişiklik yok.
+
+### Bölüm 16 (MC-M119–MC-M126) — AES-256-GCM ileri sınırlar (`CORE/crypto.py`)
+
+Test alt kümesi: `tests/test_crypto.py` + `tests/test_integrity.py` +
+`tests/test_backup.py` + `tests/test_timestamp.py` + `tests/test_
+timestamp_verify.py` + `tests/test_timestamp_report.py` + `tests/
+test_checkout.py` (baseline 421).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M119 | Nonce `os.urandom(12)` → sabit | **Killed** | `test_nonce_is_unique_across_encryptions`, `test_nonce_her_bayt_pozisyonu_bagimsiz_rastgele`, `test_ayni_master_key_farkli_dosyalarda_farkli_alt_anahtar_uretir` üçü birden düşüyor |
+| MC-M120 | decrypt'te AAD=None ile doğrula | **Killed** | `decrypt_file()`'daki `authenticate_additional_data(aad)` → `b""` yapılınca 5 test kırılıyor (round-trip dahil) |
+| MC-M121 | `InvalidTag`: yakala, boş bytes döndür | **Killed** | `decrypt_file()`'da `except InvalidTag: return b"", {}` yapılınca 12 test kırılıyor (tamperlama/anahtar testlerinin hepsi) |
+| MC-M122 | `verify_file()`: tag kontrolünü yap, sonucu yok say, hep OK | **Killed** | `test_crypto.py` TEK BAŞINA fark etmiyordu (verify_file()'ı hiç çağırmıyor) — asıl çağıranlar `test_integrity.py` (17 test, haftalık bütünlük taraması) + `test_backup.py` (2) + `test_timestamp.py` (2) doğrudan yakalıyor |
+| MC-M123 | Streaming decrypt: son bloğu işlemeden dön | **Killed** | `decrypt_file()`'da `finalize()` çağrısı tamamen kaldırılınca (tag hiç doğrulanmıyor) 12 test kırılıyor |
+| MC-M124 | Anahtar uzunluğu 32 byte şartı → 16 kabul | **Killed** | 3 kontrol noktası (`encrypt_file`/`verify_file`/`decrypt_file`) `not in (16, 32)` yapılınca `test_anahtar_uzunlugu_tam_32_byte_disinda_reddedilir` (B-126 senaryo 14 mirası) doğrudan yakalıyor |
+| MC-M125 ★ | Zeroize: exception yolunda `_zero()` atla | **Survived-Fixed** | Gerçek bulgu: `decrypt_file()`'daki `finally: zero_bytearray(buf)` kaldırılıp sıfırlama yalnızca BAŞARI yoluna taşınınca `test_zeroizable_true_hata_yolunda_da_tamponu_sifirliyor` dahil 53 testin HİÇBİRİ fark etmedi — o test yalnızca `AuthenticationError`'ın fırladığını doğruluyordu, `zero_bytearray`'in GERÇEKTEN çağrıldığını hiç ölçmüyordu. `tests/test_integrity.py::test_verify_file_buffer_is_zeroed_even_when_the_tag_fails`'in AYNI deseni (`bytearray` yakalayıp içeriği ölçmek) `verify_file()` için vardı ama `decrypt_file()`'ın kendi `buf`'ı için hiç uygulanmamıştı. `test_decrypt_file_buf_gercekten_sifirlaniyor_hata_yolunda` eklendi |
+| MC-M126 | Format sürümü: magic/sürüm byte'ını eski değere sabitle | **Killed** | `encrypt_file()`'ın yazdığı sürüm byte'ı sabit `VERSION_LEGACY`'ye çevrilince (yeni dosyalar hep v1 etiketli yazılır) 26 test kırılıyor (`test_new_files_are_written_as_the_current_version` dahil, B-140 turunun kendi testleri) |
+
+**Bölüm 16 özet:** Killed 7 (M119,M120,M121,M122,M123,M124,M126),
+Survived-Fixed 1 (M125★ — `decrypt_file()`'ın hata-yolu zeroize
+garantisi, `verify_file()`'ın zaten sahip olduğu byte-seviyesi kanıtla
+hiç sınanmamıştı). Yeni test: `tests/test_crypto.py` (+1). Üretim
+kodunda değişiklik yok. Bu blok en doygun blok — 8 mutasyondan 7'si
+zaten mevcut/miras testlerce (B-126, M013-M022, B-140 turları)
+doğrudan yakalanıyor.
