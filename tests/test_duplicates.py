@@ -183,6 +183,25 @@ def test_find_for_file_hashes_and_searches(db, belge: Path) -> None:
     assert len(esl) == 1
 
 
+def test_find_for_file_ASIL_GUVENLIK_TESTI_mahrem_esleseni_yonetici_olmayandan_gizliyor(
+    db, belge: Path
+) -> None:
+    """
+    `find_duplicates_for_file()`'ın gerçek UI çağrı yeri
+    (`UI/main_window_table.py`) `include_private=yonetici` geçiyor —
+    bu, `find_duplicates_by_hash()`'e sadıkça İLETİLMELİ. Aksi hâlde
+    yönetici olmayan biri, sürükleyip bıraktığı bir dosyanın "zaten
+    mahrem bir klasörde kayıtlı" olduğunu öğrenir — tam olarak
+    `test_a_private_match_is_hidden_from_non_admins`'in engellemeye
+    çalıştığı sızıntı, yalnızca farklı bir giriş noktasından.
+    """
+    fid = _dosya(db, "gizli-karar")
+    _etiketle(db, fid, "Yönetim", private=True)
+
+    _sha, esl = find_duplicates_for_file(db, belge, include_private=False)
+    assert esl == []
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. Kapsam kararları — hangi dosyalar sayılıyor
 # ══════════════════════════════════════════════════════════════════════════════

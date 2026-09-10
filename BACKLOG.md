@@ -10730,4 +10730,31 @@ Yeni/güncellenen test dosyaları: `tests/test_recover_cli.py` (+2),
 `tests/test_inventory.py` (+2), `tests/test_verify_timestamp_cli.py` (+1),
 `tests/test_report_seal.py` (+1).
 
-M034–M045: devam edecek.
+### Bölüm 5 (M034–M036) — özet
+
+Bu bölümde bir arka plan ajanının önerdiği bir aday (`export.py`'nin
+`hwid_fallback`/`session_hwid` parametre karışıklığı) GERÇEKTEN
+doğrulanmadan Survived sayılıyordu — tam suite çalıştırıldığında
+`test_iki_akis_ayni_dosyada_ayni_karari_veriyor`'un bunu zaten
+yakaladığı görüldü. Ajan bulgularının HER ZAMAN gerçek mutasyonla
+doğrulanması gerektiğinin somut kanıtı.
+
+| # | Hedef | Bulgu/Mutasyon | Sonuç |
+|---|-------|-----------------|-------|
+| M034 | `CORE/export.py::export_to_directory()` — `hwid_fallback`/`session_hwid` karışıklığı | Parametre değiştirildi | **Killed** — `test_iki_akis_ayni_dosyada_ayni_karari_veriyor` zaten yakalıyordu (ajan bunu gözden kaçırmıştı) |
+| M035 | `CORE/duplicates.py::find_duplicates_for_file()` — `include_private` iletimi | Sabit `include_private=True`'a çevrildi | **Survived-Fixed** — GERÇEK sızıntı sınıfı: `UI/main_window_table.py`'nin gerçek çağrısı `include_private=yonetici` geçiyor, ama bu geçiş hiç test edilmemişti; yönetici olmayan biri sürükleyip bıraktığı dosyanın mahrem bir klasörde zaten kayıtlı olduğunu öğrenebilirdi |
+| M036 | `CORE/rate_limit.py::check()` — kilit süresi tam sınır | `remaining <= 0` → `remaining < 0` | **Survived-Fixed** — tam `BACKOFF_SECONDS[0]` anı hiç sınanmamıştı (düşük önem: yön kilidi UZATIR, ZAYIFLATMAZ) |
+
+2 Survived-Fixed, 1 Killed. Üretim kodunda net değişiklik YOK.
+
+Ayrıca incelenip GERÇEKTEN İYİ durumda bulunan modüller (yeni senaryo
+gerektirmedi): `CORE/file_queries.py` (5 fonksiyonun hepsi için
+`include_private` zaten kapsamlı test ediliyor — M035'in TAM AYNI
+sınıfı ama burada önceden kapatılmış), `CORE/hclx.py::open_package()`
+(dış/iç manifesto karşılaştırması kodun kendi yorumunda "mutasyon testi
+zaten yapıldı" diye belgelenmiş).
+
+Yeni/güncellenen test dosyaları: `tests/test_duplicates.py` (+1),
+`tests/test_rate_limit.py` (+1).
+
+M037–M050: devam edecek.

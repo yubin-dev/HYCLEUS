@@ -88,6 +88,19 @@ def test_attempt_allowed_after_lock_expires(db, clock) -> None:
     assert rate_limit.check(db, _HWID).locked is False, "süre dolunca izin verilmeli"
 
 
+def test_lock_expires_at_the_EXACT_boundary_second(db, clock) -> None:
+    """
+    Tam `BACKOFF_SECONDS` anında (`remaining == 0`) kilit AÇIK olmalı —
+    kapalı aralık değil. Yukarıdaki test yalnızca 29 (hâlâ kilitli) ve 31
+    (toplam, açık) saniyeleri sınıyordu, tam sınırı hiç sınamıyordu.
+    """
+    _fail(db, MAX_ATTEMPTS)
+    clock.advance(BACKOFF_SECONDS[0])
+    assert rate_limit.check(db, _HWID).locked is False, (
+        "tam BACKOFF_SECONDS[0] anında hâlâ kilitli görünüyor"
+    )
+
+
 def test_remaining_seconds_counts_down(db, clock) -> None:
     _fail(db, MAX_ATTEMPTS)
     assert rate_limit.check(db, _HWID).remaining_seconds == 30
