@@ -11306,3 +11306,20 @@ path)`. Temp dosya AYNI dizinde olmalı (vault dizini, `/tmp` değil —
 `0o600` izniyle açılmalı. Kapsamı: tek fonksiyon, 4 çağıran etkilenir
 ama arayüz değişmez. Bu turun kapsamı (test yazmak) dışında olduğu için
 burada BIRAKILDI.
+
+### Bölüm 10 (MC-M080–MC-M084) — SQLite (`DB/db_manager.py`, `DB/migrations.py`)
+
+Test alt kümesi: `tests/test_db_manager_rbac.py` (baseline 25) + `tests/
+test_migrations.py` (26) + `tests/test_audit_log_immutable.py` (18).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M080 | WAL enable edilmez (default journal) | **Survived-Fixed** | `PRAGMA journal_mode = WAL` kaldırılınca 69 testin HİÇBİRİ fark etmedi — WAL modu hiçbir yerde doğrudan sınanmıyordu. `test_wal_modu_gercekten_acik` eklendi |
+| MC-M081 | `busy_timeout=0` | **Eşdeğer mutant** | ÖNCEDEN belgelenmiş (B-126 senaryo 51, `test_busy_timeout_gercekten_ayarli_sifir_degil`'in kendi docstring'i): `db_manager.py`'nin kendi ataması, `CORE/audit_chain.py::_begin_immediate()`'in HER denetim yazımında bağımsız olarak uyguladığı AYNI PRAGMA tarafından fiilen maskeleniyor/yedekleniyor — `db` fixture'ının gördüğü son değer açısından bu satır tek başına eşdeğer. Yeniden doğrulandı: mutasyon tek başına hâlâ SURVIVED |
+| MC-M082 | Migration tek transaction'da değil (kısmi migration) | **Kapsam dışı — bilinçli sınır** | `DB/migrations.py::senkronize()`'ın kendi docstring'i bunu AÇIKÇA savunuyor: "Her göç KENDİ işleminde: biri düşerse öncekiler kalıcı olur... Hepsini tek işleme almak, 22 başarılıyken 23'ün düşmesi hâlinde 22'yi de geri alırdı." Kataloğun "zayıflık" saydığı şey burada KASITLI bir tasarım (resumability > tüm-batch atomicity) |
+| MC-M083 | `foreign_keys` OFF (orphan satır) | **Survived-Fixed** | `PRAGMA foreign_keys = ON` → `OFF` yapılınca mevcut testlerin HİÇBİRİ fark etmedi — hiçbiri kasıtlı bir orphan satır yazmayı DENEMİYORDU. `test_foreign_keys_gercekten_acik_orphan_satir_reddediliyor` eklendi (var olmayan `parent_id`'li bir `folders` satırı `sqlite3.IntegrityError` ile reddediliyor mu diye doğrudan sınıyor) |
+| MC-M084 | Blob TEXT olarak latin-1 (0x80 üstü byte bozulur) | **Kapsam dışı** | Hedef kod yok — şemada hiç `BLOB` sütunu yok (grep doğrulandı); tüm ikili veri (hash, token_id, TPM-mühürlü değerler) hex/base64 ile ASCII-güvenli TEXT'e kodlanarak saklanıyor, encoding bozulması oluşamaz |
+
+**Bölüm 10 özet:** Survived-Fixed 2 (M080,M083), Eşdeğer mutant 1 (M081),
+Kapsam dışı 2 (M082 bilinçli sınır, M084 hedef kod yok). Yeni testler:
+`tests/test_db_manager_rbac.py` (+2). Üretim kodunda net değişiklik yok.

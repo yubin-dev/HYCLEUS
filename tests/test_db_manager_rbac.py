@@ -533,3 +533,50 @@ def test_busy_timeout_gercekten_ayarli_sifir_degil(db) -> None:
     deger = db.fetchone("PRAGMA busy_timeout")
     ms = deger[0] if not isinstance(deger, dict) else next(iter(deger.values()))
     assert ms >= 1000, f"busy_timeout={ms}ms — pratikte kapalıya yakın"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-10) — SQLite pragma'ları (MC-M080/M083)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_wal_modu_gercekten_acik(db) -> None:
+    """
+    MC-Kataloğu M080: `DB/db_manager.py`'nin `PRAGMA journal_mode = WAL`
+    çağrısının GERÇEKTEN etkili olduğunu doğrudan doğrular.
+
+    Mutasyon-kanıt: bu satır kaldırılınca (varsayılan `journal_mode`,
+    genelde `delete`, döner) mevcut test paketinin HİÇBİRİ fark etmedi —
+    WAL'ın kendisi (eşzamanlı okuma/yazım, `wal_checkpoint`) hiçbir yerde
+    doğrudan sınanmıyordu, yalnızca dolaylı olarak "veritabanı işlevleri
+    çalışıyor" görülüyordu.
+    """
+    deger = db.fetchone("PRAGMA journal_mode")
+    mod = deger[0] if not isinstance(deger, dict) else next(iter(deger.values()))
+    assert str(mod).lower() == "wal", f"journal_mode={mod!r} — WAL bekleniyordu"
+
+
+def test_foreign_keys_gercekten_acik_orphan_satir_reddediliyor(db) -> None:
+    """
+    MC-Kataloğu M083: `PRAGMA foreign_keys = ON`'un yalnızca AYARLANMIŞ
+    değil, GERÇEKTEN uygulandığını — var olmayan bir `parent_id`'ye
+    sahip bir `folders` satırının reddedildiğini — doğrudan kanıtlar.
+
+    Mutasyon-kanıt: `PRAGMA foreign_keys = ON` → `OFF` yapılınca mevcut
+    test paketinin HİÇBİRİ fark etmedi — hiçbir test kasıtlı bir orphan
+    (yetim) satır YAZMAYA ÇALIŞMIYORDU, yalnızca PRAGMA'nın VARLIĞINA
+    güveniliyordu. `OFF` olsa `folders.parent_id`/`owner_id`,
+    `files.folder_id`, `duplicates.user_id` gibi FK'ler sessizce
+    yaptırımsız kalır — silinen bir klasör/kullanıcıya işaret eden
+    yetim satırlar birikebilirdi.
+    """
+    import sqlite3
+
+    deger = db.fetchone("PRAGMA foreign_keys")
+    acik = deger[0] if not isinstance(deger, dict) else next(iter(deger.values()))
+    assert acik == 1, f"foreign_keys={acik} — açık olmalı"
+
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute(
+            "INSERT INTO folders (name, parent_id) VALUES (?, ?)",
+            ("yetim-klasor", 999999),
+        )
