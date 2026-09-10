@@ -678,3 +678,73 @@ def test_hmac_token_karsilastirmalari_sabit_zamanli_kaliyor() -> None:
         f"vault_manager.py'de yalnızca {len(cagrilar)} compare_digest() "
         "çağrısı var — biri kaldırılmış/düz karşılaştırmaya dönmüş olabilir."
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-10) — KDF/PIN mutasyon turu (MC-M001–MC-M012)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# B-135'ten AYRI, bağımsız bir 200'lük mutasyon kataloğu (bkz. BACKLOG.md
+# "MC-Kataloğu" başlığı). M001-M012'den ikisi (M003, M011) bu bölümdeki
+# testler eklenmeden önce hayatta kalıyordu; M004 de öyle.
+
+def test_argon2_paralellik_beklenen_degerden_sapmaz() -> None:
+    """
+    MC-M003: `_A2_PARA` yalnızca pozitifliği değil, kasıtlı seçilmiş değeri
+    (4) de sabitler. Var olan `test_argon2_paralellik_pozitif` yalnızca
+    `>= 1` kontrol ediyordu — parallelism 4'ten 1'e düşürülse (Argon2id'nin
+    güvenliğini zayıflatmasa da tempo/konfigürasyon sürüklenmesi) fark
+    etmiyordu. Mutasyon-kanıt: `_A2_PARA = 1` yapılınca KDF test alt
+    kümesindeki 148 testin HİÇBİRİ fark etmedi.
+    """
+    assert _A2_PARA == 4, (
+        f"_A2_PARA={_A2_PARA} beklenen değerden (4) sapmış — kasıtlı bir "
+        "değişiklikse bu testi güncelleyin."
+    )
+
+
+def test_derive_kek_32_byte_uretir_aes_256_icin() -> None:
+    """
+    MC-M004: `_derive_kek()`'in `hash_len=_KEY_SIZE` (32) ürettiğini
+    doğrudan doğrular. `cryptography...algorithms.AES` 16/24/32 baytlık
+    anahtarların HEPSİNİ sessizce kabul eder (AES-128/192/256) — `hash_len`
+    32'den 16'ya düşürülse KEK sessizce AES-128'e iner ve hiçbir round-trip
+    testi bunu YAKALAMAZ (round-trip 16 baytlık bir KEK'le de çalışır).
+    Mutasyon-kanıt: `hash_len=16` yapılınca KDF test alt kümesindeki 148
+    testin HİÇBİRİ fark etmedi.
+    """
+    salt = secrets.token_bytes(16)
+    kek = vault_manager._derive_kek("123456", salt)
+    assert len(kek) == 32 == _KEY_SIZE, (
+        f"_derive_kek() {len(kek)} bayt üretti — AES-256 32 bayt anahtar "
+        "bekliyor; kısalırsa şifreleme sessizce AES-128/192'ye düşer."
+    )
+
+
+def test_derive_kek_kisa_pin_icin_argon2id_atlamaz() -> None:
+    """
+    MC-M011: `_derive_kek()`'in PIN uzunluğuna bakan bir "hızlı yol"u
+    OLMADIĞINI doğrudan kanıtlar — 1 karakterlik bir PIN için bile tam
+    Argon2id parametreleriyle (time_cost/memory_cost/parallelism/Type.ID)
+    hesaplanmış sonuçla eşleşmeli. Üretim akışında `CORE.pin_policy`
+    (PIN_MIN_LEN=6, LOGIN_MIN_LEN=4) kısa PIN'leri zaten reddediyor, ama
+    `_derive_kek()`'in KENDİSİ bu korumaya güvenmemeli — savunma derinliği.
+
+    Mutasyon-kanıt: `_derive_kek()`'e `if len(pin) < 4: return sha256(...)`
+    kısayolu eklenince KDF test alt kümesindeki 148 testin HİÇBİRİ fark
+    etmedi (policy katmanı zaten kısa PIN'leri süzüyor, `_derive_kek`'i
+    doğrudan/izole çağıran hiçbir test yoktu).
+    """
+    from argon2.low_level import Type, hash_secret_raw
+
+    salt = secrets.token_bytes(16)
+    beklenen = hash_secret_raw(
+        secret=b"1",
+        salt=salt,
+        time_cost=_A2_TIME,
+        memory_cost=_A2_MEM,
+        parallelism=_A2_PARA,
+        hash_len=_KEY_SIZE,
+        type=Type.ID,
+    )
+    assert vault_manager._derive_kek("1", salt) == beklenen

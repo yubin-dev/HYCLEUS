@@ -10869,3 +10869,86 @@ küçük, daha seyrek bölümlerle (2-4 senaryo/bölüm) sürdürülmeli — zor
 zayıf bulgular üretmek yerine.
 
 M047–M060: sonraki oturumda/talepte devam edecek.
+
+## MC-Kataloğu — KDF/AES-GCM/Shamir/TOTP/TPM Mutasyon Turu (MC-M001–MC-M200), devam ediyor
+
+B-135'ten (200'lük mutasyon turu, M001-M200) TAMAMEN AYRI ve BAĞIMSIZ,
+önceden hazırlanmış sabit bir katalog — kod taraması değil, kullanıcı
+tarafından önceden yazılmış 200 spesifik kripto-primitif mutasyonu
+(Argon2id/AES-256-GCM/Shamir 2-of-3/TOTP/TPM mühürleme). Numaralandırma
+çakışmasını önlemek için `MC-M` öneki kullanılıyor (bkz. B-135'in kendi
+M001-M200'ü, farklı içerik). Aynı yöntem: gerçek mutasyon → hedef test
+dosyası → Survived ise yeni test + kırmızı→yeşil kanıt → prod kodu geri
+al. 10'ar 10'ar ilerleniyor, her 10'da bir ara özet + yerel commit (push
+yok).
+
+### Bölüm 1 (MC-M001–MC-M012) — KDF / PIN (`CORE/vault_manager.py::_derive_kek`)
+
+Test alt kümesi: `test_vault_manager.py` + `test_vault_hmac_share2.py` +
+`test_pin_policy.py` + `test_pin_rotation.py` + `test_recovery_share.py` +
+`test_recovery_share_anchor.py` (baseline 148 test).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M001 | `_A2_TIME` 3→2 | **Killed** | `test_argon2_zaman_maliyeti_owasp_minimumunun_altina_dusurulmez` (B-126'dan) zaten yakalıyor |
+| MC-M002 | `_A2_MEM` 65536→32768 | **Killed** | `test_argon2_bellek_maliyeti_owasp_minimumunun_altina_dusurulmez` zaten yakalıyor |
+| MC-M003 | `_A2_PARA` 4→1 | **Survived-Fixed** | Var olan `test_argon2_paralellik_pozitif` yalnızca `>= 1` kontrol ediyordu. `test_argon2_paralellik_beklenen_degerden_sapmaz` eklendi — kasıtlı seçilmiş değeri (4) sabitler |
+| MC-M004 | `hash_len=_KEY_SIZE` → `hash_len=16` | **Survived-Fixed** ⚠️ | Gerçek bulgu: `cryptography`'nin `algorithms.AES` sınıfı 16/24/32 baytlık anahtarların HEPSİNİ sessizce kabul ediyor — KEK 16 bayta inince şifreleme sessizce AES-128'e düşer, hiçbir round-trip testi fark etmiyordu. `test_derive_kek_32_byte_uretir_aes_256_icin` eklendi |
+| MC-M005 | `_SALT_SIZE` 16→8 | **Killed** | Header offset'lerine bağlı 32 test kırılıyor (yapısal, adanmış bir güvenlik testi değil ama gerçek kırılma) |
+| MC-M006 | `Type.ID` → `Type.I` | **Killed** | `test_argon2_tipi_id_olmali` zaten yakalıyor |
+| MC-M007 | Salt tüm kasalarda sabit (`bytes(_SALT_SIZE)`) | **Killed** | `test_iki_farkli_registration_farkli_salt_ve_farkli_kek_uretir` zaten yakalıyor |
+| MC-M008 | Salt = `SHA256(PIN)[:16]` | **Killed** | Aynı test — iki kayıt aynı PIN kullanıyor, salt'lar eşitleniyor, assertion kırılıyor |
+| MC-M009 | Hash karşılaştırma `compare_digest` → `==` | **Kapsam dışı** | Bu mimaride PIN doğruluğu ayrı bir "hash karşılaştırma" ile değil, AES-GCM AEAD tag doğrulamasıyla (decrypt başarılı/`InvalidTag`) kontrol ediliyor — mutasyonun hedeflediği kod deseni yok. Var olan `compare_digest` çağrıları (HMAC bütünlüğü, blacklist, token_id) zaten `test_hmac_token_karsilastirmalari_sabit_zamanli_kaliyor` ile korunuyor |
+| MC-M010 | Metadata'ya `hash[:8]` kırpılmış yaz | **Survived — kontrol yok** | Hedef kod yok: KEK/hash hiçbir yerde metadata'ya yazılmıyor (grep doğrulandı) — ama bunun böyle KALACAĞINI garanti eden bir yapısal test de yok. Uygulama boşluğu → B-138 |
+| MC-M011 | PIN <4 karakterse Argon2'yi atla ("hızlı yol") | **Survived-Fixed** | `_derive_kek()`'in kendisi PIN uzunluğuna bakmıyor (iyi) ama bunu izole doğrudan kanıtlayan test yoktu — `CORE.pin_policy` (PIN_MIN_LEN=6/LOGIN_MIN_LEN=4) üst katmanda filtrelese de savunma derinliği eksikti. `test_derive_kek_kisa_pin_icin_argon2id_atlamaz` eklendi |
+| MC-M012 ★ | Zeroize kaldır — kilit sonrası türetilmiş anahtar bellekte kalır | **Kapsam dışı (bu tur için)** | Gerçek ve ÖNCEDEN VAR OLAN bir tasarım boşluğu — `kek`/`master_key` `vault_manager.py`'de her yerde değişmez `bytes`, asla `bytearray`'e çevrilip `CORE.crypto.zero_bytearray()` (ctypes.memset) ile sıfırlanmıyor; `crypto.py`'nin akış şifreleme katmanı bu deseni zaten kullanıyor ama `vault_manager.py` kullanmıyor. Bu bir "mutasyonla üretilen" regresyon değil — kodun ŞU ANKİ hâli. Düzeltmek üretim kodu değişikliği gerektiriyor (bytes→bytearray geçişi, tüm `kek`/`master_key` çağrı zincirinde) — bu mutasyon turunun kapsamı (test yazmak) dışında → B-139 |
+
+**Bölüm 1 özet:** Killed 6 (M001,M002,M005,M006,M007,M008), Survived-Fixed
+3 (M003,M004,M011 — M004 gerçek güvenlik bulgusu), Kapsam dışı 2 (M009,
+M012★→B-139), Kontrol yok 1 (M010→B-138). Üretim kodunda net değişiklik
+YOK — hepsi mutasyon-kanıtlı yeni testler. Yeni testler:
+`tests/test_vault_manager.py` (+3: `test_argon2_paralellik_beklenen_
+degerden_sapmaz`, `test_derive_kek_32_byte_uretir_aes_256_icin`,
+`test_derive_kek_kisa_pin_icin_argon2id_atlamaz`). Tam KDF alt kümesi:
+151 passed.
+
+## B-138 — Vault metadata'sının hiçbir zaman KEK/hash türevi taşımadığını garanti eden yapısal test yok
+
+**Durum:** Açık — düşük öncelik (uygulama boşluğu, mevcut bir açık değil).
+**Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M010) — hedef kod mutasyonla
+üretilemedi çünkü böyle bir kod yolu hiç yok; `CORE/vault_manager.py`'de
+KEK veya ondan türetilmiş hiçbir değer (`hash[:8]` vb.) metadata/plaintext
+alanına yazılmıyor (grep ile doğrulandı: `kek\[`, `hash\[:8\]`, `kek_hash`
+desenleri sıfır eşleşme).
+
+**Öneri:** İleride bir regresyon önlemek için `vault_manager.py`'nin
+plaintext bölümünün (`s1_len || share_1 || role`) yalnızca bu üç alanı
+içerdiğini doğrulayan bir yapısal/format testi eklenebilir — ör. bilinen
+bir `kek`'in baytlarının şifrelenmemiş vault header'ında/plaintext'inde
+asla görünmediğini kanıtlayan bir "negative" test. Şu an aciliyeti yok,
+zorlanmadı.
+
+## B-139 ★ — `kek`/`master_key` bellek zeroize edilmiyor (`CORE/vault_manager.py`)
+
+**Durum:** Açık — orta öncelik (gerçek tasarım boşluğu, üretim kodu
+değişikliği gerektiriyor — bu mutasyon turunun kapsamı dışında).
+**Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M012 ★) — kod incelemesiyle,
+mutasyona gerek kalmadan: şu anki kod ZATEN bu durumda.
+
+`CORE/crypto.py`'nin akış şifreleme katmanı hassas bytearray'leri
+`zero_bytearray()` (ctypes.memset) ile açıkça sıfırlıyor (bkz. crypto.py
+satır ~138-145, ~469, ~596, ~655). `CORE/vault_manager.py` ise `kek`
+(`_derive_kek()` çıktısı) ve `master_key`'i HER YERDE değişmez `bytes`
+olarak tutuyor — `create_vault`, `open_vault`, `rotate_pin`,
+`recover_master_key` dahil hiçbir çağrı zincirinde bu değerler
+`bytearray`'e çevrilip kullanım sonrası sıfırlanmıyor. Python'ın çöp
+toplayıcısına güveniliyor; bellek dump'ı/swap/core dump senaryolarında
+KEK/master_key kilit sonrası bir süre daha bellekte kalabilir.
+
+**Öneri:** `_derive_kek()` çıktısını ve `master_key`'i `bytearray`'e
+çevirip kullanım sonrası (encryptor/decryptor `finalize()` sonrası, ilgili
+`try/finally` blokları içinde) `CORE.crypto.zero_bytearray()` ile
+sıfırlamak — `crypto.py`'deki mevcut desenle tutarlı. Kapsamı: 6 çağrı
+noktası (`create_vault`, `open_vault`, `rotate_pin` ×2, `recover_vault`
+benzeri, `_derive_kek` çağıran her yer). Bu turun kapsamı (test yazmak)
+dışında olduğu için burada BIRAKILDI, ayrı bir görev olarak ele alınmalı.
