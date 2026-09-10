@@ -461,6 +461,30 @@ def test_is_descendant_ebeveyn_kendi_cocugunun_alt_agacinda_degil(db):
     assert is_descendant(db, ust, alt) is False
 
 
+@pytest.mark.timeout(3)
+def test_is_descendant_elle_bozulmus_dongude_sonsuz_donguye_girmiyor(db):
+    """
+    `move_folder()`'ın kendi döngü koruması sağlamken `parent_id` zinciri
+    bozulamaz — ama `gorulen` kümesi tam olarak BUNUN İÇİN var: elle DB
+    düzenlemesiyle (ya da başka bir hatayla) oluşmuş, uygulamanın kendi
+    guard'ını hiç görmeden yazılmış bir döngüye karşı savunma.
+    Bu senaryo normal akışta hiç oluşmuyor, o yüzden `gorulen` kümesi
+    kaldırılsa bile mevcut hiçbir test bunu YAKALAMAZ — burada `parent_id`
+    zincirini `move_folder()`'ı BYPASS edip doğrudan SQL ile bozarak
+    kanıtlıyoruz: fonksiyon sonsuz döngüye girmeden (zaman aşımı olmadan)
+    dönüyor.
+    """
+    uid = _add_user(db)
+    a = create_folder(db, "A", owner_id=uid)
+    b = create_folder(db, "B", owner_id=uid, parent_id=a)
+    diger = create_folder(db, "Alakasiz", owner_id=uid)
+    # Guard'ı bypass edip A→B→A döngüsü kuruyoruz (move_folder() bunu
+    # asla üretmez, ama bir veri bozulmasını simüle ediyoruz).
+    db.execute("UPDATE folders SET parent_id = ? WHERE id = ?", (b, a))
+
+    assert is_descendant(db, a, diger) is False
+
+
 # ── move_folder() — döngü koruması GERÇEKTEN reddediyor mu ───────────────────
 
 

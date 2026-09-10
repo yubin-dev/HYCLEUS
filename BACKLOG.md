@@ -10573,4 +10573,78 @@ Yeni/güncellenen test dosyaları: `tests/test_backup.py` (+1),
 hepsi zaten doğru davranan ama test edilmemiş yollar (mutasyon-kanıtlı,
 kırmızı→yeşil doğrulandı, sonra üretim kodu istisnasız geri alındı).
 
-M011–M020: devam edecek.
+## B-136 — `CORE.usb_tokens.token_kayitlarini_getir()` LIKE deseni HWID'deki `_`/`%` ile ÇARPIŞABİLİR
+
+**Durum:** Açık — karar bekliyor (kapsam dışı, SQL değişikliği gerektiriyor).
+**Öncelik:** Düşük-orta (yalnızca BİLGİLENDİRME alanlarını — rol/son giriş
+görüntüsünü — etkiliyor; erişim kontrolü BUNA dayanmıyor, gerçek ince
+taneli rol vault dosyasının içinde saklanıyor, bkz. `CORE/usb_takeover.py`
+docstring'i).
+**Bulundu:** 2026-09-10 (200'lük tur, M020) — mutasyon değil, GERÇEK bir
+kod yolu, doğrudan kod incelemesiyle bulundu ve `sqlite3` ile canlı
+kanıtlandı.
+
+`token_kayitlarini_getir()` (`CORE/usb_tokens.py:71-78`) rol/son-giriş
+bilgisini audit_log'dan şu desenle arıyor:
+
+```sql
+a.detail LIKE 'hwid=' || u.hwid || '%'
+```
+
+`u.hwid` ham hâliyle bir SQL `LIKE` deseninin PARÇASI olarak string
+birleştirmeyle kullanılıyor — parametreli değer olarak DEĞİL, desenin
+KENDİSİ olarak. `CORE/usb_manager.py::_sanitize_hwid()` HWID'i
+`[a-zA-Z0-9_-]` kümesine indiriyor (`%` temizleniyor) ama **`_` alt
+çizgiyi bilerek İZİN VERİYOR** — ve `_`, `LIKE`'ın "herhangi BİR karakter"
+joker'i.
+
+Canlı kanıt (bu oturumda çalıştırıldı):
+
+```python
+>>> conn.execute("INSERT INTO t VALUES ('USB_001', 'hwid=USB_001 role=admin')")
+>>> conn.execute("INSERT INTO t VALUES ('USBX001', 'hwid=USBX001 role=readonly')")
+>>> conn.execute("SELECT detail FROM t WHERE detail LIKE 'hwid=' || ? || '%'", ('USB_001',)).fetchall()
+[('hwid=USB_001 role=admin',), ('hwid=USBX001 role=readonly',)]
+```
+
+`USB_001` için sorgu yapıldığında `USBX001`'in (tamamen farklı bir HWID)
+audit kaydı da eşleşiyor; `ORDER BY a.timestamp DESC LIMIT 1` hangisinin
+gerçekten döneceğini zaman damgasına bırakıyor — yani USB Yönetim
+Paneli'nde ya da Profil sayfasında bir cihazın rolü/son giriş zamanı
+YANLIŞ bir cihazınkiyle karışabilir, alt çizgi içeren bir HWID varsa.
+
+Neden kod bu turda DEĞİŞTİRİLMEDİ: düzeltme bir SQL `ESCAPE` cümlesi
+(`LIKE ... ESCAPE '\'` + `u.hwid`'i birleştirmeden önce `_`/`%`'i kaçırma)
+ya da sorguyu tamamen `GLOB`/farklı bir eşleştirmeye çevirmek gerektiriyor
+— ikisi de mevcut `parse_field()` ayrıştırma sözleşmesini etkileyebilir
+ve bir tasarım kararı istiyor. Kod tabanında bu TAM desenin (`LIKE ... ||
+hwid || ...`) TEK oluştuğu yer burası (grep ile doğrulandı) — B-129'daki
+Bandit B608 f-string bulgusuyla AYNI SINIF değil (o SQL enjeksiyonu, bu
+LIKE joker çarpışması) ama ikisi de "ham girdi SQL desenine/sorgusuna
+sızıyor" ailesinden.
+
+### Bölüm 2 (M011–M020) — özet
+
+| # | Hedef | Bulgu/Mutasyon | Sonuç |
+|---|-------|-----------------|-------|
+| M011 | `CORE/folders.py::is_descendant()` — elle bozulmuş `parent_id` döngüsü | `gorulen` küme koruması kaldırıldı | **Survived-Fixed** — `test_is_descendant_elle_bozulmus_dongude_sonsuz_donguye_girmiyor` (pytest-timeout ile gerçek sonsuz döngü kanıtlandı) |
+| M012 | `CORE/session_user.py::oturum_yetkisi_gecerli_mi()` — kara liste dalı | Kontrol kaldırıldı | **Survived-Fixed** — fonksiyon HİÇ doğrudan test edilmiyordu; 5 yeni doğrudan test eklendi |
+| M013 | `CORE/usb_takeover.py` — `new_hwid` çakışma kontrolü | Yalnızca `status='approved'` satırlara bakacak şekilde zayıflatıldı | **Survived-Fixed** — mutasyon ayrıca `discard_vault(old_hwid)`'in DB UNIQUE ihlalinden ÖNCE, geri alınamaz biçimde çalıştığını da ortaya çıkardı (veri kaybı riski) |
+| M014 | `CORE/setup_usb.py::main()` — `--reset` PIN doğrulama kapısı | `except Exception: _abort(...)` kaldırıldı | **Survived-Fixed** — `main()` hiç doğrudan test edilmiyordu; yeni `tests/test_setup_usb.py` |
+| M015 | `CORE/registration.py::register_new_user()` — TOTP yazma hatasında `discard_vault` | Geri alma kaldırıldı | **Survived-Fixed** — `users` INSERT hatası için eşdeğeri test edilmişti (B-061), TOTP adımı için yoktu |
+| M016 | `CORE/setup_usb.py::main()` — mevcut vault üzerine yazma onayı | Onay kontrolü kaldırıldı | **Survived-Fixed** — aynı `tests/test_setup_usb.py` |
+| M017 | `CORE/session_user.py::tekil_hwid_satiri()` — çoklu satır guard'ı (B-060) | Kontrol kaldırıldı | **Survived-Fixed** — UNIQUE indeks testte elle kaldırılarak (eski/bozuk DB simülasyonu) tetiklendi |
+| M018 | `CORE/usb_manager.py::get_usb_hwid()` — `DEV_MODE and not hasattr(sys,"frozen")` | Frozen kontrolü etkisizleştirildi | **Survived-Fixed** — paketlenmiş bir derleme DEV_MODE'u yanlışlıkla/kötü niyetle devrede bulursa gerçek donanım yerine sahte HWID kabul ederdi |
+| M019 | `CORE/usb_manager.py::get_usb_mount_root()` — aynı kontrol, ikinci çağrı noktası | Aynı mutasyon | **Survived-Fixed** |
+| M020 | `CORE/usb_tokens.py::token_kayitlarini_getir()` — LIKE deseni | (mutasyon değil, gerçek bulgu) | **→ BACKLOG B-136** |
+
+9 Survived-Fixed, 1 → BACKLOG (gerçek bulgu, kod DEĞİŞTİRİLMEDİ).
+
+Yeni/güncellenen test dosyaları: `tests/test_folders.py` (+1),
+`tests/test_session_user.py` (+7), `tests/test_usb_takeover.py` (+1),
+`tests/test_setup_usb.py` (YENİ, 3 test), `tests/test_authz_invariants.py`
+(+1), `tests/test_usb_manager.py` (+2), `tests/test_usb_mount_root.py` (+1).
+Üretim kodunda net değişiklik YOK (B-136 hariç, o kasıtlı olarak
+değiştirilmedi).
+
+M021–M030: devam edecek.

@@ -20,7 +20,9 @@ from CORE.session_user import (
     PAROLASIZ,
     VAULT_USERNAME_PREFIX,
     db_role,
+    oturum_yetkisi_gecerli_mi,
     sync_session_user,
+    tekil_hwid_satiri,
     vault_username,
 )
 
@@ -42,6 +44,99 @@ def _eylem_var(db, action: str) -> bool:
     return db.fetchone(
         "SELECT id FROM audit_log WHERE action = ? LIMIT 1", (action,)
     ) is not None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 0. oturum_yetkisi_gecerli_mi() — B-064/B-066, doğrudan (Qt'siz) testler
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Bu fonksiyon şimdiye kadar yalnızca Qt pencereli entegrasyon testleri
+# (test_admin_pages_construction_guard.py, test_lock_overlay.py) üzerinden,
+# yalnızca ROL DÜŞÜŞÜ senaryosuyla dolaylı sınanıyordu. Kara liste dalı
+# (`token["blacklisted"]`) hiçbir testte hiç tetiklenmemişti.
+
+
+def test_oturum_yetkisi_normal_durumda_gecerli(db):
+    _kayit(db, "gecerli.kullanici", _HWID, role="admin")
+    assert oturum_yetkisi_gecerli_mi(db, _HWID, "Yönetici") == (True, "")
+
+
+def test_oturum_yetkisi_kayit_yoksa_gecersiz(db):
+    gecerli, sebep = oturum_yetkisi_gecerli_mi(db, "HIC-KAYITLI-OLMAYAN-HWID", "Yönetici")
+    assert gecerli is False
+    assert "mevcut değil" in sebep
+
+
+def test_oturum_yetkisi_status_onayli_degilse_gecersiz(db):
+    uid = _kayit(db, "beklemede.kullanici", _HWID, role="user")
+    db.execute("UPDATE users SET status = 'pending' WHERE id = ?", (uid,))
+    gecerli, sebep = oturum_yetkisi_gecerli_mi(db, _HWID, "Personel")
+    assert gecerli is False
+    assert "pending" in sebep
+
+
+def test_oturum_yetkisi_rol_dusunce_gecersiz(db):
+    _kayit(db, "dusurulen.yonetici", _HWID, role="admin")
+    db.execute("UPDATE users SET role = 'user' WHERE hwid = ?", (_HWID,))
+    gecerli, sebep = oturum_yetkisi_gecerli_mi(db, _HWID, "Yönetici")
+    assert gecerli is False
+    assert "Yetki düzeyi değişti" in sebep
+
+
+def test_oturum_yetkisi_kara_listeye_alinca_gecersiz(db):
+    """
+    B-064/B-066'nın asıl konusu: USB fiziksel olarak takılı kalsa bile
+    (bu fonksiyon buna bakmıyor) bir yönetici o HWID'i kara listeye
+    aldığında AÇIK oturum artık geçerli SAYILMAMALI.
+    """
+    _kayit(db, "sonradan.kara.listeye", _HWID, role="user")
+    db.execute(
+        "INSERT INTO usb_tokens (hwid, share_2, blacklisted) VALUES (?, 'x', 1)",
+        (_HWID,),
+    )
+    gecerli, sebep = oturum_yetkisi_gecerli_mi(db, _HWID, "Personel")
+    assert gecerli is False
+    assert "kara liste" in sebep
+
+
+def test_tekil_hwid_satiri_coklu_satirda_gorunur_bicimde_cokuyor(db):
+    """
+    B-060'ın canlı kanıtı: `users.hwid` üzerindeki kısmi UNIQUE indeks
+    (DB/migrations.py::_m23_users_hwid_unique) normalde iki satırın aynı
+    HWID'e bağlanmasını engeller. Bu test, o indeksi henüz görmemiş ESKİ
+    bir veritabanını (ya da ileride bozulan bir varsayımı) simüle ediyor:
+    indeksi elle kaldırıp AYNI HWID'e bilerek iki satır yazıyoruz —
+    `tekil_hwid_satiri()` SESSİZCE `fetchone()`'un ilk sonucunu kabul
+    etmek yerine GÖRÜNÜR biçimde RuntimeError fırlatmalı.
+    """
+    db.conn.execute("DROP INDEX IF EXISTS idx_users_hwid_unique")
+    db.conn.commit()
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid) "
+        "VALUES ('kurban', 'x', 'admin', 'approved', ?)",
+        (_HWID,),
+    )
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid) "
+        "VALUES ('saldirgan', 'x', 'user', 'pending', ?)",
+        (_HWID,),
+    )
+
+    with pytest.raises(RuntimeError, match="2 satir"):
+        tekil_hwid_satiri(db, _HWID, "id, username")
+
+
+def test_oturum_yetkisi_token_yoksa_veya_temizse_gecerli(db):
+    """usb_tokens satırı hiç yoksa ya da blacklisted=0 ise engellenmemeli."""
+    _kayit(db, "token_yok", _HWID, role="user")
+    assert oturum_yetkisi_gecerli_mi(db, _HWID, "Personel") == (True, "")
+
+    _kayit(db, "token_temiz", _HWID2, role="user")
+    db.execute(
+        "INSERT INTO usb_tokens (hwid, share_2, blacklisted) VALUES (?, 'x', 0)",
+        (_HWID2,),
+    )
+    assert oturum_yetkisi_gecerli_mi(db, _HWID2, "Personel") == (True, "")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

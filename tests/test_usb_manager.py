@@ -147,3 +147,32 @@ def test_linux_bos_seri_uuid_yedegine_dusuyor(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(hwid_probe, "read_linux", lambda: [_kimlik(None)])
     monkeypatch.setattr(hwid_probe, "read_macos", lambda: [])
     assert get_usb_hwid() is None
+
+
+# ── DEV_MODE, yalnızca DONMAMIŞ (paketlenmemiş) çalışırken geçerli ───────────
+#
+# `if DEV_MODE and not hasattr(sys, "frozen"):` — paketlenmiş bir EXE'de
+# `sys.frozen` ayarlı olur (PyInstaller vb.). Bu kontrolün amacı: dağıtılan
+# bir .exe, ortamda yanlışlıkla/kötü niyetle `HYCLEUS_DEV_MODE=true`
+# ayarlansa bile GERÇEK USB donanımı gerektirmeye devam etmeli — sahte
+# `DEV-HWID-1234` asla üretime sızmamalı.
+
+
+def test_dev_mode_donmus_yapida_GECERSIZ_gercek_donanima_dusuyor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(usb_manager, "DEV_MODE", True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(hwid_probe, "read_linux", lambda: [])
+    monkeypatch.setattr(hwid_probe, "read_macos", lambda: [])
+
+    assert get_usb_hwid() != usb_manager._DEV_HWID
+    assert get_usb_hwid() is None
+
+
+def test_dev_mode_donmamis_yapida_hala_gecerli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Karşı kanıt: donmamış (normal `python ...` çalıştırması) DEV_MODE
+    hâlâ kısayolu vermeli — yanlış-pozitif değil."""
+    monkeypatch.setattr(usb_manager, "DEV_MODE", True)
+    assert not hasattr(sys, "frozen")
+    assert get_usb_hwid() == usb_manager._DEV_HWID

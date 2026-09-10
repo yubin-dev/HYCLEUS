@@ -157,6 +157,24 @@ def test_dev_modeda_gercek_donanim_aranmiyor(monkeypatch: pytest.MonkeyPatch) ->
     assert get_usb_mount_root(usb_manager._DEV_HWID) is None
 
 
+def test_dev_mode_donmus_yapida_gercek_donanima_bakiyor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    `if DEV_MODE and not hasattr(sys, "frozen"):` — yukarıdaki test
+    yalnızca "DEV_MODE açıkken donanıma bakılmıyor" iddiasını sınıyor;
+    bu test onun EŞLEŞTİĞİ diğer yarıyı sınıyor: paketlenmiş (frozen)
+    bir derlemede DEV_MODE devrede olsa bile kısayol devre dışı kalmalı
+    ve gerçek WMI sorgusu çalışmalı.
+    """
+    monkeypatch.setattr(usb_manager, "DEV_MODE", True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    disk = _usb_diski(serial="GERCEK-DONANIM-SERI", mount_letter="F:")
+    monkeypatch.setitem(sys.modules, "wmi", _SahteWMI([disk]))
+
+    assert get_usb_mount_root("GERCEK-DONANIM-SERI") == Path("F:\\")
+
+
 def test_wmi_yoksa_hata_firlatmiyor_none_donuyor(monkeypatch: pytest.MonkeyPatch) -> None:
     """`wmi` paketi hiç kurulu değilse (Linux, wmi eksik) sessizce None —
     `get_usb_hwid()` ile AYNI "best-effort, hata değil" disiplini."""

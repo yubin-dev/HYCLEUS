@@ -168,6 +168,34 @@ def test_kesinti_sonrasi_ne_approved_satir_ne_yarim_vault_kaliyor(
         vault_manager.open_vault(hwid, _PIN)
 
 
+def test_totp_kaydi_basarisiz_olursa_da_vault_geri_aliniyor(
+    db, kasa_dizini, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Yukarıdaki testin ERKEN adımdaki eşdeğeri: `users` INSERT'inden ÖNCE
+    gelen TOTP-kasaya-yazma adımı başarısız olursa da aynı disiplin
+    uygulanmalı — vault geri alınmalı, yarım bir HWID (vault var, ne
+    TOTP ne `users` satırı var) diskte kalmamalı.
+    """
+    hwid = "USB-INV-006"
+
+    def patlayan_store(hwid_arg, secret):
+        raise RuntimeError("simüle edilen kasa hatası")
+
+    monkeypatch.setattr(secret_store, "store_totp_secret_for_hwid", patlayan_store)
+
+    with pytest.raises(RuntimeError):
+        register_new_user(
+            db, hwid=hwid, username="totp-kesintili", pin=_PIN, role="Standart",
+        )
+
+    assert db.fetchone("SELECT * FROM users WHERE hwid = ?", (hwid,)) is None
+    vault_yolu = vault_manager._VAULT_DIR / f"{hwid}.hclv"
+    assert not vault_yolu.exists(), "TOTP kesintisinde vault geri alınmadı"
+    with pytest.raises(FileNotFoundError):
+        vault_manager.open_vault(hwid, _PIN)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # B-060'ın eski PoC'u — artık başarısız olmalı
 # ══════════════════════════════════════════════════════════════════════════════

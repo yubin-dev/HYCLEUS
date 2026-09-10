@@ -197,6 +197,41 @@ def test_yeni_hwid_zaten_baskasina_baGLiysa_reddedilir(db, kasa_dizini):
     ]
 
 
+def test_yeni_hwid_BEKLEYEN_bir_hesaba_baGLiysa_da_reddedilir(db, kasa_dizini):
+    """
+    Çakışma kontrolü yalnızca 'approved' satırlara bakarsa (zayıflatılmış
+    hâli), `new_hwid` bekleyen (henüz onaylanmamış) bir kayda bağlıysa
+    kontrolden GEÇER ve devralma devam eder. Bu ÖZELLİKLE tehlikelidir:
+    `discard_vault(old_hwid)` GERİ ALINAMAZ biçimde eski vault'u siler,
+    ve ancak ONDAN SONRA gelen `UPDATE users SET hwid=...` adımı
+    `users.hwid` üzerindeki UNIQUE indekse (B-060) çarpıp patlar — yani
+    eski vault YOK OLUR ama devralma yine de BAŞARISIZ kalır. Kontrol
+    durumdan (approved/pending) BAĞIMSIZ olmalı; hiçbir yan etki
+    başlamadan EN BAŞTA reddetmeli.
+    """
+    share_3 = _admin_kur_ve_kurtarma_parcasi_al(db, kasa_dizini)
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid) "
+        "VALUES ('bekleyen_kullanici', 'x', 'user', 'pending', ?)",
+        (_HWID_YENI,),
+    )
+
+    with pytest.raises(TakeoverError, match="zaten başka bir hesaba"):
+        takeover_usb(
+            db, old_hwid=_HWID_ESKI, new_hwid=_HWID_YENI,
+            recovery_share=share_3, new_pin=_PIN_YENI, old_pin=_PIN_ESKI,
+        )
+
+    # Hiçbir yan etki başlamamış olmalı: eski vault hâlâ açılabiliyor,
+    # users tablosu değişmemiş.
+    _rol, _key = open_vault(_HWID_ESKI, _PIN_ESKI)
+    satirlar = db.fetchall("SELECT username, hwid, status FROM users ORDER BY id")
+    assert [dict(r) for r in satirlar] == [
+        {"username": "admin1", "hwid": _HWID_ESKI, "status": "approved"},
+        {"username": "bekleyen_kullanici", "hwid": _HWID_YENI, "status": "pending"},
+    ]
+
+
 def test_yanlis_kurtarma_parcasi_reddedilir_DB_DEGISMEZ(db, kasa_dizini):
     _admin_kur_ve_kurtarma_parcasi_al(db, kasa_dizini)
 
