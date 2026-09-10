@@ -10217,3 +10217,50 @@ Kapatma seçenekleri (bu turda YAZILMADI):
    only) yapmak — RBAC katmanına bile güvenmeyen, daha güçlü bir garanti.
 2 numaralı seçenek daha güçlü ama şema/migration değişikliği gerektiriyor
 — ikisi de kullanıcı kararı bekliyor.
+
+### Bölüm 7 — Giriş, PIN Rotasyonu & Kimlik Doğrulama (`UI/login_dialog.py`, `CORE/rate_limit.py`, `CORE/recovery_share.py`, `CORE/vault_manager.py`)
+
+| No | Senaryo (özet) | Sonuç | Kanıt/Not |
+|----|-----------------|-------|-----------|
+| 86 | 6 hane politikasında 4 haneli PIN'le girişe izin ver | Kanıtlanmış-Eşdeğer / mimari karar | `LOGIN_MIN_LEN=4` BİLEREK `PIN_MIN_LEN=6`'dan farklı — eski (politika-öncesi) 4-5 haneli PIN sahiplerinin giriş yapabilmesi KASITLI bir geriye dönük uyumluluk (yeni PIN'ler `validate_new_pin()` ile hâlâ 6+ zorunlu). Zaten `test_pin_policy.py`'de `LOGIN_MIN_LEN == 4` olarak sabitlenmiş |
+| 87 | PIN rotasyon diyaloğunu atla | Killed | `_on_login()`'deki `yenileme_gerekli(pin)` kontrolü atlatılınca 5 test düştü |
+| 88 | Hatalı PIN deneme sayacını artırma | Killed | `CORE/rate_limit.py::record_failure()`'daki `+ 1` kaldırılınca 9 test düştü |
+| 89 | Kilit süresini 0 yap | Killed | `BACKOFF_SECONDS` sıfırlanınca 11 test düştü (`test_backoff_for_pure_function` dahil) |
+| 90 | Base32 kurtarma parçasında geçersiz karakterleri (0/1/8/9) kabul et | **Survived-Fixed** | `decode_share()`'e "yardımsever" bir 0→O/1→I/8→B ön-çevirisi eklenince 26 test hiçbiri fark etmedi (gerçek paylar bu rakamları zaten hiç üretmediği için round-trip testleri etkilenmiyordu). Yeni parametrize test her bir geçersiz rakamı doğrudan deniyor |
+| 91 | "KRM-" önek kontrolünü kaldır | Uygulanamaz | Böyle ayrı bir önek kontrolü hiç yok — doğrulama TAM STRING eşitliği (`girilen_kod != gercek_kod`, DB'deki TEK üretilmiş kodla); "KRM-" yalnızca `generate_referans_id()`'nin ürettiği kodun bir parçası, ayrıca doğrulanan bir alan değil |
+| 92 | Yapıştırılan 6 haneli PIN'in son hanesini kes | Killed | `_dagit()`'teki dilim sınırı 1 kaydırılınca 10 test düştü |
+| 93 | Boş kullanıcı adıyla kayda izin ver | **Survived-Fixed** | Hem UI kontrolü (`if not username`) hem `len(username) < 3` gevşetilince (`0 < len < 3`) test_kayit_ekrani.py'nin 37 testi hiçbiri fark etmedi (test hep dolu kullanıcı adıyla çalışıyordu). DAHA CİDDİ bir buluntu: `CORE.registration.register_new_user()`'ın KENDİSİ `username=""` ile doğrudan çağrıldığında da GERÇEKTEN başarıyla bir kullanıcı oluşturuyor — CORE katmanında hiçbir doğrulama yok, tek savunma UI'daki bu kontrol. Yeni test UI'ı kilitliyor; CORE'a ikinci bir savunma katmanı eklenmesi B-133'e not düşüldü |
+| 94 | TOTP zaman penceresini ±1'den ±10'a çıkar | **Survived-Fixed** | `_on_login()`'deki `valid_window=1` → `10` yapılınca 54 test hiçbiri fark etmedi — `test_authz_invariants.py`'nin KENDİ TOTP testleri `pyotp.TOTP(...).verify(..., valid_window=1)`'i KENDİ sabit değeriyle çağırıyordu, `_on_login()`'in gerçekte ne kullandığını hiç ölçmüyordu. Yeni test AST ile kaynaktaki `valid_window=` değerini doğrudan doğruluyor |
+| 95 | PIN/HMAC karşılaştırmasında `hmac.compare_digest` yerine `==` | **Survived-Fixed** | Fonksiyonel testler bunu YAPISAL OLARAK yakalayamaz (ikisi de aynı boole sonucu, yalnızca zamanlama farklı) — `CORE/vault_manager.py`'deki 4 `compare_digest()` çağrısından biri düz `!=`'e çevrilince 95 test hiçbiri fark etmedi. Yeni AST-tabanlı test çağrı SAYISINI (≥4) sabitliyor, deponun `bandit`/`nosec` sayım-sabitleme geleneğiyle aynı yöntem |
+
+**Özet Bölüm 7:** 10 senaryo → 4 Killed, 4 Survived-Fixed (yeni testler:
+`test_decode_gecersiz_base32_rakamini_SESSIZCE_duzeltmiyor`,
+`test_bos_kullanici_adiyla_kayit_REDDEDILIYOR`,
+`test_login_dialog_totp_penceresi_dar_tutuluyor`,
+`test_hmac_token_karsilastirmalari_sabit_zamanli_kaliyor`), 1
+Kanıtlanmış-Eşdeğer (4 haneli PIN girişi kasıtlı geriye dönük uyum), 1
+Uygulanamaz (referans kodu önek değil tam-string doğrulaması kullanıyor).
+Bir gerçek bulgu B-133'e yazıldı (CORE.registration.register_new_user()'da
+username için hiç doğrulama yok — kod bu turda YAZILMADI).
+`tests/test_recovery_share.py`: 26 → 30, `tests/test_kayit_ekrani.py`:
+11 → 12, `tests/test_authz_invariants.py`: 20 → 21,
+`tests/test_vault_manager.py`: 48 → 49.
+
+## B-133 — `CORE.registration.register_new_user()` `username` parametresinde hiçbir doğrulama yapmıyor
+
+**Durum:** Açık — karar bekliyor (savunma-derinliği, kapsam dışı).
+**Öncelik:** Düşük (tek savunma katmanı UI'da VAR ve çalışıyor; bu madde
+CORE katmanına İKİNCİ, bağımsız bir katman eklemek isteyip istemediğimiz).
+**Bulundu:** 2026-09-10 (B-126 senaryo 93).
+
+Gerçek deneyle doğrulandı: `register_new_user(db, hwid=..., username="",
+pin="gecerlipin123", role="Standart")` GERÇEKTEN başarılı dönüyor,
+`users` tablosuna `username=''` bir satır yazıyor. Tek savunma
+`UI/login_dialog.py::_on_register()`'ın kendi `if not username`/`len(username)
+< 3` kontrolleri — CORE fonksiyonunun kendisi hiçbir uzunluk/boşluk
+kontrolü yapmıyor. Bugün `register_new_user()`'ın TEK çağıranı bu UI yolu
+olduğu için pratikte sömürülemez, ama gelecekte bir CLI aracı ya da başka
+bir giriş noktası bu fonksiyonu doğrudan çağırırsa (B-058/B-067'nin CLI
+bayrağı emsalinde olduğu gibi) aynı korumadan geçmeyecektir. Kod bu turda
+YAZILMADI — CORE katmanına bir doğrulama eklemek, imzasının/istisna
+sözleşmesinin genişlemesi anlamına geliyor ve kullanıcı kararı gerektiriyor.

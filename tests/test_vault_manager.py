@@ -11,6 +11,7 @@ DB veya dosya sistemi kullanılmaz — saf kripto katmanı sınanır.
 """
 from __future__ import annotations
 
+import ast
 import secrets
 import sys
 from pathlib import Path
@@ -643,3 +644,37 @@ def test_lagrange_ayni_x_koordinatiyla_sessizce_sifir_donmuyor() -> None:
     """
     with pytest.raises((ValueError, ZeroDivisionError)):
         vault_manager._lagrange_at([(1, 111), (1, 222)], 0)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-126 Bölüm 7 (2026-09-10) — sabit-zamanlı karşılaştırma
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_hmac_token_karsilastirmalari_sabit_zamanli_kaliyor() -> None:
+    """
+    B-126 senaryo 95: HMAC/token karşılaştırmalarının hepsi `hmac.
+    compare_digest()` ile yapılmalı — düz `==`/`!=` DEĞİL. Fonksiyonel
+    testler bu farkı YAKALAYAMAZ (ikisi de aynı boolean sonucu üretir,
+    yalnızca ZAMANLAMA farklı) — bu yüzden kaynağı doğrudan sayıyoruz.
+
+    Mutasyon-kanıt: `_stdlib_hmac.compare_digest(expected_hmac,
+    stored_hmac)` çağrısı düz `expected_hmac != stored_hmac`'e
+    çevrilince tests/test_vault_manager.py + test_vault_hmac_share2.py +
+    test_blacklist.py + test_usb_weak_binding.py (95 test) hiçbiri fark
+    etmedi.
+    """
+    kaynak = Path(vault_manager.__file__).read_text(encoding="utf-8")
+    agac = ast.parse(kaynak)
+
+    cagrilar = [
+        n for n in ast.walk(agac)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "compare_digest"
+    ]
+    # Bugün 4 çağrı var (vault HMAC, blacklist reddi, token_id x2).
+    # Sayı düşerse biri sessizce düz karşılaştırmaya dönmüş olabilir.
+    assert len(cagrilar) >= 4, (
+        f"vault_manager.py'de yalnızca {len(cagrilar)} compare_digest() "
+        "çağrısı var — biri kaldırılmış/düz karşılaştırmaya dönmüş olabilir."
+    )

@@ -14,6 +14,7 @@ kaybetmiyor.
 """
 from __future__ import annotations
 
+import ast
 import os
 import sqlite3
 from pathlib import Path
@@ -306,6 +307,47 @@ def test_totp_sirri_iki_kullanici_arasinda_bagimsiz(db, kasa_dizini) -> None:
     # Kasadan okunan da tutarlı ve birbirinden bağımsız.
     assert secret_store.load_totp_secret_for_hwid("USB-INV-A") == sonuc_a.totp_secret
     assert secret_store.load_totp_secret_for_hwid("USB-INV-B") == sonuc_b.totp_secret
+
+
+def test_login_dialog_totp_penceresi_dar_tutuluyor() -> None:
+    """
+    B-126 senaryo 94: Giriş ekranındaki GERÇEK TOTP doğrulama çağrılarının
+    `valid_window=1` (±30 sn) taşıdığını KAYNAKTAN doğrudan doğrular.
+
+    Bu satırı gerçek bir uçtan-uca girişle (gerçek vault + gerçek TOTP
+    sırrı + zaman manipülasyonu) sınamak yerine AST/kaynak-metni
+    denetimi seçildi: `tests/test_authz_invariants.py`'nin buradaki
+    KENDİ testleri (bir üstteki) `pyotp.TOTP(...).verify(kod,
+    valid_window=1)`'i DOĞRUDAN, kendi sabit değeriyle çağırıyor —
+    `UI/login_dialog.py::_on_login()`'in GERÇEKTE hangi pencereyi
+    kullandığını hiç ÖLÇMÜYOR. Mutasyon-kanıt: `_on_login()`'deki
+    `valid_window=1` değeri `10`'a çıkarılınca test_totp_gorunen_ad.py +
+    test_authz_invariants.py + test_kayit_ekrani.py + test_pin_rotation_
+    ui.py (54 test) hiçbiri fark etmedi.
+    """
+    # Modülü içe aktarmak yerine kaynağı doğrudan dosyadan okuyor — bu
+    # dosya bilerek Qt'siz (yalnızca CORE), PySide6'yı ZORUNLU KILMAMALI
+    # (bkz. tests/test_layering.py'nin katman kuralı).
+    yol = Path(__file__).resolve().parent.parent / "UI" / "login_dialog.py"
+    kaynak = yol.read_text(encoding="utf-8")
+    agac = ast.parse(kaynak)
+
+    pencereler: list[int] = []
+    for n in ast.walk(agac):
+        if (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "verify"
+        ):
+            for kw in n.keywords:
+                if kw.arg == "valid_window" and isinstance(kw.value, ast.Constant):
+                    pencereler.append(kw.value.value)
+
+    assert pencereler, "login_dialog.py'de valid_window= geçen bir .verify() çağrısı bulunamadı"
+    assert all(p == 1 for p in pencereler), (
+        f"login_dialog.py'de valid_window=1 dışında bir değer var: {pencereler} "
+        "— TOTP kabul penceresi genişletilmiş olabilir."
+    )
 
 
 def test_migration_eski_global_sir_ilk_onayli_kullaniciya_devrediyor(

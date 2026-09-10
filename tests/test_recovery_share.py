@@ -75,6 +75,32 @@ def test_decode_rejects_malformed_text(bozuk: str) -> None:
         decode_share(bozuk)
 
 
+@pytest.mark.parametrize("gecersiz_karakter", ["0", "1", "8", "9"])
+def test_decode_gecersiz_base32_rakamini_SESSIZCE_duzeltmiyor(gecersiz_karakter: str) -> None:
+    """
+    B-126 senaryo 90: RFC 4648 base32 alfabesinde 0/1/8/9 rakamları HİÇ
+    yok (yalnızca A-Z + 2-7) — bu yüzden gövdede bu rakamlardan biri
+    görülürse ya AÇIKÇA reddedilmeli, ya da (bu test asıl bunu sınıyor)
+    "muhtemelen O/I/B/g demek istedi" diye SESSİZCE bir başka karaktere
+    ÇEVRİLİP kabul EDİLMEMELİ — böyle bir "yardımsever" düzeltme, gerçekte
+    farklı bir karakteri kastetmiş bir yazım hatasını sessizce YANLIŞ bir
+    değere çözebilir (bkz. B-021'in aynı sınıftan riski).
+
+    Mutasyon-kanıt: `decode_share()`'e `str.maketrans("018", "OIB")` ile
+    böyle bir "yardımsever" ön-çeviri eklenince test_recovery_share.py'nin
+    (26 test) HİÇBİRİ fark etmedi — gövdede zaten bu rakamlar hiç
+    kullanılmadığı için (encode_share() onları hiç üretmiyor) round-trip
+    testleri etkilenmiyordu.
+    """
+    _s1, _s2, share_3 = vault_manager._sss_split(b"\x7a" * 32)
+    text = encode_share(share_3)
+    govde = text.replace("HYCLEUS-R3-", "").replace("-", "")
+    bozuk_govde = gecersiz_karakter + govde[1:]
+
+    with pytest.raises(RecoveryShareError):
+        decode_share(f"HYCLEUS-R3-{bozuk_govde}")
+
+
 def test_decode_tolerates_user_typing_variations() -> None:
     """Elle girilirken boşluk, satır sonu, küçük harf ve tire farkları tolere edilmeli."""
     _s1, _s2, share_3 = vault_manager._sss_split(b"\x5c" * 32)

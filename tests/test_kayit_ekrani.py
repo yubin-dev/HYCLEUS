@@ -276,6 +276,46 @@ def test_kayit_akisi_HER_IKI_MODDA_da_tamamlaniyor(
         )
 
 
+def test_bos_kullanici_adiyla_kayit_REDDEDILIYOR(
+    qapp, db, kasa_dizini, totp_gecerli, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    B-126 senaryo 93: Kayıt Ol ekranında kullanıcı adı BOŞ bırakılırsa
+    `_on_register()` reddetmeli, DB'ye satır YAZMAMALI.
+
+    Mutasyon-kanıt: `if not username: ... return` kontrolü kaldırılıp
+    (yalnızca `len(username) < 3` kontrolü, boş dizeyi de zaten
+    yakaladığı için) ayrıca o kontrol de `0 < len(username) < 3`'e
+    gevşetilince (boş dizeyi ATLAYAN gerçek bir bypass) bu dosyadaki 37
+    test hiçbiri fark etmedi — hiçbiri BOŞ kullanıcı adıyla kayıt
+    denemiyordu.
+    """
+    set_app_mode(db, BIREYSEL)  # Referans Kodu alanı bu modda hiç YOK —
+    # aksi hâlde boş referans kontrolü, sınanan boş-kullanıcı-adı
+    # kontrolünden ÖNCE devreye girip testi yanlışlıkla "geçirirdi".
+
+    import UI.login_dialog as ld
+    hwid = f"{_HWID_BASE}-bos-kullanici-adi"
+    monkeypatch.setattr(ld, "get_usb_hwid", lambda: hwid)
+    monkeypatch.setattr(ld, "show_totp_enrollment_dialog", lambda *a, **k: None)
+
+    dlg = _kayit_ekrani(qapp)
+    assert dlg._reg_referans is None, "test kurulumu hatalı — Bireysel modda olmalı"
+    dlg._reg_username.setText("")
+    dlg._reg_pin.setText(_PIN)
+    dlg._reg_pin2.setText(_PIN)
+    dlg._reg_role.setCurrentText(_ROLE)
+
+    dlg._on_register()
+
+    assert not dlg._reg_error.isHidden(), (
+        "boş kullanıcı adıyla kayıt hiçbir hata göstermeden geçti"
+    )
+    assert db.fetchone(
+        "SELECT id FROM users WHERE hwid = ?", (hwid,)
+    ) is None, "boş kullanıcı adıyla DB'ye satır yazılmış"
+
+
 def test_iki_mod_SONUC_SATIRININ_SEKLI_AYNI_kaliyor(
     qapp, db, kasa_dizini, totp_gecerli, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
