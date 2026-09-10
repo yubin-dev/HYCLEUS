@@ -162,6 +162,44 @@ def test_kilit_ortasinda_bulk_indirme_gercekten_duruyor(
         )
 
 
+def test_yanlis_totp_kodu_indirmeyi_GERCEKTEN_engelliyor(
+    pencere, db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    ASIL 2FA TESTİ. Yukarıdaki (kilit) testler HEP doğru/canlı TOTP kodu
+    kullanıyor — `pyotp.TOTP(secret).verify(...)` çağrısının GERÇEKTEN
+    çalıştığını hiçbir test kanıtlamıyordu. Yanlış bir kod, hiçbir dosya
+    indirilmeden reddedilmeli ve `bulk_download_totp_failed` denetim
+    kaydına düşmeli.
+    """
+    secret = pyotp.random_base32()
+    secret_store.store_totp_secret_for_hwid(_HWID, secret)
+
+    file_ids, filepaths = _sifreli_dosyalar_ekle(db, tmp_path, 3)
+
+    yanlis_kod = "000000"
+    dogru_kod = pyotp.TOTP(secret).now()
+    if yanlis_kod == dogru_kod:  # olasılık ~10^-6, yine de dürüst davranalım
+        yanlis_kod = "111111"
+    monkeypatch.setattr(
+        QInputDialog, "getText", staticmethod(lambda *a, **kw: (yanlis_kod, True))
+    )
+
+    secildi = []
+    monkeypatch.setattr(
+        QFileDialog, "getExistingDirectory",
+        staticmethod(lambda *a, **kw: secildi.append(1) or ""),
+    )
+
+    pencere._on_ctx_bulk_download(file_ids, filepaths)
+
+    assert not secildi, "yanlış TOTP kodu reddedilmedi — klasör seçimine kadar ilerledi"
+    satir = db.fetchone(
+        "SELECT detail FROM audit_log WHERE action = 'bulk_download_totp_failed'"
+    )
+    assert satir is not None, "yanlış kod denemesi denetim kaydına düşmedi"
+
+
 def test_kilitlenmeden_tum_dosyalar_normal_sekilde_iniyor(
     pencere, db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

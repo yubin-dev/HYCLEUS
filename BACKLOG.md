@@ -10814,4 +10814,58 @@ küçük (2-4 senaryo) ve daha uzun araştırma gerektirecek. M041 türü
 ama artık nadir — her yeni tur incelemesi giderek daha spesifik/derin
 kod yollarına inmek gerektiriyor.
 
-M044–M050: devam edecek.
+### Bölüm 8 (M044–M046) — özet
+
+`CORE/vault_keyring.py` diye ayrı bir dosya yok (kasa-tarafı kasa
+entegrasyonu `vault_manager.py`'de, zaten kapsanmış); `CORE/secret_store.py`
+araştırıldı ve DOYGUN bulundu (erase/reseal/gölge-kopya/TPM-kaybı
+yolları gerçek donanımla kapsamlı test ediliyor, uygulanabilir aday yok).
+
+| # | Hedef | Mutasyon | Sonuç |
+|---|-------|----------|-------|
+| M044 | `UI/main_window_bulk.py::_on_ctx_bulk_download()` — TOTP kod doğrulaması | `pyotp.TOTP(secret).verify(...)` çağrısı kaldırıldı (yalnızca 6 haneli olma kontrolü kaldı) | **Survived-Fixed** — CİDDİ bulgu: herhangi bir 6 haneli sayı toplu indirmenin 2FA kapısından geçerdi; iki mevcut test de HEP doğru/canlı kod kullanıyordu, yanlış kod hiç denenmemişti |
+| M045 | `CORE/usb_takeover.py::takeover_usb()` — devralınan hesabın rolü | `rol_arayuz` sabit `"Yönetici"`ye çevrildi | **Survived-Fixed** — CİDDİ bulgu: TÜM mevcut testler eski hesabı Yönetici kuruyordu; bir Standart/Salt Okunur hesabın devralınması sonrası rolün gerçekten korunduğunu (Yönetici'ye sıçramadığını) hiçbir test kanıtlamıyordu — yetki genişlemesi şekli |
+| M046 | `CORE/usb_takeover.py::takeover_usb()` — TOTP aktarımının `None` koruması | `if eski_totp is not None:` kaldırıldı | **Survived-Fixed** — eski hesap hiç TOTP kaydetmemişse (meşru bir durum) devralma `ValueError` ile çökerdi; `discard_vault()`'tan ÖNCE olduğu için veri kaybı yok ama meşru bir devralma isteği reddedilirdi |
+
+3/3 Survived-Fixed — bu bölümde de BACKLOG'a giden gerçek bir bulgu
+olmadı. Üretim kodunda net değişiklik YOK.
+
+Yeni/güncellenen test dosyaları: `tests/test_bulk_download_lock.py` (+1),
+`tests/test_usb_takeover.py` (+2).
+
+---
+
+## 200'lük tur — ARA DURUM (2026-09-10, 8 bölüm sonunda)
+
+**43 → 46 senaryo (M001–M046) tamamlandı, 8 bölüm hâlinde, hepsi yerel
+commit, HİÇBİRİ push edilmedi** (`c6e4226` … en son commit'e kadar,
+sırayla Bölüm 1-8). Toplam: ~40 Survived-Fixed (yeni test, üretim kodu
+değişmedi), birkaç Killed (mevcut testler zaten yakalıyordu), 2 gerçek
+bulgu kod DEĞİŞTİRİLMEDEN BACKLOG'a yazıldı (B-136 LIKE joker çarpışması,
+B-137 scan_by_hash sessiz hata yutma).
+
+**En önemli 5 bulgu** (etki sırasına göre):
+1. **M044** — toplu indirmenin TOTP 2FA kapısı hiçbir yanlış kodla
+   sınanmamıştı; herhangi bir 6 haneli sayı geçerdi.
+2. **M028** — `recover_vault.py`'nin CLI testleri `input()`'u öyle
+   yamalıyordu ki B-028'in kendi düzeltmesi (rol normalizasyonu) hiçbir
+   testte çalışmıyordu — B-028 regresyonunun aynısı sessizce geri
+   gelebilirdi.
+3. **M045** — USB devralmada Standart/Salt Okunur bir hesabın rolünün
+   gerçekten korunduğu (Yönetici'ye sıçramadığı) hiç kanıtlanmamıştı.
+4. **M035** — `find_duplicates_for_file()`'ın `include_private`
+   parametresini iletmesi test edilmemişti; yönetici olmayan biri
+   mahrem bir dosyanın varlığını tekrar-tespiti üzerinden öğrenebilirdi.
+5. **M041** — PIN rotasyonunda vault yeniden şifreleme gerçekten
+   başarısız olsa bile denetim kaydı "PIN değişti" diye yalan
+   söyleyebilirdi.
+
+Kod tabanı artık çoğu modülde 6-8 turdan geçmiş durumda (doygunluk
+belirtileri: Bölüm 7'de 5 alandan 2'si sıfır aday üretti; Bölüm 8'de
+`secret_store.py` ve `vault_keyring.py` tamamen doygun bulundu). Kalan
+~154 senaryo (M047–M200) için tavsiye: bu oturumun tempoyla devam etmek
+yerine ya (a) taze bir oturumda/gözle devam edilmeli, ya da (b) daha
+küçük, daha seyrek bölümlerle (2-4 senaryo/bölüm) sürdürülmeli — zorlama
+zayıf bulgular üretmek yerine.
+
+M047–M060: sonraki oturumda/talepte devam edecek.

@@ -70,6 +70,68 @@ def _admin_kur_ve_kurtarma_parcasi_al(db, kasa_dizini) -> str:
     return export_recovery_share(_HWID_ESKI, _PIN_ESKI)
 
 
+def _standart_kur_ve_kurtarma_parcasi_al(db, kasa_dizini) -> str:
+    """`_admin_kur_ve_kurtarma_parcasi_al` ile AYNI ama Standart (admin
+    OLMAYAN) bir hesap için — devralmanın rolü SABİTLEMEDİĞİNİ, gerçek
+    rolü koruduğunu kanıtlamak için."""
+    create_vault(_HWID_ESKI, _PIN_ESKI, "Standart")
+    store_totp_secret_for_hwid(_HWID_ESKI, _TOTP_SIR)
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid) "
+        "VALUES ('standart1', 'x', 'user', 'approved', ?)",
+        (_HWID_ESKI,),
+    )
+    return export_recovery_share(_HWID_ESKI, _PIN_ESKI)
+
+
+def test_totp_hic_kayitli_olmayan_hesap_da_devralinabiliyor(db, kasa_dizini):
+    """
+    Eski hesap HİÇ TOTP kaydetmemişse (`load_totp_secret_for_hwid`
+    `None` döner) devralma yine de BAŞARIYLA tamamlanmalı — TOTP
+    aktarımı isteğe bağlı bir adım, zorunlu bir ön koşul değil. Tüm
+    diğer testler eski hesaba HEP bir TOTP sırrı kaydediyor, bu dalı
+    hiç tetiklemiyordu.
+    """
+    create_vault(_HWID_ESKI, _PIN_ESKI, "Yönetici")
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid) "
+        "VALUES ('totpsuz_admin', 'x', 'admin', 'approved', ?)",
+        (_HWID_ESKI,),
+    )
+    share_3 = export_recovery_share(_HWID_ESKI, _PIN_ESKI)
+    assert load_totp_secret_for_hwid(_HWID_ESKI) is None  # ön koşul
+
+    sonuc = takeover_usb(
+        db, old_hwid=_HWID_ESKI, new_hwid=_HWID_YENI,
+        recovery_share=share_3, new_pin=_PIN_YENI, old_pin=_PIN_ESKI,
+    )
+
+    assert isinstance(sonuc, TakeoverResult)
+    assert load_totp_secret_for_hwid(_HWID_YENI) is None
+
+
+def test_standart_hesabin_devralinmasi_YONETICI_URETMIYOR(db, kasa_dizini):
+    """
+    ASIL YETKİ TESTİ. Diğer tüm testler eski hesabı YÖNETİCİ kuruyor —
+    hiçbiri devralınan hesap Standart/Salt Okunur iken rolün SABİT
+    "Yönetici"ye düşüp düşmediğini kanıtlamıyor. Bu, USB kaybeden bir
+    Standart kullanıcının devralma sonrası sessizce Yönetici olmasını
+    engelleyen tek kontrol.
+    """
+    share_3 = _standart_kur_ve_kurtarma_parcasi_al(db, kasa_dizini)
+
+    sonuc = takeover_usb(
+        db, old_hwid=_HWID_ESKI, new_hwid=_HWID_YENI,
+        recovery_share=share_3, new_pin=_PIN_YENI, old_pin=_PIN_ESKI,
+    )
+
+    assert sonuc.role == "Standart", (
+        f"Standart hesap devralma sonrası {sonuc.role!r} oldu — yetki genişlemesi"
+    )
+    rol, _key = open_vault(_HWID_YENI, _PIN_YENI)
+    assert rol == "Standart"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Temel akış — PIN biliniyor (share_1 yoluyla kurtarma)
 # ══════════════════════════════════════════════════════════════════════════════
