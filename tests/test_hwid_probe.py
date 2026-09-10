@@ -31,6 +31,7 @@ from CORE.hwid_probe import (
     normalize_serial,
     parse_ioreg,
     parse_windows_pnp_id,
+    read_linux,
     read_macos,
     summarise,
     read_windows,
@@ -742,3 +743,115 @@ def test_okuyucular_yalnizca_usb_manager_uzerinden_uretime_bagli() -> None:
                     "yalnızca `from CORE.hwid_probe import read_linux/read_macos` "
                     "bekleniyor."
                 )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-10) — Linux/pyudev dalı (MC-M056/M057)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Bu dosyanın kendi docstring'i "ioreg/pyudev gerçekten bu biçimde çıktı
+# veriyor mu test EDİLEMİYOR" diyor — ama `read_linux()`'un pyudev dalının
+# AYRIŞTIRMA MANTIĞININ KENDİSİ de (macOS'un `parse_ioreg()`'i gibi) bugüne
+# kadar hiç sürülmemişti: fonksiyon `sys.platform.startswith("linux")`
+# olmadıkça anında `[]` döner. Aşağıdaki fixture `sys.platform`'u ve
+# `sys.modules["pyudev"]`'i sahteleyip, GERÇEK pyudev/Linux olmadan
+# ayrıştırma mantığını sürüyor — modülün kendi kabul ettiği sınırla
+# (donanım/araç çıktısı doğrulanamaz, mantık doğrulanabilir) aynı ilke.
+
+
+class _SahteUdevAygit(dict):
+    def get(self, anahtar, varsayilan=None):  # pyudev.Device.get() imzası
+        return dict.get(self, anahtar, varsayilan)
+
+
+class _SahteUdevBaglam:
+    def __init__(self, aygitlar: list["_SahteUdevAygit"]) -> None:
+        self._aygitlar = aygitlar
+
+    def list_devices(self, subsystem=None, DEVTYPE=None):
+        return self._aygitlar
+
+
+@pytest.fixture
+def sahte_linux_pyudev(monkeypatch: pytest.MonkeyPatch):
+    import sys as _sys
+    import types
+
+    def kur(aygitlar: list[dict]):
+        sahte_modul = types.ModuleType("pyudev")
+        sahte_modul.Context = lambda: _SahteUdevBaglam(  # type: ignore[attr-defined]
+            [_SahteUdevAygit(a) for a in aygitlar]
+        )
+        monkeypatch.setitem(_sys.modules, "pyudev", sahte_modul)
+        monkeypatch.setattr(_sys, "platform", "linux")
+
+    return kur
+
+
+def test_linux_serisiz_aygitta_device_path_kimlik_olarak_kullanilmiyor(
+    sahte_linux_pyudev,
+) -> None:
+    """
+    MC-Kataloğu M056: `ID_SERIAL_SHORT` boşsa `read_linux()` bir DEVICE
+    PATH'i (ör. `/dev/sdb`) hash'leyip `descriptor_serial`'a KOYMAMALI —
+    böyle bir kimlik ne platformlar arası ne de aynı makinede portlar
+    arası KARARLIDIR (aygıt başka porta takılınca düğüm adı değişir,
+    bkz. modül docstring'i "Üretilen kimlik hub ve port yoluna bağlı").
+    Serisiz aygıt `generated=True` ve `stable_id=None` KALMALI.
+
+    Bu, `read_linux()`'un pyudev dalını GERÇEKTEN süren TEK testtir —
+    bugüne kadar fonksiyon yalnızca Windows dışı platformlarda `[]`
+    döndüğü için (ve CI/geliştirme burada hep Windows) bu mantık hiç
+    çalıştırılmamıştı.
+    """
+    sahte_linux_pyudev([{
+        "ID_BUS": "usb",
+        "ID_SERIAL_SHORT": None,
+        "ID_VENDOR_ID": "0781",
+        "ID_MODEL_ID": "5567",
+        "ID_SERIAL": None,
+    }])
+
+    sonuc = read_linux()
+    assert len(sonuc) == 1
+    aygit = sonuc[0]
+    assert aygit.descriptor_serial is None, (
+        f"seri yok ama descriptor_serial doldu: {aygit.descriptor_serial!r} "
+        "— kararsız bir alan (ör. device path) kimlik yerine geçmiş olabilir."
+    )
+    assert aygit.generated is True
+    assert aygit.stable_id is None
+
+
+def test_linux_bilinmeyen_udev_alanlari_kimlige_karismiyor(
+    sahte_linux_pyudev,
+) -> None:
+    """
+    MC-Kataloğu M057: Bağlama noktası (mount point, ör.
+    "/media/ay/USBDRIVE") ya da aygıt düğümü (`/dev/sdb1`) gibi kararsız
+    alanlar HWID'e HİÇ karışmamalı — ikisi de USB'nin TAKILDIĞI porta/
+    bağlama sırasına bağlı, aynı fiziksel USB farklı bir bağlamada farklı
+    "kimlik" üretirdi. `read_linux()`'un pyudev dalı yalnızca 5 belgelenmiş
+    özelliği (ID_BUS, ID_SERIAL_SHORT, ID_VENDOR_ID, ID_MODEL_ID,
+    ID_SERIAL/ID_SCSI_SERIAL) okumalı — başka bir udev alanı eklenip
+    sessizce bir kimlik alanına sızabilir mi diye izlenen bir iz bırakıyor.
+    """
+    IZ = "__BAGLAMA_NOKTASI_VEYA_DEVICE_NODE_IZI__"
+    sahte_linux_pyudev([{
+        "ID_BUS": "usb",
+        "ID_SERIAL_SHORT": "ABC123",
+        "ID_VENDOR_ID": "0781",
+        "ID_MODEL_ID": "5567",
+        "ID_SERIAL": "SanDisk_ABC123",
+        "ID_FS_MOUNT_POINT": IZ,
+        "DEVNAME": IZ,
+        "MOUNT_POINT": IZ,
+    }])
+
+    sonuc = read_linux()
+    assert len(sonuc) == 1
+    from dataclasses import asdict
+    degerler = [str(v) for v in asdict(sonuc[0]).values()]
+    assert not any(IZ in v for v in degerler), (
+        f"bağlama noktası/aygıt düğümü kimlik alanlarından birine sızmış: {degerler}"
+    )

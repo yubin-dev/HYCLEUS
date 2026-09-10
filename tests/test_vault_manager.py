@@ -748,3 +748,42 @@ def test_derive_kek_kisa_pin_icin_argon2id_atlamaz() -> None:
         type=Type.ID,
     )
     assert vault_manager._derive_kek("1", salt) == beklenen
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-10) — HWID/AAD bağlaması (MC-M061 ★)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_decrypt_vault_yanlis_hwid_ile_AAD_uyusmazliginda_reddediliyor(
+    db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    MC-Kataloğu M061 ★: `_decrypt_vault()`'un GCM AAD'ının GERÇEKTEN
+    hwid'e bağlı olduğunu, yalnızca dosya-yolu ayrımının (farklı hwid →
+    farklı `.hclv` dosyası → FileNotFoundError) DEĞİL, kriptografik
+    bağlamanın kendisinin de reddettiğini doğrudan kanıtlar. Bugüne
+    kadarki testler (ör. test_usb_takeover.py) "yanlış hwid" senaryosunu
+    hep dosya bulunamama üzerinden sınıyordu — AAD kontrolü hiç izole
+    test edilmemişti.
+
+    Mutasyon-kanıt: `_decrypt_vault()`'taki `decryptor.authenticate_
+    additional_data(hwid.encode())` çağrısı sabit bir değere (`b""`)
+    çevrilip — "HWID mismatch → sadece PIN ile aç" (downgrade) —
+    dosya-yolu ayrımı bu testte olduğu gibi devre dışı bırakılınca, kod
+    tabanındaki HİÇBİR test bunu fark etmezdi.
+    """
+    monkeypatch.setattr(vault_manager, "_VAULT_DIR", tmp_path / "vaults")
+    monkeypatch.setattr(vault_manager, "_VAULT_PATH_LEGACY", tmp_path / ".hcl_vault")
+
+    hwid_a = "USB-AAD-BINDING-A"
+    hwid_b = "USB-AAD-BINDING-B"
+    pin = "123456"
+    vault_manager.create_vault(hwid_a, pin, "admin")
+
+    # hwid_b, hwid_a'nın GERÇEK dosyasını okusun — dosya-yolu ayrımını
+    # devre dışı bırakıp YALNIZCA AAD/kriptografik bağlamayı sınıyoruz.
+    gercek_yol = vault_manager._read_vault_path(hwid_a)
+    monkeypatch.setattr(vault_manager, "_read_vault_path", lambda h: gercek_yol)
+
+    with pytest.raises(ValueError, match="PIN yanlış|bozulmuş"):
+        vault_manager._decrypt_vault(hwid_b, pin)

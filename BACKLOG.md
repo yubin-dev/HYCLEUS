@@ -11186,3 +11186,41 @@ değişiklik yapılmadı — bu blok, kataloğun PCR-tabanlı TPM2 sealing
 varsayan bir referans mimariye göre yazıldığını, HYCLEUS'un ise daha
 sade bir CNG-anahtarı şemasına dayandığını doğruladı. `belki_muhurle()`
 zaten Loud-fallback (MC-M049, Bölüm 5) için ayrı test kapsamı altında.
+
+### Bölüm 7 (MC-M056–MC-M065) — HWID (`CORE/hwid_probe.py`, `CORE/usb_manager.py`, `CORE/vault_manager.py`)
+
+Bu turun en verimli bloğu. `CORE/hwid_probe.py`'nin kendi docstring'i
+zaten "üç platform aynı kimliği güvenilir vermiyor" diyordu ama asıl
+bulgu şu: **`get_usb_hwid()`'in Windows dalı (Yöntem 1, `wmi`) bu
+projenin test paketinde BUGÜNE KADAR HİÇ ÇALIŞTIRILMAMIŞTI** —
+`tests/test_usb_manager.py`'nin kendi autouse fixture'ı
+(`_wmi_hicbir_zaman_bulunmasin`) `wmi`'yi HER testte ImportError'a
+düşürüyordu (CI'ın bir gün Linux'ta koşacağı varsayımıyla, meşru bir
+gerekçeyle — ama bedelini kimse ölçmemiş). `read_linux()`'un pyudev dalı
+da benzer şekilde hiç sürülmemişti (fonksiyon `sys.platform` Linux
+olmadıkça anında `[]` dönüyor). İki gerçek boşluk zinciri buradan çıktı.
+
+Test alt kümesi: `test_hwid_probe.py` (baseline 49) + `test_usb_
+manager.py` (baseline 12) + `test_usb_mount_root.py` (10) + `test_vault_
+manager.py` (baseline 151, bu bloktan önceki toplam).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M056 ★ | Linux: serial boşsa device path (`/dev/sdX`) hash'le | **Survived-Fixed** | `read_linux()`'un pyudev dalı hiç sürülmüyordu. Yeni sahte-pyudev fixture'ı (`sahte_linux_pyudev`) + `test_linux_serisiz_aygitta_device_path_kimlik_olarak_kullanilmiyor` eklendi |
+| MC-M057 ★ | Linux: mount noktası kimliğe girer | **Survived-Fixed** | Aynı yeni fixture; `test_linux_bilinmeyen_udev_alanlari_kimlige_karismiyor` — `raw` alanına bağlama noktası/DEVNAME karışıp karışmadığını izliyor |
+| MC-M058 | Windows: USB yok say, sadece machine GUID | **Survived-Fixed** | Yöntem 1 (`wmi`) hiçbir testte ÇALIŞMIYORDU (autouse fixture hep ImportError'a düşürüyordu). `test_windows_yontem1_gercek_usb_seriyi_donduruyor` + `..._usb_yoksa_dahili_diski_kullanmiyor` eklendi |
+| MC-M059 | Bir taraf lowercase, diğeri değil (case uyuşmazlığı) | **Survived-Fixed** | İlk M058 testi tesadüfen tamamen büyük harf seri kullanıyordu, `.upper()` mutasyonunu YAKALAMAZDI. `test_windows_yontem1_seri_harf_buyuklugu_degistirilmeden_kullaniliyor` (karışık harfli seri) eklendi |
+| MC-M060 ★ | HWID mismatch → yeni HWID ile otomatik re-seal (sessiz re-bind) | **Kapsam dışı** | Hedef kod yok: `open_vault()`/`_decrypt_vault()`'ta uyuşmazlıkta otomatik yeniden mühürleme/re-bind dalı yok — tek sonuç GCM AAD hatası (`ValueError`). `reprovision_vault()` yalnızca AÇIKÇA, `master_key`+`recovery_share` ile kullanıcı tetikler (recover_vault.py --recover), asla otomatik değil |
+| MC-M061 ★ | HWID mismatch → sadece PIN ile aç (downgrade) | **Survived-Fixed** | Gerçek ve önemli bulgu: AAD/hwid bağlamasının KENDİSİ hiç izole test edilmemişti — tüm mevcut testler "yanlış hwid" senaryosunu dosya-yolu ayrımı (farklı hwid → farklı `.hclv` dosyası → FileNotFoundError) üzerinden sınıyordu. `test_decrypt_vault_yanlis_hwid_ile_AAD_uyusmazliginda_reddediliyor` eklendi — dosya-yolu ayrımını `_read_vault_path` monkeypatch'iyle devre dışı bırakıp YALNIZCA kriptografik bağlamayı sınıyor |
+| MC-M062 | HWID hash'i MD5 | **Kapsam dışı** | Hedef kod yok — HWID hiçbir yerde hash'lenmiyor (MD5 ya da başka), doğrudan string olarak kullanılıyor (grep doğrulandı) |
+| MC-M063 | USB port numarası kimlikte (volatile) | **Killed** | `_windows_usb_nodes()`'taki `generated` filtresi kaldırılınca `test_uretilmis_dugumler_haritaya_girmiyor` zaten yakalıyor — bu tam olarak önceki bir mutasyon turunda bulunup sabitlenmiş aynı sınıf |
+| MC-M064 | Boş serial geçerli bileşen kabul ("" hash'lenir) | **Survived-Fixed** | Yöntem 1'de `if serial and serial != "?":` → `if serial != "?":` yapılınca boş seri İLK USB diskte UUID yedeğini hemen döndürüyor, gerçek serili İKİNCİ diske hiç bakmıyordu — Linux dalında eşdeğeri zaten test ediliyordu (`test_linux_ikinci_aygit_serisiz_ilki_kullaniliyor`), Windows'ta yoktu. `test_windows_yontem1_ikinci_aygit_serisiz_ilki_kullaniliyor` eklendi |
+| MC-M065 | `--selftest` modunda HWID kontrolü atlanır | **Kapsam dışı** | Hedef kod yok — `main.py::_selftest()` hiçbir vault/HWID/PIN doğrulamasına DOKUNMUYOR (yalnızca modül import'ları + tanılama satırları yazıyor) — atlanacak bir HWID kontrolü zaten yok |
+
+**Bölüm 7 özet:** Killed 1 (M063), Survived-Fixed 6 (M056★,M057★,M058,
+M059,M061★,M064 — 3'ü ★, hepsi gerçek boşluk), Kapsam dışı 3 (M060★,
+M062,M065). Üretim kodunda net değişiklik YOK — hepsi mutasyon-kanıtlı
+yeni testler. Yeni testler: `tests/test_hwid_probe.py` (+2, ayrıca yeni
+`sahte_linux_pyudev` fixture'ı), `tests/test_usb_manager.py` (+4),
+`tests/test_vault_manager.py` (+1). Tam blok: 128 passed (49+12+10+151→
+51+18+10+153, TPM/AAD birikimiyle).
