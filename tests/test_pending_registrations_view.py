@@ -165,6 +165,47 @@ def test_kart_isim_rol_hwid_tarih_dogru_gosteriyor(qapp, db, sahte_usb):
         _pencereyi_kapat(window)
 
 
+def test_load_pending_pin_hash_sutununu_hic_secmiyor(qapp, db, sahte_usb):
+    """
+    B-126 senaryo 55: `_load_pending()`'in `SELECT`'i `password_hash`
+    (PIN hash) sütununu HİÇ döndürmemeli — kartlar zaten yalnızca
+    username/hwid/role/created_at gösteriyor, ham satırın kendisinde
+    dahi hash bulunmamalı (bellek dökümü / gelecekteki bir dışa aktarma
+    kodu üzerinden sızma riskine karşı savunma-derinliği).
+
+    Mutasyon-kanıt: SELECT'i `SELECT *`'e genişletince
+    test_pending_registrations_view.py + test_admin_pages_construction_
+    guard.py (20 test) hiçbiri fark etmedi — kartlar isim/hwid/rol/tarihi
+    zaten NAMED erişimle okuduğu için ekstra sütunların varlığı görsel
+    hiçbir şeyi bozmuyordu; sızıntı yalnızca `_son_kayitlar`'ın ham
+    içeriğine bakınca görünür.
+    """
+    gercek_hash = "ARGON2ID$cok-gizli-pin-hash-degeri"
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid, created_at)"
+        " VALUES (?, ?, 'user', 'pending', ?, ?)",
+        ("hash.sizinti.testi", gercek_hash, "PIN-HASH-SIZINTI-HWID", "2026-09-10T10:00:00Z"),
+    )
+
+    window = _pencere(db, sahte_usb)
+    try:
+        sayfa = window._pending_view
+        sayfa._load_pending()
+
+        assert sayfa._son_kayitlar, "test verisi yüklenmedi"
+        for row in sayfa._son_kayitlar:
+            assert "password_hash" not in row.keys(), (
+                "_load_pending() satırlarında password_hash sütunu var"
+            )
+            for deger in tuple(row):
+                assert deger != gercek_hash, (
+                    "PIN hash değeri _load_pending() sonucunda başka bir "
+                    "sütun altında da sızmış"
+                )
+    finally:
+        _pencereyi_kapat(window)
+
+
 def test_kart_uzun_hwid_kirpiliyor(qapp, db, sahte_usb):
     """28 karakterden uzun HWID kartta "…" ile kırpılıyor — eski
     `_pending_table`'ın AYNI 28-karakter sınırı (bkz. `UI/
@@ -283,6 +324,47 @@ def test_bir_kartin_reddet_dugmesi_SADECE_o_kullaniciyi_reddediyor(
 
         assert len(sayfa._kart_widgetleri) == 1
         assert sayfa._kart_widgetleri[0].property("hwid") == "COKLU-RED-HWID-2"
+    finally:
+        _pencereyi_kapat(window)
+
+
+def test_reddet_guard_reddederse_kullanici_SILINMIYOR(
+    qapp, db, sahte_usb, kasa_dizini, monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    B-126 senaryo 48: `_on_reject()`'in KENDİ `yonetici_hala_yetkili()`
+    kapısı gerçekten çalışıyor mu — `_on_approve()` için zaten var olan
+    mutasyon-karşıtlığı testinin (`test_b064_guard_kaldirilirsa_test_
+    gercekten_dusuyor`) `_on_reject()` için EŞDEĞERİ hiç yazılmamıştı.
+
+    Mutasyon-kanıt: `_on_reject()`'in başındaki `if not admin_common.
+    yonetici_hala_yetkili(...): return` satırı kaldırılınca
+    test_pending_registrations_view.py + test_authz_invariants.py +
+    test_admin_pages_construction_guard.py (39 test) hiçbiri fark
+    etmedi — bu üç dosyanın hiçbiri `_on_reject()`'in kendi guard'ını
+    devre dışı bırakıp SİLMENİN GERÇEKTEN engellendiğini doğrudan
+    sınamıyordu.
+    """
+    import UI.PendingRegistrationsView as prv
+
+    _bekleyen_ekle(db, "GUARD-RED-HWID", "guard.red.testi")
+    window = _pencere(db, sahte_usb)
+    try:
+        sayfa = window._pending_view
+        sayfa._load_pending()
+
+        monkeypatch.setattr(
+            prv.admin_common, "yonetici_hala_yetkili", lambda *a, **k: False
+        )
+        kart = _kart_for_hwid(sayfa, "GUARD-RED-HWID")
+        _kart_dugmesine_bas(kart, "pending_kart_btn_reddet")
+
+        assert db.fetchone(
+            "SELECT id FROM users WHERE hwid = ?", ("GUARD-RED-HWID",)
+        ) is not None, (
+            "guard False dönerken kullanıcı YİNE DE silindi — "
+            "_on_reject()'in kendi yetki kontrolü çalışmıyor"
+        )
     finally:
         _pencereyi_kapat(window)
 

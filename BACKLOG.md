@@ -9988,3 +9988,80 @@ ayrı B-NNN açılacak.
 `test_lagrange_ayni_x_koordinatiyla_sessizce_sifir_donmuyor`), 2
 Kanıtlanmış-Eşdeğer (eşik sabitleri kozmetik), 1 zaten belgelenmiş bilinen
 sınır (checksum yok, B-021). `tests/test_vault_manager.py`: 47 → 48 test.
+
+### Bölüm 4 — Veritabanı, RBAC & WAL (`CORE/roles.py`, `DB/db_manager.py`, `CORE/secure_erase.py`, `UI/PendingRegistrationsView.py`)
+
+| No | Senaryo (özet) | Sonuç | Kanıt/Not |
+|----|-----------------|-------|-----------|
+| 41 | can_write() salt-okunuru da True döndürsün | Killed | 20 test düştü (`test_salt_okunur_is_verisi_tablolarina_dogrudan_yazamiyor` dahil) |
+| 42 | Bilinmeyen rol → True | Killed | 9 test düştü, `test_bilinmeyen_rol_de_yazamiyor` doğrudan hedefliyor |
+| 43 | Büyük/küçük harf duyarlılığı (Türkçe İ/ı) | Killed | 24 test düştü — `_katla()`'nın `.lower()` adımı kaldırılınca |
+| 44 | `system_write()` sayacı azaltılmasın | **Survived-Fixed** | 200 test (rbac+disposal+retention+scheduled_checks) hiçbiri fark etmedi — her testin kendi izole `db` fixture'ı olduğu için sızıntı GÖZLENEMİYORDU. Yeni test bloktan çıktıktan SONRA aynı bağlantıyla yeniden yazma denemesi yapıyor |
+| 45 | `system_write()` istisna yolunda sayaç azalmasın | **Survived-Fixed** | Aynı 201 test kör — `try/except-raise/else` deseniyle (yalnızca BAŞARILI çıkışta azalt) yeniden üretildi; yeni test özellikle istisna fırlatan bir bloktan sonrasını sınıyor |
+| 46 | Yedek/kalıntı temizliği öncesi WAL checkpoint'i atla | **Survived-Fixed** | `CORE/secure_erase.py::purge_sqlite_residue()`. Byte-seviyesi bir test GÜVENİLİR DEĞİL (elle deneyler `sqlite3.Connection.close()`'un SON bağlantıda kendi checkpoint'ini tetikleyip mutasyonu gizlediğini, kapatmadan önce kontrol edilse bile VACUUM'un kendi WAL yazımlarının sonucu KARARSIZ kıldığını gösterdi) — bunun yerine AST/kaynak-metni tabanlı bir test (`wal_checkpoint` çağrısı var mı, VACUUM'dan önce mi) eklendi, deponun `test_backup_reminder.py` tarzı emsaliyle aynı yöntem |
+| 47 | Parametrik sorgu yerine f-string (SQL enjeksiyonu) | Survived → **B-129** | `CORE/folders.py::is_descendant()`'taki gerçek bir değişkeni (`simdi`) f-string'e enjekte eden bir mutasyon YAPILDI — ne `bandit` (B608 kuralı pyproject.toml'da PROJE GENELİNDE susturulmuş, 17 "zaten güvenli" siteyi kapsıyor diye) ne `semgrep` (yerel kural kümesinde SQL'e özel bir kural YOK) ne de tam pytest suite'i (folders+static_analysis, 62 test) bunu yakaladı. Gerçek, yapısal bir kör nokta — B-129'a yazıldı, bu turda kod/kural DEĞİŞTİRİLMEDİ (yanlış pozitif riski yüksek bir semgrep taint kuralı gerektirir) |
+| 48 | Yetkisiz kullanıcı silme (`_on_reject`) | **Survived-Fixed** | `delete_user()` diye bir fonksiyon yok — en yakın karşılık `PendingRegistrationsView._on_reject()`. Kendi `yonetici_hala_yetkili()` kapısı kaldırılınca 39 test (pending_view+authz+construction_guard) hiçbiri fark etmedi — yalnızca `_on_approve()` için bir mutasyon-karşıtlığı testi vardı, `_on_reject()` için hiç yoktu |
+| 49 | Kilitli hesapla yazma | Uygulanamaz | `users` tablosunda `is_active`/`locked` sütunu HİÇ yok; kilitleme `login_attempts.locked_until` (CORE/rate_limit.py) ile YALNIZCA giriş anında uygulanıyor — oturum içi yazma denetimi (`can_write`) yalnızca role bakıyor. Mimari fark, kod boşluğu değil |
+| 50 | Reddedilen yazının audit kaydını iptal et | Killed | 3 test düştü (`test_reddedilen_yazi_audit_loga_tam_bir_rbac_write_rejected_satiri_dusuyor` dahil) |
+| 51 | `busy_timeout` = 0 | **Survived-Fixed** | `DB/db_manager.py`'nin TEK BAŞINA mutasyonu bu testi bile YEŞİL bıraktı — `CORE/audit_chain.py::_begin_immediate()` HER denetim yazımında bağımsız olarak AYNI PRAGMA'yı yeniden uyguluyor ve `db` fixture'ının `connect()`'i en az bir yazım tetikliyor, bu da ilk atamayı MASKELİYOR. İkisi BİRDEN 0'a çekilince gerçekten kırmızı oldu — daha önce belgelenmemiş bir yedeklilik/gölgeleme ilişkisi ortaya çıktı |
+| 52 | `PRAGMA foreign_keys = OFF` | Killed | 7 test düştü (klasör/dosya CASCADE'e bağlı testler) |
+| 53 | Yetkisiz etiket değişimi (yönetici-only görünürlük) | Uygulanamaz | Böyle bir kavram yok — tek görünürlük ekseni `tags.is_private` (mahrem/paylaşılan), role değil dosya-sahipliğine bağlı; `can_write()` yönetici/standart ayrımı yapmıyor (bilinçli tasarım, tags iş verisi RBAC'ı zaten yönetici+standart'a AÇIK) |
+| 54 | `role=None` → misafir/varsayılan role ata | Killed | `db_role(None)` gerçekten `DB_USER`'a (en dar yetki) düşüyor — deneme olarak tam tersi (None→DB_ADMIN, gerçek yetki-yükseltme senaryosu) simüle edildi, 2 test (`test_bilinmeyen_rol_en_dar_yetkiye_dusuyor[None]`, `test_rol_esleme_yetki_genisletmiyor[None-user]`) anında yakaladı |
+| 55 | `get_users()` PIN hash'i de döndürsün | **Survived-Fixed** | `get_users()` yok — en yakın karşılık `PendingRegistrationsView._load_pending()`. `SELECT username, hwid, role, created_at` → `SELECT *` yapılınca 20 test hiçbiri fark etmedi (kartlar zaten adlandırılmış anahtarlarla okuyor, fazla sütun görsel hiçbir şeyi bozmuyor) — yeni test ham satırın `password_hash` içermediğini VE hash değerinin başka bir sütun altında da sızmadığını doğrudan sınıyor |
+
+**Özet Bölüm 4:** 15 senaryo → 6 Killed, 6 Survived-Fixed (yeni testler:
+`test_system_write_bloktan_cikinca_bypass_GERCEKTEN_kapaniyor`,
+`test_system_write_icinde_istisna_firlarsa_bile_bypass_kapaniyor`,
+`test_purge_sqlite_residue_gercekten_wal_checkpoint_cagiriyor`,
+`test_reddet_guard_reddederse_kullanici_SILINMIYOR`,
+`test_busy_timeout_gercekten_ayarli_sifir_degil`,
+`test_load_pending_pin_hash_sutununu_hic_secmiyor`), 2 Uygulanamaz
+(mimari fark — kilitli hesap kavramı ve yönetici-only etiket hiç yok),
+1 gerçek yapısal kör nokta B-129'a yazıldı (kod/kural değişikliği
+YAPILMADI). `tests/test_db_manager_rbac.py`: 22 → 25,
+`tests/test_secret_store.py`: 14 → 15,
+`tests/test_pending_registrations_view.py`: 10 → 11.
+
+## B-129 — Bandit B608 susturması + semgrep'te SQL enjeksiyonu kuralı yok: gerçek bir f-string enjeksiyonu HİÇBİR taramadan geçmiyor
+
+**Durum:** Açık — karar bekliyor (yeni statik analiz kuralı, kapsam dışı).
+**Öncelik:** Orta-Yüksek (güvenlik taraması kör noktası).
+**Bulundu:** 2026-09-10 (B-126 senaryo 47).
+
+`pyproject.toml`'daki `[tool.bandit]` yapılandırması `B608`'i (hardcoded
+SQL expression) PROJE GENELİNDE susturuyor — gerekçe, taramanın bulduğu
+17 sitenin TAMAMININ incelenip yalnızca sabit değerler (sütun listeleri,
+tablo adları, allowlist'ten geçmiş adlar) enterpolasyona girdiğinin
+doğrulanmış olması. Ama bu susturma GENİŞ: bundan sonra AYNI dosyalarda
+GERÇEK bir değişkeni (kullanıcı girdisinden türeyen ya da öyle olabilecek)
+bir f-string SQL'e enjekte eden YENİ bir satır da sessizce geçer.
+
+Gerçek deney: `CORE/folders.py::is_descendant()`'taki parametrik
+`"... WHERE id = ?", (simdi,)` çağrısı `f"... WHERE id = {simdi}"`'e
+çevrildi (klasör id'si zaten int olduğu için BU ÖRNEKTE istismar
+edilemez, ama şeklen tam bir SQL enjeksiyonu deseni). Ne `bandit -c
+pyproject.toml -r CORE` (B608 susturulduğu için sessiz), ne
+`.semgrep/hycleus.yml`'deki 5 yerel kural (hiçbiri SQL'e değil
+kriptografik desenlere bakıyor), ne de `tests/test_folders.py` +
+`tests/test_static_analysis.py` (62 test) bunu yakaladı.
+
+Kapatma seçenekleri (bu turda YAZILMADI — hepsi false-positive riski
+taşıyan tasarım kararları gerektiriyor):
+1. Yeni bir semgrep taint kuralı: kaynak = fonksiyon parametreleri/yerel
+   değişkenler, sink = `.execute(f"...")`/`.fetchone(f"...")`/
+   `.fetchall(f"...")` — ama mevcut 17 "meşru" siteyi (bazıları TAM
+   OLARAK parametre adı kullanıyor, ör. `secure_erase.py`'deki `table`/
+   `column`) allowlist'lemeden false-positive'siz yazmak ciddi bir
+   tasarım işi.
+2. B608'i proje genelinde susturmak yerine her 17 siteye ayrı ayrı
+   `# nosec B608 <gerekçe>` koymak — mevcut satırların çoğunda zaten
+   `# noqa: S608` var (ruff'ın kendi kuralı), bandit için ayrıca
+   `# nosec B608` eklemek susturmayı DARALTIR ama yine de "değişken adı
+   masum mu" sorusunu insan gözden geçirmesine bırakır.
+3. Hiçbir şey yapmama — mevcut 17 site zaten incelendi, riski kabul et,
+   yalnızca kod incelemesine güven.
+
+Öneri: Seçenek 2 (susturmayı daralt) + Seçenek 1'in hafif bir versiyonu
+(yalnızca "tek harfli/kısa yerel değişken adı" gibi kaba bir heuristikle
+YENİ eklenen f-string SQL'leri code review'da işaretleyen bir semgrep
+kuralı) — ama ikisi de kullanıcı kararı gerektiriyor.

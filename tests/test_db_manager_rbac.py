@@ -433,6 +433,56 @@ def test_system_write_icindeki_mesru_yazi_rbac_write_rejected_uretmiyor(
     ) is not None
 
 
+def test_system_write_bloktan_cikinca_bypass_GERCEKTEN_kapaniyor(db) -> None:
+    """
+    B-126 senaryo 44: `system_write()` bloğundan çıkınca thread-local
+    derinlik sayacı GERİ İNMELİ — kalıcı bir bypass'a dönüşmemeli.
+
+    Mutasyon-kanıt: `finally: yerel.derinlik -= 1` satırı `pass` ile
+    değiştirilince (sayaç bir daha asla sıfıra dönmüyor) HEM bu dosyadaki
+    22 test HEM DE test_disposal.py + test_retention.py +
+    test_scheduled_checks.py (toplam 200 test) hiçbiri fark etmedi —
+    gerçek bir boşluktu: her testin kendi `db` fixture'ı ayrı bir
+    `DBManager` örneği kullandığı için sayaç sızıntısı test SÜRECİ
+    içinde hiç gözlenmiyordu, ama AYNI DBManager'ı paylaşan İKİ ardışık
+    `system_write()` kullanımı arasında (gerçek uygulamada — tekil
+    DBManager, arka plan zamanlayıcısı + QThreadPool işçileri) birinci
+    kullanımdan sonra rol denetimi KALICI olarak devre dışı kalırdı.
+    """
+    db.set_active_role(ROL_SALT_OKUNUR)
+    with db.system_write():
+        db.execute("INSERT INTO folders (name) VALUES ('sistem-yazisi-1')")
+
+    # Blok kapandı — aynı (salt okunur) rolle YENİDEN, system_write() OLMADAN
+    # bir yazı denemesi şimdi REDDEDİLMELİ.
+    with pytest.raises(YazmaYetkisiYokError):
+        db.execute("INSERT INTO folders (name) VALUES ('bypass-sizintisi')")
+
+    assert db.fetchone(
+        "SELECT id FROM folders WHERE name = 'bypass-sizintisi'"
+    ) is None, "system_write() bloğu kapandıktan SONRA bile yazı geçti"
+
+
+def test_system_write_icinde_istisna_firlarsa_bile_bypass_kapaniyor(db) -> None:
+    """
+    B-126 senaryo 45: `system_write()` bloğu İSTİSNAYLA çıkarsa bile
+    sayaç geri inmeli — `finally` yerine `try/except-raise/else` gibi bir
+    yapıya "sadeleştirilirse" (yalnızca BAŞARILI çıkışta azaltma yapar)
+    normal-yol testi (bir üstteki test) bunu YAKALAMAZ, çünkü o hiç
+    istisna fırlatmıyor. Mutasyon-kanıt: tam olarak bu değişiklik
+    yapılınca test_db_manager_rbac.py + test_disposal.py + test_retention.py
+    + test_scheduled_checks.py (201 test) hiçbiri fark etmedi.
+    """
+    db.set_active_role(ROL_SALT_OKUNUR)
+    with pytest.raises(RuntimeError, match="kasitli-hata"):
+        with db.system_write():
+            db.execute("INSERT INTO folders (name) VALUES ('sistem-yazisi-2')")
+            raise RuntimeError("kasitli-hata")
+
+    with pytest.raises(YazmaYetkisiYokError):
+        db.execute("INSERT INTO folders (name) VALUES ('bypass-sizintisi-2')")
+
+
 def test_otomatik_temizleyiciler_calisirken_de_yanlis_red_kaydi_uretmiyor(
     db,
 ) -> None:
@@ -456,3 +506,30 @@ def test_otomatik_temizleyiciler_calisirken_de_yanlis_red_kaydi_uretmiyor(
     assert db.fetchone(
         "SELECT id FROM audit_log WHERE action = 'rbac_write_rejected'"
     ) is None
+
+
+def test_busy_timeout_gercekten_ayarli_sifir_degil(db) -> None:
+    """
+    B-126 senaryo 51: `PRAGMA busy_timeout` gerçekten ayarlanmış olmalı —
+    0 (kapalı, ilk kilit çakışmasında anında `sqlite3.OperationalError:
+    database is locked`) DEĞİL.
+
+    Mutasyon-kanıt: `DB/db_manager.py`'deki `busy_timeout = 5000` → `= 0`
+    TEK BAŞINA değiştirilince bu test bile YEŞİL kaldı — çünkü
+    `CORE/audit_chain.py::_begin_immediate()` HER denetim kaydı
+    yazımında AYRICA, bağımsız olarak `busy_timeout = _BUSY_TIMEOUT_MS`
+    (5000) uyguluyor ve `db` fixture'ının `connect()`'i en az bir denetim
+    yazımı tetiklediği için bu ikinci atama birinciyi MASKELİYORDU. İKİSİ
+    BİRDEN 0'a çekilince (gerçek "hiçbir yerde busy_timeout korunmuyor"
+    senaryosu) test GERÇEKTEN kırmızı oldu. Yani `db_manager.py`'nin
+    kendi satırı, bu fixture'ın gördüğü son değer açısından FİİLEN
+    yedekli — asıl garanti `audit_chain.py`'nin kendi atamasından geliyor.
+    Bu ayrım daha önce hiçbir yerde belgelenmemişti.
+
+    Gerçek bir kilit çakışmasını (iki bağlantı, biri tutarken diğeri
+    yazmaya çalışsın) simüle etmek zamanlamaya bağlı OLURDU (flaky);
+    bunun yerine PRAGMA değerinin KENDİSİNİ doğrudan okuyoruz.
+    """
+    deger = db.fetchone("PRAGMA busy_timeout")
+    ms = deger[0] if not isinstance(deger, dict) else next(iter(deger.values()))
+    assert ms >= 1000, f"busy_timeout={ms}ms — pratikte kapalıya yakın"

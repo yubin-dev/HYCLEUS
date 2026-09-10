@@ -7,6 +7,8 @@ keyring API'si üzerinden çalışır.
 """
 from __future__ import annotations
 
+import ast
+import inspect
 import sqlite3
 from pathlib import Path
 
@@ -159,6 +161,51 @@ def test_shred_file_overwrites_before_unlink(tmp_path: Path) -> None:
 
     # Zaten yok olan dosya hata değil
     assert shred_file(target) is False
+
+
+def test_purge_sqlite_residue_gercekten_wal_checkpoint_cagiriyor() -> None:
+    """
+    B-126 senaryo 46: `purge_sqlite_residue()` gerçekten `wal_checkpoint`
+    çağırmalı — VACUUM'dan ÖNCE.
+
+    Bunu diskteki -wal dosyasının ham baytlarıyla sınamak GÜVENİLİR DEĞİL:
+    elle yapılan deneyler `sqlite3.Connection.close()`'un SON açık bağlantı
+    olduğunda KENDİ checkpoint'ini tetiklediğini (bu da mutasyonu gizler),
+    VE kapatmadan önce kontrol edildiğinde bile VACUUM'un kendi WAL
+    yazımlarının orijinal sırrı bazen hâlâ içerdiğini (SQLite'ın iç sayfa/
+    serbest liste davranışına bağlı, gözlemlenen ama kararlı biçimde
+    yeniden üretilemeyen bir sonuç) gösterdi — yani byte-seviyesi bir test
+    kararsız (flaky) olurdu. Bunun yerine, deponun `test_backup_reminder.py`
+    ve benzerlerinde kullandığı AST/kaynak-metni yaklaşımıyla, çağrının
+    GERÇEKTEN var olduğunu ve VACUUM'dan önce geldiğini doğrudan sınıyoruz.
+    """
+    agac = ast.parse(inspect.getsource(purge_sqlite_residue))
+    fn = agac.body[0]
+    assert isinstance(fn, ast.FunctionDef)
+
+    # Yalnızca gövdedeki .execute(...) çağrılarının SQL argümanlarına bak —
+    # docstring metnindeki "VACUUM" sözü ("...ve VACUUM ile dosyayı baştan
+    # yazar.") sıralamayı yanlış ölçtürür; kod satırları gerekli.
+    satirlar: list[tuple[int, str]] = []
+    for n in ast.walk(fn):
+        if (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "execute"
+            and n.args
+            and isinstance(n.args[0], ast.Constant)
+            and isinstance(n.args[0].value, str)
+        ):
+            satirlar.append((n.lineno, n.args[0].value))
+
+    checkpoint_satirlari = [ln for ln, sql in satirlar if "wal_checkpoint" in sql]
+    vacuum_satirlari = [ln for ln, sql in satirlar if "VACUUM" in sql]
+    assert checkpoint_satirlari, "purge_sqlite_residue() artık wal_checkpoint çağırmıyor"
+    assert vacuum_satirlari, "purge_sqlite_residue() artık VACUUM çağırmıyor"
+    assert checkpoint_satirlari[0] < vacuum_satirlari[0], (
+        "wal_checkpoint, VACUUM'dan SONRA çağrılıyor — sıralama tersine "
+        "dönmüş (eski WAL sayfaları VACUUM'un yeni yazımlarıyla karışabilir)"
+    )
 
 
 def test_shred_file_handles_empty_file(tmp_path: Path) -> None:
