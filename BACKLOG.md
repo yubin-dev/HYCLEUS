@@ -11009,3 +11009,32 @@ radius'u tek dosyayla sınırlar. Kapsamı geniş (tüm `encrypt_file`/
 `decrypt_file` çağıranları, dosya formatı değişir — geriye dönük uyumluluk
 gerektirir). Bu turun kapsamı (test yazmak) dışında, acil değil (96 bit
 nonce zaten endüstri standardı).
+
+### Bölüm 3 (MC-M027–MC-M038) — Shamir 2-of-3 (`CORE/vault_manager.py::_sss_*`, `CORE/recovery_share.py`)
+
+Test alt kümesi: `test_vault_manager.py` + `test_recovery_share.py` +
+`test_recovery_share_anchor.py` + `test_recovery_share_ui.py` +
+`test_kurtarma_usb_kapisi.py` + `test_login_dialog_kurtarma_ekrani_yok.py`
++ `test_recover_cli.py` + `test_recovery_e2e.py` + `test_vault_hmac_
+share2.py` (baseline 181 test).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M027 | `_SSS_THRESHOLD` 2→1 | **Eşdeğer mutant** | `_SSS_THRESHOLD` yalnızca bir hata mesajı metninde kullanılıyor (satır 412) — eşik fiilen `_sss_recover()`'ın imzasıyla (her zaman tam 2 pay alır) ve `idx_a==idx_b` reddiyle uygulanıyor. Sabiti değiştirmenin davranışa hiçbir etkisi yok |
+| MC-M028 | `_SSS_THRESHOLD` 3 (üç pay şart) | **Eşdeğer mutant** | Aynı gerekçe |
+| MC-M029 | Polinom derecesi 2 (threshold-1 yanlış) | **Killed** | 9 test kırılıyor (round-trip, any-two-of-three, türetme) |
+| MC-M030 | Bir pay x=0'da (pay = secret'ın kendisi) | **Killed** | `test_shamir_shares_do_not_leak_the_secret` + `test_shamir_share_1_is_information_theoretically_hiding` doğrudan yakalıyor |
+| MC-M031 | İki paya aynı x koordinatı (`idx_a==idx_b` reddi kaldırılır) | **Killed** | `test_shamir_single_share_cannot_recover_secret` fark ediyor — ama farklı yoldan: `pow(0,-1,p)`'nin kendisi `ValueError` fırlatıyor (payda sıfır), testin regex'i ("indisli") eşleşmiyor ve test bu yüzden FAIL oluyor. Sonuç Killed ama test biraz kırılgan — regex daha genel olsaydı "doğru sebep" için de geçerdi. Küçük, düşük öncelikli test kırılganlığı, ayrı görev açılmadı |
+| MC-M032 | Katsayılar `random.Random(1337)` sabit tohum | **Killed** | `test_shamir_share_1_is_information_theoretically_hiding` (200 örneklem tekrar testi) |
+| MC-M033 | Katsayılar `range(256)`'dan (tam alan değil) | **Killed** | Aynı test — 200 örneklemde 131 benzersiz değer (doğum günü çarpışması) |
+| MC-M034 | Lagrange x-koordinatsız (pay sırasına bağımlı) | **Killed** | 11 test kırılıyor (any-two-of-three, kurtarma akışları) |
+| MC-M035 | Kağıt payı "checksum" (33 bayt uzunluk) kontrolü kaldırılır | **Killed** | `test_truncated_share_is_rejected` |
+| MC-M036 | Uzunluk uyuşmazsa sessizce pad/kırp (reddetme) | **Killed** | Aynı test |
+| MC-M037 | Üretim GF(2^8), reconstruct GF(p) (alan uyuşmazlığı) | **Kapsam dışı** | Mimari uyuşmuyor: kod TEK bir alan (GF(p), `_SSS_PRIME = 2**256+297`) kullanıyor, hem `_sss_split` hem `_lagrange_at`'ta aynı sabit — GF(2^8) (klasik bayt-bazlı SSSS) hiç yok, grep doğrulandı |
+| MC-M038 | Kağıt/USB payı (`share_1`) plaintext metadata'ya yazılır (şifrelenmeden) | **Killed** | 17 test kırılıyor — `open_vault()` share_1'i şifreli `plaintext`'ten okumayı bekliyor, format uyuşmazlığı geniş çaplı kırılmaya yol açıyor |
+
+**Bölüm 3 özet:** Killed 10 (M029,M030,M031,M032,M033,M034,M035,M036,
+M038 — ★ yok bu blokta), Eşdeğer mutant 2 (M027,M028), Kapsam dışı 1
+(M037). Üretim kodunda VE testlerde hiçbir değişiklik yapılmadı — Shamir
+katmanı (muhtemelen B-126 Bölüm 3'ün mirası) bu 12 mutasyonun hiçbirinde
+gerçek bir boşluk göstermedi; kod tabanının bu köşesi doygun.
