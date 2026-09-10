@@ -89,6 +89,24 @@ def test_yanlis_boyutlu_yaprak_reddediliyor(boyut: int) -> None:
         build_tree([b"\x00" * boyut])
 
 
+def test_ilk_yaprak_disindaki_yanlis_boyut_da_ERKEN_ve_ACIK_mesajla_reddediliyor() -> None:
+    """
+    Yukarıdaki test tek elemanlı listeler kullanıyor — kusurlu yaprak
+    HEP indeks 0. Bu, ön-kontrolü yalnızca `leaves[0]`'a bakan
+    zayıflatılmış bir sürümünü YAKALAMAZDI: `node_hash()`'in kendi 32
+    byte kontrolü (eşleştirme sırasında) sonunda YİNE reddederdi, ama
+    HANGİ yaprağın bozuk olduğunu söylemeyen, teşhisi zorlaştıran bir
+    mesajla ("Düğüm çocukları ... 32/16 verildi" — kaçıncı yaprak
+    olduğu kayıp). Asıl iddia: ön-kontrol GERÇEKTEN çalışıyor ve AÇIK,
+    yaprak numarasını içeren mesajı üretiyor — geç, belirsiz bir
+    savunma katmanına düşmeden.
+    """
+    iyi = [b"\x11" * HASH_SIZE, b"\x22" * HASH_SIZE, b"\x33" * HASH_SIZE]
+    kusurlu = [*iyi[:1], b"\x00" * 16, *iyi[1:]]
+    with pytest.raises(MerkleError, match=r"1\. yaprak .* byte olmalı"):
+        build_tree(kusurlu)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 2. Yol doğrulaması — TÜM indisler, 1..40 yaprak
 # ══════════════════════════════════════════════════════════════════════════════

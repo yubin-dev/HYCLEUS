@@ -10785,4 +10785,33 @@ uygulanamaz ya da zaten test ediliyor çıktı; kod tabanı olgun modüllerde
 doygunluğa yaklaşıyor. Sonraki bölümler muhtemelen daha küçük (3-5
 senaryo) ve daha uzun araştırma gerektirecek.
 
-M041–M050: devam edecek.
+### Bölüm 7 (M041–M043) — özet
+
+`CORE/blacklist.py` diye ayrı bir modül YOK (USB kara listesi
+`vault_manager.py`'de, zaten kapsanmış); `CORE/folders.py`'de
+`is_descendant`/`move_folder` dışında zayıflatılabilecek bir Python
+seviyesi koruma yok (doğrulama SQLite FK kısıtlarına devredilmiş, her
+koşul zaten test ediliyor) — ikisi de araştırıldı, uygulanabilir
+senaryo bulunamadı.
+
+| # | Hedef | Mutasyon | Sonuç |
+|---|-------|----------|-------|
+| M041 | `CORE/pin_rotation.py::rotate_pin()` — `change_vault_pin()`'in genel istisna dalı | `raise` kaldırıldı (yutulup devam) | **Survived-Fixed** — EN ÖNEMLİ bulgu: vault yeniden şifreleme GERÇEKTEN başarısız olsa bile (`ValueError` dışında bir istisna) denetim kaydı "PIN değişti" diye YALAN SÖYLERDİ; hiçbir test bunu tetiklemiyordu |
+| M042 | `CORE/merkle.py::build_tree()` — yaprak boyutu ön-kontrolü | Yalnızca `leaves[0]`'a bakacak şekilde daraltıldı | **Survived-Fixed** (nüanslı) — `node_hash()`'in kendi 32-byte kontrolü savunma derinliği olarak YİNE reddediyordu, ama belirsiz/geç bir mesajla (kaçıncı yaprağın bozuk olduğu kayboluyor); yeni test ön-kontrolün GERÇEKTEN çalışıp AÇIK/erken mesaj ürettiğini doğruluyor |
+| M043 | `CORE/expiry.py::countdown_for()` — `expired` alanı tam sınır | `kalan <= 0` → `kalan < 0` | **Survived-Fixed** — `is_expired()`'ın AYNI tam sınırı ayrı testle güvenceye alınmıştı, bu ikinci (arayüz) kopyası hiç sınanmamıştı |
+
+3/3 Survived-Fixed. Üretim kodunda net değişiklik YOK.
+
+Yeni/güncellenen test dosyaları: `tests/test_pin_rotation.py` (+1),
+`tests/test_merkle.py` (+1), `tests/test_expiry.py` (+1).
+
+**Doygunluk notu:** 7. bölümde araştırılan 5 alandan 2'si (blacklist,
+folders) hiç uygulanabilir aday üretmedi; kalan 3'ü (pin_rotation,
+merkle, expiry) küçük ama gerçek bulgular verdi. Kod tabanı artık çoğu
+modülde 6-7 turdan geçmiş durumda — sonraki bölümler muhtemelen daha
+küçük (2-4 senaryo) ve daha uzun araştırma gerektirecek. M041 türü
+(gerçekten ciddi, denetim bütünlüğünü etkileyen) bulgular hâlâ mümkün
+ama artık nadir — her yeni tur incelemesi giderek daha spesifik/derin
+kod yollarına inmek gerektiriyor.
+
+M044–M050: devam edecek.

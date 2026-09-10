@@ -165,6 +165,29 @@ def test_reddedilen_denemede_denetim_kaydi_YOK(kasa, db) -> None:
     assert satir["n"] == 0
 
 
+def test_kasa_yeniden_sifrelenemezse_DENETIM_YALAN_SOYLEMIYOR(
+    kasa, db, monkeypatch
+) -> None:
+    """
+    `change_vault_pin()` `ValueError` DIŞINDA bir istisna fırlatırsa
+    (dosya yazılamadı, kasa bozuk — gerçek bir yeniden şifreleme hatası)
+    bu istisna YUKARI TAŞINMALI ve denetim kaydı ASLA yazılmamalı. Aksi
+    hâlde kayıt "PIN değişti" der ama vault hiç yeniden şifrelenmemiş
+    olur — denetim zincirinin sahteleşmesi.
+    """
+    def patlayan(*_a, **_k):
+        raise RuntimeError("disk dolu")
+
+    monkeypatch.setattr(vault_manager, "change_vault_pin", patlayan)
+
+    with pytest.raises(PinRotationError, match="disk dolu"):
+        rotate_pin(db, kasa, _ESKI_PIN, _YENI_PIN, user_id=7, zorunlu=True)
+
+    satir = db.fetchone(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE action LIKE 'pin_%'")
+    assert satir["n"] == 0, "vault yeniden şifrelenemediği hâlde denetim kaydı yazıldı"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. Denetim kaydı
 # ══════════════════════════════════════════════════════════════════════════════

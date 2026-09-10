@@ -187,6 +187,17 @@ def test_countdown_row_for_an_expired_file():
     assert satir.urgency() == "red"
 
 
+def test_countdown_row_tam_sinirda_expired_SAYILIYOR():
+    """
+    `is_expired()`'ın tam sınırı (`test_expiry_boundary_is_inclusive`)
+    KAPALI aralık — `countdown_for()`'un `expired` alanı da AYNI kurala
+    uymalı, aksi hâlde arayüzdeki geri sayım satırı ile gerçek imha
+    kararı tam sınırda birbirinden AYRIŞIRDI. Bu satır hiç sınanmamıştı.
+    """
+    satir = countdown_for(format_expires_at(_ŞİMDİ), now=_ŞİMDİ)
+    assert satir.expired is True
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. Özet bant — üç hâl
 # ══════════════════════════════════════════════════════════════════════════════
