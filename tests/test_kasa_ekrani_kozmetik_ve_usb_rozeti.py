@@ -295,3 +295,41 @@ def test_usb_rozeti_takili_ve_cikarili_durumlari_gercekten_yansitiyor(win) -> No
     win._usb.cikar()
     win._refresh_usb_badge()
     assert "USB Yok" in win._usb_badge.text()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-10) — Toplu yükleme worker hata işleme (MC-M088 ★)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_sifreleme_hatasi_basarili_olarak_isaretlenmiyor(
+    win, qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    MC-Kataloğu M088 ★: `_FileRunnable.run()`'da `encrypt_file()`
+    GERÇEKTEN başarısız olursa dosyanın tabloya "başarıyla eklenmiş" gibi
+    GİRMEMESİ gerekiyor — `result["ok"]` False kalmalı, `_batch_errors`
+    artmalı. Bugüne kadar hiçbir test bu senaryoyu (toplu yükleme
+    sırasında gerçek bir şifreleme hatası) simüle etmiyordu.
+
+    Mutasyon-kanıt: `except Exception` bloğunda `ok=True` yapılıp eksik
+    alanlar (size_bytes, sha256, file_id, vb.) sahte değerlerle
+    doldurularak `file_done` yayınlanınca bu dosyanın (ve tüm test
+    paketinin, 155 test) HİÇBİRİ fark etmedi.
+    """
+    from UI import main_window_table as mwt
+
+    def patlayan_encrypt_file(*a, **k):
+        raise OSError("disk dolu (simüle)")
+
+    monkeypatch.setattr(mwt, "encrypt_file", patlayan_encrypt_file)
+
+    f = tmp_path / "basarisiz.txt"
+    f.write_bytes(b"icerik")
+    win._handle_dropped_file(f, label="Genel")
+    assert _pump(qapp, lambda: win._batch_total >= 1 and win._batch_done >= win._batch_total), (
+        "dosya işleme zaman aşımına uğradı"
+    )
+
+    win._on_sidebar_click("Genel", win._nav_btns["Genel"])
+    assert win._table.rowCount() == 0, "şifrelemesi başarısız dosya tabloya eklenmiş"
+    assert win._batch_errors == 1

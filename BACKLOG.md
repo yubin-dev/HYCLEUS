@@ -11323,3 +11323,46 @@ test_migrations.py` (26) + `tests/test_audit_log_immutable.py` (18).
 **Bölüm 10 özet:** Survived-Fixed 2 (M080,M083), Eşdeğer mutant 1 (M081),
 Kapsam dışı 2 (M082 bilinçli sınır, M084 hedef kod yok). Yeni testler:
 `tests/test_db_manager_rbac.py` (+2). Üretim kodunda net değişiklik yok.
+
+### Bölüm 11 (MC-M085–MC-M089) — Eşzamanlılık (`UI/main_window_table.py`, `CORE/crypto.py`)
+
+Test alt kümesi: `tests/test_kasa_ekrani_kozmetik_ve_usb_rozeti.py` +
+`tests/test_kasa_ekrani_ozet_rozetleri.py` + `tests/test_main_window_
+smoke.py` (baseline 155).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M085 ★ | Nonce sayacı QThreadPool worker'larında atomik değil (paralel nonce reuse) | **Kapsam dışı** | Hedef kod yok — `CORE/crypto.py::encrypt_file()` nonce'u `os.urandom(12)` ile üretiyor (MC-M013/023'te zaten doğrulandı), sistemde HİÇBİR yerde nonce SAYACI yok — atomik olmayan bir sayaç, olmayan bir mekanizmadır |
+| MC-M086 | Cipher nesnesi thread'ler arasında locksuz paylaşılır | **Kapsam dışı** | Hedef kod yok — her `encrypt_file()`/`decrypt_file()` çağrısı KENDİ `Cipher()` nesnesini yerelde oluşturuyor; worker'lar (`_FileRunnable`) arasında paylaşılan/modül-seviyesi bir Cipher örneği yok |
+| MC-M087 | Progress listesi locksuz append (corruption) | **Kapsam dışı — mimari** | `_batch_done`/`_batch_errors`/tablo güncellemeleri `_ProcessSignals(QObject)` sinyali (`file_done`) üzerinden geliyor — sinyal ana thread'de yaşayan bir nesneye bağlı (`self._batch_signals.file_done.connect(self._on_file_done)`, `UI/main_window.py:145`), Qt worker thread'lerden gelen emit'leri OTOMATİK olarak ana thread'in event loop'una kuyruklar (queued connection). Yani `_on_file_done()` HER ZAMAN tek thread'de, sırayla çalışıyor — kilitlenecek bir concurrent-access senaryosu mimari olarak yok |
+| MC-M088 ★ | Worker exception yutulur → başarısız dosya "şifrelendi" işaretlenir | **Survived-Fixed** | Gerçek ve önemli bulgu: `_FileRunnable.run()`'da `encrypt_file()` hatasının `except` bloğu `ok=True` yapılıp eksik alanlar (size_bytes, sha256, file_id vb.) sahte değerlerle doldurulunca 155 testin HİÇBİRİ fark etmedi — toplu yükleme sırasında GERÇEK bir şifreleme hatasını simüle eden HİÇBİR test yoktu. `test_sifreleme_hatasi_basarili_olarak_isaretlenmiyor` eklendi |
+| MC-M089 | `waitForDone` kaldırılır (process write bitmeden çıkar) | **Kapsam dışı (bu tur için)** | Gerçek, önceden var olan boşluk — `QThreadPool.globalInstance()` (`UI/main_window.py:135`) kullanılıyor ama `waitForDone()` HİÇBİR yerde çağrılmıyor (grep doğrulandı); `closeEvent()` yalnızca checkout check-in'lerini bekliyor, bekleyen toplu-yükleme worker'larını değil. Üretim kodu değişikliği gerektiriyor → B-143 |
+
+**Bölüm 11 özet:** Survived-Fixed 1 (M088★), Kapsam dışı 4 (M085★,M086,
+M087 mimari, M089→B-143). Yeni test: `tests/test_kasa_ekrani_kozmetik_
+ve_usb_rozeti.py` (+1). Üretim kodunda net değişiklik yok.
+
+## B-143 — Pencere kapanırken bekleyen toplu-yükleme worker'ları için `waitForDone()` yok
+
+**Durum:** Açık — düşük-orta öncelik (gerçek tasarım boşluğu, üretim
+kodu değişikliği gerektiriyor — bu mutasyon turunun kapsamı dışında).
+**Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M089) — kod incelemesiyle,
+mutasyona gerek kalmadan: şu anki kod ZATEN bu durumda.
+
+`UI/main_window.py::HycleusWindow.__init__` `QThreadPool.globalInstance()`
+kullanıyor (satır 135) ve toplu dosya yükleme (`_start_batch()`) bu
+havuzda `_FileRunnable` görevleri çalıştırıyor. `closeEvent()`
+(satır 199) yalnızca açık checkout'ları geri şifreleyip kapatıyor —
+`self._pool.waitForDone(...)` çağrısı yok. Kullanıcı dosya
+sürükle-bırakır bırakmaz pencereyi kapatırsa, arka planda hâlâ
+şifreleme/DB-kayıt/tarama yapan worker'lar process sonlanırken YARIDA
+kesilebilir (kısmi/bozuk `.hcl` dosyası, DB'de eksik satır, ya da hiç
+DB kaydı olmayan bir `.hcl` — B-142'nin vault dosyası için tespit
+ettiği torn-write riskinin toplu yükleme worker'ları için karşılığı).
+
+**Öneri:** `closeEvent()`'e (ya da `main.py`'nin `aboutToQuit`
+işleyicisine) bekleyen görev varsa (`self._batch_done < self._batch_
+total`) kullanıcıya bilgi verip `self._pool.waitForDone(makul_bir_
+zaman_asimi)` çağıran bir adım eklemek — checkout check-in'inin zaten
+izlediği "kapanışta bekleyen işi bitir" deseniyle tutarlı. Bu turun
+kapsamı (test yazmak) dışında, ayrı bir görev olarak ele alınmalı.
