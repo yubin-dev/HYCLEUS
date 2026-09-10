@@ -428,3 +428,75 @@ def test_iki_okuma_yolu_ayni_basligi_kullaniyor() -> None:
             f"{ad}() icinde dogrudan _MAGIC karsilastirmasi var — baslik "
             "okumasi `_read_header()` icinde kalmali."
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-126 — mutasyon testi turu (2026-09-10): gerçek boşluklar
+# ══════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize("kisa_anahtar", [b"\x00" * 16, b"\xff" * 24, b""])
+def test_anahtar_uzunlugu_tam_32_byte_disinda_reddedilir(
+    plain_file: Path, key: bytes, kisa_anahtar: bytes
+) -> None:
+    """
+    B-126 senaryo 14: 32 byte dışındaki HERHANGİ bir anahtar boyutu
+    reddedilmeli — yalnızca "çok kısa" değil, 16 (AES-128 boyu) ve 24
+    byte da dahil.
+
+    Mutasyon-kanıt: `if len(key) != 32` denetimi `not in (16, 32)` olarak
+    gevşetildiğinde `tests/test_crypto.py`'nin GERİ KALANI (42 test) hiçbir
+    şey fark etmiyordu — hiçbir test 16 byte'lık bir anahtarla ÇAĞRI
+    yapmıyordu. Gerçek bir boşluktu, bu test onu kapatıyor.
+    """
+    hcl_path, _sha, _aad = encrypt_file(plain_file, key, _USER_ID, hwid=_HWID)
+
+    with pytest.raises(ValueError):
+        encrypt_file(plain_file, kisa_anahtar, _USER_ID, hwid=_HWID)
+    with pytest.raises(ValueError):
+        crypto.verify_file(hcl_path, kisa_anahtar, hwid=_HWID)
+    with pytest.raises(ValueError):
+        decrypt_file(hcl_path, kisa_anahtar, hwid=_HWID)
+
+
+@pytest.mark.parametrize(
+    "islem",
+    ["blok_takasi", "blok_atlama", "blok_ortasinda_kesme", "sona_bayt_ekleme"],
+)
+def test_cok_bloklu_dosyada_ciphertext_seviyesi_saldirilar_reddedilir(
+    plain_file: Path, key: bytes, islem: str
+) -> None:
+    """
+    B-126 senaryo 8/9/10/13/17: birden fazla 64 KB bloğu kapsayan gerçek
+    bir dosyada blok takası, blok atlama, blok ortasında kesme ve sona
+    fazladan bayt ekleme.
+
+    HYCLEUS'ta AYRI blok imzası/sıra numarası YOK (tek dosya = tek GCM
+    akışı, tek uçtaki tag tüm ciphertext'i kapsıyor) — bu dört saldırı,
+    var olmayan bir "blok çerçeveleme" katmanını değil, GCM tag'inin
+    TÜM ciphertext üzerindeki tek bütünlük garantisini sınıyor. `plain_file`
+    204 800 bayt (3 tam olmayan 64 KB blok) olduğu için ilk iki 64 KB'lık
+    blok üzerinde gerçek bir manipülasyon yapılabiliyor.
+    """
+    hcl_path, _sha, _aad = encrypt_file(plain_file, key, _USER_ID, hwid=_HWID)
+    raw = bytearray(hcl_path.read_bytes())
+    body_start = _HDR_AAD + struct.unpack(
+        ">I", bytes(raw[_HDR_AAD_LEN:_HDR_AAD])
+    )[0]
+    c1_end = body_start + 65536
+    c2_end = c1_end + 65536
+    assert len(raw) > c2_end + _TAG_SIZE, "plain_file en az 2 tam blok içermeli"
+
+    if islem == "blok_takasi":
+        mutated = bytes(raw[:body_start]) + bytes(
+            raw[c1_end:c2_end] + raw[body_start:c1_end]
+        ) + bytes(raw[c2_end:])
+    elif islem == "blok_atlama":
+        mutated = bytes(raw[:c1_end]) + bytes(raw[c2_end:])
+    elif islem == "blok_ortasinda_kesme":
+        mutated = bytes(raw[: c1_end + 32768])
+    else:  # sona_bayt_ekleme
+        mutated = bytes(raw) + b"\x00"
+
+    hcl_path.write_bytes(mutated)
+    with pytest.raises(AuthenticationError):
+        decrypt_file(hcl_path, key, hwid=_HWID)

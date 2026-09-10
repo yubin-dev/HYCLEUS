@@ -9849,3 +9849,92 @@ dropdown kablolaması, nokta öneki, "⋯"in satır bulma mantığı, arama
 testlerin GERÇEKTEN düştüğü doğrulandı, sonra geri alındı. Ayrıca mevcut
 `test_main_window_smoke.py::test_central_widget_and_table_exist`
 (sütun sayısı 5→6) güncellendi.
+
+## B-126 — Kapsamlı mutasyon testi turu (100 senaryo, 8 bölüm)
+
+**Durum:** Devam ediyor (bölüm bölüm işleniyor, her bölüm sonunda yerel commit).
+**Öncelik:** Yüksek (güvenlik-kritik çekirdek: kripto, DB/RBAC, HWID/TPM, denetim zinciri, kimlik doğrulama, imha).
+**Başlangıç:** 2026-09-10.
+
+Kullanıcı tarafından tarif edilen 100 spesifik mutasyon senaryosu
+(AES-256-GCM/AAD/akış, Argon2id/HKDF, Shamir 2-of-3, DB/RBAC, HWID/TPM/USB,
+Audit Chain/RFC 3161/Merkle, Giriş/PIN/Auth, Güvenli İmha/CI), her biri için:
+mutasyonu GERÇEKTEN uygula → ilgili testleri çalıştır → yakalandı mı
+doğrula → yakalanmadıysa yeni test yaz → mutasyonu geri al. Sonuç
+sınıfları: **Killed** (mevcut suite zaten yakalıyor), **Survived-Fixed**
+(gerçek boşluktu, yeni test eklendi), **Kanıtlanmış-Eşdeğer** (mutasyon
+davranışı değiştirmiyor — mimari gerekçesiyle), **Uygulanamaz** (senaryonun
+varsaydığı mekanizma HYCLEUS'ta hiç yok — yeni bir güvenlik kontrolü
+eklemek "backlog konvansiyonu" kapsamına giriyor, bu turda YAZILMADI,
+ayrı B-NNN'ye not düşüldü).
+
+### Bölüm 1 — AES-256-GCM, AAD & Akış Blokları (`CORE/crypto.py`)
+
+| No | Senaryo (özet) | Sonuç | Kanıt/Not |
+|----|-----------------|-------|-----------|
+| 1 | Tag boyutu 16→15 | Killed | `cryptography` lib `ValueError` ("tag must be 16 bytes or longer") — 12 test düştü |
+| 2 | Boş tag (`b""`) | Kanıtlanmış-Eşdeğer | Dosya yolundan yapısal olarak ulaşılamaz (`ciphertext_len<0` erken kontrolü onu önlüyor); ham API'ye zorlanırsa kütüphane `ValueError` veriyor (`InvalidTag` değil, ama sonuç aynı: red) |
+| 3 | Nonce boyutu 12→16 | Killed | 11 test düştü (format/fixture varsayımları kırıldı) |
+| 4 | Sabit sıfır nonce | Killed | `test_nonce_is_unique_across_encryptions` |
+| 5 | AAD son bayt ters çevirme | Killed | `test_aad_metadata_tampering_is_rejected` (mevcut) |
+| 6 | Boş AAD ile çözme | Killed | Gerçek `aad_len=0` dosyası inşa edilip doğrudan denendi → `AuthenticationError` |
+| 7 | `_CHUNK` 64K→64K+1 | Kanıtlanmış-Eşdeğer | Salt bir okuma-tampon boyutu, dosya formatının parçası değil; GCM tag tüm ciphertext'i tek parça doğruluyor |
+| 8 | "Son blok" bayrağı False | Uygulanamaz | HYCLEUS'ta per-blok bayrak/sıra numarası YOK (tek GCM akışı); işlevsel eşdeğeri (blok ortasında kesme) senaryo 13 ile birlikte kapatıldı |
+| 9 | Blok sırası takası | Survived-Fixed | Gerçek 2-bloklu dosyada takas denendi → zaten reddediliyordu ama HİÇBİR test kapsamıyordu; yeni test eklendi |
+| 10 | Blok atlama | Survived-Fixed | Aynı yeni test (`test_cok_bloklu_dosyada_ciphertext_seviyesi_saldirilar_reddedilir[blok_atlama]`) |
+| 11 | AAD'de dosya boyutu meta. +1 | Uygulanamaz | Böyle bir alan hiç yok (B-092/B-099: AAD kasıtlı olarak minimal) — genel mekanizma (AAD'nin TAMAMI GCM'e dahil) zaten senaryo 5 ile kanıtlı |
+| 12 | Ciphertext bit flip | Killed | `test_ciphertext_tampering_raises_authentication_error` (mevcut, first/last varyantları) |
+| 13 | Yarım kalan blok (32K'da kes) | Survived-Fixed | Aynı yeni test (`blok_ortasinda_kesme`) |
+| 14 | DEK 32→16 byte | **Survived-Fixed** | `if len(key)!=32` → `not in (16,32)` yapılınca 42 testin HİÇBİRİ fark etmedi — gerçek boşluk. Yeni parametrize test eklendi (16/24/0 byte) |
+| 15 | Sıfır DEK (`b"\x00"*32`) | Uygulanamaz → **B-127** | Böyle bir zayıf-anahtar denetleyicisi hiç yok; DEK'ler her zaman `os.urandom(32)`, kullanıcı girdisinden gelmiyor — yeni bir savunma-katmanı kontrolü eklemek kapsam kararı, B-127'ye not düşüldü |
+| 16 | `decrypt_file` dönüşü `str` | Killed | `test_zeroizable_false_varsayilan_bytes_donduruyor` (`type(content) is bytes`) |
+| 17 | Sona fazladan 1 bayt | Survived-Fixed | Gerçek dosyayla doğrulandı (zaten `AuthenticationError`) ama kapsayan test yoktu; yeni testin `sona_bayt_ekleme` varyantı |
+| 18 | GCM→CBC modu | Killed | 14 test düştü (`AttributeError`: CBC'de `.tag`/`authenticate_additional_data` yok) |
+| 19 | Bellek üst sınırı taşması | Uygulanamaz → **B-128** | Böyle bir tavan hiç yok; `decrypt_file()` belgeli olarak O(dosya-boyu) bellek kullanıyor (`verify_file()` O(64KB) sabit) — B-128'e not düşüldü |
+| 20 | `zero_bytearray()` no-op | Killed | `test_zero_bytearray_sonrasi_icerik_gercekten_sifir` |
+
+**Özet Bölüm 1:** 20 senaryo → 9 Killed, 5 Survived-Fixed (yeni testler:
+`test_anahtar_uzunlugu_tam_32_byte_disinda_reddedilir`,
+`test_cok_bloklu_dosyada_ciphertext_seviyesi_saldirilar_reddedilir`),
+4 Kanıtlanmış-Eşdeğer, 2 Uygulanamaz (B-127, B-128'e not düşüldü).
+`tests/test_crypto.py`: 42 → 49 test.
+
+## B-127 — DEK/anahtar için "zayıf/sıfır anahtar" denetleyicisi yok (B-126 senaryo 15)
+
+**Durum:** Açık — karar bekliyor (yeni güvenlik kontrolü, kapsam dışı).
+**Öncelik:** Düşük (DEK'ler yalnızca `CORE.crypto.generate_key()` =
+`os.urandom(32)` ile üretiliyor; kullanıcı girdisinden DOĞRUDAN gelmiyor,
+bu yüzden `b"\x00"*32` gibi dejenere bir anahtar yalnızca `os.urandom`'un
+kendisinin KATASTROFİK şekilde bozulması ya da saklanan anahtar
+materyalinin (Shamir payları/TPM mührü) yanlış birleştirilmesi/çözülmesi
+durumunda ortaya çıkabilir — ikisi de kendi başına ayrı ve daha ciddi bir
+arıza belirtisi olurdu).
+**Bulundu:** 2026-09-10 (B-126 mutasyon testi turu).
+
+`CORE/crypto.py::encrypt_file/verify_file/decrypt_file` anahtarın 32 byte
+olup olmadığını kontrol ediyor ama İÇERİĞİNİN dejenere (tüm sıfır, tüm
+`0xFF` vb.) olup olmadığını hiç kontrol etmiyor. AES-256'nın kriptografik
+olarak bilinen bir "zayıf anahtar" sınıfı YOK (DES'in aksine) — yani bu
+gerçek bir kriptografik zafiyet değil, saf bir SANITY/defense-in-depth
+kontrolü olurdu ("anahtar bu kadar dejenereyse bir yerde ciddi bir hata
+var, işlemi durdur"). Eklenip eklenmeyeceği ve eşiğin ne olacağı
+("tamamen sıfır" mı, yoksa genel bir entropi testi mi) bir ürün/güvenlik
+kararı — bu turda YAZILMADI.
+
+## B-128 — `decrypt_file()` için dosya boyutu / bellek tavanı yok (B-126 senaryo 19)
+
+**Durum:** Açık — karar bekliyor (yeni güvenlik kontrolü, kapsam dışı).
+**Öncelik:** Düşük.
+**Bulundu:** 2026-09-10 (B-126 mutasyon testi turu).
+
+`CORE/crypto.py::decrypt_file()` düz metni TAMAMEN belleğe topluyor
+(`buf.extend(...)` döngüsü) — bu KASITLI bir tasarım (fonksiyonun kendi
+docstring'i: `verify_file()`'ın O(64KB) sabit bellekli akış yoluyla
+karşılaştırıldığında, `decrypt_file()`'ın çağıranlara TAM içeriği
+`bytes`/`bytearray` olarak vermesi gerektiği için bu bir zorunluluk).
+Sonuç: çok büyük bir `.hcl` dosyası decrypt edilirse bellek kullanımı
+dosya boyutuyla orantılı büyür, üst sınır YOK. Bir üst sınır eklemek
+("N GB'tan büyük dosyalar `decrypt_file()` ile açılamaz, yalnızca
+`verify_file()`/akış tabanlı bir yol kullanılmalı") gerçek bir ürün
+kararı (mevcut hiçbir çağıran — `CORE/export.py` vb. — bunu talep
+etmiyor) — bu turda YAZILMADI.
