@@ -11588,3 +11588,25 @@ hiç sınanmamıştı). Yeni test: `tests/test_crypto.py` (+1). Üretim
 kodunda değişiklik yok. Bu blok en doygun blok — 8 mutasyondan 7'si
 zaten mevcut/miras testlerce (B-126, M013-M022, B-140 turları)
 doğrudan yakalanıyor.
+
+### Bölüm 17 (MC-M127–MC-M133) — HKDF / anahtar türetme / K0-1 (`CORE/vault_manager.py`)
+
+Test alt kümesi: `tests/test_vault_hmac_share2.py` + `tests/test_
+vault_manager.py` + `tests/test_vault_keyring.py` + `tests/test_
+recovery_share_anchor.py` (baseline 82).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M127 | HKDF info: `"vault-hmac-v1:"` önekini kaldır | **Killed** | `_derive_signing_key()`'daki `info=_HMAC_INFO_PREFIX + hwid.encode()` → yalnızca `hwid.encode()` yapılınca `test_derive_signing_key_matches_documented_hkdf_parameters` doğrudan yakalıyor |
+| MC-M128 | HKDF IKM: `share_2` → `hwid` (K0-1 regresyonu) | **Killed** | `.derive(share_2.encode())` → `.derive(hwid.encode())` yapılınca (tam da SECURITY.md §4.2'nin ESKİ, kırık şeması) `test_derive_signing_key_matches_documented_hkdf_parameters` + `test_signing_key_depends_on_share_2_not_just_hwid` doğrudan yakalıyor |
+| MC-M129 | HKDF salt: sabit ↔ `None` değiştir | **Killed** | `salt=_HKDF_LABEL` → `salt=None` yapılınca `test_derive_signing_key_matches_documented_hkdf_parameters` yakalıyor |
+| MC-M130 | Master key: Shamir çıktısını HKDF'siz doğrudan kullan | **Kapsam dışı** | Hedef kod yok — bu ZATEN mevcut/istenen tasarım: `master_key = _sss_recover(...)` (grep doğrulandı, 3 çağrı yeri) hiçbir yerde HKDF'den geçmiyor. Shamir 2-of-3'ün kendisi bilgi-teorik güvenlik sağlıyor; master_key'in üstüne HKDF eklemek gereksiz bir katman olurdu — "kaldırılacak" bir HKDF adımı hiç yok |
+| MC-M131 | Amaç karışması: vault HMAC ile çıpa HMAC'ine aynı info | **Kapsam dışı** | Hedef kod yok — kod tabanında HKDF yalnızca 2 dosyada (`vault_manager.py` vault-imza, `crypto.py` dosya-alt-anahtarı) kullanılıyor; ayrı bir "çıpa (anchor) HMAC" mekanizması hiç yok (`anchor_share` yalnızca Shamir polinomunu korumak için bir parametre, HMAC değil) — karıştırılacak ikinci bir amaç yok |
+| MC-M132 | HMAC algoritması `sha256` → `md5` | **Killed** | `_sign()`'daki `hashes.SHA256()` → `hashes.MD5()` yapılınca (16 byte çıktı, `_HMAC_SIZE=32` varsayımını da kırıyor) 10 test kırılıyor |
+| MC-M133 | HMAC doğrulama `compare_digest` → `==` | **Killed** | 4 çağrı yerinin hepsi `==`'ye eşdeğer bir yardımcıya (`_teq`) çevrilince `test_hmac_token_karsilastirmalari_sabit_zamanli_kaliyor` (AST ile `compare_digest()` çağrı SAYISINI ≥4 doğrulayan, B-126 mirası) doğrudan yakalıyor |
+
+**Bölüm 17 özet:** Killed 5 (M127,M128,M129,M132,M133), Kapsam dışı 2
+(M130,M131 — hedef kod yok). Üretim kodunda VE testlerde hiçbir
+değişiklik yapılmadı — bu blok (K0-1 bölgesi, HKDF domain-separation)
+önceki turlarda (B-126, SECURITY.md §4.2 düzeltmesi) zaten tamamen
+sertleştirilmiş; 7 mutasyondan hiçbiri gerçek bir boşluk göstermedi.
