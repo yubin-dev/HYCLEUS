@@ -271,6 +271,35 @@ def test_no_temporary_plaintext_dump_is_left(dolu_db, vault, tmp_path, key) -> N
         [MANIFEST_NAME, METADATA_NAME, "files"])
 
 
+def test_temporary_plaintext_dump_is_shredded_not_bare_unlinked(
+    dolu_db, vault, tmp_path, key, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    M001 (200'lük tur): `_shred_plaintext()` gerçekten `CORE.secure_erase.
+    shred_file()`'ı çağırmalı — çıplak `Path.unlink()` DEĞİL. Bir üstteki
+    test yalnızca dosyanın SONUÇTA yok olduğunu doğruluyor, NASIL
+    silindiğini değil — `_shred_plaintext()` `path.unlink(missing_ok=True)`
+    ile değiştirilse (üzerine yazma hiç OLMASA) o test bile fark etmezdi
+    (mutasyon-kanıtla doğrulandı: 64 testin hiçbiri fark etmedi).
+    """
+    cagrilar: list[Path] = []
+
+    def casus_shred(path, *a, **kw):
+        cagrilar.append(Path(path))
+        return True
+
+    # `_shred_plaintext()` `shred_file`'ı YEREL import ediyor
+    # (`CORE.secure_erase`'ten) — modülün KENDİ ad alanına değil, o
+    # modülün ad alanına yama yapılıyor.
+    import CORE.secure_erase as secure_erase_mod
+    monkeypatch.setattr(secure_erase_mod, "shred_file", casus_shred)
+
+    _yedek(dolu_db, vault, tmp_path, key)
+
+    assert cagrilar, "shred_file() hiç çağrılmadı — geçici döküm hâlâ çıplak unlink() ile mi siliniyor?"
+    assert cagrilar[0].name == "_metadata.json"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. SIZINTI TARAMASI — yedekte düz metin olmamalı
 # ══════════════════════════════════════════════════════════════════════════════

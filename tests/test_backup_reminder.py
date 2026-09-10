@@ -146,6 +146,24 @@ def test_erteleme_suresiz_DEGIL(db):
     assert yedek_durumu(db, simdi=_SIMDI).uyarilmali is True
 
 
+def test_erteleme_suresi_ozel_esige_gore_ayarlanir(db):
+    """
+    Erteleme süresi, VARSAYILAN_ESIK_GUN'a DEĞİL, o an geçerli (özel) eşiğe
+    göre olmalı. Aksi halde bir yönetici eşiği 15'ten 3'e düşürse bile
+    "sonra" tıklaması 15 gün boyunca (varsayılan) susturmaya devam eder —
+    kullanıcının kısalttığı eşiği sessizce iptal eder.
+    """
+    db.set_setting(ESIK_AYARI, "3")
+    db.set_setting(LAST_BACKUP_SETTING, _gun_once(30))
+    ertele(db, zaman=_gun_once(0))
+
+    # 2 gün sonra: özel eşik (3 gün) henüz dolmadı, hâlâ susturulmalı.
+    assert yedek_durumu(db, simdi=_SIMDI + timedelta(days=2)).uyarilmali is False
+
+    # 4 gün sonra: özel eşik (3 gün) doldu, uyarı geri dönmeli.
+    assert yedek_durumu(db, simdi=_SIMDI + timedelta(days=4)).uyarilmali is True
+
+
 def test_yedek_alinca_erteleme_siliniyor(db):
     """
     Kullanıcı "sonra" dedikten sonra gerçekten yedek aldıysa, o erteleme

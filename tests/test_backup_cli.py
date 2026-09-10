@@ -12,6 +12,7 @@ testlerde `_load_key` yamalanıyor. Anahtarsız yollar (`--info`,
 """
 from __future__ import annotations
 
+import getpass
 import hashlib
 import json
 import os
@@ -68,6 +69,60 @@ def usb_yok(monkeypatch: pytest.MonkeyPatch):
     import CORE.usb_manager as um
 
     monkeypatch.setattr(um, "get_usb_hwid", lambda: None)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 0. _load_key() — hata yolları GERÇEKTEN çalışıyor mu
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Diğer tüm testler `_load_key`'i tamamen yamalıyor (anahtar_ver) ya da
+# yalnızca "USB yok" dalını (usb_yok) sınıyor — fonksiyonun GÖVDESİ hiçbir
+# testte gerçekten çalışmıyor. Bu yüzden "vault açılamazsa/PIN yanlışsa
+# BackupError fırlar, sessizce boş/geçersiz bir anahtarla devam ETMEZ"
+# iddiası hiç kanıtlanmamıştı.
+
+
+def test_load_key_db_baglanti_hatasi_backuperror_olarak_yukseliyor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import CORE.usb_manager as um
+    from DB.db_manager import DBManager
+
+    monkeypatch.setattr(um, "get_usb_hwid", lambda: _HWID)
+
+    def patlayan_connect(self, *a, **k):
+        raise RuntimeError("disk erisilemez")
+
+    monkeypatch.setattr(DBManager, "connect", patlayan_connect)
+
+    with pytest.raises(backup_cli.BackupError, match="Veritabani acilamadi"):
+        backup_cli._load_key()
+
+
+def test_load_key_yanlis_pin_backuperror_olarak_yukseliyor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Vault açma başarısız olursa fonksiyon boş/None bir anahtarla sessizce
+    dönmemeli — çağıran taraf (main.py'deki --deep/--restore komutları)
+    böyle bir anahtarla şifre çözmeye kalkışırsa hata mesajı "PIN yanlış"
+    yerine anlamsız bir crash'e dönüşürdü.
+    """
+    import CORE.usb_manager as um
+    import CORE.vault_manager as vm
+    from DB.db_manager import DBManager
+
+    monkeypatch.setattr(um, "get_usb_hwid", lambda: _HWID)
+    monkeypatch.setattr(DBManager, "connect", lambda self, *a, **k: None)
+    monkeypatch.setattr(getpass, "getpass", lambda *_a, **_k: "yanlis-pin")
+
+    def patlayan_open_vault(hwid, pin):
+        raise vm.VaultTamperedError("PIN yanlis")
+
+    monkeypatch.setattr(vm, "open_vault", patlayan_open_vault)
+
+    with pytest.raises(backup_cli.BackupError, match="Vault acilamadi"):
+        backup_cli._load_key()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

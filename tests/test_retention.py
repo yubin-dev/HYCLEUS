@@ -188,6 +188,23 @@ class TestCRUD:
             db, pid, duration_unit=UNIT_UNLIMITED, duration_value=None
         ) is True
 
+    def test_guncelle_negatif_sure_reddediliyor_dogru_hatayla(self, db):
+        """
+        `_validate()` create_profile() için test edilmişti (bkz. yukarıdaki
+        "geçersiz alanlar" testi) ama update_profile() aynı `_validate()`'i
+        merged (mevcut satır + yeni alanlar) üzerinden AYRICA çağırıyor —
+        bu yol daha önce hiç sınanmamıştı. Önemi: `_validate()` burada
+        atlanırsa hata DB CHECK'e düşer ve `update_profile()`'ın
+        `except sqlite3.IntegrityError` bloğu bunu KÖRÜKÖRÜNE
+        `DuplicateProfileNameError` (yanlış isim çakışması mesajıyla)
+        etiketler — gerçek sebep süre değeriyle ilgiliyken kullanıcıya
+        "bu isimde profil zaten var" gibi yanıltıcı bir mesaj gösterirdi.
+        """
+        pid = _mk(db, duration_value=5)
+        with pytest.raises(RetentionError, match="pozitif") as hata:
+            update_profile(db, pid, duration_value=-5)
+        assert not isinstance(hata.value, DuplicateProfileNameError)
+
     def test_guncelle_isim_cakismasi(self, db):
         _mk(db, name="Var olan")
         pid = _mk(db, name="Başka")

@@ -222,6 +222,30 @@ def test_totp_migration_shreds_the_file(tmp_path: Path) -> None:
             assert _TOTP_SECRET.encode() not in leftover.read_bytes(), f"kalıntı: {leftover}"
 
 
+def test_totp_migration_uses_shred_file_not_bare_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    migrate_totp_secret() gerçekten shred_file() çağırmalı — düz unlink()
+    ciphertext'i değil ama burada asıl DÜZ METİN sırrın kendisini disk
+    üzerinde kurtarılabilir bırakır. test_totp_migration_shreds_the_file
+    yalnızca "dosya artık yok" diyor; bare unlink() de bunu sağlardı, o
+    yüzden shred_file'ın GERÇEKTEN çağrıldığını ayrıca kanıtlamak gerekiyor.
+    """
+    path = _write_legacy_totp(tmp_path)
+    cagrilar: list[Path] = []
+
+    def casus_shred(hedef: Path) -> None:
+        cagrilar.append(hedef)
+        hedef.unlink(missing_ok=True)
+
+    monkeypatch.setattr(secret_migration, "shred_file", casus_shred)
+
+    secret_migration.migrate_totp_secret(path)
+
+    assert cagrilar == [path], "migrate_totp_secret() shred_file() kullanmıyor"
+
+
 def test_totp_migration_is_idempotent(tmp_path: Path) -> None:
     path = _write_legacy_totp(tmp_path)
     secret_migration.migrate_totp_secret(path)

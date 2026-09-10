@@ -10515,3 +10515,62 @@ parametrize): `tests/test_crypto.py` (42→49), `tests/test_vault_manager.py`
 (20→21), `tests/test_session_user.py` (21→22).
 
 Tam suite (sonunda çalıştırıldı): bkz. bu bölümün commit mesajı.
+
+---
+
+## B-135 — 200'lük mutasyon turu (M001–M200), devam ediyor
+
+B-132/B-134 kapatıldıktan sonra kullanıcı talimatıyla başlatılan ikinci,
+daha geniş mutasyon turu. Aynı yöntem: gerçek mutasyon → hedef test dosyası
+→ Survived ise yeni test + kırmızı→yeşil kanıt → prod kodu geri al (ya
+zaten Killed'diyse ya da yeni test eklendiyse). 10'ar 10'ar ilerleniyor,
+her 10'da bir bu dosyaya ara özet + yerel commit (push yok).
+
+### Bölüm 1 (M001–M010) — devam ediyor
+
+Başlangıç noktası: B-134/M001'in ortaya çıkardığı deseni ("`shred_file()`
+çağrısı var görünüyor ama gerçekten çağrıldığı test edilmiyor mu?")
+kasıtlı olarak `CORE.secure_erase.shred_file`'ın TÜM diğer çağıranlarına
+sistematik olarak uygulamak — kanıtlanmış verimli bir mutasyon sınıfı.
+
+| # | Hedef | Mutasyon | Sonuç | Not |
+|---|-------|----------|-------|-----|
+| M001 | `CORE/backup.py::_shred_plaintext()` | `shred_file()` → çıplak `unlink()` | **Survived-Fixed** | `tests/test_backup.py::test_temporary_plaintext_dump_is_shredded_not_bare_unlinked` eklendi (65. test) |
+| M002 | `CORE/checkout.py::_shred()` | `shred_file()` → çıplak `unlink()` | **Killed** | Mevcut `test_shredding_overwrites_before_unlinking` + `test_a_failed_shred_does_not_raise` zaten yakalıyor |
+| M003 | `CORE/secret_migration.py::migrate_totp_secret()` | `shred_file(path)` → `path.unlink(missing_ok=True)` | **Survived-Fixed** | `tests/test_secret_migration.py::test_totp_migration_uses_shred_file_not_bare_unlink` eklendi (21. test) — mevcut `test_totp_migration_shreds_the_file` yalnızca "dosya yok" diyordu, bare unlink de bunu sağlardı |
+| M004 | `CORE/safezone.py::safezone_file()` (bağlam yöneticisi çıkışı) | `shred_file(path)` → `path.unlink(missing_ok=True)` | **Survived-Fixed** | `tests/test_safezone.py::test_context_manager_overwrites_before_deleting` eklendi (31. test) — `purge()` yolu (`test_purge_overwrites_before_deleting`) byte-seviyesinde kanıtlıyordu ama bağlam yöneticisi yolu kanıtlamıyordu |
+| M005 | `CORE/safezone.py::purge()` | `shred_file(path)` → çıplak `unlink()` | **Killed** | Mevcut `test_purge_overwrites_before_deleting` zaten byte-seviyesinde yakalıyor |
+
+`shred_file()` çağıran taraf taraması tamamlandı — kod tabanındaki TÜM
+çağrı noktaları (`backup.py`, `checkout.py`, `disposal.py` ×2 [B-134'te
+zaten düzeltildi], `safezone.py` ×2, `secret_migration.py`) artık ya
+gerçekten Killed ya da yeni eklenen bir testle Survived-Fixed durumda.
+
+M006–M010: `CORE/backup_cli.py`, `CORE/backup_reminder.py`,
+`CORE/retention.py` — bir arka plan ajanının taradığı adaylardan doğrulanan
+gerçek boşluklar.
+
+| # | Hedef | Mutasyon | Sonuç | Not |
+|---|-------|----------|-------|-----|
+| M006 | `CORE/backup_reminder.py::yedek_durumu()` — erteleme süresi | `timedelta(days=esik)` → `timedelta(days=VARSAYILAN_ESIK_GUN)` (özel eşiği yok sayar) | **Survived-Fixed** | `tests/test_backup_reminder.py::test_erteleme_suresi_ozel_esige_gore_ayarlanir` eklendi (29. test) — mevcut testler `ertele()`'i hep varsayılan eşikle çağırıyordu, özel `ESIK_AYARI` ile birleştiren hiçbir test yoktu |
+| M007 | `CORE/backup_cli.py::_load_key()` — `open_vault()` istisnası | `raise BackupError(...) from exc` → sessizce `key = b""` | **Survived-Fixed** | `tests/test_backup_cli.py::test_load_key_yanlis_pin_backuperror_olarak_yukseliyor` eklendi — `_load_key` HER testte ya tamamen yamalanıyor (`anahtar_ver`) ya da yalnızca "USB yok" dalı (`usb_yok`) sınanıyordu, gövdesinin geri kalanı hiç çalışmıyordu |
+| M008 | `CORE/backup_cli.py::_load_key()` — `DBManager().connect()` istisnası | `raise BackupError(...) from exc` → sessizce yut | **Survived-Fixed** | `tests/test_backup_cli.py::test_load_key_db_baglanti_hatasi_backuperror_olarak_yukseliyor` eklendi (21. test) |
+| M009 | `CORE/retention.py::_validate()` — `duration_value <= 0` (create_profile yolu) | Kontrol tamamen kaldırıldı | **Killed** | Mevcut `test_gecersiz_alanlar_reddediliyor` + şemadaki `CHECK(duration_value > 0)` (DB seviyesi, `DB/migrations.py::_m17_retention_profiles`) birlikte yakalıyor — savunma derinliği |
+| M010 | `CORE/retention.py::_validate()` — aynı kontrol, `update_profile()` yolu | Aynı mutasyon | **Survived-Fixed** | `tests/test_retention.py::test_guncelle_negatif_sure_reddediliyor_dogru_hatayla` eklendi (77. test) — DAHA ÖNEMLİSİ, mutasyon `update_profile()`'ın `except sqlite3.IntegrityError` bloğunun DB CHECK ihlalini KÖRÜKÖRÜNE `DuplicateProfileNameError("Bu isimde bir profil zaten var: None")` diye etiketlediğini ortaya çıkardı — gerçek sebep süre değeriyken kullanıcıya yanlış/yanıltıcı bir mesaj gösterilirdi. Üretim kodu DEĞİŞMEDİ (mevcut `_validate()` zaten bu yolu DB'ye hiç ulaşmadan engelliyor) — yalnızca bu koruma daha önce update_profile() için hiç test edilmemişti |
+
+### Bölüm 1 (M001–M010) — ÖZET
+
+| Sonuç | Adet |
+|-------|------|
+| Killed | 3 (M002, M005, M009) |
+| Survived-Fixed | 7 (M001, M003, M004, M006, M007, M008, M010) |
+| **Toplam** | **10** |
+
+Yeni/güncellenen test dosyaları: `tests/test_backup.py` (+1),
+`tests/test_secret_migration.py` (+1), `tests/test_safezone.py` (+1),
+`tests/test_backup_reminder.py` (+1), `tests/test_backup_cli.py` (+2),
+`tests/test_retention.py` (+1). Üretim kodunda net değişiklik YOK —
+hepsi zaten doğru davranan ama test edilmemiş yollar (mutasyon-kanıtlı,
+kırmızı→yeşil doğrulandı, sonra üretim kodu istisnasız geri alındı).
+
+M011–M020: devam edecek.

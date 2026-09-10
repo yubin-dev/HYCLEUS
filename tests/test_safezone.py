@@ -287,6 +287,60 @@ def test_context_manager_shreds_even_when_the_block_raises(isolate_safezone: Pat
     assert yol is not None and not yol.exists()
 
 
+def test_context_manager_overwrites_before_deleting(isolate_safezone: Path, monkeypatch):
+    """
+    safezone_file()'ın çıkışta çağırdığı imha, test_purge_overwrites_before_deleting
+    ile aynı şeyi kanıtlamalı — "dosya artık yok" tek başına yetmez, bare
+    unlink() de bunu sağlardı. Üzerine gerçekten yazıldığını, ve yazmanın
+    unlink'ten ÖNCE olduğunu doğruluyoruz.
+    """
+    from CORE import secure_erase
+
+    yazilanlar: list[bytes] = []
+    silinenler: list[str] = []
+    gercek_open = open
+
+    class _Izleyen:
+        def __init__(self, fh):
+            self._fh = fh
+
+        def write(self, data):
+            yazilanlar.append(bytes(data))
+            return self._fh.write(data)
+
+        def __getattr__(self, ad):
+            return getattr(self._fh, ad)
+
+        def __enter__(self):
+            self._fh.__enter__()
+            return self
+
+        def __exit__(self, *a):
+            return self._fh.__exit__(*a)
+
+    def izleyen_open(path, *a, **k):
+        return _Izleyen(gercek_open(path, *a, **k))
+
+    gercek_unlink = Path.unlink
+
+    def izleyen_unlink(self, *a, **k):
+        silinenler.append(self.name)
+        assert yazilanlar, "unlink, üzerine yazmadan önce çağrıldı"
+        return gercek_unlink(self, *a, **k)
+
+    monkeypatch.setattr(secure_erase, "open", izleyen_open, raising=False)
+    monkeypatch.setattr(Path, "unlink", izleyen_unlink)
+    with safezone_file(suffix=".pdf") as tmp:
+        tmp.write_bytes(_GIZLI)
+        beklenen_ad = tmp.name
+    monkeypatch.undo()
+
+    assert silinenler == [beklenen_ad]
+    assert yazilanlar, "hiç üzerine yazma yapılmadı"
+    for blok in yazilanlar:
+        assert b"COZULMUS_BELGE_ICERIGI_c7f21a" not in blok
+
+
 def test_context_manager_tolerates_an_unused_file(isolate_safezone: Path):
     """Dosya hiç yazılmadıysa çıkış patlamamalı."""
     with safezone_file() as tmp:
