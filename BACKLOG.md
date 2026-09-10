@@ -10065,3 +10065,61 @@ taşıyan tasarım kararları gerektiriyor):
 (yalnızca "tek harfli/kısa yerel değişken adı" gibi kaba bir heuristikle
 YENİ eklenen f-string SQL'leri code review'da işaretleyen bir semgrep
 kuralı) — ama ikisi de kullanıcı kararı gerektiriyor.
+
+### Bölüm 5 — HWID/TPM/USB (`CORE/vault_manager.py`, `CORE/hwid_probe.py`, `CORE/idle_lock.py`, `CORE/tpm_sealing.py`, `CORE/secret_store.py`, `UI/main_window_lock.py`, `UI/main_window_bulk.py`, `UI/ProfileView.py`)
+
+| No | Senaryo (özet) | Sonuç | Kanıt/Not |
+|----|-----------------|-------|-----------|
+| 56 | HWID seri no fallback'i sessizce kabul et | Killed | `_reject_if_weak_binding()` no-op yapılınca 9 test düştü |
+| 57 | weak_binding=True iken açılışa izin ver | Killed | Aynı mutasyon/testler (56 ile aynı kod yolu) |
+| 58 | Kayıtsız USB HWID'i doğrulamadan kabul et | **Survived-Fixed** | `authenticate_usb()`'in Katman-1'i ("HWID kayıtlı mı") no-op yapılınca 124 test (blacklist+weak_binding+recovery_call_graph+usb_manager+usb_takeover+usb_mount_root+kurtarma_usb_kapisi+hwid_probe) hiçbiri fark etmedi — bu dosyalardaki TÜM testler önce bir vault oluşturup (hwid'i kayıtlı hâle getirip) farklı bir katmanı sınıyordu. Yeni test hiç kayıtlı olmayan bir hwid'le doğrudan çağırıyor |
+| 59 | USB sökülünce `setEnabled(False)`'ı atla | Killed | `UI/main_window_lock.py::_lock()`. 3 test düştü (`test_lock_overlay.py`) |
+| 60 | Worker'lara giden iptal sinyalini kaldır | Killed | HYCLEUS'ta ayrı bir `threading.Event` yok — gerçek karşılığı `should_continue=lambda: not prog.wasCanceled() and not self._locked` (K1-15). `and not self._locked` kaldırılınca `test_bulk_download_lock.py` düştü |
+| 61 | TPM PCR 0/7 politikasını boşalt | Uygulanamaz | HYCLEUS TPM katmanı Windows CNG/NCrypt "Platform Crypto Provider" kullanıyor — TPM2_PolicyPCR tabanlı bir mühür politikası hiç yok; mühür kalıcı bir CNG anahtar tanıtıcısına (`ANAHTAR_ADI`) bağlı, PCR durumuna değil |
+| 62 | TPM unseal hatasını yutup sahte share_2 üret | Killed | `coz()`'un `except InvalidTag` dalı sahte bir değer dönecek şekilde değiştirilince 2 test düştü |
+| 63 | Eski kurulum re-seal kontrolünü atla | Killed | `_reseal_firsatci()` çağrısı koşulsuz atlanınca 5 test düştü (`test_ESKI_kurulum_ILK_ACILISTA_otomatik_yeniden_muhurleniyor` dahil) |
+| 64 | Yalnızca VID/PID eşleşmesini yeterli say | Killed | `CORE/hwid_probe.py::compare()` — NOT: bu modülün `compare()`/CLI yüzeyi modül docstring'inde AÇIKÇA "yalnızca elle çalıştırılan bir TEŞHİS aracı" olarak işaretli, canlı `authenticate_usb()` yoluna hiç bağlı değil. Yine de 5 test düştü |
+| 65 | Hareketsizlik zamanlayıcısını sıfırlanamaz yap | Killed | `IdleTracker.record_activity()` no-op yapılınca 16 test düştü |
+| 66 | TPM NVRAM indeks çakışması | Uygulanamaz | HYCLEUS ham TPM2 NVRAM adresleme kullanmıyor — CNG'nin adlandırılmış kalıcı anahtarı (`NCryptCreatePersistedKey` + `ANAHTAR_ADI`) üzerinden çalışıyor, NVRAM indeksi kavramı hiç yok |
+| 67 | Monotonik saat yerine duvar saati kullan | Killed | `IdleTracker.idle_seconds()`'daki `max(0.0, ...)` kırpması kaldırılınca (geri giden saat kaynağını simüle eder) 1 test düştü — modülün kendi docstring'i zaten `time.monotonic()` seçimini bu tam senaryoyla gerekçelendiriyor |
+| 68 | Kayıtlı olmayan İKİNCİ bir USB'yi kayıtlı say | Killed | Senaryo 58 ile AYNI kod yolu/test — `authenticate_usb()`'in Katman-1'i hangi hwid olursa olsun aynı şekilde koruyor |
+| 69 | USB çıkarıldığında master_key'i bellekte sıfırla | Uygulanamaz → **B-130** | Böyle bir "kaldırılacak satır" hiç YOK — `HycleusWindow._key` (oturum boyu tutulan DEK) `USB çekme`/`_lock()` sırasında HİÇBİR ZAMAN sıfırlanmıyor; `zero_bytearray()` yalnızca `CORE/export.py`'nin dosya-başına geçici arabelleğinde kullanılıyor. Yeni bir güvenlik kontrolü gerektiriyor (üstelik `self._key` bugün `bytes` — sıfırlanabilir olması için `bytearray`'e geçmesi gerekir, bu da geniş bir refactor), B-130'a yazıldı |
+| 70 | Profil ekranındaki HWID'i rastgele üret | **Survived-Fixed** | `UI/ProfileView.py`'deki "HWID" bilgi satırının GÖSTERDİĞİ metni hiçbir test kontrol etmiyordu (yalnızca ayrı "Cihazlar" tablosu test ediliyordu) — `uuid.uuid4().hex` ile değiştirilince mevcut 6 test hiçbiri fark etmedi. Yeni test etiketin gerçek oturum HWID'iyle başladığını doğruluyor |
+
+**Özet Bölüm 5:** 15 senaryo → 10 Killed, 2 Survived-Fixed (yeni testler:
+`test_authenticate_usb_hic_kayitli_olmayan_hwid_icin_reddedilir`,
+`test_profil_hwid_satiri_gercek_oturum_hwidini_gosteriyor`), 3 Uygulanamaz
+(TPM PCR politikası ve NVRAM indeksleme HYCLEUS'un CNG tabanlı TPM
+katmanında hiç yok — mimari fark; master_key'in bellekte sıfırlanmaması
+gerçek bir eksik kontrol, B-130'a yazıldı, kod bu turda YAZILMADI).
+`tests/test_usb_weak_binding.py`: 23 → 24, `tests/test_profile_view.py`:
+6 → 7.
+
+## B-130 — Oturum master_key'i (`HycleusWindow._key`) USB çıkarıldığında/kilitte bellekte sıfırlanmıyor
+
+**Durum:** Açık — karar bekliyor (yeni güvenlik kontrolü + olası refactor, kapsam dışı).
+**Öncelik:** Orta (bellek dökümü/adli erişim senaryosu — SECURITY.md §3'ün
+zaten kabul ettiği bir sınırın devamı, ama azaltılabilir bir yüzey).
+**Bulundu:** 2026-09-10 (B-126 senaryo 69).
+
+`UI/main_window.py`'de `self._key = key` (satır 106) — oturumun tüm
+ömrü boyunca DEK bellekte `bytes` olarak duruyor. `UI/main_window_lock.py
+::_lock()` (USB çekilince, hareketsizlikte, manuel çıkışta tetiklenir)
+`centralWidget().setEnabled(False)` yapıp overlay gösteriyor ama
+`self._key`'e HİÇ dokunmuyor — kilitli ekranın ARKASINDA anahtar hâlâ
+düz bellekte duruyor. `CORE/crypto.py::zero_bytearray()` yalnızca
+`CORE/export.py`'nin dosya-başına KISA ömürlü arabelleğinde kullanılıyor;
+oturum boyu yaşayan `_key` hiç bu mekanizmadan geçmiyor.
+
+Kapatmak GERÇEK bir refactor gerektiriyor: `self._key` bugün `bytes`
+(değiştirilemez, `zero_bytearray()` üzerinde ÇALIŞMAZ) — `bytearray`'e
+çevrilmesi, `CORE.crypto.encrypt_file/decrypt_file/verify_file`'a
+geçirilen her yerin buna uyarlanması ve kilitten ÇIKARKEN (PIN'le tekrar
+açılışta) anahtarın NASIL yeniden kurulacağının (yeniden `open_vault()`
+mü, yoksa bir kopyası ayrı mı tutulacak) tasarlanması gerekiyor —
+bu turda YAZILMADI, yalnızca bulgu belgelendi.
+
+Kapsam notu: SECURITY.md §3 zaten "bellek dökümü düz metin içerebilir"
+sınırını kabul ediyor (decrypt edilen DOSYA içeriği için) — bu madde
+FARKLI ve daha temel bir yüzey: dosya içeriği değil, kasa açma
+ANAHTARININ kendisi, kilitliyken bile bellekte kalıyor.

@@ -256,6 +256,26 @@ def test_authenticate_usb_zayif_hwid_icin_reddedilir(zayif_vault, db) -> None:
         vault_manager.authenticate_usb(zayif_vault)
 
 
+def test_authenticate_usb_hic_kayitli_olmayan_hwid_icin_reddedilir(db) -> None:
+    """
+    B-126 senaryo 58: `authenticate_usb()`'in Katman 1'i ("HWID
+    usb_tokens'ta kayıtlı mı") gerçekten reddetmeli — asla True'ya
+    düşmemeli.
+
+    Mutasyon-kanıt: `if row is None: _reject(...)` → `if row is None:
+    return` (sessizce kabul) yapılınca test_blacklist.py +
+    test_usb_weak_binding.py + test_recovery_call_graph.py (36 test) VE
+    test_usb_manager.py + test_usb_takeover.py + test_usb_mount_root.py +
+    test_kurtarma_usb_kapisi.py + test_hwid_probe.py (88 test) — TOPLAM
+    124 test — hiçbiri fark etmedi. Bu dosyadaki tüm "Katman 1" testleri
+    ÖNCE bir vault oluşturup (dolayısıyla hwid'i KAYITLI hâle getirip)
+    sonra farklı bir katmanı (zayıf bağlama, kara liste, HMAC) sınıyordu
+    — hiçbiri gerçekten HİÇ kayıtlı olmayan bir hwid'le çağırmıyordu.
+    """
+    with pytest.raises(USBAuthError, match="kayıtlı değil"):
+        vault_manager.authenticate_usb("HIC-KAYITLI-OLMAYAN-HWID-99999")
+
+
 def test_kritik_islem_reddi_ac_kapali_HEPSI_denetim_kaydina_dusuyor(zayif_vault, db) -> None:
     """Beş reddin hepsi ayrı ayrı denetim kaydına düşmeli — sessiz olan yok."""
     for cagri in (

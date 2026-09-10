@@ -31,7 +31,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QApplication, QMessageBox
+    from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
 
     from UI.main_window import HycleusWindow
     from UI.UsbTokensView import UsbTokensView
@@ -216,6 +216,28 @@ def test_cihazlar_bolumu_su_an_takili_durumunu_canli_yansitiyor(qapp, db, sahte_
         sahte_usb(None)
         window._profil_view.yenile()
         assert window._profil_view._cihaz_table.item(0, 3).text() == "Hayır"
+    finally:
+        _pencereyi_kapat(window)
+
+
+def test_profil_hwid_satiri_gercek_oturum_hwidini_gosteriyor(qapp, db, sahte_usb):
+    """
+    B-126 senaryo 70: Profil sayfasındaki "HWID" satırı, GERÇEKTEN bu
+    oturumun (`pencere._hwid`) HWID'ini göstermeli — rastgele/başka bir
+    değer DEĞİL. Hiçbir test bu satırın İÇERİĞİNİ daha önce hiç
+    kontrol etmiyordu (yalnızca "Cihazlar" sekmesindeki AYRI tabloya
+    bakıyorlardı).
+    """
+    user_id = _kullanici_ekle(db, _HWID, "hwid.satiri.test")
+    window = _pencere(db, sahte_usb, _HWID, username="hwid.satiri.test", user_id=user_id)
+    try:
+        window._on_open_profile()
+        etiket = window._profil_view._bilgi_hwid.findChild(QLabel, "field_val")
+        assert etiket is not None
+        assert etiket.text().startswith(_HWID[:16]), (
+            f"Profil HWID satırı {etiket.text()!r} gösteriyor, "
+            f"oturumun gerçek HWID'i {_HWID!r} ile başlamıyor"
+        )
     finally:
         _pencereyi_kapat(window)
 
