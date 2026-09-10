@@ -199,6 +199,27 @@ def test_an_edit_is_detected(db, reg, hcl, key) -> None:
     assert has_changed(entry) is True
 
 
+def test_an_unreadable_copy_defers_rather_than_claims_no_change(
+    db, reg, hcl, key, monkeypatch
+) -> None:
+    """
+    Dosya kaydetme sırasında kilitli olup OKUNAMAZSA (`OSError`), modülün
+    kendi yorumu bunu "değişmedi" saymanın YANLIŞ olduğunu ama şu an geri
+    de yazılamayacağını söylüyor — mevcut kod ERTELEME anlamında `False`
+    dönüyor. Bu dal hiç test edilmemişti; şimdiki kararı sabitliyoruz.
+    """
+    import CORE.checkout as checkout_mod
+
+    entry = check_out(reg, db=db, file_id=1, hcl_path=hcl, key=key, aad_hwid=_HWID)
+
+    def patlayan_sha256(*_a, **_k):
+        raise OSError("dosya kilitli")
+
+    monkeypatch.setattr(checkout_mod, "sha256_of", patlayan_sha256)
+
+    assert has_changed(entry) is False
+
+
 def test_a_rewrite_with_identical_content_is_not_a_change(db, reg, hcl, key) -> None:
     """
     Bazı uygulamalar kaydederken içeriği değiştirmeden dosyayı yeniden
@@ -690,6 +711,27 @@ def test_the_same_instance_can_reopen_its_own_lock(db, hcl, key) -> None:
     # içinde kaydı elle temizlemiş olsun) kilit hâlâ AYNI session_id'ye ait
     # olduğu için ikinci bir acquire_lock çağrısı reddedilmemeli.
     acquire_lock(db, file_id=1, user_id=_USER, session_id="ayni-ornek")
+
+
+def test_release_lock_baska_sessionin_kilidine_dokunmuyor(db) -> None:
+    """
+    `release_lock()`'un ASIL garantisi (kendi docstring'i): başka bir
+    `session_id`'ye ait bir satırı SESSİZCE ATLAMALI, silmemeli. Bu hep
+    `check_in`/`discard` ÜZERİNDEN dolaylı çağrılıyordu — o yollar HEP
+    KENDİ session_id'siyle çağırdığı için yabancı-session dalı hiçbir
+    testte gerçekten tetiklenmemişti.
+    """
+    from CORE.checkout import release_lock
+
+    acquire_lock(db, file_id=1, user_id=_USER, session_id="sahibi")
+
+    sonuc = release_lock(db, file_id=1, session_id="yabanci-session")
+
+    assert sonuc is False, "yabancı session_id ile release_lock True döndü"
+    row = db.fetchone("SELECT session_id FROM file_locks WHERE file_id = ?", (1,))
+    assert row is not None and row["session_id"] == "sahibi", (
+        "yabancı bir session_id, başkasının kilidini SİLEBİLDİ"
+    )
 
 
 def test_closing_releases_the_lock_for_the_next_instance(db, hcl, key) -> None:

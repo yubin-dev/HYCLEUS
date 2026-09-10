@@ -337,3 +337,71 @@ def test_ucdan_uca_usb_cikarilinca_uyari_gosteriliyor_geri_takilinca_devam_ediyo
     )
     assert sahne._overlay.isHidden()
     assert sahne.centralWidget().isEnabled() is True
+
+
+def test_gecici_db_hatasi_meşru_oturumu_KILITLEMIYOR(
+    qapp, db, monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    B-064/B-066'nın yetki-doğrulama çağrısı (`oturum_yetkisi_gecerli_mi`)
+    anlık bir DB hatasıyla patlarsa (ör. yoğun bir toplu işlem sırasında
+    kısa süreli kilit), bu "yetki iptal edildi" SAYILMAMALI — aksi hâlde
+    geçici bir DB tıkanıklığı meşru bir oturumu kilitlerdi. Bu dal hiçbir
+    testte hiç tetiklenmemişti.
+    """
+    hwid = "GECICI-DB-HATASI-HWID"
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, 'admin', 'approved', ?)",
+        ("gecici.hata.admin", "x", hwid),
+    )
+
+    sahne = _UcTanUcaSahne(hwid)
+    monkeypatch.setattr(_mwl_modulu, "get_usb_hwid", lambda: hwid)
+
+    def patlayan(*_a, **_k):
+        raise RuntimeError("simüle edilen geçici DB hatası")
+
+    monkeypatch.setattr(_mwl_modulu, "oturum_yetkisi_gecerli_mi", patlayan)
+
+    sahne._poll_usb()
+
+    assert sahne._locked is False, (
+        "geçici bir DB hatası oturumu kilitledi — B-064/B-066 regresyonu"
+    )
+    assert "revoked" not in sahne._lock_reasons
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. `_tick_idle()` — hareketsizlik kilidinin gerçek tetikleyicisi
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `CORE.idle_lock.IdleTracker` (karar mantığı) kendi test dosyasında
+# (tests/test_idle_lock.py) Qt'siz kapsamlı sınanıyor — ama modülün kendi
+# docstring'i bu Qt bağlantısının (_tick_idle) "elle doğrulanmalı" olduğunu
+# söylüyor: hiçbir testte GERÇEKTEN çağrılmıyordu.
+
+
+class _IdleSahne(_UcTanUcaSahne):
+    _tick_idle = HycleusWindow._tick_idle
+
+    def __init__(self, hwid: str, idle) -> None:
+        super().__init__(hwid)
+        self._idle = idle
+
+
+def test_tick_idle_esik_asilinca_gercekten_kilitliyor(
+    qapp, db, monkeypatch: pytest.MonkeyPatch,
+):
+    from CORE.idle_lock import IdleTracker
+
+    hwid = "TICK-IDLE-HWID"
+    sahne = _IdleSahne(hwid, IdleTracker(timeout_seconds=0.001))
+    monkeypatch.setattr(_mwl_modulu, "log_idle_lock", lambda *a, **k: None)
+
+    import time as _time
+    _time.sleep(0.01)  # idle_seconds() eşiği kesin aşsın
+    sahne._tick_idle()
+
+    assert sahne._locked is True, "eşik aşıldığı hâlde _tick_idle() kilitlemedi"
+    assert "idle" in sahne._lock_reasons

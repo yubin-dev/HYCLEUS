@@ -10757,4 +10757,32 @@ zaten yapıldı" diye belgelenmiş).
 Yeni/güncellenen test dosyaları: `tests/test_duplicates.py` (+1),
 `tests/test_rate_limit.py` (+1).
 
-M037–M050: devam edecek.
+### Bölüm 6 (M037–M040) — özet
+
+Bu bölümde bir arka plan ajanının TPM önerisi (fiziksel TPM olmayan
+ortamlarda `gercek_tpm` fixture'ının `pytest.skip()` ile testleri
+ATLADIĞI, mutasyonun "Survived" değil "hiç çalışmadı" olduğu) bilinçli
+olarak mutasyon senaryosu YAPILMADI — bu zaten bilinen, belgelenmiş bir
+donanım-bağımlılığı sınırı (aynı sınıf: SECURITY.md'nin fiziksel
+erişim/TPM varsayımları), yeni bir bulgu değil.
+
+| # | Hedef | Mutasyon | Sonuç |
+|---|-------|----------|-------|
+| M037 | `CORE/checkout.py::release_lock()` — sahiplik kontrolü | `session_id` karşılaştırması kaldırıldı (her zaman siler) | **Survived-Fixed** — fonksiyon hiç doğrudan çağrılmıyordu, yalnızca `check_in`/`discard` üzerinden ve onlar HEP kendi session_id'siyle çağırıyordu; yabancı-session dalı hiç tetiklenmemişti |
+| M038 | `CORE/checkout.py::has_changed()` — okunamayan dosya (`OSError`) | `return False` → `return True` | **Survived-Fixed** — modülün kendi yorumu bu kararın bir ödünleşim olduğunu söylüyor ama hiç test edilmemişti; şimdiki karar (`False`, erteleme) sabitlendi |
+| M039 | `UI/main_window_lock.py::_poll_usb()` — geçici DB hatası toleransı | `try/except` kaldırıldı | **Survived-Fixed** — B-064/B-066'nın "geçici DB hatası meşru oturumu kilitlememeli" garantisi yalnızca yorumda vardı, hiçbir testte yoktu |
+| M040 | `UI/main_window_lock.py::_tick_idle()` — asıl kilit çağrısı | `self._lock("idle")` kaldırıldı | **Survived-Fixed** — EN ÖNEMLİ bulgu: hareketsizlik kilidinin GERÇEK tetikleyicisi (`_tick_idle`) hiçbir testte hiç çağrılmamıştı (yalnızca `CORE.idle_lock.IdleTracker`'ın Qt'siz karar mantığı test ediliyordu); `tests/test_main_window_smoke.py` yalnızca metodun VAR olduğunu doğruluyordu, ÇALIŞTIĞINI değil |
+
+4/4 Survived-Fixed. Üretim kodunda net değişiklik YOK.
+
+Yeni/güncellenen test dosyaları: `tests/test_checkout.py` (+2),
+`tests/test_lock_overlay.py` (+2, biri `_UcTanUcaSahne`'yi genişleten
+yeni `_IdleSahne` yardımcı sınıfıyla).
+
+**Not (tempo):** Bu bölümde incelenen adaylardan ikisi (TPM donanım
+bağımlılığı, `export.py` parametre karışıklığı — Bölüm 5) ya
+uygulanamaz ya da zaten test ediliyor çıktı; kod tabanı olgun modüllerde
+doygunluğa yaklaşıyor. Sonraki bölümler muhtemelen daha küçük (3-5
+senaryo) ve daha uzun araştırma gerektirecek.
+
+M041–M050: devam edecek.
