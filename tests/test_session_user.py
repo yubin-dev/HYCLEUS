@@ -284,6 +284,35 @@ def test_main_oturum_kullanicisini_esliyor():
     )
 
 
+def test_main_yarim_kalan_imhalari_acilista_tamamliyor():
+    """
+    B-126 senaryo 97: `main.py` açılışta `resume_pending_disposals()`'ı
+    çağırmalı — önceki oturum bir dosyayı KALICI silerken çökmüşse
+    (`CORE/disposal.py` modül docstring'i, "Çökmeye dayanıklı KALICI
+    silme") yarım kalan kayıt sonsuza kadar `disposal_queue`'da asılı
+    kalır.
+
+    Mutasyon-kanıt: `main.py`'deki çağrı satırı devre dışı bırakılınca
+    (gerçek çağrı yerine `None` ataması) tests/test_disposal.py +
+    test_first_run_isolation.py + test_console.py + test_b058_ilk_
+    kurulum.py (110 test) hiçbiri fark etmedi — hepsi `resume_pending_
+    disposals()`'ı DOĞRUDAN çağırıyordu, `main.py`'nin onu GERÇEKTEN
+    açılışta çağırdığını hiçbiri ölçmüyordu. `test_main_oturum_
+    kullanicisini_esliyor`'un AYNI AST yöntemiyle.
+    """
+    import ast
+
+    cagrilar = {
+        d.func.id
+        for d in ast.walk(_main_agaci())
+        if isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+    }
+    assert "resume_pending_disposals" in cagrilar, (
+        "main.py açılışta resume_pending_disposals() çağırmıyor — "
+        "yarım kalan imhalar bir sonraki açılışta tamamlanmayabilir"
+    )
+
+
 def test_main_pencereye_user_id_geciyor():
     """
     `HycleusWindow(...)` çağrısı `user_id` argümanı taşımalı.

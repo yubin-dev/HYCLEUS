@@ -9852,9 +9852,9 @@ testlerin GERÇEKTEN düştüğü doğrulandı, sonra geri alındı. Ayrıca mev
 
 ## B-126 — Kapsamlı mutasyon testi turu (100 senaryo, 8 bölüm)
 
-**Durum:** Devam ediyor (bölüm bölüm işleniyor, her bölüm sonunda yerel commit).
+**Durum:** Kapalı — 100/100 senaryo işlendi.
 **Öncelik:** Yüksek (güvenlik-kritik çekirdek: kripto, DB/RBAC, HWID/TPM, denetim zinciri, kimlik doğrulama, imha).
-**Başlangıç:** 2026-09-10.
+**Başlangıç/Bitiş:** 2026-09-10.
 
 Kullanıcı tarafından tarif edilen 100 spesifik mutasyon senaryosu
 (AES-256-GCM/AAD/akış, Argon2id/HKDF, Shamir 2-of-3, DB/RBAC, HWID/TPM/USB,
@@ -9984,7 +9984,7 @@ ayrı B-NNN açılacak.
 | 39 | Polinom derecesi k yerine k-1+1 (fazladan a2) | Killed | 8 test düştü (round-trip / 2-nokta kurtarma derece-2 polinomda başarısız) |
 | 40 | Sabit polinom katsayısı (a1=1) | Killed | Mevcut `test_shamir_share_1_is_information_theoretically_hiding` |
 
-**Özet Bölüm 3:** 10 senaryo → 7 Killed, 1 Survived-Fixed (yeni test:
+**Özet Bölüm 3:** 10 senaryo → 6 Killed, 1 Survived-Fixed (yeni test:
 `test_lagrange_ayni_x_koordinatiyla_sessizce_sifir_donmuyor`), 2
 Kanıtlanmış-Eşdeğer (eşik sabitleri kozmetik), 1 zaten belgelenmiş bilinen
 sınır (checksum yok, B-021). `tests/test_vault_manager.py`: 47 → 48 test.
@@ -10264,3 +10264,140 @@ bir giriş noktası bu fonksiyonu doğrudan çağırırsa (B-058/B-067'nin CLI
 bayrağı emsalinde olduğu gibi) aynı korumadan geçmeyecektir. Kod bu turda
 YAZILMADI — CORE katmanına bir doğrulama eklemek, imzasının/istisna
 sözleşmesinin genişlemesi anlamına geliyor ve kullanıcı kararı gerektiriyor.
+
+### Bölüm 8 — Güvenli İmha, Çökme Kurtarma & CI Kuralları (`CORE/disposal.py`, `CORE/safezone.py`, `CORE/scanner_backends.py`, `main.py`, `tests/test_ui_yasakli_iddia_terimleri.py`)
+
+| No | Senaryo (özet) | Sonuç | Kanıt/Not |
+|----|-----------------|-------|-----------|
+| 96 | Silmeden önce zero-fill/üzerine yazma döngüsünü atla | Survived → **B-134 (KRİTİK)** | Mutasyona bile gerek kalmadı — gerçek kod GERÇEKTEN böyle: `CORE/disposal.py::purge_file()`/`purge_expired_file()` (İmha Odası'nın "kalıcı sil" fonksiyonlarının İKİSİ DE) yalnızca çıplak `path.unlink()` çağırıyor, `CORE/secure_erase.py::shred_file()`'ı HİÇ ÇAĞIRMIYOR. `shred_file()` başka 4 modülde (backup/checkout/safezone/secret_migration) kullanılıyor ama İmha Odası'nın kendisinde yok. En ciddi bulgu — B-134'e yazıldı |
+| 97 | Açılışta yarım kalan imhaları tamamlayan çağrıyı kaldır | **Survived-Fixed** | `main.py`'deki `resume_pending_disposals(DBManager())` çağrısı devre dışı bırakılınca test_disposal.py + test_first_run_isolation.py + test_console.py + test_b058_ilk_kurulum.py (110 test) hiçbiri fark etmedi — hepsi fonksiyonu DOĞRUDAN çağırıyordu, `main.py`'nin açılışta GERÇEKTEN çağırdığını hiçbiri ölçmüyordu. Yeni AST testi `test_main_oturum_kullanicisini_esliyor` ile AYNI yöntemle ekliyor |
+| 98 | Geçici dosya adını `uuid4()` yerine sabit/tahmin edilebilir yap | Killed | `CORE/safezone.py::allocate()`'in `secrets.token_hex(16)` çağrısı sabit bir sayaca çevrilince `test_allocated_names_are_unique` düştü |
+| 99 | CI'a "AIR-GAPPED SYSTEM GUARANTEE" enjekte et, yakalanmalı | Killed | GERÇEK bir enjeksiyonla doğrulandı: `UI/ProfileView.py`'ye `x = "AIR-GAPPED SYSTEM GUARANTEE"` satırı eklenince `test_ui_stringlerinde_yasakli_mimari_iddia_YOK` GERÇEKTEN düştü (yorum satırı olarak enjekte edilince YAKALANMADI — beklenen, AST yalnızca string literal'lara bakıyor, testin kendi tasarımı zaten bunu belgeliyor) |
+| 100 | MpCmdRun.exe çağrısındaki timeout'u kaldır | Killed | `run_tool()`'daki `proc.wait(timeout=timeout)` → `proc.wait()` yapılınca `test_scan_timeout_handle_leak.py`'nin kasıtlı-asılan-süreç testi GERÇEKTEN sonsuza kadar bekledi, pytest'in kendi `--timeout` gözcüsü yakaladı. **Not:** mutasyon bir yan etki bıraktı — testin başlattığı `ping -n 9999` alt süreci pytest zaman aşımıyla öldürülünce artakalan/öksüz kaldı, elle `Stop-Process` ile temizlendi (kalıcı bir iz bırakmadı) |
+
+**Özet Bölüm 8:** 5 senaryo → 3 Killed, 1 Survived-Fixed (yeni test:
+`test_main_yarim_kalan_imhalari_acilista_tamamliyor`), 1 KRİTİK bulgu
+B-134'e yazıldı (kod bu turda YAZILMADI — büyük, kasıtlı bir mimari karar
+gerektiriyor). `tests/test_session_user.py`: 21 → 22.
+
+## B-134 — İmha Odası'nın "kalıcı silme" fonksiyonları GÜVENLİ SİLME (shred) YAPMIYOR, düz `unlink()` kullanıyor
+
+**Durum:** Açık — karar bekliyor (kritik bulgu, önemli bir mimari/performans kararı gerektiriyor).
+**Öncelik:** YÜKSEK-KRİTİK (kullanıcıya verilen "kalıcı olarak siler" sözü ile fiili davranış arasında doğrudan çelişki).
+**Bulundu:** 2026-09-10 (B-126 senaryo 96) — mutasyon bile gerekmedi, gerçek koddan doğrudan görüldü.
+
+### Bulgu
+
+`CORE/disposal.py::purge_file()` (kullanıcı tetikli, açık onaylı kalıcı
+silme) ve `purge_expired_file()` (otomatik süpürme) — İmha Odası'nın
+DİSKTEN silme yapan TEK İKİ fonksiyonu — ikisi de şunu yapıyor:
+
+    path = Path(filepath)
+    if path.exists():
+        path.unlink()
+
+`CORE/secure_erase.py::shred_file()` (rastgele bayt ile 3 tur üzerine
+yazma → fsync → truncate → unlink, bkz. o modülün docstring'i) HİÇ
+çağrılmıyor. `shred_file()` şu 4 modülde kullanılıyor:
+`CORE/backup.py`, `CORE/checkout.py`, `CORE/safezone.py`,
+`CORE/secret_migration.py` — ama `CORE/disposal.py`'de YOK.
+
+### Neden bu ciddi
+
+Kullanıcı arayüzü ve modülün kendi docstring'i "kalıcı" kelimesini
+AÇIKÇA kullanıyor: `purge_file()`'ın docstring'i "Dosyayı diskten ve
+veritabanından KALICI olarak siler" diyor, imha onay diyalogları
+kullanıcıya "bu işlem geri alınamaz" mesajı veriyor. Ama gerçekte olan:
+yalnızca dizin girdisi kaldırılıyor, dosyanın kapladığı disk blokları
+başka bir şey tarafından üzerine yazılana kadar ADLİ KURTARMA
+araçlarıyla (undelete) okunabilir durumda kalıyor.
+
+Bu, tesadüfi bir gözden kaçırma değil — GERÇEK bir risk taşıyor, çünkü
+HYCLEUS'ta dosyalar TEK bir paylaşılan oturum anahtarıyla
+şifreleniyor (`UI/main_window_table.py`'nin `encrypt_file(self._src,
+self._key, ...)` çağrısı — `self._key`, `HycleusWindow._key`, KASADAKİ
+HER dosya için AYNI). Yani "imha edilmiş" bir dosyanın ciphertext'i
+diskte kurtarılabilir kaldığı sürece, o kasanın master key'i NE ZAMAN
+ele geçirilirse geçirilsin (çalıntı USB + kaba kuvvet PIN, Shamir
+paylarının ele geçirilmesi, vb.) — "kalıcı olarak imha edilmiş" dosya
+DA aynı anahtarla çözülebilir. Risk profili, dosya HİÇ silinmemiş
+olsaydı ki AYNI: imha, kullanıcının beklediği ek korumayı SAĞLAMIYOR.
+
+### Neden daha önce fark edilmedi
+
+SECURITY.md'de bu tam konuda BAŞKA bir denetim var (2026'da yapılmış,
+bu dosyada §"Takip" bölümünde belgeli): `.unlink()`/`os.remove()`/
+`shred_file()` çağrılarının TAMAMI taranıp `disposal_queue`'yu atlayan
+İKİNCİ bir silme yolu var mı diye incelendi — ve `tests/test_disposal.py
+::TestKarantinaTemizligiKorumasi::test_CORE_UI_DB_genelinde_disposal_
+queue_atlayan_baska_bir_silme_yolu_yok` bunu kalıcı bir AST testi olarak
+bıraktı. Ama o denetimin sorusu "başka bir BYPASS yolu var mı" idi,
+"`unlink()` yerine `shred_file()` mi olmalıydı" DEĞİL — iki ayrı soru,
+biri sorulup cevaplanmış, diğeri hiç sorulmamış.
+
+### Kapatma seçenekleri (bu turda YAZILMADI — hepsi performans/tasarım kararı gerektiriyor)
+
+1. `purge_file()`/`purge_expired_file()`'daki `path.unlink()` çağrılarını
+   `shred_file(path)` ile değiştirmek — en doğrudan düzeltme. Bedel:
+   büyük dosyalarda (backup/checkout zaten bu bedeli ödüyor) 3 tam
+   üzerine-yazma turu, özellikle `sweep_retention_expired()`'ın
+   otomatik/toplu sürpürmesinde performans etkisi olabilir.
+2. Yalnızca `purge_file()`'ı (kullanıcı tetikli, tekil) değiştirip
+   `purge_expired_file()`'ı (otomatik, toplu) mevcut haliyle bırakmak —
+   ama bu, kullanıcının AÇIKÇA onayladığı silmeyi korurken arka planda
+   sessizce çalışan otomatik süpürmeyi KORUMASIZ bırakır; tutarsız bir
+   güvenlik garantisi.
+3. Hiçbir şey değiştirmeme, ama SECURITY.md'ye VE imha onay diyaloglarına
+   bu sınırı AÇIKÇA yazmak ("kalıcı silme yalnızca dosya kaydını
+   kaldırır, disk bloklarının üzerine yazılmasını GARANTİ ETMEZ") — B-092/
+   B-099'un "dürüst sınır" yaklaşımıyla aynı, ama kullanıcı beklentisini
+   düşürüyor.
+
+Öneri: Seçenek 1 — mevcut `shred_file()` zaten bu iş için yazılmış ve
+test edilmiş, yalnızca doğru çağrı yerine eklenmemiş; performans bedeli
+`CORE/backup.py`'nin ZATEN kabul ettiği bedelle aynı sınıfta. Ama karar
+kullanıcının.
+
+### B-126 — TOPLAM ÖZET (100/100 senaryo)
+
+| Sonuç | Adet | Anlamı |
+|-------|------|--------|
+| Killed | 55 | Mevcut test suite mutasyonu zaten yakalıyordu — doğrulandı, kod/test değişikliği yok |
+| Survived-Fixed | 24 | Gerçek boşluktu — 21 yeni test fonksiyonu eklendi (bazıları parametrize, birden fazla senaryoyu kapsıyor), hepsi mutasyon-kanıtla (kırmızı→yeşil) doğrulandı |
+| Kanıtlanmış-Eşdeğer | 8 | Mutasyon davranışı GERÇEKTEN değiştirmiyor — mimari gerekçesiyle (ör. yalnızca hata mesajında kullanılan sabitler, zaten belgelenmiş bilinen sınırlar) |
+| Uygulanamaz (mimari fark) | 5 | Senaryonun varsaydığı mekanizma HYCLEUS'ta hiç yok (ör. TPM PCR politikası, NVRAM indeksleme — CNG farklı bir model kullanıyor) |
+| Survived → BACKLOG (gerçek boşluk, kod DEĞİŞTİRİLMEDİ) | 8 | Yeni bir güvenlik kontrolü/karar gerektiren gerçek bulgular — B-127 ... B-134 |
+| **Toplam** | **100** | |
+
+Mutasyon-testi başarı oranı (mutmut'un kendi ölçütüyle, "Uygulanamaz"
+gerçek eşdeğer mutasyonlar sayılmadığı için hariç tutulur —
+`(Killed + Survived-Fixed) / (100 − Kanıtlanmış-Eşdeğer − Uygulanamaz)`):
+
+    (55 + 24) / (100 − 8 − 5) = 79 / 87 ≈ **%90,8**
+
+Hedeflenen %90+ eşiği karşılandı. Kapatılamayan 8 senaryo (Survived →
+BACKLOG) BİLEREK kod değişikliği YAPILMADAN bırakıldı — her biri yeni bir
+güvenlik kontrolü ya da mimari karar gerektiriyor (backlog konvansiyonu):
+
+  · **B-127** — DEK/anahtar için zayıf/sıfır-anahtar denetleyicisi yok (düşük öncelik)
+  · **B-128** — `decrypt_file()` için dosya boyutu/bellek tavanı yok (düşük öncelik)
+  · **B-129** — Bandit B608 susturması + semgrep'te SQL enjeksiyonu kuralı yok (orta-yüksek öncelik)
+  · **B-130** — Oturum master_key'i USB çıkarıldığında bellekte sıfırlanmıyor (orta öncelik)
+  · **B-131** — `audit_log.action` alanında boş-string/enum doğrulaması yok (düşük-orta öncelik)
+  · **B-132** — `audit_log` HERHANGİ bir rol tarafından `DELETE` edilebiliyor (**YÜKSEK öncelik**)
+  · **B-133** — `register_new_user()`'da `username` doğrulaması CORE katmanında yok (düşük öncelik)
+  · **B-134** — İmha Odası güvenli silme (shred) YAPMIYOR, düz `unlink()` kullanıyor (**YÜKSEK-KRİTİK öncelik**)
+
+En önemli iki bulgu **B-132** ve **B-134** — ikisi de kullanıcının
+mümkün olan en kısa sürede gözden geçirmesi önerilir.
+
+Yeni/güncellenen test dosyaları (toplam +21 yeni test fonksiyonu, bazıları
+parametrize): `tests/test_crypto.py` (42→49), `tests/test_vault_manager.py`
+(42→49), `tests/test_db_manager_rbac.py` (22→25), `tests/test_secret_store.py`
+(14→15), `tests/test_pending_registrations_view.py` (10→11),
+`tests/test_usb_weak_binding.py` (23→24), `tests/test_profile_view.py`
+(6→7), `tests/test_audit_chain.py` (91→92), `tests/test_recovery_share.py`
+(26→30), `tests/test_kayit_ekrani.py` (11→12), `tests/test_authz_invariants.py`
+(20→21), `tests/test_session_user.py` (21→22).
+
+Tam suite (sonunda çalıştırıldı): bkz. bu bölümün commit mesajı.
