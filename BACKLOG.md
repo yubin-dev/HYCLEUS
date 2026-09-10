@@ -11610,3 +11610,27 @@ recovery_share_anchor.py` (baseline 82).
 değişiklik yapılmadı — bu blok (K0-1 bölgesi, HKDF domain-separation)
 önceki turlarda (B-126, SECURITY.md §4.2 düzeltmesi) zaten tamamen
 sertleştirilmiş; 7 mutasyondan hiçbiri gerçek bir boşluk göstermedi.
+
+### Bölüm 18 (MC-M134–MC-M141) — Shamir 2-of-3 (`CORE/vault_manager.py`, `CORE/recovery_share.py`, `UI/RecoveryShareDialog.py`)
+
+Test alt kümesi: `tests/test_vault_manager.py` + `tests/test_recovery_
+share.py` + `tests/test_recovery_share_ui.py` + `tests/test_recovery_
+share_anchor.py` + `tests/test_recovery_e2e.py` + `tests/test_recover_
+cli.py` (baseline 161).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M134 | Eşik 2 → 1 | **Eşdeğer mutant** | `_SSS_THRESHOLD` yalnızca bir hata mesajı metninde kullanılıyor (M027/M028 ile AYNI gerekçe, yeniden doğrulandı) — eşik fiilen `_sss_recover()`'ın imzasıyla uygulanıyor |
+| MC-M135 | Pay indeksi x=0 kabul et | **Killed** | `_SSS_INDEXES = (1,2,3)` → `(0,1,2,3)` yapılınca `_sss_split()`'in döndürdüğü 4-tuple, çağıranların 3'lü unpacking'ini kırıp 19 test düşürüyor |
+| MC-M136 | Katsayı `os.urandom` → sabit | **Killed** | `a1` sabit bir değere (`1337`) sabitlenince `test_shamir_share_1_is_information_theoretically_hiding` (200 örneklem) doğrudan yakalıyor |
+| MC-M137 | Sonlu alan: modülü küçült / asal olmayan yap | **Killed** | `_SSS_PRIME` çok daha küçük bir asala düşürülünce 13 test kırılıyor (`_parse_share`'in kendi aralık kontrolü + round-trip testleri) |
+| MC-M138 | Çift indeks: iki pay aynı x'te → hata yerine kabul | **Killed** | `_sss_recover()`'daki `idx_a == idx_b` reddi kaldırılınca `test_shamir_single_share_cannot_recover_secret` düşüyor — M031'de zaten belgelenmiş kırılganlıkla AYNI: test doğru sebeple değil (`pow(0,-1,p)`'nin "base is not invertible" hatasıyla) geçiyor, ama YİNE DE Killed. Küçük, düşük öncelikli test kırılganlığı, ayrı görev açılmadı (M031'e atıf) |
+| MC-M139 | share_3 bellek: gösterim sonrası temizliği atla | **Kapsam dışı — bilinçli sınır** | `CORE/recovery_share.py::RecoveryExport`'un kendi docstring'i bunu AÇIKÇA kabul ediyor: "yalnızca bellekte yaşar... kullanım bittiğinde referansı bırakın" — share_3 bir Python `str` (DEĞİŞTİRİLEMEZ), `decrypt_file()`'ın varsayılan (zeroizable=False) modunun ZATEN belgelediği aynı dilsel sınır. "Atlanacak" bir temizlik adımı hiç yok, çağıranın referans bırakması TEK yol |
+| MC-M140 | share_3 sızıntı: görüntülenen parçayı log/denetime yaz | **Kapsam dışı** | Hedef kod yok — `export_recovery_share()`'in TEK log çağrısı (`"recovery_share_exported"`) yalnızca `hwid` taşıyor, share_3'ün DEĞERİNİ hiçbir log/audit çağrısı içermiyor (grep doğrulandı, `UI/RecoveryShareDialog.py` + `CORE/recovery_share.py` dahil) |
+| MC-M141 | Kurtarma sonrası: yeni parça üretmeden eski paylarla devam | **Kapsam dışı — bilinçli sınır** | `reprovision_vault()`'un KENDİ docstring'i bunu BİRİNCİL tasarım amacı olarak açıklıyor: "polinom... f(1),f(2),f(3) değerleri aynı kalır, yani kullanıcının elindeki BASILI KURTARMA PARÇASI GEÇERLİLİĞİNİ SÜRDÜRÜR" — "yeni parça üretmemek" kataloğun zayıflık saydığı şey burada KASITLI, belgelenmiş bir takas (kendi "Güvenlik takası" notuyla) |
+
+**Bölüm 18 özet:** Killed 4 (M135,M136,M137,M138), Eşdeğer mutant 1
+(M134), Kapsam dışı 3 (M139/M141 bilinçli sınır — ikisi de kendi
+docstring'lerinde açıkça belgelenmiş, M140 hedef kod yok). Üretim
+kodunda VE testlerde hiçbir değişiklik yapılmadı — Shamir katmanı
+(muhtemelen B-126'nın mirası) bu turda da tamamen doygun çıktı.
