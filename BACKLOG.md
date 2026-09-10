@@ -9938,3 +9938,33 @@ dosya boyutuyla orantılı büyür, üst sınır YOK. Bir üst sınır eklemek
 `verify_file()`/akış tabanlı bir yol kullanılmalı") gerçek bir ürün
 kararı (mevcut hiçbir çağıran — `CORE/export.py` vb. — bunu talep
 etmiyor) — bu turda YAZILMADI.
+
+### Bölüm 2 — Argon2id, Anahtar Türetimi & HKDF (`CORE/vault_manager.py`)
+
+| No | Senaryo (özet) | Sonuç | Kanıt/Not |
+|----|-----------------|-------|-----------|
+| 21 | Argon2 time_cost 3→1 | **Survived-Fixed** | 136 test hiçbiri fark etmedi; yeni test OWASP alt sınırını (≥3) doğrudan sabitliyor |
+| 22 | Argon2 memory_cost 64MB→1024KB | **Survived-Fixed** | Aynı 136 test kör; yeni test ≥65536 KB'yi sabitliyor |
+| 23 | Argon2 parallelism=0 | Killed | argon2-cffi kütüphanesi kendisi hata veriyor — 34 error + 10 failed |
+| 24 | Salt 16→8 byte | Killed | 32 test düştü (format self-consistency, hardcoded ofsetler) |
+| 25 | Statik/sabit salt | **Survived-Fixed** | Gerçek `create_vault()` çağrısıyla doğrulandı: sabit tuzla da round-trip ÇALIŞIYOR, hiçbir test yakalamıyordu. Yeni test iki gerçek `create_vault()` çağrısının diskteki `.hclv` dosyalarından farklı tuz ürettiğini doğruluyor |
+| 26 | HKDF hash SHA-256→SHA-1 | Killed | `test_derive_signing_key_matches_documented_hkdf_parameters` (mevcut, çıktıyı pinliyor) |
+| 27 | HKDF info→`b""` | Killed | Aynı mevcut pin testi |
+| 28 | HMAC anahtarı hwid-only'e (K0-1 rejeksiyonu) | Killed | 6 test düştü — `test_signing_key_depends_on_share_2_not_just_hwid` dahil, doğrudan bu regresyonu hedefliyor |
+| 29 | HKDF salt=None | Killed | Aynı mevcut pin testi |
+| 30 | Argon2id tipi ID→I | **Survived-Fixed** | Hiçbir test `type=Type.ID` seçimini denetlemiyordu; yeni test kaynağı doğrudan grep'liyor (`hash_secret_raw`'ın `type` argümanı runtime'da introspect edilemediği için) |
+
+**Özet Bölüm 2:** 10 senaryo → 6 Killed, 4 Survived-Fixed (yeni testler
+`tests/test_vault_manager.py`'ye eklendi: `test_argon2_zaman_maliyeti_...`,
+`test_argon2_bellek_maliyeti_...`, `test_argon2_tipi_id_olmali`,
+`test_iki_farkli_registration_farkli_salt_ve_farkli_kek_uretir`). Hepsi
+gerçek mutasyonla tek tek doğrulandı (kırmızı→yeşil).
+`tests/test_vault_manager.py`: 42 → 47 test.
+
+**Yan not (kod değişikliği YAPILMADI, ayrı madde açılmadı):**
+`tests/test_vault_manager.py` modül docstring'i "Mevcut şema 2-of-2'dir"
+diyor ama `CORE/vault_manager.py`'nin kendisi 2-of-3 (`_SSS_THRESHOLD=2`,
+`_SSS_INDEXES=(1,2,3)`, üçüncü pay kurtarma parçası). Muhtemelen şema
+2-of-2'den 2-of-3'e yükseltilirken test dosyasının docstring'i
+güncellenmemiş — Bölüm 3'te (Shamir) daha yakından bakılacak, gerekirse
+ayrı B-NNN açılacak.

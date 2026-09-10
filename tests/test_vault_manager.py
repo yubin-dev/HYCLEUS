@@ -533,3 +533,85 @@ def test_base32_roundtrip_kanonik_kaliyor() -> None:
         geri = decode_share(encode_share(s3))
         assert geri == s3
         vault_manager._parse_share(geri)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-126 Bölüm 2 (2026-09-10) — Argon2id politika parametreleri
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Mutasyon-kanıt: `_A2_TIME`/`_A2_MEM` tek tek gevşetilip (time_cost 3→1,
+# memory_cost 64 MB→1024 KB) tests/test_vault_manager.py + test_vault_hmac_
+# share2.py + test_pin_policy.py + test_pin_rotation.py + test_recovery_
+# share*.py (136 test) çalıştırıldı — HİÇBİRİ fark etmedi. Argon2id
+# parametreleri hiçbir yerde doğrudan denetlenmiyordu (yalnızca dolaylı
+# olarak, round-trip'in ÇALIŞTIĞI görülüyordu — zayıflatılmış parametrelerle
+# de round-trip çalışır). Aşağıdaki testler bu iki parametreyi VE Argon2id
+# tip seçimini (Type.ID) doğrudan sabitliyor.
+
+from argon2.low_level import Type  # noqa: E402
+
+from CORE.vault_manager import _A2_MEM, _A2_PARA, _A2_TIME  # noqa: E402
+
+
+def test_argon2_zaman_maliyeti_owasp_minimumunun_altina_dusurulmez() -> None:
+    """OWASP Argon2id minimum önerisi: time_cost >= 3."""
+    assert _A2_TIME >= 3, f"_A2_TIME={_A2_TIME} — OWASP minimumu 3'ün altında"
+
+
+def test_argon2_bellek_maliyeti_owasp_minimumunun_altina_dusurulmez() -> None:
+    """OWASP Argon2id minimum önerisi: memory_cost >= 64 MB (65536 KB)."""
+    assert _A2_MEM >= 65536, f"_A2_MEM={_A2_MEM} KB — OWASP minimumu 64 MB'ın altında"
+
+
+def test_argon2_paralellik_pozitif() -> None:
+    assert _A2_PARA >= 1, f"_A2_PARA={_A2_PARA} — geçersiz/etkisiz paralellik"
+
+
+def test_argon2_tipi_id_olmali() -> None:
+    """
+    Argon2i/Argon2d değil Argon2id — yan-kanal (Argon2d) VE GPU/ASIC
+    direnci (Argon2i'nin tek başına eksik olduğu) arasındaki dengeyi kurar.
+    """
+    kaynak = Path(vault_manager.__file__).read_text(encoding="utf-8")
+    assert "type=Type.ID" in kaynak, (
+        "_derive_kek() Type.ID kullanmıyor gibi görünüyor — kaynaktan "
+        "doğrudan doğrulandı (hash_secret_raw çağrısı içindeki `type` "
+        "argümanı runtime'da introspect edilemiyor)."
+    )
+    assert Type.ID.value == 2  # argon2-cffi sabiti; regresyon güvencesi
+
+
+def test_iki_farkli_registration_farkli_salt_ve_farkli_kek_uretir(
+    db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    B-126 senaryo 25: `create_vault()`'un GERÇEKTEN her çağrıda yeni,
+    rastgele bir Argon2id tuzu ürettiğini doğrudan diskteki `.hclv`
+    dosyasından okuyarak kanıtlar (`_derive_kek`'i izole çağırmak yeterli
+    DEĞİL — mutasyon `create_vault()` içindeki `os.urandom(_SALT_SIZE)`
+    satırında, bu test onu ATLAMADAN sınamalı).
+
+    Mutasyon-kanıt: `salt = os.urandom(_SALT_SIZE)` -> `salt =
+    bytes(_SALT_SIZE)` yapılınca create_vault()'la ilgili 136 testin
+    HİÇBİRİ düşmedi (sabit tuzla da round-trip çalışır) — gerçek bir
+    boşluktu.
+    """
+    monkeypatch.setattr(vault_manager, "_VAULT_DIR", tmp_path / "vaults")
+    monkeypatch.setattr(vault_manager, "_VAULT_PATH_LEGACY", tmp_path / ".hcl_vault")
+
+    vault_manager.create_vault("USB-SALT-TEST-0001", "123456", "admin")
+    vault_manager.create_vault("USB-SALT-TEST-0002", "123456", "admin")
+
+    def _salt(hwid: str) -> bytes:
+        raw = (tmp_path / "vaults" / f"{hwid}.hclv").read_bytes()
+        return raw[5 : 5 + vault_manager._SALT_SIZE]
+
+    salt1 = _salt("USB-SALT-TEST-0001")
+    salt2 = _salt("USB-SALT-TEST-0002")
+    assert len(salt1) == vault_manager._SALT_SIZE
+    assert salt1 != salt2, "İki ayrı create_vault() çağrısı AYNI tuzu üretti"
+    assert salt1 != bytes(vault_manager._SALT_SIZE), "Tuz sabit sıfır"
+
+    kek1 = vault_manager._derive_kek("123456", salt1)
+    kek2 = vault_manager._derive_kek("123456", salt2)
+    assert kek1 != kek2, "Aynı PIN + farklı salt aynı KEK'i üretti"
