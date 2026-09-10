@@ -456,6 +456,29 @@ def test_hwid_mismatch_is_not_counted_as_corruption(db, tmp_path: Path):
     assert not verdict.corrupt and not verdict.ok
 
 
+def test_vault_dogrulama_hatasi_denetim_kaydina_dusuyor(db, tmp_path: Path):
+    """
+    `sweep_integrity(hwid=...)` verilirse vault'un kendi HMAC imzası da
+    doğrulanıyor (`_check_vault`) — bu HWID için hiç vault dosyası
+    olmadığından `vault_status="missing"` dönmeli ve bu durum
+    `integrity_vault_failed` denetim kaydına düşmeli. Yukarıdaki
+    `test_hwid_mismatch_is_not_counted_as_corruption` bu kod yolunu zaten
+    ÇALIŞTIRIYOR ama sonucunu hiç doğrulamıyor — vault tarafındaki hata
+    denetim izi olmadan sessizce kaybolabilirdi.
+    """
+    hcl = _make_hcl(tmp_path)
+    _register(db, hcl)
+
+    rapor = sweep_integrity(db, _KEY, hwid="VAULT-DOSYASI-HIC-OLMAYAN-HWID")
+
+    assert rapor.vault_status == "missing"
+    row = db.fetchone(
+        "SELECT detail FROM audit_log WHERE action = 'integrity_vault_failed'"
+    )
+    assert row is not None, "vault doğrulama hatası denetim kaydına düşmedi"
+    assert "status=missing" in row["detail"]
+
+
 def test_mixed_vault_classifies_each_file_independently(db, tmp_path: Path):
     saglam = _make_hcl(tmp_path, name="a.txt")
     tag_bozuk = _make_hcl(tmp_path, name="b.txt")
@@ -638,6 +661,23 @@ def test_wrong_key_guard_needs_a_minimum_sample(db, tmp_path: Path):
     rapor = sweep_integrity(db, _KEY)
     assert not rapor.suspected_wrong_key
     assert rapor.corrupt == 2
+
+
+def test_wrong_key_guard_tam_esik_degerinde_devreye_giriyor(db, tmp_path: Path):
+    """
+    `_WRONG_KEY_MIN_FILES` sınırın TAM ÜZERİNDE (`>=`, `>` değil) devreye
+    girmeli. 2 dosya (guard kapalı) ve 4 dosya (guard açık) zaten test
+    ediliyordu — sınırın TAM KENDİSİ (3) hiç sınanmamıştı.
+    """
+    from CORE.integrity import _WRONG_KEY_MIN_FILES
+
+    assert _WRONG_KEY_MIN_FILES == 3
+    for i in range(_WRONG_KEY_MIN_FILES):
+        _register(db, _make_hcl(tmp_path, name=f"d{i}.txt"))
+
+    rapor = sweep_integrity(db, b"Y" * 32)
+
+    assert rapor.suspected_wrong_key, "tam eşik değerinde guard devreye girmedi"
 
 
 def test_missing_files_do_not_trigger_the_wrong_key_guard(db, tmp_path: Path):

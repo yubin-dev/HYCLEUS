@@ -73,6 +73,7 @@ def build_authority(
     tsa_not_before: datetime | None = None,
     tsa_not_after: datetime | None = None,
     timestamping_eku: bool = True,
+    wrong_eku: bool = False,
     tsa_key_type: str = "ec",
     sign_with_wrong_ca: Any = None,
 ) -> Authority:
@@ -83,7 +84,13 @@ def build_authority(
         tsa_not_before / tsa_not_after: Geçerlilik penceresi. Süresi dolmuş
             sertifika senaryosunu kurmak için.
         timestamping_eku: False ise TSA sertifikası `timeStamping` EKU'suz
-            üretilir — RFC 3161 §2.3 ihlali, doğrulama reddetmeli.
+            (uzantı tamamen YOK) üretilir — RFC 3161 §2.3 ihlali, doğrulama
+            reddetmeli.
+        wrong_eku: True ise sertifika EKU uzantısı TAŞIR ama `timeStamping`
+            DEĞİL, `serverAuth` taşır — `timestamping_eku=False`'tan (uzantı
+            hiç yok) FARKLI bir ihlal sınıfı: doğrulama kodunun yalnızca
+            "uzantı var mı" değil "doğru AMACI mı taşıyor" diye baktığını
+            kanıtlamak için. `timestamping_eku` ile birlikte kullanılmaz.
         tsa_key_type: "ec" ya da "rsa" — iki imza yolu da sınanabilsin.
         sign_with_wrong_ca: Verilirse TSA sertifikası bu (cert, key) ikilisiyle
             imzalanır ama issuer alanı yine `ca_cn`'i gösterir → kırık zincir.
@@ -118,7 +125,12 @@ def build_authority(
         .not_valid_after(tsa_not_after or (_EPOCH + timedelta(days=3650)))
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
     )
-    if timestamping_eku:
+    if wrong_eku:
+        assert not timestamping_eku, "wrong_eku ve timestamping_eku birlikte kullanılmaz"
+        builder = builder.add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=True
+        )
+    elif timestamping_eku:
         builder = builder.add_extension(
             x509.ExtendedKeyUsage([ExtendedKeyUsageOID.TIME_STAMPING]), critical=True
         )

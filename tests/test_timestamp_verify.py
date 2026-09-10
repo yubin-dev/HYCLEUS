@@ -384,6 +384,22 @@ def test_a_certificate_without_the_timestamping_eku_is_rejected() -> None:
     assert "timeStamping" in (sonuc.reason or "")
 
 
+def test_a_certificate_with_a_DIFFERENT_eku_purpose_is_rejected() -> None:
+    """
+    Yukarıdaki testten FARKLI bir ihlal: sertifikanın EKU uzantısı VAR ama
+    `timeStamping` DEĞİL, `serverAuth`. `eku is None` kontrolü tek başına
+    bunu YAKALAMAZ — kod gerçekten `_EKU_TIMESTAMPING not in eku.native`
+    kısmını da çalıştırıyor mu, bunu kanıtlıyor.
+    """
+    digest = hashlib.sha256(b"x").digest()
+    yanlis_amac = build_authority(timestamping_eku=False, wrong_eku=True)
+    token = build_token(digest, 1, authority=yanlis_amac)
+
+    sonuc = verify_token(token, expected_digest=digest)
+    assert not sonuc.valid
+    assert sonuc.failed_check == "eku"
+
+
 def test_a_certificate_expired_at_stamping_time_is_rejected() -> None:
     """
     Sertifika, DAMGANIN ATILDIĞI anda geçerli olmalı.
@@ -400,6 +416,32 @@ def test_a_certificate_expired_at_stamping_time_is_rejected() -> None:
     )
     assert not sonuc.valid
     assert sonuc.failed_check == "validity"
+
+
+def test_a_certificate_valid_at_the_EXACT_boundary_instant_is_accepted() -> None:
+    """
+    Geçerlilik penceresi KAPALI aralık (`<=`, `<` değil): tam `not_before`
+    ya da tam `not_after` anında damgalanmış bir sertifika da geçerli
+    sayılmalı. İki mevcut test yalnızca AÇIKÇA içeride/dışarıda olan
+    zamanları kullanıyor, tam sınırı hiç sınamıyor.
+    """
+    digest = hashlib.sha256(b"x").digest()
+
+    tam_baslangicta = build_authority(
+        tsa_not_before=DEFAULT_GEN_TIME,
+        tsa_not_after=DEFAULT_GEN_TIME + timedelta(days=10),
+    )
+    assert verify_token(
+        build_token(digest, 1, authority=tam_baslangicta), expected_digest=digest
+    ).valid
+
+    tam_biriste = build_authority(
+        tsa_not_before=DEFAULT_GEN_TIME - timedelta(days=10),
+        tsa_not_after=DEFAULT_GEN_TIME,
+    )
+    assert verify_token(
+        build_token(digest, 1, authority=tam_biriste), expected_digest=digest
+    ).valid
 
 
 def test_a_certificate_that_expired_after_stamping_is_still_valid() -> None:

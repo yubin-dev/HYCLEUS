@@ -10647,4 +10647,59 @@ Yeni/güncellenen test dosyaları: `tests/test_folders.py` (+1),
 Üretim kodunda net değişiklik YOK (B-136 hariç, o kasıtlı olarak
 değiştirilmedi).
 
-M021–M030: devam edecek.
+## B-137 — `CORE.scanner.scan_by_hash()` DB kaydı başarısız olursa hiçbir iz bırakmadan sessizce yutuyor
+
+**Durum:** Açık — küçük ama kasıtsız görünen bir tutarsızlık.
+**Öncelik:** Düşük (yalnızca gözlemlenebilirlik/teşhis; tarama sonucu
+çağırana YİNE DE dönüyor, hiçbir güvenlik kararı bundan etkilenmiyor).
+**Bulundu:** 2026-09-10 (200'lük tur, M026).
+
+`CORE/scanner.py`'de `scan_file()` ve `scan_by_hash()` AYNI DB-kayıt
+adımını (`_save_to_db`) çağırıyor ama hata davranışları FARKLI:
+
+```python
+# scan_file() — satır 116-118
+except Exception:
+    _log.exception("scan_db_error  file_id=%d", file_id)
+
+# scan_by_hash() — satır 133-134
+except Exception:
+    pass
+```
+
+`scan_by_hash()`'in kendi bloğunu neden farklı ele aldığına dair bir
+yorum/gerekçe YOK — kod incelemesiyle bulundu, bir mutasyon değil.
+`tests/test_scanner_flow.py::test_db_hatasi_taramayi_dusurmuyor` yalnızca
+`scan_file()`'ı sınıyor; `scan_by_hash()`'in eşdeğeri hiç yazılmamış.
+Sonuç: hash-bazlı (Karantina) taramalarda DB yazımı başarısız olursa hem
+log'a hem denetime hiçbir iz düşmüyor — teşhis körlüğü, ama veri kaybı
+ya da yanlış güvenlik kararı YOK (ScanResult çağırana yine dönüyor).
+
+Kod bu turda DEĞİŞTİRİLMEDİ: küçük bir değişiklik olsa da (`pass` →
+`_log.exception(...)`) plan dışı bulguları düzeltmeme kuralına uyuluyor.
+
+### Bölüm 3 (M021–M027) — özet
+
+| # | Hedef | Bulgu/Mutasyon | Sonuç |
+|---|-------|-----------------|-------|
+| M021 | `CORE/integrity.py::sweep_integrity()` — vault-hata denetim kaydı | `integrity_vault_failed` bloğu kaldırıldı | **Survived-Fixed** — vault HMAC kurcalama tespiti denetim izi bırakmadan sessizce devre dışı kalabilirdi |
+| M022 | `CORE/scheduler.py::start_scheduler()` — `anchor_audit_chain` görev kaydı | `add_job(...)` bloğu kaldırıldı | **Survived-Fixed** — günlük dış-referans denetim çıpası hiç test edilmiyordu (dedicated test_scheduler.py bile yok) |
+| M023 | `CORE/timestamp_verify.py` — EKU "yanlış amaç" kontrolü | `eku is None or ... not in` → yalnızca `eku is None` | **Survived-Fixed** — mevcut fixture yalnızca "EKU hiç yok" durumunu üretebiliyordu, "EKU var ama serverAuth" hiç sınanmamıştı (fixture'a `wrong_eku` parametresi eklendi) |
+| M024 | `CORE/integrity.py` — yanlış-anahtar guard'ı `_WRONG_KEY_MIN_FILES` sınırı | `>=` → `>` | **Survived-Fixed** — 2 (kapalı) ve 4 (açık) dosya test ediliyordu, tam 3 hiç sınanmamıştı |
+| M025 | `CORE/timestamp_verify.py` — sertifika geçerlilik penceresi | `<=`/`<=` → `<`/`<` | **Survived-Fixed** — tam `not_before`/`not_after` anı hiç sınanmamıştı |
+| M026 | `CORE/scanner.py::scan_by_hash()` — DB hatası yutma | (mutasyon değil, gerçek bulgu) | **→ BACKLOG B-137** |
+| M027 | `CORE/pdf_utils.py::escape_for_reportlab()` — HTML/XML kaçışlama | Kaçışlama tamamen kaldırıldı VE kaçış sırası değiştirildi (2 ayrı mutasyon) | **Survived-Fixed** — fonksiyonun HİÇ doğrudan testi yoktu; dolaylı "PDF çökmüyor" testleri TESADÜFEN (yalnızca `test_inventory.py`'nin payload'ı reportlab'da parse hatası ürettiği için) yakalıyordu, `test_audit_report.py`'nin AYNI sınıftaki testi YAKALAMIYORDU — yeni `tests/test_pdf_utils.py` (5 test) escape'i reportlab'a hiç dokunmadan doğrudan doğruluyor |
+
+5 Survived-Fixed, 1 → BACKLOG (M022 registration-only, mantığı zaten
+başka yerde test ediliyor). M027 özellikle önemli: "çökmüyor" testinin
+"doğru çalışıyor"un kanıtı OLMADIĞINI, aynı mutasyonun bir kardeş testte
+yakalanıp diğerinde tesadüfen kaçtığını somut biçimde gösterdi.
+
+Yeni/güncellenen test dosyaları: `tests/test_integrity.py` (+2),
+`tests/test_disposal.py` (+1 assertion, mevcut teste eklendi),
+`tests/test_timestamp_verify.py` (+2), `tests/tsa_fixtures.py`
+(`wrong_eku` parametresi eklendi), `tests/test_pdf_utils.py` (YENİ, 5 test).
+Üretim kodunda net değişiklik YOK (B-137 hariç, kasıtlı olarak
+değiştirilmedi).
+
+M028–M040: devam edecek.

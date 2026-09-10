@@ -1026,6 +1026,11 @@ class TestSchedulerEntegrasyonu:
             # bu testi kırardı — nitekim denetim çıpası eklenince kırıldı.
             assert "sweep_retention" in kayitli
             assert "purge_expired" in kayitli
+            # Günlük denetim çıpası (CORE.audit_chain.maybe_write_daily_anchor)
+            # buradan tetiklenmezse günlerce açık kalan bir kurulumda dış
+            # referans hiç yazılmaz — kendi mantığı test_audit_chain.py'de
+            # sınanıyor, burada sınanan yalnızca gerçekten KAYITLI olması.
+            assert "anchor_audit_chain" in kayitli
             assert len(set(kayitli)) == len(kayitli)  # id çakışması yok
         finally:
             monkeypatch.setattr(scheduler, "_scheduler", None)
