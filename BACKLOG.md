@@ -10123,3 +10123,97 @@ Kapsam notu: SECURITY.md §3 zaten "bellek dökümü düz metin içerebilir"
 sınırını kabul ediyor (decrypt edilen DOSYA içeriği için) — bu madde
 FARKLI ve daha temel bir yüzey: dosya içeriği değil, kasa açma
 ANAHTARININ kendisi, kilitliyken bile bellekte kalıyor.
+
+### Bölüm 6 — Denetim Zinciri, RFC 3161 & Merkle (`CORE/audit_chain.py`, `CORE/merkle.py`, `CORE/timestamp_verify.py`, `CORE/audit_report.py`)
+
+| No | Senaryo (özet) | Sonuç | Kanıt/Not |
+|----|-----------------|-------|-----------|
+| 71 | Önceki hash'i (H_{i-1}) değiştir | Killed | Mevcut `test_modified_record_is_caught_at_the_right_id`/`test_rewriting_only_the_hash_is_caught` |
+| 72 | Genesis sabitini değiştir | **Survived-Fixed** | `GENESIS_HASH` yazma VE doğrulama AYNI modül sabitinden okunduğu için kendi içinde tutarlı bir değişiklik 142 testin hiçbirini kırmadı — ama BU sabit DİSKTE duran eski zincirlerle geriye dönük uyumluluk sözleşmesi; yeni test değeri belgelenen tarihsel değerine ("0"×64) kilitliyor |
+| 73 | timestamp alanını değiştirip hash'i güncelleme | Killed | Mevcut `test_changing_any_single_field_changes_the_hash` (timestamp dahil tüm alanları parametrize ediyor) |
+| 74 | Boş `action` ile kayıt eklenmesine izin ver | Survived → **B-131** | `append_entry(db, "")` gerçekten denendi — sessizce kabul edildi, zincir "sağlam" raporlandı. Hiçbir test bunu kontrol etmiyordu. Yeni bir doğrulama kuralı gerektiriyor, B-131'e yazıldı |
+| 75 | Dış çıpa yazımını atla | Killed | `_append_anchor_line()`'ın dosya yazma kısmı `pass` yapılınca 24 test düştü |
+| 76 | USB çıpası ile yerel çıpa çelişsin | Killed | Aynı mutasyon/test kümesi (`verify_anchor_replicas` testleri dahil) |
+| 77 | Merkle kök hash bozumu (yaprak değişsin, kök aynı kalsın) | Killed | `verify_proof()`'un karşılaştırmasını `return True`'ya indirgeyince 8 test düştü — `test_yanlis_yaprak_ayni_yolla_koke_cikmiyor` dahil |
+| 78 | Tek yapraklı ağaçta düğümü yükseltme yerine yut | Killed | `build_tree()`'deki yükseltme satırı kaldırılınca 37 test düştü |
+| 79 | RFC 3161 ASN.1 imza doğrulamasını `True`'ya zorla | Killed | `_verify_signature()` no-op yapılınca 3 test düştü |
+| 80 | Süresi geçmiş TSA sertifikasını kabul et | Killed | `validity` penceresi kontrolü kaldırılınca 2 test düştü (`test_a_certificate_expired_at_stamping_time_is_rejected` dahil) |
+| 81 | `verify_audit_chain()` sonuna `return True` koy | Killed | `ok=not breaks` → `ok=True` yapılınca 7 test düştü |
+| 82 | Sıra numarası N→N+2 atlamasını onayla | Killed | Aynı "gap" break mekanizması — `test_deleted_middle_record_is_caught_as_gap_and_break` senaryo 81'in mutasyonuyla da düştü, ayrı test edilmesine gerek kalmadı |
+| 83 | Enum dışı olay tipini ("HACK_ATTEMPT_EVENT") kabul et | Uygulanamaz → **B-131** | `action` alanı HYCLEUS'ta bilinçli olarak serbest-metin (`db.log("herhangi_bir_isim", ...)` onlarca farklı yerde farklı adlarla çağrılıyor) — bir enum/allowlist eklemek her çağrı yerini kataloglamayı gerektiren büyük bir mimari değişiklik. B-131'e (74 ile birlikte) yazıldı |
+| 84 | Yetkisiz denetim günlüğü temizleme | Survived → **B-132** | `clear_audit_logs()` diye bir fonksiyon yok, ama gerçek deney GÖSTERDİ: `db.set_active_role("salt okunur"); db.execute("DELETE FROM audit_log")` GERÇEKTEN BAŞARILI oluyor — `audit_log` `_RBAC_KORUMALI_TABLOLAR`'ın DIŞINDA (gerekçe: `append_entry()` zaten `DBManager.execute()`'u kullanmıyor) ama bu, sıradan bir `DELETE`'i de KORUMASIZ bırakıyor. Ciddi bir bulgu, B-132'ye yazıldı |
+| 85 | İmzalı PDF raporundaki hash özetini sabitle | Killed | `export_sealed_pdf()`'teki `hashlib.sha256(out.read_bytes())` sabit bayta çevrilince 5 test düştü |
+
+**Özet Bölüm 6:** 15 senaryo → 11 Killed, 1 Survived-Fixed (yeni test:
+`test_genesis_hash_geriye_donuk_uyumlu_deger_ile_sabit`), 3 gerçek bulgu
+BACKLOG'a yazıldı (B-131: `action` alanında ne boş-string ne enum/allowlist
+doğrulaması var; B-132: `audit_log` tablosu SALT OKUNUR dahil HERHANGİ bir
+rol tarafından `DELETE`'lenebiliyor — ciddi, kod bu turda YAZILMADI).
+`tests/test_audit_chain.py`: 91 → 92.
+
+## B-131 — `audit_log.action` alanında ne boş-string ne enum/allowlist doğrulaması var
+
+**Durum:** Açık — karar bekliyor (yeni doğrulama kuralı, kapsam dışı).
+**Öncelik:** Düşük-Orta (veri kalitesi + savunma-derinliği; bütünlük
+zincirinin KENDİSİ etkilenmiyor — boş/anlamsız bir `action` yine de
+doğru şekilde hash'leniyor ve zincire bağlanıyor).
+**Bulundu:** 2026-09-10 (B-126 senaryo 74/83).
+
+`CORE/audit_chain.py::append_entry(source, action, ...)` `action`
+parametresinin ne boş string olmadığını ne de bilinen bir eylem adları
+kümesinden geldiğini kontrol ediyor. Gerçek deneyle doğrulandı:
+`append_entry(db, "")` sessizce kabul ediliyor, `verify_audit_chain()`
+zinciri yine "sağlam" raporluyor — kayıt kriptografik olarak geçerli
+ama İÇERİK olarak anlamsız ("ne olduğu" bilgisi yok).
+
+Enum/allowlist YOLU (senaryo 83) ise HYCLEUS'un mevcut mimarisiyle
+DOĞRUDAN ÇATIŞIYOR: `db.log("<eylem_adı>", ...)` deponun her yerinde
+onlarca farklı, serbest-metin eylem adıyla çağrılıyor (`rbac_write_
+rejected`, `usb_auth_rejected`, `folder_created`, `user_approved`, vb.).
+Bir allowlist eklemek bu adların TAMAMININ önceden kataloglanmasını ve
+her yeni özellik eklendiğinde listenin güncellenmesini gerektirir —
+gerçek bir mimari karar, bu turda YAPILMADI.
+
+Öneri: en azından "boş/yalnızca boşluk" action'ı reddetmek (enum'a göre
+çok daha ucuz ve düşük riskli bir doğrulama) — ama bu bile `append_entry`
+imzasına yeni bir `raise` ekliyor, mevcut TÜM çağıranların bundan
+etkilenmediğinin doğrulanmasını gerektiriyor. Kod bu turda YAZILMADI.
+
+## B-132 — `audit_log` tablosu HERHANGİ bir rol (Salt Okunur dahil) tarafından `DELETE` edilebiliyor
+
+**Durum:** Açık — karar bekliyor (ciddi bulgu, yeni güvenlik kontrolü gerektiriyor).
+**Öncelik:** Yüksek (denetim zincirinin bütünlüğü doğrudan etkileniyor).
+**Bulundu:** 2026-09-10 (B-126 senaryo 84).
+
+Gerçek deneyle doğrulandı:
+
+    db.set_active_role("salt okunur")
+    db.execute("DELETE FROM audit_log")   # BAŞARILI — hiçbir hata yok
+
+`DB/db_manager.py::_RBAC_KORUMALI_TABLOLAR` listesi `audit_log`'u
+BİLEREK dışarıda bırakıyor — gerekçe (kodun kendi yorumu): "audit_log
+zaten `DBManager.execute()`'u hiç kullanmıyor (`CORE.audit_chain.
+append_entry()` ham `conn`'a yazıyor); zaten bu kontrolün DIŞINDA, ayrıca
+hariç tutmaya gerek yok." Bu gerekçe YALNIZCA `append_entry()`'nin
+YAZMA yolu için doğru — sıradan bir `db.execute("DELETE FROM
+audit_log")` çağrısını KAPSAMIYOR, ve o çağrı RBAC katmanından hiçbir
+engelle karşılaşmadan geçiyor.
+
+Sonuç: teoride "kırılmaz" olması gereken hash-zincirli denetim günlüğü,
+pratikte tek bir `DELETE` ifadesiyle TAMAMEN silinebiliyor — herhangi
+bir rolle (salt okunur dahil), UI'ı hiç atlamadan bile (ham SQL erişimi
+gerektirmiyor, yalnızca `DBManager.execute()` çağrısı). `verify_audit_
+chain()` bir SONRAKİ çalıştırmada bunu "no_chain" olarak fark eder ama
+o noktada TÜM geçmiş zaten yok olmuştur — tespit var, ÖNLEME yok.
+
+Kapatma seçenekleri (bu turda YAZILMADI):
+1. `audit_log`'u `_RBAC_KORUMALI_TABLOLAR`'a EKLEMEK yerine, ayrı ve daha
+   sert bir kural: `_yazma_yetkisini_dogrula()`'da `audit_log` hedefli
+   HERHANGİ bir `DELETE`/`UPDATE`/`DROP` — rol ne olursa olsun (admin
+   dahil) — reddedilsin. INSERT (yalnızca `append_entry()`'nin ham
+   `conn` yolundan, zaten bu kontrolün dışında) etkilenmez.
+2. SQLite seviyesinde bir `BEFORE DELETE`/`BEFORE UPDATE` TRIGGER ile
+   `audit_log`'u veritabanı motorunun kendisinde salt-eklemeli (append-
+   only) yapmak — RBAC katmanına bile güvenmeyen, daha güçlü bir garanti.
+2 numaralı seçenek daha güçlü ama şema/migration değişikliği gerektiriyor
+— ikisi de kullanıcı kararı bekliyor.

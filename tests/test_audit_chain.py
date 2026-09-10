@@ -112,6 +112,24 @@ def _entry(**overrides) -> dict:
     return base
 
 
+def test_genesis_hash_geriye_donuk_uyumlu_deger_ile_sabit():
+    """
+    B-126 senaryo 72: `GENESIS_HASH` yazma VE doğrulama tarafında AYNI
+    modül sabitinden okunuyor — bu yüzden kendi içinde tutarlı bir
+    değişiklik (`GENESIS_HASH`'in her iki tarafta da değişmesi) hiçbir
+    testi KIRMAZ, mutasyon-kanıtla doğrulandı (142 test hiçbiri fark
+    etmedi). Ama gerçek risk BAŞKA: bu sabit HERHANGİ BİR ZAMANDA
+    değişirse, ZATEN DİSKTE duran (eski değerle imzalanmış) genesis
+    kayıtları `verify_audit_chain()`'in YENİ sabitle yeniden hesapladığı
+    hash'le uyuşmaz ve TÜM zincir "modified" olarak kırık raporlanır —
+    geriye dönük UYUMSUZ, geçişsiz bir kırılma. Bu test o sabiti
+    belgelenen tarihsel değerine ("0"×64) kilitliyor; değiştirilmesi
+    KASITLI bir geçiş planı (migration) gerektirir, sessiz bir satır
+    değişikliği değil.
+    """
+    assert GENESIS_HASH == "0" * 64
+
+
 def test_canonical_form_is_deterministic():
     assert canonical_bytes(_entry()) == canonical_bytes(_entry())
 
