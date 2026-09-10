@@ -356,3 +356,62 @@ def test_idle_timer_gercekten_baslatiliyor(win) -> None:
         "auto-relock QTimer'ı başlatılmamış — boşta kalan bir oturum "
         "asla otomatik kilitlenmez"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-143 — Kapanışta bekleyen toplu-yükleme worker'ları (waitForDone)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_kapanista_bekleyen_toplu_yukleme_isi_terk_edilmeden_bitiriliyor(
+    win, qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    B-143: `closeEvent()`, `QThreadPool.globalInstance()`'ta hâlâ çalışan
+    `_FileRunnable` worker'ları BEKLEMEDEN dönerse, process kapanırken
+    arka planda süren şifreleme/DB-kayıt YARIDA kesilebilir (kısmi/bozuk
+    `.hcl`, eksik DB satırı — B-142'nin vault dosyası için tespit ettiği
+    torn-write riskinin toplu yükleme worker'ları için karşılığı).
+
+    GERÇEK bir yavaş worker (encrypt_file 0.5 sn geciktirilmiş) ile
+    GERÇEK bir kapanış tetikleniyor; sinyal/tablo durumuna değil
+    `QThreadPool.activeThreadCount()`'a bakılıyor — worker'ın KENDİSİNİN
+    (DB yazımı dahil, hepsi worker thread'inde senkron) bitmiş olması
+    yeterli ve gerekli kanıt, `file_done` sinyalinin ana thread'e teslim
+    edilmiş olması gerekmiyor.
+
+    Mutasyon-kanıt: `closeEvent()`'teki `self._pool.waitForDone(...)`
+    çağrısı kaldırılınca (eski davranış) bu test KIRMIZIYA düşüyor —
+    `closeEvent()` worker hâlâ `time.sleep(0.5)` içindeyken hemen
+    dönüyor, `activeThreadCount()` hâlâ > 0.
+    """
+    from PySide6.QtGui import QCloseEvent
+
+    from UI import main_window_table as mwt
+
+    gercek_encrypt = mwt.encrypt_file
+
+    def yavas_encrypt(*a, **k):
+        time.sleep(0.5)
+        return gercek_encrypt(*a, **k)
+
+    monkeypatch.setattr(mwt, "encrypt_file", yavas_encrypt)
+
+    f = tmp_path / "yavas.txt"
+    f.write_bytes(b"gercek icerik" * 20)
+    win._handle_dropped_file(f, label="Genel")
+
+    assert win._pool.activeThreadCount() > 0, (
+        "worker hemen bitmiş görünüyor — test yavaşlatmayı yakalamadı, "
+        "aşağıdaki assert anlamsız olur"
+    )
+
+    win.closeEvent(QCloseEvent())
+
+    assert win._pool.activeThreadCount() == 0, (
+        "closeEvent() bekleyen worker'ı BEKLEMEDEN döndü — B-143"
+    )
+
+    # Worker gerçekten bitti (yukarıdaki assert), ama `file_done` sinyali
+    # kuyruklanmış (queued connection) olabilir — teardown'ın temiz
+    # kalması için tüketiliyor.
+    _pump(qapp, lambda: win._batch_done >= win._batch_total)

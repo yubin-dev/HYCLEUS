@@ -70,6 +70,11 @@ from UI.main_window_theme import ThemeMixin
 from UI.main_window_tree import TreeMixin
 
 
+# B-143: kapanışta bekleyen toplu-yükleme worker'larının (_FileRunnable)
+# bitmesini beklemek için üst sınır. Sonsuz beklemiyor (kilitli/asılı bir
+# worker pencereyi kapatamaz hâle getirmesin) — bkz. closeEvent().
+_BATCH_KAPANIS_ZAMAN_ASIMI_MS = 30_000
+
 
 # ── Ana pencere ───────────────────────────────────────────────────────────────
 
@@ -210,7 +215,28 @@ class HycleusWindow(
         çalışıyor; yani check-in temizlikten önce yapılmış oluyor. Bu
         bağımlılık ikisi arasında yazılı bir sözleşme değil, Qt'nin olay
         sırası — bu yüzden burada açıkça belirtiliyor.
+
+        B-143: check-in'den ÖNCE, `self._pool`'daki bekleyen toplu-yükleme
+        worker'ları (`_FileRunnable` — şifreleme + DB kaydı + tarama)
+        `waitForDone()` ile bekleniyor. Aksi halde process kapanırken
+        arka planda hâlâ süren bir worker YARIDA kesilebilir: kısmi/bozuk
+        `.hcl` dosyası, DB'de eksik satır ya da hiç DB kaydı olmayan bir
+        `.hcl` (B-142'nin vault dosyası için tespit ettiği torn-write
+        riskinin toplu yükleme worker'ları için karşılığı).
         """
+        if self._batch_done < self._batch_total or self._pool.activeThreadCount() > 0:
+            _log.warning(
+                "kapanis_bekleyen_toplu_yukleme  batch_done=%d  batch_total=%d  "
+                "aktif_thread=%d — waitForDone(%d ms) cagriliyor",
+                self._batch_done, self._batch_total,
+                self._pool.activeThreadCount(), _BATCH_KAPANIS_ZAMAN_ASIMI_MS,
+            )
+            if not self._pool.waitForDone(_BATCH_KAPANIS_ZAMAN_ASIMI_MS):
+                _log.error(
+                    "kapanis_zaman_asimi  worker'lar %d ms icinde bitmedi "
+                    "(aktif_thread=%d) — kapanis yine de devam ediyor",
+                    _BATCH_KAPANIS_ZAMAN_ASIMI_MS, self._pool.activeThreadCount(),
+                )
         try:
             self._close_all_checkouts(reason="shutdown")
         except Exception as exc:
