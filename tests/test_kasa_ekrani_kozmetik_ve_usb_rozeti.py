@@ -57,6 +57,39 @@ def isolate_safezone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return hedef
 
 
+@pytest.fixture(autouse=True)
+def sahte_temiz_tarama(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    `CORE.scanner.select_backend()`'i, HER ZAMAN "clean" dönen sahte bir
+    arka uçla değiştirir (bkz. `tests/test_scanner_flow.py::arka_uc`'nin
+    aynı deseni).
+
+    Bu dosyadaki testler gerçek tarama sonucuna bakmıyor, yalnızca "●"
+    öneki + durum metninin doğru biçimlendiğini kontrol ediyor — ama
+    `_FileRunnable.run()` GERÇEK `scan_file()`'ı çağırıyor. Motor
+    platforma göre değişiyor (Windows → Defender, genelde kurulu; Linux
+    CI koşucusu → ClamAV, genelde KURULU DEĞİL) — fixture olmadan aynı
+    test paketi geliştirme makinesinde (gerçek "clean" verdict) ve CI'da
+    (motor yok → `mock_result()`, `verdict="unknown"`, "●  — (m)") FARKLI
+    sonuç veriyordu. Aynı kök neden `tpm_kapali` (conftest.py) için zaten
+    belgelenmiş: makineye göre değişen bir paket güven vermiyor.
+    """
+    from CORE import scanner
+    from CORE.scanner_backends import clean_result
+
+    class _SahteArkaUc:
+        ad = "test"
+        audit_action = "clamav_scan"
+
+        def available(self) -> bool:
+            return True
+
+        def scan(self, path: Path, sha256: str):
+            return clean_result(sha256, "test")
+
+    monkeypatch.setattr(scanner, "select_backend", lambda: _SahteArkaUc())
+
+
 def _pump(app: QApplication, cond, timeout_ms: int = 15000) -> bool:
     t0 = time.monotonic()
     while not cond():
