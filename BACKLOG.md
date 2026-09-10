@@ -11242,3 +11242,67 @@ test_tpm_sealing.py` (56).
 (muhtemelen B-025/B-070'in mirası) zaten sıkı: erişilemezlik politikası
 ("sessizce eski davranışa düşülmez") ve yazım doğrulaması ikisi de
 kataloğun hedeflediği tam noktalarda önceden test edilmiş durumda.
+
+### Bölüm 9 (MC-M070–MC-M079) — Kasa Dosyası / Temp / Atomic (`CORE/vault_manager.py`)
+
+Bu blokta önemli bir mimari bulgu çıktı: `_rewrite_vault()` — vault
+dosyasını (`.hclv`) DİSKE YAZAN TEK fonksiyon (`create_vault`,
+`change_vault_role`, `change_vault_pin`, `migrate_vault_hmac_to_
+share2` hepsi bunu çağırıyor) — DOĞRUDAN `path.write_bytes(...)`
+yapıyor: temp dosya yok, `mkstemp` yok, `fsync` yok, atomic
+`os.replace()` yok. Bu, `CORE/checkout.py`'nin AYNI kod tabanında
+belge yeniden şifrelemesi için kullandığı `os.replace(tmp, ...)`
+deseninin (satır 638, "yarıda kesilen bir yazma orijinal .hcl'i
+bozmasın diye") TAM TERSİ — en kritik dosya (vault, anahtar
+materyalini taşıyor) en az korumalı yazma yolunu kullanıyor.
+
+Test alt kümesi: KDF/vault alt kümesi (baseline 152).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M070 | Migration eski dosya yedeği almadan koşar | **Kapsam dışı (bu tur için)** | `migrate_vault_hmac_to_share2()` de `_rewrite_vault()`'u çağırıyor — aynı, önceden var olan atomicity boşluğunun bir görünümü. → B-142 |
+| MC-M071 | Versiyon kontrolü `>` yerine `>=` (migration tekrar koşar) | **Kapsam dışı** | Hedef kod yok — versiyon kontrolü sıralı (`>`/`>=`) DEĞİL, TAM EŞİTLİK (`raw[4] != _VERSION`); migration "eski imza mı yeni imza mı" diye HMAC doğrulamasıyla karar veriyor, versiyon SAYISINA hiç bakmıyor |
+| MC-M072 | Magic bytes kontrolü kaldır | **Survived-Fixed** | `_decrypt_vault()`'taki `if raw[:4] != _MAGIC:` kaldırılınca 152 testin HİÇBİRİ fark etmedi. `test_magic_byte_bozuk_vault_acilmadan_reddediliyor` eklendi — HMAC'ı (magic bozulmuş içerikle) yeniden imzalayıp SADECE magic-byte kontrolünü izole sınıyor (aksi hâlde `verify_vault()`'un HMAC kontrolü ondan ÖNCE patlardı). Not: aynı kontrol `read_vault_role`/`change_vault_role`/`change_vault_pin`'de 3 kez daha KOPYALANMIŞ — yalnızca en merkezi yol (`open_vault`) test edildi |
+| MC-M073 | Write sonrası fsync yok (power loss → torn write) | **Kapsam dışı (bu tur için)** | Gerçek, önceden var olan boşluk — `_rewrite_vault()` hiç fsync çağırmıyor → B-142 |
+| MC-M074 | Atomic rename → in-place write | **Kapsam dışı (bu tur için)** | ZATEN in-place write (`path.write_bytes()`) — mutasyonun "değiştireceği" atomic-rename hiç yok → B-142 |
+| MC-M075 ★ | `open()` ile temp dosya, `mkstemp` değil (öngörülebilir ad, race) | **Kapsam dışı (bu tur için)** | Hiç temp dosya yok (doğrudan hedef dosyaya yazılıyor) → B-142 |
+| MC-M076 | `mkstemp` izni 0644 (0600 değil) | **Kapsam dışı (bu tur için)** | `mkstemp` hiç kullanılmıyor → B-142 |
+| MC-M077 | Temp dizini paylaşılan `/tmp` (private dizin değil) | **Kapsam dışı (bu tur için)** | Temp dizini kullanımı hiç yok → B-142 |
+| MC-M078 | Write hatasında kısmi temp + eski kasa ikisi kalır (ambiguous load) | **Kapsam dışı (bu tur için)** | Temp dosya yok, dolayısıyla "iki dosya kalması" senaryosu da yok — ama write ORTASINDA kesinti olursa TEK dosya YARIM/bozuk kalabilir (daha kötüsü: dosya bütünlüğü garantisi hiç yok) → B-142 |
+| MC-M079 | Metadata JSON sıraya bağımlı parse (position-based) | **Kapsam dışı** | Hedef kod yok — tek JSON metadata (AAD, `CORE/crypto.py`) her yerde `json.loads()` + anahtar-bazlı erişimle (`meta.get("hwid")` vb.) okunuyor, pozisyona bağımlı bir ayrıştırma hiç yok |
+
+**Bölüm 9 özet:** Survived-Fixed 1 (M072), Kapsam dışı 9 (M070,M071,
+M073-M079 — 7'si B-142'ye, M075★ dahil). Yeni test: `tests/test_vault_
+manager.py` (+1). Tam KDF/vault alt kümesi: 153 passed.
+
+## B-142 — Vault dosyası (`_rewrite_vault()`) atomic/dayanıklı yazılmıyor
+
+**Durum:** Açık — orta öncelik (gerçek tasarım boşluğu, üretim kodu
+değişikliği gerektiriyor — bu mutasyon turunun kapsamı dışında).
+**Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M070/073/074/075★/076/077/078)
+— mutasyona gerek kalmadan, kod okumasıyla: bu ZATEN mevcut kod.
+
+`CORE/vault_manager.py::_rewrite_vault()` — `.hclv` dosyasına yazan TEK
+fonksiyon, `create_vault`/`change_vault_role`/`change_vault_pin`/
+`migrate_vault_hmac_to_share2` hepsi bunu çağırıyor — doğrudan
+`path.write_bytes(protected + signature)` yapıyor:
+
+  · Temp dosya YOK (`mkstemp`/`NamedTemporaryFile` kullanılmıyor)
+  · `fsync` YOK — yazma OS sayfa önbelleğinde kalabilir, güç kaybında
+    diske hiç ulaşmamış olabilir
+  · Atomic `os.replace()` YOK — yazma ORTASINDA kesinti (çökme, güç
+    kaybı) olursa dosya YARIM/bozuk kalır
+
+Aynı kod tabanında `CORE/checkout.py:638` TAM OLARAK bu sınıf sorunu
+`os.replace(tmp, entry.hcl_path)` ile çözüyor (belge yeniden
+şifreleme akışı için) — yani desen zaten VAR ve KULLANILIYOR, sadece
+vault dosyasının kendisine (en kritik dosya — anahtar materyalini
+taşıyor) UYGULANMAMIŞ.
+
+**Öneri:** `_rewrite_vault()`'u `checkout.py`'deki desenle hizalamak:
+geçici dosyaya yaz → `f.flush()` + `os.fsync(f.fileno())` → `os.replace(tmp,
+path)`. Temp dosya AYNI dizinde olmalı (vault dizini, `/tmp` değil —
+`os.replace()` farklı dosya sistemleri arasında atomic değil) ve
+`0o600` izniyle açılmalı. Kapsamı: tek fonksiyon, 4 çağıran etkilenir
+ama arayüz değişmez. Bu turun kapsamı (test yazmak) dışında olduğu için
+burada BIRAKILDI.

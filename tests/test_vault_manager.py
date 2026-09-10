@@ -787,3 +787,53 @@ def test_decrypt_vault_yanlis_hwid_ile_AAD_uyusmazliginda_reddediliyor(
 
     with pytest.raises(ValueError, match="PIN yanlış|bozulmuş"):
         vault_manager._decrypt_vault(hwid_b, pin)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MC-Kataloğu (2026-09-10) — Kasa dosyası format doğrulaması (MC-M072)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_magic_byte_bozuk_vault_acilmadan_reddediliyor(
+    db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    MC-Kataloğu M072: `open_vault()`'un (`_decrypt_vault()` üzerinden)
+    dosyanın ilk 4 baytını (`_MAGIC = b"HCLV"`) doğruladığını doğrudan
+    kanıtlar — bu kontrol bugüne kadar hiçbir testte SINANMAMIŞTI.
+
+    Mutasyon-kanıt: `_decrypt_vault()`'taki `if raw[:4] != _MAGIC:` satırı
+    kaldırılınca (`if False:`) KDF/vault test alt kümesindeki 152 testin
+    HİÇBİRİ fark etmedi — dosya yine de (yanlış biçimde) Argon2id/GCM
+    aşamasına ilerliyor, yalnızca DAHA GEÇ ve DAHA BELİRSİZ bir hatayla
+    (ya da hiç hatasız, format tesadüfen uyuşursa) başarısız olabilirdi.
+
+    Not: aynı kontrol `read_vault_role()`, `change_vault_role()`,
+    `change_vault_pin()` içinde de AYRI AYRI tekrarlanıyor (4 kopya) —
+    bu test yalnızca en merkezi/en çok kullanılan yolu (`open_vault`)
+    kapsıyor; kopyaların birbirinden sessizce sapması ayrı bir risk
+    (bkz. BACKLOG.md B-142, aynı bölümdeki atomic-write bulgusu).
+    """
+    monkeypatch.setattr(vault_manager, "_VAULT_DIR", tmp_path / "vaults")
+    monkeypatch.setattr(vault_manager, "_VAULT_PATH_LEGACY", tmp_path / ".hcl_vault")
+
+    hwid = "USB-MAGIC-BYTE-TEST"
+    pin = "123456"
+    vault_manager.create_vault(hwid, pin, "admin")
+
+    yol = vault_manager._read_vault_path(hwid)
+    ham = bytearray(yol.read_bytes())
+    ham[0:4] = b"XXXX"  # yalnızca magic bozuldu — geri kalanı (dolayısıyla
+    # HMAC de) el değmemiş kalması için _sign() imzasını da yeniden hesaplayıp
+    # yazıyoruz: aksi hâlde verify_vault()'un HMAC kontrolü open_vault()'ta
+    # magic-byte kontrolünden ÖNCE patlar ve bu test onu değil HMAC yolunu
+    # sınamış olur.
+    protected_bozuk = bytes(ham[: -vault_manager._HMAC_SIZE])
+    share_2 = vault_manager._load_share_2(hwid)
+    yeni_imza = vault_manager._sign(
+        vault_manager._derive_signing_key(hwid, share_2), protected_bozuk
+    )
+    with vault_manager._writable(path=yol):
+        yol.write_bytes(protected_bozuk + yeni_imza)
+
+    with pytest.raises(vault_manager.VaultTamperedError, match="magic"):
+        vault_manager.open_vault(hwid, pin)
