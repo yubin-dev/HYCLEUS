@@ -503,6 +503,104 @@ class TestPurgeFile:
         with pytest.raises(RetentionError, match="Dosya bulunamadı"):
             purge_file(db, 9999)
 
+    # ── B-134: güvenli silme (shred), çıplak unlink() DEĞİL ────────────────
+
+    def test_purge_file_bare_unlink_DEGIL_shred_file_cagiriyor(
+        self, db, tmp_path, monkeypatch
+    ) -> None:
+        """
+        B-134: `purge_file()` diski `Path.unlink()` ile DEĞİL,
+        `CORE.secure_erase.shred_file()` ile temizlemeli — tek gerçek
+        yol bu olmalı, ikinci bir çıplak `unlink()` çağrısı KALMAMALI.
+        """
+        import CORE.disposal as disposal_mod
+
+        fid, hcl, _ = _expired_file(db, tmp_path)
+        cagrilar: list[Path] = []
+        gercek_unlink_cagrildi = []
+
+        def sahte_shred(path, *a, **kw):
+            cagrilar.append(Path(path))
+            return True
+
+        def casus_unlink(self, *a, **kw):
+            gercek_unlink_cagrildi.append(self)
+            raise AssertionError(
+                "purge_file() dosyayı hâlâ çıplak Path.unlink() ile siliyor"
+            )
+
+        monkeypatch.setattr(disposal_mod, "shred_file", sahte_shred)
+        monkeypatch.setattr(Path, "unlink", casus_unlink, raising=True)
+
+        purge_file(db, fid, user_confirmed=True)
+
+        assert cagrilar == [hcl], f"shred_file() beklenen yolla çağrılmadı: {cagrilar}"
+        assert not gercek_unlink_cagrildi, "çıplak Path.unlink() ayrıca çağrılmış"
+
+    def test_purge_expired_file_bare_unlink_DEGIL_shred_file_cagiriyor(
+        self, db, tmp_path, monkeypatch
+    ) -> None:
+        """`purge_expired_file()` için aynı iddia — otomatik/sistem yolu."""
+        import CORE.disposal as disposal_mod
+
+        fid, hcl = _mk_file(db, tmp_path)
+        cagrilar: list[Path] = []
+        gercek_unlink_cagrildi = []
+
+        def sahte_shred(path, *a, **kw):
+            cagrilar.append(Path(path))
+            return True
+
+        def casus_unlink(self, *a, **kw):
+            gercek_unlink_cagrildi.append(self)
+            raise AssertionError(
+                "purge_expired_file() dosyayı hâlâ çıplak Path.unlink() ile siliyor"
+            )
+
+        monkeypatch.setattr(disposal_mod, "shred_file", sahte_shred)
+        monkeypatch.setattr(Path, "unlink", casus_unlink, raising=True)
+
+        purge_expired_file(db, fid, source="test")
+
+        assert cagrilar == [hcl], f"shred_file() beklenen yolla çağrılmadı: {cagrilar}"
+        assert not gercek_unlink_cagrildi, "çıplak Path.unlink() ayrıca çağrılmış"
+
+    def test_purge_file_gercekten_dosyanin_uzerine_yazip_siliyor(
+        self, db, tmp_path, monkeypatch
+    ) -> None:
+        """
+        Uçtan uca, HİÇBİR ŞEY mock'lanmadan: gerçek `shred_file()`
+        çalışıyor mu? `os.urandom`'u casus olarak sarmalayıp dosyanın
+        TAM boyutuyla, silinmeden ÖNCE en az bir kez çağrıldığını
+        kanıtlıyoruz — dosya `unlink()` sonrası zaten yok olduğu için
+        içeriğini SONRADAN okuyup doğrulamak mümkün değil.
+        """
+        import os as os_mod
+
+        import CORE.secure_erase as secure_erase_mod
+
+        fid, hcl, _ = _expired_file(db, tmp_path)
+        orijinal_boyut = hcl.stat().st_size
+        assert orijinal_boyut > 0
+
+        cagrilar: list[int] = []
+        gercek_urandom = os_mod.urandom
+
+        def casus_urandom(n):
+            cagrilar.append(n)
+            return gercek_urandom(n)
+
+        monkeypatch.setattr(secure_erase_mod.os, "urandom", casus_urandom)
+
+        purge_file(db, fid, user_confirmed=True)
+
+        assert not hcl.exists(), "dosya hâlâ diskte duruyor"
+        assert cagrilar, "os.urandom() hiç çağrılmadı — üzerine yazma hiç OLMADI"
+        assert all(n == orijinal_boyut for n in cagrilar), (
+            f"üzerine yazma dosyanın TAM boyutuyla eşleşmiyor: {cagrilar} "
+            f"(beklenen: {orijinal_boyut})"
+        )
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Karantina otomatik temizliğiyle etkileşim

@@ -542,6 +542,123 @@ def _m26_file_locks(conn: sqlite3.Connection) -> None:
     """)
 
 
+#: `_m27_audit_log_immutable()`'ın yarattığı tetikleyicilerin adları —
+#: `CORE/audit_chain.py` ve testler bunu tekrar SABİT yazmak yerine
+#: buradan içe aktarıyor (tek kaynak).
+AUDIT_LOG_GUARD_TRIGGERS: tuple[str, ...] = (
+    "audit_log_no_delete",
+    "audit_log_no_content_update",
+    "audit_log_user_id_guard",
+    "audit_log_hash_immutable",
+)
+
+
+def _m27_audit_log_immutable(conn: sqlite3.Connection) -> None:
+    """
+    `audit_log` tablosunu DB SEVİYESİNDE değiştirilemez/silinemez yapar (B-132).
+
+    Kök sorun: `audit_log`, `DB/db_manager.py::_RBAC_KORUMALI_TABLOLAR`'ın
+    BİLİNÇLİ olarak DIŞINDA (gerekçe: `append_entry()` zaten
+    `DBManager.execute()`'u kullanmıyor, ham `conn`'a yazıyor). Ama bu
+    gerekçe yalnızca YAZMA (INSERT) yolunu kapsıyor — sıradan bir
+    `db.execute("DELETE FROM audit_log")` çağrısı hiçbir RBAC engeliyle
+    karşılaşmadan geçiyordu (ölçüldü: Salt Okunur bir oturumla bile).
+    Hash zinciri kendi içinde tutarlı kalsa da, TÜM tablo tek bir DELETE
+    ile yok edilebiliyordu — "kırılmaz" iddiası yalnızca UYGULAMA
+    KATMANINA (kimse DELETE çağırmıyor varsayımına) dayanıyordu.
+
+    Bu göç üç tetikleyici kuruyor — dördüncüsü user_id için özel:
+
+      1. `audit_log_no_delete` — HERHANGİ bir DELETE'i, rol/bağlantı fark
+         etmeksizin koşulsuz reddeder.
+      2. `audit_log_no_content_update` — `action`/`target_type`/
+         `target_id`/`detail`/`timestamp` sütunlarından herhangi birini
+         hedefleyen HER UPDATE'i reddeder. `entry_hash` ve `user_id`
+         burada YOK — ikisinin de kendi, DAHA İNCE kuralı var (aşağıya
+         bakın), çünkü ikisi de meşru bir SONRADAN güncelleme görüyor.
+      3. `audit_log_hash_immutable` — `entry_hash` yalnızca NULL'dan bir
+         DEĞERE geçebilir (bkz. `append_entry()`: INSERT → geri oku →
+         UPDATE ... SET entry_hash = ...) — bir kez atandıktan SONRA
+         (`OLD.entry_hash IS NOT NULL`) DEĞİŞTİRİLEMEZ. Koşulsuz bir
+         "entry_hash hiç değişemez" kuralı `append_entry()`'nin KENDİ
+         çalışma biçimini kırardı.
+      4. `audit_log_user_id_guard` — `user_id` yalnızca DOLU bir değerden
+         NULL'a geçebilir (`users.id ON DELETE SET NULL` FK eyleminin
+         TAM OLARAK yaptığı şey — bir kullanıcı silinince onun geçmiş
+         kayıtları user_id=NULL alır, SATIRLAR SİLİNMEZ). Başka HİÇBİR
+         user_id değişimine (bir kaydı başka birine "üstlendirmek" gibi)
+         izin verilmez. Bu kural `audit_log_no_content_update`'e DAHİL
+         EDİLMEDİ çünkü user_id'yi de oraya eklemek `ON DELETE SET
+         NULL` FK eylemini de reddederdi — ÖLÇÜLDÜ (canlı bir deneyle):
+         SQLite, FK eyleminin ürettiği UPDATE için de tabloya tanımlı
+         tetikleyicileri ÇALIŞTIRIYOR.
+
+    NEDEN uygulama kodu (RBAC) değil DB tetikleyicisi
+    ---------------------------------------------------
+    `DB/db_manager.py::_yazma_yetkisini_dogrula()`'ya bir kural eklemek
+    yalnızca `DBManager.execute()` üzerinden gelen çağrıları kapsardı —
+    `append_entry()`'nin zaten yaptığı gibi ham `conn` kullanan HERHANGİ
+    bir gelecekteki kod (ya da doğrudan `sqlite3` ile açılan bir CLI/
+    betik) bu engeli hiç görmez. Tetikleyici şemanın PARÇASI: dosyayı
+    açan HANGİ araç olursa olsun (uygulamanın kendisi, `sqlite3` CLI,
+    DB Browser for SQLite, gelecekteki bir bakım betiği) aynı kısıtla
+    karşılaşır — RBAC'ın aksine, ATLANACAK bir Python kod yolu yok.
+
+    DÜRÜST SINIR — bu KIRILAMAZ demek DEĞİL
+    ------------------------------------------
+    Tetikleyiciler SQLite'ın normal SQL yürütme yolundan geçen HER
+    işlemi yakalıyor. Yakalamadığı şey: veritabanı dosyasının HAM
+    baytlarının, SQLite motorunu HİÇ kullanmadan (`PRAGMA
+    writable_schema` ile şemayı yeniden yazmak, ya da dosyayı bir hex
+    editörle/özel bir araçla doğrudan değiştirmek) manipüle edilmesi —
+    bu, uygulamanın "makineye fiziksel/yönetici erişimi olan biri zaten
+    her şeyi yapabilir" sınırıyla (SECURITY.md §1, M3 modeli) AYNI
+    sınıfta. Bu tetikleyiciler o sınırı GENİŞLETMİYOR, yalnızca
+    "sıradan bir SQL DELETE/UPDATE" sınıfındaki (kod hatası, SQL
+    enjeksiyonu, art niyetli ama SQL-seviyesinde kalan bir yönetici)
+    saldırıları kapatıyor.
+
+    Testler (`tests/test_audit_chain.py` modül docstring'i) bu göçten
+    ÖNCE ham `conn.execute("DELETE ...")`/`UPDATE ...` ile "diske
+    erişimi olan bir saldırgan"ı simüle ediyordu — artık bu senaryo
+    saldırganın tetikleyicileri de (yukarıdaki writable_schema sınıfı
+    bir saldırıyla) kaldırmış olmasını gerektiriyor; testler
+    `AUDIT_LOG_GUARD_TRIGGERS`'ı `DROP TRIGGER` ile kaldırıp o daha
+    sofistike senaryoyu simüle edecek şekilde güncellendi.
+    """
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
+        BEFORE DELETE ON audit_log
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_log satirlari silinemez (append-only, B-132)');
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS audit_log_no_content_update
+        BEFORE UPDATE OF action, target_type, target_id, detail, timestamp
+        ON audit_log
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_log icerigi degistirilemez (append-only, B-132)');
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS audit_log_hash_immutable
+        BEFORE UPDATE OF entry_hash ON audit_log
+        WHEN OLD.entry_hash IS NOT NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_log entry_hash bir kez atandiktan sonra degistirilemez (B-132)');
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS audit_log_user_id_guard
+        BEFORE UPDATE OF user_id ON audit_log
+        WHEN NOT (NEW.user_id IS NULL AND OLD.user_id IS NOT NULL)
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_log user_id yalnizca kullanici silinince NULLa gecebilir (B-132)');
+        END
+    """)
+
+
 #: Numaralı, SIRALI, değişmez göç listesi. Sıra anlamlıdır: 11 numara
 #: `folders` tablosuna referans veriyor, yani 10'dan sonra gelmek ZORUNDA.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -638,7 +755,12 @@ MIGRATIONS: tuple[Migration, ...] = (
               "engelleyen çökmeye dayanıklı kilit — açılışta "
               "release_stale_locks() sahipsiz kalanları temizler.",
               _m26_file_locks),
-    # Migration(27, "tpm-...", "...", _m27_...),
+    Migration(27, "audit-log-immutable",
+              "audit_log'a DB-seviyesi DELETE/UPDATE koruması (B-132) — "
+              "tetikleyiciler, hangi araçla açılırsa açılsın tabloyu "
+              "append-only'e zorluyor. Yalnızca append_entry()'nin kendi "
+              "entry_hash ataması ve users ON DELETE SET NULL FK eylemi muaf.",
+              _m27_audit_log_immutable),
 )
 
 
@@ -760,6 +882,7 @@ def durum(conn: sqlite3.Connection) -> list[tuple[int, str, str, str]]:
 
 
 __all__ = [
+    "AUDIT_LOG_GUARD_TRIGGERS",
     "LEDGER_TABLE",
     "MIGRATIONS",
     "TEMEL_SURUM",

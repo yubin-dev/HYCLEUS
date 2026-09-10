@@ -10181,9 +10181,9 @@ etkilenmediğinin doğrulanmasını gerektiriyor. Kod bu turda YAZILMADI.
 
 ## B-132 — `audit_log` tablosu HERHANGİ bir rol (Salt Okunur dahil) tarafından `DELETE` edilebiliyor
 
-**Durum:** Açık — karar bekliyor (ciddi bulgu, yeni güvenlik kontrolü gerektiriyor).
+**Durum:** Kapalı.
 **Öncelik:** Yüksek (denetim zincirinin bütünlüğü doğrudan etkileniyor).
-**Bulundu:** 2026-09-10 (B-126 senaryo 84).
+**Bulundu:** 2026-09-10 (B-126 senaryo 84). **Kapatıldı:** 2026-09-10.
 
 Gerçek deneyle doğrulandı:
 
@@ -10206,17 +10206,82 @@ gerektirmiyor, yalnızca `DBManager.execute()` çağrısı). `verify_audit_
 chain()` bir SONRAKİ çalıştırmada bunu "no_chain" olarak fark eder ama
 o noktada TÜM geçmiş zaten yok olmuştur — tespit var, ÖNLEME yok.
 
-Kapatma seçenekleri (bu turda YAZILMADI):
-1. `audit_log`'u `_RBAC_KORUMALI_TABLOLAR`'a EKLEMEK yerine, ayrı ve daha
-   sert bir kural: `_yazma_yetkisini_dogrula()`'da `audit_log` hedefli
-   HERHANGİ bir `DELETE`/`UPDATE`/`DROP` — rol ne olursa olsun (admin
-   dahil) — reddedilsin. INSERT (yalnızca `append_entry()`'nin ham
-   `conn` yolundan, zaten bu kontrolün dışında) etkilenmez.
-2. SQLite seviyesinde bir `BEFORE DELETE`/`BEFORE UPDATE` TRIGGER ile
-   `audit_log`'u veritabanı motorunun kendisinde salt-eklemeli (append-
-   only) yapmak — RBAC katmanına bile güvenmeyen, daha güçlü bir garanti.
-2 numaralı seçenek daha güçlü ama şema/migration değişikliği gerektiriyor
-— ikisi de kullanıcı kararı bekliyor.
+### Düzeltme (2026-09-10)
+
+**Seçenek 2** uygulandı — RBAC/uygulama katmanına GÜVENMEYEN, DB'nin
+kendisinin reddettiği bir katman. `DB/migrations.py::
+_m27_audit_log_immutable()` (Migration 27, `TEMEL_SURUM`=21'in üstünde,
+yani her gerçek `connect()`'te fiilen ÇALIŞIYOR) `audit_log`'a 4
+tetikleyici ekliyor:
+
+1. **`audit_log_no_delete`** — HERHANGİ bir `DELETE`'i, rol/bağlantı/
+   araç fark etmeksizin koşulsuz reddeder (`RAISE(ABORT, ...)`).
+2. **`audit_log_no_content_update`** — `action`/`target_type`/
+   `target_id`/`detail`/`timestamp` sütunlarından herhangi birini
+   hedefleyen HER `UPDATE`'i reddeder.
+3. **`audit_log_hash_immutable`** — `entry_hash` yalnızca NULL'dan bir
+   değere geçebilir (append_entry()'nin kendi INSERT→UPDATE akışı);
+   bir kez atandıktan sonra DEĞİŞTİRİLEMEZ.
+4. **`audit_log_user_id_guard`** — `user_id` yalnızca DOLU bir
+   değerden NULL'a geçebilir (`users.id ON DELETE SET NULL` FK
+   eyleminin ürettiği geçiş, canlı bir deneyle ÖLÇÜLEREK doğrulandı:
+   SQLite, FK eyleminin ürettiği UPDATE için de tabloya tanımlı
+   tetikleyicileri ÇALIŞTIRIYOR). Başka HİÇBİR user_id değişimine
+   izin verilmez — `audit_log_no_content_update`'e dahil edilmediği
+   için (o da user_id'yi kapsasaydı kullanıcı silme işlemi FK
+   eylemi tarafından üretilen UPDATE'te patlardı).
+
+**Madde 2 (UPDATE gözden geçirmesi) — evet, DAHA TEHLİKELİ olabileceği
+doğrulandı ve kapatıldı:** `prev_hash`/olay içeriğinin `UPDATE` ile
+değiştirilmesi `DELETE` kadar (hatta bazı açılardan daha sinsi, çünkü
+kayıt sayısı değişmiyor) tehlikeliydi — yukarıdaki 2 ve 3 numaralı
+tetikleyiciler bunu kapatıyor.
+
+**Madde 3 (mutasyon testi) — `tests/test_audit_log_immutable.py`
+(18 yeni test) + mutasyon-kanıt:** Migration 27'nin trigger-oluşturma
+gövdesi geçici olarak `pass`'e indirgenip test suite'i çalıştırıldı —
+18 testten 15'i GERÇEKTEN kırmızı oldu (DELETE/UPDATE/entry_hash/
+user_id koruması testleri), yalnızca "meşru işlem" testleri (append_entry,
+FK cascade, WAL checkpoint) yeşil kaldı — beklenen ve doğru. Orijinal
+koda geri dönüldü, tekrar 18/18 yeşil.
+
+**Madde 4 (meşru işlemler bozulmuyor) — doğrulandı:**
+  - `append_entry()`'nin kendi entry_hash ataması: `test_append_entry_
+    kendi_hash_atamasi_calismaya_devam_ediyor`.
+  - `users.id ON DELETE SET NULL` FK eylemi: `test_kullanici_silinince_
+    user_id_NULLa_dusuyor_FK_eylemi_calisiyor` — GERÇEK bir kullanıcı
+    silinip audit_log.user_id'nin NULL'a düştüğü, satırın SİLİNMEDİĞİ
+    canlı doğrulandı.
+  - `PRAGMA wal_checkpoint(TRUNCATE)`: `test_wal_checkpoint_ve_vacuum_
+    tetikleyicilerden_etkilenmiyor`.
+  - Migration/şema eşdeğerliği: `tests/test_migrations.py` (26 test,
+    `sifirdan_kur()` ile `_apply_schema()`'nın ÜRETTİĞİ şemanın hâlâ
+    birebir aynı olduğunu doğrulayan test dahil) hepsi yeşil.
+
+**Yan etki — mevcut testlerin kurcalama simülasyonu güncellendi:**
+`tests/test_audit_chain.py` (ve `test_audit_log_view.py`/
+`test_audit_report.py`/`test_integrity.py`/`test_inventory.py`) ham
+`conn.execute("DELETE/UPDATE ...")` ile "diske erişimi olan bir
+saldırgan"ı simüle ediyordu (~28 çağrı noktası) — artık bu senaryo
+saldırganın DB-seviyesi tetikleyicileri de (bir `writable_schema`
+sınıfı saldırıyla) önceden kaldırmış olmasını gerektiriyor.
+`AUDIT_LOG_GUARD_TRIGGERS` sabiti (`DB/migrations.py`) + `DROP TRIGGER
+IF EXISTS` çağrılarıyla (test_audit_chain.py'de tek bir autouse
+fixture, diğer 4 dosyada yerel yardımcı fonksiyonlar) güncellendi —
+bu testlerin ASIL iddiası (`verify_audit_chain()`'in kurcalamayı doğru
+raporlaması) DEĞİŞMEDİ, yalnızca "kurcalamaya nasıl ulaşılıyor" adımı
+gerçekçi hâle getirildi.
+
+**Dürüst sınır (migration'ın kendi docstring'inde belgelendi):**
+Tetikleyiciler SQLite'ın normal SQL yürütme yolundan geçen HER işlemi
+yakalıyor (uygulamanın kendisi, `sqlite3` CLI, DB Browser, gelecekteki
+bir bakım betiği — hepsi aynı kısıtla karşılaşır). Yakalamadığı şey:
+veritabanı dosyasının HAM baytlarının SQLite motorunu hiç kullanmadan
+(`PRAGMA writable_schema`, hex editör) manipüle edilmesi — bu,
+SECURITY.md §1'in M3 (fiziksel/yönetici erişimi) sınırıyla AYNI
+sınıfta, GENİŞLETİLMEDİ.
+
+Tam suite (bu düzeltmeyle ilgili dosyalar): 369 passed. ruff temiz.
 
 ### Bölüm 7 — Giriş, PIN Rotasyonu & Kimlik Doğrulama (`UI/login_dialog.py`, `CORE/rate_limit.py`, `CORE/recovery_share.py`, `CORE/vault_manager.py`)
 
@@ -10282,9 +10347,9 @@ gerektiriyor). `tests/test_session_user.py`: 21 → 22.
 
 ## B-134 — İmha Odası'nın "kalıcı silme" fonksiyonları GÜVENLİ SİLME (shred) YAPMIYOR, düz `unlink()` kullanıyor
 
-**Durum:** Açık — karar bekliyor (kritik bulgu, önemli bir mimari/performans kararı gerektiriyor).
+**Durum:** Kapalı.
 **Öncelik:** YÜKSEK-KRİTİK (kullanıcıya verilen "kalıcı olarak siler" sözü ile fiili davranış arasında doğrudan çelişki).
-**Bulundu:** 2026-09-10 (B-126 senaryo 96) — mutasyon bile gerekmedi, gerçek koddan doğrudan görüldü.
+**Bulundu:** 2026-09-10 (B-126 senaryo 96) — mutasyon bile gerekmedi, gerçek koddan doğrudan görüldü. **Kapatıldı:** 2026-09-10.
 
 ### Bulgu
 
@@ -10358,6 +10423,53 @@ test edilmiş, yalnızca doğru çağrı yerine eklenmemiş; performans bedeli
 `CORE/backup.py`'nin ZATEN kabul ettiği bedelle aynı sınıfta. Ama karar
 kullanıcının.
 
+### Düzeltme (2026-09-10) — Seçenek 1 uygulandı
+
+`purge_file()` ve `purge_expired_file()`'daki `path.exists(); path.
+unlink()` çağrıları `shred_file(path)` ile değiştirildi (`CORE/
+disposal.py`) — her iki fonksiyon da artık tek bir güvenli-silme yolunu
+paylaşıyor, `CORE/backup.py`/`checkout.py`/`safezone.py`/
+`secret_migration.py` ile AYNI ilkel.
+
+**Madde 1 (overwrite eklendi) — yapıldı:** `shred_file()`'ın varsayılan
+3 turlu rastgele üzerine yazma → fsync → kısaltma → silme sırası artık
+İmha Odası'nın HER İKİ çıkış noktasında da çalışıyor.
+
+**Madde 2 (HDD/SSD dürüst sınırı) — SECURITY.md'ye eklendi:**
+`SECURITY.md` §4.29 (İngilizce + Türkçe, `tests/test_belge_dil_
+paritesi.py` ile dil paritesi doğrulandı) bu düzeltmeyi, HDD'de gerçek
+bir iyileştirme olduğunu ve SSD'de wear-leveling nedeniyle yalnızca "en
+iyi çaba" olduğunu (`CORE/secure_erase.py`'nin zaten taşıdığı aynı
+dürüst uyarıyı miras alarak) açıkça yazıyor — yanlış bir güvenlik vaadi
+VERİLMİYOR.
+
+**Madde 3 (mutasyon testi) — 3 yeni test + mutasyon-kanıt:**
+`tests/test_disposal.py::TestPurgeFile` içine üç test eklendi:
+  - `test_purge_file_bare_unlink_DEGIL_shred_file_cagiriyor` /
+    `test_purge_expired_file_bare_unlink_DEGIL_shred_file_cagiriyor` —
+    `Path.unlink`'i doğrudan çağrılırsa hata fırlatacak şekilde
+    monkeypatch'leyip `shred_file()`'ın TEK silme yolu olduğunu KABLOLAMA
+    seviyesinde kanıtlıyor.
+  - `test_purge_file_gercekten_dosyanin_uzerine_yazip_siliyor` — HİÇBİR
+    ŞEY mock'lanmadan, `os.urandom()`'u casus olarak sararak üzerine
+    yazmanın dosyanın TAM boyutuyla, silinmeden ÖNCE GERÇEKTEN
+    tetiklendiğini kanıtlıyor.
+  Mutasyon-kanıt: her iki fonksiyon eski `path.exists(); path.unlink()`
+  desenine geri çevrildi, üç test de KIRMIZI oldu; orijinal koda dönüldü,
+  tekrar yeşil.
+
+**Madde 4 (performans) — ölçüldü, BACKLOG'a not düşüldü:** Bu geliştirme
+makinesinde (NVMe SSD) 1 MB ~23 ms, 100 MB ~430 ms (~4,3 ms/MB) ekliyor.
+`purge_file()` tek/kullanıcı-tetikli olduğu için fark edilmiyor;
+`purge_expired_file()` bir döngüde ÇOKLU dosya için çağrılabildiğinden
+büyük/çok sayıda dosyanın aynı süpürme turunda süresi dolarsa zamanlayıcı
+tik'i ÖLÇÜLEBİLİR şekilde uzuyor — ilerleme göstergesi/arka plana alma bu
+turda EKLENMEDİ, bilinen ve kabul edilmiş bir bedel olarak bırakıldı
+(otomatik süpürme zaten UI iş parçacığının kritik yolunun dışında).
+
+Tam suite (bu düzeltmeyle ilgili dosyalar): 80+61 passed. ruff/mypy
+temiz.
+
 ### B-126 — TOPLAM ÖZET (100/100 senaryo)
 
 | Sonuç | Adet | Anlamı |
@@ -10384,12 +10496,14 @@ güvenlik kontrolü ya da mimari karar gerektiriyor (backlog konvansiyonu):
   · **B-129** — Bandit B608 susturması + semgrep'te SQL enjeksiyonu kuralı yok (orta-yüksek öncelik)
   · **B-130** — Oturum master_key'i USB çıkarıldığında bellekte sıfırlanmıyor (orta öncelik)
   · **B-131** — `audit_log.action` alanında boş-string/enum doğrulaması yok (düşük-orta öncelik)
-  · **B-132** — `audit_log` HERHANGİ bir rol tarafından `DELETE` edilebiliyor (**YÜKSEK öncelik**)
+  · **B-132** — `audit_log` HERHANGİ bir rol tarafından `DELETE` edilebiliyor (**YÜKSEK öncelik**) — **KAPATILDI (2026-09-10)**, bkz. yukarıdaki "Düzeltme" bölümü.
   · **B-133** — `register_new_user()`'da `username` doğrulaması CORE katmanında yok (düşük öncelik)
-  · **B-134** — İmha Odası güvenli silme (shred) YAPMIYOR, düz `unlink()` kullanıyor (**YÜKSEK-KRİTİK öncelik**)
+  · **B-134** — İmha Odası güvenli silme (shred) YAPMIYOR, düz `unlink()` kullanıyor (**YÜKSEK-KRİTİK öncelik**) — **KAPATILDI (2026-09-10)**, bkz. yukarıdaki "Düzeltme (2026-09-10)" bölümü.
 
-En önemli iki bulgu **B-132** ve **B-134** — ikisi de kullanıcının
-mümkün olan en kısa sürede gözden geçirmesi önerilir.
+**GÜNCELLEME (2026-09-10):** en kritik iki bulgu **B-132** ve **B-134**
+kullanıcı talimatıyla AYNI oturumda kapatıldı — bkz. bu iki maddenin
+kendi "Düzeltme" alt bölümleri (yukarıda). Kalan 6 madde (B-127, B-128,
+B-129, B-130, B-131, B-133) hâlâ açık.
 
 Yeni/güncellenen test dosyaları (toplam +21 yeni test fonksiyonu, bazıları
 parametrize): `tests/test_crypto.py` (42→49), `tests/test_vault_manager.py`

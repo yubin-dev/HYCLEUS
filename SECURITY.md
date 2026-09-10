@@ -3632,6 +3632,83 @@ as part of CI's `security` job.
 
 ---
 
+### 4.29 The Disposal Room's "permanent delete" used to be a plain `unlink()` — the ciphertext stayed recoverable on disk
+
+**What was found.** `CORE/disposal.py::purge_file()` (user-triggered,
+confirmed) and `purge_expired_file()` (automatic sweep) — the *only* two
+functions that remove a file from disk — called `Path.unlink()` directly.
+`CORE/secure_erase.py::shred_file()` (overwrite → fsync → truncate →
+unlink, already used by `CORE/backup.py`, `CORE/checkout.py`,
+`CORE/safezone.py`, and `CORE/secret_migration.py`) was never called from
+either. `unlink()` only removes the directory entry; the file's data
+blocks stay on disk, readable with an undelete tool, until some unrelated
+future write happens to reuse them.
+
+**Why this mattered here specifically, not just in the abstract.** Every
+file in a vault is encrypted with the *same* session master key
+(`UI/main_window_table.py`'s `encrypt_file(self._src, self._key, ...)` —
+one key, every file, not one key per file). So a file the user explicitly
+told the Disposal Room to destroy forever stayed exactly as decryptable
+as one they never deleted, for as long as its ciphertext blocks survived
+on disk — which could be indefinitely on a lightly-used vault. Recovering
+that master key later (stolen USB plus a cracked PIN, recovered Shamir
+shares, a TPM that gets cleared and falls back to the keyring) would
+decrypt the "destroyed" file exactly as it would any file still present.
+The confirmation dialog's word "kalıcı" ("permanent") was not backed by
+what the code actually did to the bytes.
+
+**Fix.** Both functions now call `shred_file()` instead of `unlink()`
+directly. Confirmed with a real end-to-end test that does not mock
+`shred_file()` at all: `os.urandom()` is wrapped as a spy, and the
+overwrite is observed to fire with the file's *exact* size before the
+path stops existing (`tests/test_disposal.py::TestPurgeFile::
+test_purge_file_gercekten_dosyanin_uzerine_yazip_siliyor`). Two more
+tests pin the wiring itself — `Path.unlink` is monkeypatched to raise if
+called directly, proving `shred_file()` is now the *only* removal path
+for both functions, not an addition alongside a surviving bare `unlink()`.
+Mutation-tested: reverting either function's body to the old
+`path.exists(); path.unlink()` pattern makes all three new tests fail
+red, confirming they would have caught this regression before it shipped.
+
+**Honest limit — overwrite is not a guarantee, it is best effort at the
+logical layer.** This is not new information; `CORE/secure_erase.py`'s
+own module docstring already says it, and the Disposal Room now inherits
+that same limit rather than a separate, undocumented one:
+
+> Overwriting assumes the data physically lands on the same sector again.
+> SSD wear-leveling, copy-on-write filesystems (btrfs, ReFS), snapshots,
+> and VM disk images all break that assumption.
+
+On a spinning HDD with a conventional filesystem, this is a real,
+meaningful improvement — the sectors get overwritten in place, and an
+undelete tool finds random noise instead of ciphertext. **On an SSD, the
+overwrite is best-effort, not a guarantee**: wear-leveling firmware may
+have already relocated the original blocks to a different physical page
+before the "overwrite" reaches them, leaving the original ciphertext
+readable at the controller level even though the filesystem-visible copy
+is now noise. The only guarantee-grade defense against that class of
+residue is full-disk encryption (already recommended in §1 as the
+baseline the M2/M3 threat model assumes); this fix narrows the gap
+between "permanent" as promised and "permanent" as delivered, it does not
+close it to zero on every storage medium.
+
+**Performance, measured, not guessed.** Three overwrite passes plus
+`fsync` add real time proportional to file size: on this development
+machine (NVMe SSD), a 1 MB file added ~23 ms, 100 MB added ~430 ms
+(~4.3 ms/MB at that size — per-call overhead dominates at small sizes).
+`purge_file()` is a single, user-initiated, already-confirmed action, so
+this is imperceptible in practice. `purge_expired_file()` is different:
+`sweep_retention_expired()` can call it in a loop for every file whose
+retention period lapsed in the same scheduler tick, so a sweep that
+catches many large files at once now takes measurably longer than the
+instant `unlink()` it used to be. No progress indicator or background
+offload was added for that path in this pass — recorded as a known,
+accepted cost (BACKLOG B-134) rather than solved, since the automatic
+sweep already runs off the UI thread's critical path and was already
+expected to take a variable amount of time per tick.
+
+---
+
 ## 5. Cryptographic details
 
 | Layer | Construction |
@@ -7633,6 +7710,85 @@ ortam değişkeninden okunmuyor ya da kaynağa yazılmıyor; `pip-audit`
 (`requirements-security.txt`) zaten kullanılan üç ağ-yetenekli
 bağımlılığı (`requests`, `cryptography`, `PySide6`) CI'ın `security`
 işinin parçası olarak bilinen CVE'lere karşı tarıyor.
+
+---
+
+### 4.29 İmha Odası'nın "kalıcı silme"si çıplak bir `unlink()`'ti — ciphertext diskte kurtarılabilir kalıyordu
+
+**Bulgu.** `CORE/disposal.py::purge_file()` (kullanıcı tetikli, onaylı)
+ve `purge_expired_file()` (otomatik süpürme) — bir dosyayı diskten
+kaldıran TEK İKİ fonksiyon — doğrudan `Path.unlink()` çağırıyordu.
+`CORE/secure_erase.py::shred_file()` (üzerine yaz → fsync → kısalt →
+sil; zaten `CORE/backup.py`, `CORE/checkout.py`, `CORE/safezone.py`,
+`CORE/secret_migration.py` tarafından kullanılıyor) ikisinden de HİÇ
+çağrılmıyordu. `unlink()` yalnızca dizin girdisini kaldırıyor; dosyanın
+veri blokları, ileride ilgisiz bir yazı onları yeniden kullanana kadar
+diskte, bir undelete aracıyla okunabilir durumda kalıyor.
+
+**Neden bu SOYUT değil, HYCLEUS'a ÖZGÜ bir sorun.** Bir kasadaki HER
+dosya AYNI oturum master key'iyle şifreleniyor
+(`UI/main_window_table.py`'nin `encrypt_file(self._src, self._key, ...)`
+çağrısı — dosya başına değil, TEK anahtar). Yani kullanıcının İmha
+Odası'ndan "sonsuza
+kadar yok et" dediği bir dosya, ciphertext blokları diskte hayatta
+kaldığı sürece — hafif kullanılan bir kasada bu SÜRESİZ olabilir —
+HİÇ silinmemiş bir dosyayla AYNI ÇÖZÜLEBİLİRLİKTE kalıyordu. O master
+key'in sonradan ele geçirilmesi (çalıntı USB + kırılmış PIN, kurtarılmış
+Shamir payları, temizlenip anahtar kasasına düşen bir TPM) "imha
+edilmiş" dosyayı da, hâlâ duran herhangi bir dosya gibi çözerdi. Onay
+diyaloğundaki "kalıcı" sözü, kodun bayt'lara GERÇEKTE ne yaptığıyla
+karşılanmıyordu.
+
+**Düzeltme.** İki fonksiyon da artık doğrudan `unlink()` yerine
+`shred_file()` çağırıyor. `shred_file()`'ı HİÇ mock'lamayan gerçek bir
+uçtan-uca testle doğrulandı: `os.urandom()` casus olarak sarmalanıp
+üzerine yazmanın, yol var olmaktan çıkmadan ÖNCE dosyanın TAM boyutuyla
+tetiklendiği gözlemlendi (`tests/test_disposal.py::TestPurgeFile::
+test_purge_file_gercekten_dosyanin_uzerine_yazip_siliyor`). İki test daha
+bizzat KABLOLAMAYI sabitliyor — `Path.unlink` doğrudan çağrılırsa hata
+fırlatacak şekilde monkeypatch'lenip, `shred_file()`'ın artık HER İKİ
+fonksiyon için de TEK silme yolu olduğu (yanında hayatta kalan ayrı bir
+çıplak `unlink()` DEĞİL) kanıtlandı. Mutasyon testi: her iki fonksiyonun
+gövdesi eski `path.exists(); path.unlink()` desenine geri çevrilince
+yeni 3 test de KIRMIZI oldu — bu regresyonu yayınlanmadan ÖNCE
+yakalayacaklarını doğruluyor.
+
+**Dürüst sınır — üzerine yazma bir GARANTİ değil, mantıksal katmanda en
+iyi çaba.** Bu yeni bir bilgi değil; `CORE/secure_erase.py`'nin kendi
+modül docstring'i zaten bunu söylüyor, İmha Odası artık AYRI, belgesiz
+bir sınır yerine AYNI sınırı devralıyor:
+
+> Üzerine yazma, verinin fiziksel olarak aynı sektöre gittiğini
+> varsayar. SSD'de wear leveling, kopyala-yaz dosya sistemleri (btrfs,
+> ReFS), snapshot'lar ve VM disk imajları bu varsayımı bozar.
+
+Dönen bir HDD'de, geleneksel bir dosya sistemiyle, bu GERÇEK ve anlamlı
+bir iyileştirme — sektörler yerinde üzerine yazılıyor, bir undelete
+aracı ciphertext yerine rastgele gürültü buluyor. **SSD'de üzerine
+yazma en iyi çabadır, GARANTİ DEĞİLDİR:** wear-leveling ürün yazılımı,
+"üzerine yazma" onlara ulaşmadan ÖNCE orijinal blokları farklı bir
+fiziksel sayfaya taşımış olabilir — dosya sistemi seviyesinde görünen
+kopya artık gürültü olsa bile, orijinal ciphertext denetleyici
+seviyesinde okunabilir kalabilir. Bu sınıf bir kalıntıya karşı GARANTİ
+seviyesindeki TEK savunma tam disk şifrelemesi (zaten §1'de M2/M3 tehdit
+modelinin varsaydığı taban çizgi olarak öneriliyor); bu düzeltme "vaat
+edilen kalıcı" ile "teslim edilen kalıcı" arasındaki farkı DARALTIYOR,
+her depolama ortamında sıfıra İNDİRMİYOR.
+
+**Performans, ÖLÇÜLDÜ, tahmin edilmedi.** Üç üzerine-yazma turu artı
+`fsync`, dosya boyutuyla orantılı gerçek bir süre ekliyor: bu geliştirme
+makinesinde (NVMe SSD) 1 MB'lık bir dosya ~23 ms, 100 MB ~430 ms ekledi
+(o boyutta ~4,3 ms/MB — küçük boyutlarda çağrı başına sabit maliyet
+baskın). `purge_file()` tek, kullanıcı tetikli, zaten onaylanmış bir
+eylem, yani pratikte fark edilmiyor. `purge_expired_file()` FARKLI:
+`sweep_retention_expired()` AYNI zamanlayıcı tik'inde saklama süresi
+dolan HER dosya için onu döngüde çağırabiliyor, yani aynı anda birçok
+büyük dosyayı yakalayan bir süpürme artık eskisi gibi anlık `unlink()`
+olmaktan çıkıp ÖLÇÜLEBİLİR şekilde uzuyor. Bu tur o yol için bir
+ilerleme göstergesi ya da arka plana alma EKLENMEDİ — çözülmüş değil,
+bilinen ve kabul edilmiş bir bedel olarak kaydedildi (BACKLOG B-134),
+çünkü otomatik süpürme zaten UI iş parçacığının kritik yolunun dışında
+çalışıyor ve zaten tik başına değişken bir süre alması bekleniyordu.
 
 ---
 

@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from DB.migrations import AUDIT_LOG_GUARD_TRIGGERS
+
 from CORE import crypto
 from CORE.audit_chain import verify_audit_chain
 from CORE.crypto import AuthenticationError, decrypt_file, encrypt_file, verify_file
@@ -571,6 +573,12 @@ def test_tampering_with_a_sweep_entry_breaks_the_chain(db, tmp_path: Path):
     kayit = db.fetchone(
         "SELECT id FROM audit_log WHERE action = 'integrity_check_failed'"
     )
+    # B-132: DB-seviyesi tetikleyicileri kaldırmadan bu DELETE artık
+    # reddedilir (DB/migrations.py::_m27_audit_log_immutable) — gerçek
+    # bir saldırganın da yapması gereken adım.
+    for ad in AUDIT_LOG_GUARD_TRIGGERS:
+        db.conn.execute(f"DROP TRIGGER IF EXISTS {ad}")
+    db.conn.commit()
     db.conn.execute("DELETE FROM audit_log WHERE id = ?", (kayit["id"],))
     db.conn.commit()
 

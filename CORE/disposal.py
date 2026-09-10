@@ -88,6 +88,7 @@ from typing import TYPE_CHECKING
 
 from CORE.retention import RetentionError, destruction_date_for_file
 from CORE.roles import DB_ADMIN
+from CORE.secure_erase import shred_file
 
 if TYPE_CHECKING:  # pragma: no cover
     from DB.db_manager import DBManager
@@ -522,6 +523,13 @@ def purge_file(
     profil değişmiş ya da dosya oraya süpürmeyle düşmüş olabilir. Geri
     alınamayan işlemde kontrolü tekrarlamak ucuz, atlamak pahalıdır.
 
+    Diskten silme B-134 ile `CORE.secure_erase.shred_file()`'a taşındı —
+    bkz. o fonksiyonun docstring'i. Çıplak `unlink()`'in aksine dosya
+    ÖNCE rastgele baytlarla (varsayılan 3 tur) üzerine yazılıyor, SONRA
+    kısaltılıp siliniyor; "kalıcı" sözü artık yalnızca DB kaydı için değil
+    diskteki içerik için de tutuluyor (HDD'de — SSD sınırı için bkz.
+    SECURITY.md §4.29).
+
     Raises:
         EarlyDeletionBlocked: gereken onay yoksa (dosya SİLİNMEZ).
     """
@@ -544,11 +552,9 @@ def purge_file(
 
     if filepath:
         try:
-            path = Path(filepath)
-            if path.exists():
-                path.unlink()
+            shred_file(Path(filepath))
         except OSError as exc:
-            logger.warning("Dosya diskten silinemedi %s: %s", filepath, exc)
+            logger.warning("Dosya diskten güvenli silinemedi %s: %s", filepath, exc)
 
     db.execute("DELETE FROM files WHERE id = ?", (file_id,))
     _dequeue(db, queue_id)
@@ -677,6 +683,16 @@ def purge_expired_file(
 
     İstisna FIRLATMIYOR: iki çağıran da döngü içinde ve tek bir dosyanın
     hatası kalanları durdurmamalı. Hatalar günlüğe yazılıyor.
+
+    Diskten silme B-134 ile `CORE.secure_erase.shred_file()`'a taşındı
+    (bkz. `purge_file()`'ın docstring'i, aynı gerekçe). Performans notu:
+    bu fonksiyon `sweep_retention_expired()`'ın döngüsünden ÇOKLU dosya
+    için art arda çağrılabiliyor — her çağrı artık 3 tam üzerine-yazma
+    turu (dosya boyutuyla orantılı) ekliyor. Bugün senkron ve arka plan
+    göstergesiz çalışıyor; çok sayıda büyük dosyanın AYNI süpürme
+    turunda süresi dolarsa zamanlayıcı tik'i uzayabilir. İlerleme
+    çubuğu/arka plana alma bu turda EKLENMEDİ — BACKLOG B-134'e not
+    düşüldü.
     """
     if is_retention_protected(db, file_id):
         row = db.fetchone("SELECT filename FROM files WHERE id = ?", (file_id,))
@@ -709,14 +725,12 @@ def purge_expired_file(
 
     if yol:
         try:
-            path = Path(yol)
-            if path.exists():
-                path.unlink()
+            shred_file(Path(yol))
         except OSError as exc:
             # Dosya silinemese bile DB kaydı temizleniyor: aksi hâlde satır
             # her turda yeniden denenir ve kullanıcı süresi dolmuş bir
             # dosyayı listede görmeye devam ederdi.
-            logger.warning("Dosya diskten silinemedi %s: %s", yol, exc)
+            logger.warning("Dosya diskten güvenli silinemedi %s: %s", yol, exc)
 
     with db.system_write():
         db.execute("DELETE FROM files WHERE id = ?", (file_id,))

@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from DB.migrations import AUDIT_LOG_GUARD_TRIGGERS
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
@@ -46,6 +48,19 @@ except ImportError as _exc:  # pragma: no cover — ortama bağlı
 
 _HWID = "AUDIT-VIEW-TEST"
 _KEY = b"K" * 32
+
+
+def _guard_kaldir(db) -> None:
+    """
+    B-132: `audit_log` artık DB-seviyesi DELETE/UPDATE tetikleyicileri
+    taşıyor (`DB/migrations.py::_m27_audit_log_immutable`). Bu dosyadaki
+    iki test bilerek ham `UPDATE`/`DELETE` ile kurcalama simüle ediyor —
+    bunun için önce tetikleyicileri kaldırmak (gerçek bir saldırganın da
+    yapması gereken şey) gerekiyor.
+    """
+    for ad in AUDIT_LOG_GUARD_TRIGGERS:
+        db.conn.execute(f"DROP TRIGGER IF EXISTS {ad}")
+    db.conn.commit()
 
 
 @pytest.fixture(scope="module")
@@ -249,6 +264,7 @@ def test_BILEREK_kirilmis_halka_KOPUK_gosterilir_ve_verify_ile_TUTARLI(
     for i in range(5):
         db.log(f"file_added_{i}", detail=f"kayit-{i}")
 
+    _guard_kaldir(db)
     kurban = db.fetchone(
         "SELECT id FROM audit_log WHERE action = 'file_added_2'"
     )["id"]
@@ -304,6 +320,7 @@ def test_gecmis_zincir_disi_kayit_KAPSAM_DISI_gosterilir(gorunum: AuditLogView, 
     """
     from CORE.audit_chain import CHAIN_START_SETTING, ensure_chain_started
 
+    _guard_kaldir(db)
     db.execute("DELETE FROM audit_log")
     db.execute("DELETE FROM settings WHERE key = ?", (CHAIN_START_SETTING,))
     db.conn.execute(

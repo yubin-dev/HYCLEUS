@@ -13,6 +13,8 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from DB.migrations import AUDIT_LOG_GUARD_TRIGGERS
+
 from CORE.disposal import LABEL_IMHA, move_to_imha, sweep_retention_expired
 from CORE.inventory import (
     COLUMN_HEADERS,
@@ -126,6 +128,13 @@ class TestRaporIcerigi:
     def test_son_islem_audit_logdan(self, db, tmp_path):
         fid, _ = _mk_file(db, tmp_path)
         db.log("file_added", target_type="file", target_id=fid)
+        # B-132: DB-seviyesi tetikleyicileri kaldırmadan bu UPDATE'ler
+        # artık reddedilir (DB/migrations.py::_m27_audit_log_immutable) —
+        # burada gerçek bir kurcalama sınanmıyor, yalnızca test kolaylığı
+        # için zaman damgası geriye alınıyor.
+        for ad in AUDIT_LOG_GUARD_TRIGGERS:
+            db.conn.execute(f"DROP TRIGGER IF EXISTS {ad}")
+        db.conn.commit()
         db.execute(
             "UPDATE audit_log SET timestamp = ? WHERE target_id = ?",
             ("2026-03-01T09:00:00Z", fid),

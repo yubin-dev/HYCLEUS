@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from DB.migrations import AUDIT_LOG_GUARD_TRIGGERS
+
 from CORE.audit_chain import write_anchor
 from CORE.audit_report import (
     DenetimSatiri,
@@ -40,8 +42,21 @@ def _kayitlar(db, n: int = 5) -> None:
         db.log("test_action", detail=f"n={i}")
 
 
+def _guard_kaldir(db) -> None:
+    """
+    B-132: `audit_log` artık DB-seviyesi DELETE/UPDATE tetikleyicileri
+    taşıyor (`DB/migrations.py::_m27_audit_log_immutable`) — ham
+    `UPDATE`/`DELETE` ile kurcalama simüle etmeden önce kaldırılmaları
+    gerekiyor (gerçek bir saldırganın da yapması gereken şey).
+    """
+    for ad in AUDIT_LOG_GUARD_TRIGGERS:
+        db.conn.execute(f"DROP TRIGGER IF EXISTS {ad}")
+    db.conn.commit()
+
+
 def _zinciri_kir(db) -> int:
     """Bir kaydın detayını doğrudan değiştirir — hash artık tutmaz."""
+    _guard_kaldir(db)
     satir = db.fetchone(
         "SELECT id FROM audit_log ORDER BY id LIMIT 1 OFFSET 2"
     )
@@ -121,6 +136,7 @@ def test_zincir_saglam_cipa_uyusmuyorsa_ayirt_ediliyor(db, cipa):
     _kayitlar(db)
     write_anchor(db, "test", path=cipa)
     # Çıpalanan son kaydı sil — zincir kendi içinde tutarlı kalır.
+    _guard_kaldir(db)
     son = db.fetchone("SELECT MAX(id) AS m FROM audit_log")["m"]
     db.conn.execute("DELETE FROM audit_log WHERE id = ?", (son,))
     db.conn.commit()

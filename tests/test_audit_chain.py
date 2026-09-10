@@ -6,8 +6,20 @@ zinciri atlayarak INSERT etmek, kuyruğu kesmek. Sağlam zincirin doğrulanması
 kolay kısım; asıl soru kırılmanın DOĞRU NOKTADA raporlanıp raporlanmadığı.
 
 Kurcalama her yerde `db.conn.execute()` ile, yani `append_entry()` yolunu
-atlayarak yapılıyor — diske erişimi olan bir saldırganın yapacağı şeyin
-birebir aynısı.
+atlayarak yapılıyor.
+
+B-132 GÜNCELLEMESİ — kurcalama artık İKİ ADIM
+-----------------------------------------------
+`DB/migrations.py::_m27_audit_log_immutable()` `audit_log`'a DB-seviyesi
+DELETE/UPDATE tetikleyicileri ekledi — sıradan bir `db.conn.execute("DELETE
+...")` artık HİÇBİR bağlantıdan geçmiyor (bkz. o göçün docstring'i). Bu
+dosyanın testleri hâlâ "verify_audit_chain()'in KENDİSİ bir kurcalamayı
+doğru raporluyor mu" sorusunu soruyor — artık bu senaryo saldırganın
+tetikleyicileri de (bir `writable_schema` sınıfı saldırıyla) önceden
+kaldırmış olmasını varsayıyor. `_guard_tetikleyicilerini_kaldir` (autouse)
+bunu HER testin başında simüle ediyor; tetikleyicilerin KENDİSİNİN
+GERÇEKTEN engellediğini sınayan testler ayrı bir dosyada
+(`tests/test_audit_log_immutable.py`) — orada bu fixture YOK.
 """
 from __future__ import annotations
 
@@ -16,6 +28,8 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+
+from DB.migrations import AUDIT_LOG_GUARD_TRIGGERS
 
 from CORE.audit_chain import (
     CHAIN_START_SETTING,
@@ -47,6 +61,22 @@ from CORE.audit_chain import (
 
 
 # ── Yardımcılar ───────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _guard_tetikleyicilerini_kaldir(db):
+    """
+    B-132: bu dosyanın TÜM testleri ham `conn.execute()` ile kurcalama
+    simüle ediyor (bkz. modül docstring'i) — artık bunun için önce
+    `_m27_audit_log_immutable()`'ın DB-seviyesi tetikleyicilerini
+    kaldırmak gerekiyor (gerçek bir saldırganın da yapması gereken şey).
+    Tek bir yerden yapılıyor ki dosyadaki ~25 ayrı DELETE/UPDATE çağrı
+    noktası tek tek değiştirilmesin.
+    """
+    for ad in AUDIT_LOG_GUARD_TRIGGERS:
+        db.conn.execute(f"DROP TRIGGER IF EXISTS {ad}")
+    db.conn.commit()
+    return db
 
 
 def _seed_users(db) -> list[int]:
