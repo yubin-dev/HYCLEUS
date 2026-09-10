@@ -378,6 +378,64 @@ def test_login_dialog_totp_penceresi_dar_tutuluyor() -> None:
     )
 
 
+def test_dosya_erisimi_totp_kapilari_pencere_ve_algoritma_sertlestirilmis() -> None:
+    """
+    MC-Kataloğu M039/M045: `main_window_bulk.py`, `main_window_tree.py`,
+    `main_window_files.py` içindeki toplu indirme / önizleme / erişim TOTP
+    kapıları, `login_dialog.py`'nin aksine (bkz. bir üstteki test)
+    KAYNAKTAN sabitlenmiş değildi — `valid_window` genişletilse VEYA
+    `.verify()`'a `digest=` ile alternatif bir algoritma (ör. SHA256) EK
+    bir kabul yolu olarak eklense hiçbir test fark etmiyordu.
+
+    Mutasyon-kanıt: `main_window_bulk.py`'de `valid_window=1`→`3`
+    yapılınca (M039) VE ayrı olarak `.verify(code, valid_window=1)`
+    çağrısına `or pyotp.TOTP(secret, digest=sha256).verify(...)`
+    eklenince (M045) test_bulk_download_lock.py + test_authz_
+    invariants.py + test_totp_gorunen_ad.py + test_kayit_ekrani.py +
+    test_pin_rotation_ui.py + test_b058_ilk_kurulum.py + test_kayit_
+    kurumsal_referans.py + test_usb_weak_binding_ui.py (78 test) M045'i
+    HİÇ yakalamadı.
+    """
+    kok = Path(__file__).resolve().parent.parent / "UI"
+    for dosya_adi in ("main_window_bulk.py", "main_window_tree.py", "main_window_files.py"):
+        kaynak = (kok / dosya_adi).read_text(encoding="utf-8")
+        agac = ast.parse(kaynak)
+
+        totp_cagrilari = [
+            n for n in ast.walk(agac)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "TOTP"
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "pyotp"
+        ]
+        assert len(totp_cagrilari) == 1, (
+            f"{dosya_adi}'de {len(totp_cagrilari)} adet pyotp.TOTP(...) "
+            "çağrısı var — TOTP doğrulaması için TEK, açık algoritmalı bir "
+            "yol bekleniyor (birden fazlası, bir fallback/OR yolu eklendiğine "
+            "işaret edebilir)."
+        )
+        digest_kw = [kw for kw in totp_cagrilari[0].keywords if kw.arg == "digest"]
+        assert not digest_kw, (
+            f"{dosya_adi}'de pyotp.TOTP(..., digest=...) açıkça geçiliyor — "
+            "varsayılan SHA1 dışında bir algoritma EK kabul yolu açabilir."
+        )
+
+        pencereler = [
+            kw.value.value
+            for n in ast.walk(agac)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "verify"
+            for kw in n.keywords
+            if kw.arg == "valid_window" and isinstance(kw.value, ast.Constant)
+        ]
+        assert pencereler, f"{dosya_adi}'de valid_window= geçen bir .verify() çağrısı bulunamadı"
+        assert all(p == 1 for p in pencereler), (
+            f"{dosya_adi}'de valid_window=1 dışında bir değer var: {pencereler}"
+        )
+
+
 def test_migration_eski_global_sir_ilk_onayli_kullaniciya_devrediyor(
     db, kasa_dizini,
 ) -> None:

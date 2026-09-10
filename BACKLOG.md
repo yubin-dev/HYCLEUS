@@ -11038,3 +11038,67 @@ M038 — ★ yok bu blokta), Eşdeğer mutant 2 (M027,M028), Kapsam dışı 1
 (M037). Üretim kodunda VE testlerde hiçbir değişiklik yapılmadı — Shamir
 katmanı (muhtemelen B-126 Bölüm 3'ün mirası) bu 12 mutasyonun hiçbirinde
 gerçek bir boşluk göstermedi; kod tabanının bu köşesi doygun.
+
+### Bölüm 4 (MC-M039–MC-M048) — TOTP (`UI/login_dialog.py`, `UI/main_window_bulk.py`, `UI/main_window_tree.py`, `UI/main_window_files.py`, `CORE/secret_store.py`)
+
+TOTP doğrulaması CORE'da değil, UI katmanında yaşıyor: `login_dialog.py`
+(giriş) + 3 ayrı dosya erişim kapısı (`main_window_bulk.py` toplu indirme,
+`main_window_tree.py`, `main_window_files.py`) her biri KENDİ
+`pyotp.TOTP(secret).verify(code, valid_window=1)` çağrısını taşıyor —
+paylaşılan bir yardımcı fonksiyon yok, 4 kopya. `login_dialog.py`
+B-126 senaryo 94'ten beri kaynak-AST testiyle (`test_login_dialog_totp_
+penceresi_dar_tutuluyor`) sabitlenmişti; diğer 3 dosya sabitlenmemişti.
+
+Test alt kümesi: `test_authz_invariants.py` + `test_totp_gorunen_ad.py`
++ `test_kayit_ekrani.py` + `test_pin_rotation_ui.py` + `test_bulk_
+download_lock.py` + `test_b058_ilk_kurulum.py` + `test_kayit_kurumsal_
+referans.py` + `test_usb_weak_binding_ui.py` (baseline 78), ayrıca M046
+için `test_secret_store.py` + `test_tpm_sealing.py` + `test_secret_
+migration.py` (baseline 115).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M039 | Pencere ±1→±3 (`valid_window` 1→3) | **Survived-Fixed** ⚠️ | `login_dialog.py`'de Killed (mevcut AST testi) — ama `main_window_bulk.py`/`main_window_tree.py`/`main_window_files.py`'de SURVIVED: bu 3 dosyanın hiçbiri kaynaktan sabitlenmemişti. Yeni test: `test_dosya_erisimi_totp_kapilari_pencere_ve_algoritma_sertlestirilmis` |
+| MC-M040 | Kullanılmış token kaydı kaldır (replay) | **Kapsam dışı (bu tur için)** | Gerçek, ÖNCEDEN VAR OLAN boşluk — kod tabanında (grep doğrulandı) HİÇ replay-önleme/kullanılmış-kod kaydı mekanizması yok, `login_dialog.py` dahil hiçbir TOTP kapısında. Üretim kodu değişikliği (kullanılmış kod önbelleği/DB kaydı) gerektiriyor — bu turun kapsamı dışında → B-141 |
+| MC-M041 | `time_step` 30→60 | **Killed** | `interval=60` eklenince enrollment (period=30 varsayan `provisioning_uri`) ile verify uyuşmuyor, doğru kod bile reddediliyor — `test_bulk_download_lock.py`'nin 2 fonksiyonel testi kırılıyor |
+| MC-M042 | Lokal saat, UTC normalizasyonu yok | **Kapsam dışı** | Hedef kod yok: hiçbir `.verify()` çağrısı `for_time=` geçmiyor (grep doğrulandı) — pyotp'nin varsayılan UTC-epoch (`time.time()`) davranışı hiç ezilmiyor |
+| MC-M043 | Kod karşılaştırma `==` (timing) | **Kapsam dışı** | Hedef kod yok: HYCLEUS hiçbir yerde TOTP kodunu elle karşılaştırmıyor (grep doğrulandı) — tamamı `pyotp.TOTP(...).verify()`'e devrediliyor, kütüphane içinde zaten `hmac.compare_digest` kullanıyor |
+| MC-M044 | Hane 6→4 (`digits=4`) | **Killed** | `main_window_bulk.py`'de `digits=4` eklenince (hem UI'daki `len(code)==6` ön-kontrolü hem üretilen/beklenen kod uzunluğu uyuşmuyor) 2 fonksiyonel test kırılıyor |
+| MC-M045 | Hem SHA1 hem SHA256 token kabul (çift pencere/algoritma) | **Survived-Fixed** ⚠️ | Gerçek bulgu: `main_window_bulk.py`'ye `... or pyotp.TOTP(secret, digest=sha256).verify(...)` eklenince 78 testin HİÇBİRİ fark etmedi — doğru kod hâlâ SHA1 dalından geçiyordu, ek kabul yolunun varlığını hiçbir test sınamıyordu. MC-M039 ile aynı yeni testte (`test_dosya_erisimi_totp_kapilari_pencere_ve_algoritma_sertlestirilmis`) kapatıldı — `pyotp.TOTP(` çağrı SAYISININ 1 olduğunu VE `digest=` kwarg'ı olmadığını doğruluyor |
+| MC-M046 | TOTP secret mühürlü değil, metadata'da plaintext | **Killed** | `store_totp_secret_for_hwid()` TPM mühürlemeyi (`belki_muhurle`) atlayıp doğrudan `_keyring.set_password` çağırınca `test_share_2_DISI_cagri_yerinde_reseal_TETIKLENMIYOR_TAZE_yazimda` fark ediyor — taze TOTP yazımının mühürlü olduğunu doğrudan denetliyor |
+| MC-M047 ★ | TPM varsa TOTP'yi tamamen atla (auth downgrade) | **Kapsam dışı** | Hedef kod yok: 4 TOTP kapısının (`login_dialog.py` + 3 erişim dosyası) HİÇBİRİNDE "tpm" kelimesi bile geçmiyor (grep doğrulandı) — TPM yalnızca `secret_store.py`'nin dahili mühürleme katmanında, TOTP doğrulama akışıyla hiç kesişmiyor |
+| MC-M048 | Drift toleransı `abs(now-t) < 300s` (elle) | **Kapsam dışı** | Hedef kod yok: hiçbir yerde elle yazılmış bir zaman-farkı toleransı yok (grep doğrulandı) — TEK pencere mekanizması pyotp'nin `valid_window=1`'i (MC-M039'da zaten test edildi) |
+
+**Bölüm 4 özet:** Killed 3 (M041,M044,M046), Survived-Fixed 2 (M039,M045
+— aynı yeni testte birleşik, gerçek ve orta şiddetli bulgular: 3/4 TOTP
+kapısı kaynaktan sertleştirilmemişti), Kapsam dışı 5 (M042,M043,M047★,
+M048 — hedef kod hiç yok; M040 — gerçek ama önceden var olan, üretim
+kodu gerektiren boşluk → B-141). Yeni test: `tests/test_authz_
+invariants.py` (+1: `test_dosya_erisimi_totp_kapilari_pencere_ve_
+algoritma_sertlestirilmis`, 3 dosyayı `login_dialog.py` ile aynı
+sıkılıkta AST ile denetliyor). Üretim kodunda net değişiklik yok.
+test_authz_invariants.py: 23 passed (22+1 yeni test).
+
+## B-141 — TOTP kodlarında replay-önleme yok (`UI/login_dialog.py` + 3 dosya-erişim TOTP kapısı)
+
+**Durum:** Açık — düşük-orta öncelik (gerçek tasarım boşluğu, üretim kodu
+değişikliği gerektiriyor — bu mutasyon turunun kapsamı dışında).
+**Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M040) — kod incelemesiyle,
+mutasyona gerek kalmadan: şu anki kod ZATEN bu durumda.
+
+`valid_window=1` (±30 sn) bir TOTP kodunun kendi 30 saniyelik penceresi
+DIŞINDA da (önceki/sonraki adım) kabul edilmesi demek — yani AYNI kod,
+yakalanıp tekrar oynatılırsa (replay), geçerliliği süresince (pratikte
+~30-90 sn) BİRDEN FAZLA kez kabul edilebilir. Kod tabanında (4 TOTP
+kapısının hiçbirinde) "bu kod zaten kullanıldı" diye bir kayıt/önbellek
+mekanizması yok.
+
+**Öneri:** Başarılı bir TOTP doğrulamasından sonra o kodu (hwid + kod +
+zaman penceresi anahtarıyla) kısa ömürlü bir önbelleğe/DB tablosuna
+yazıp, aynı kodun aynı pencerede İKİNCİ kez kullanılmasını reddetmek —
+klasik TOTP replay-önleme deseni. 4 çağrı noktasının hepsini kapsayan
+paylaşılan bir yardımcı fonksiyon (`CORE`'a taşınmış, tek bir
+`verify_totp()`) hem bu boşluğu kapatır hem de 4 kopya kodun bakım
+yükünü azaltır — MC-M039/M045'in de gösterdiği gibi kopyalar birbirinden
+sessizce sapabiliyor. Bu turun kapsamı (test yazmak) dışında, ayrı bir
+görev olarak ele alınmalı.
