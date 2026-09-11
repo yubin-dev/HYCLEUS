@@ -89,6 +89,7 @@ from PySide6.QtWidgets import (
 
 from CORE.disposal import EarlyDeletionBlocked, move_to_imha
 from CORE.export import export_to_directory, format_errors
+from CORE.scanner import son_tarama_verdict
 from CORE.totp_guard import verify_totp_no_replay
 from DB.db_manager import DBManager
 
@@ -174,20 +175,32 @@ class BulkActionsMixin:
         )
         if confirm != QMessageBox.Yes:
             return
+        # B-146: taranmamış ya da temiz çıkmamış bir dosya Genel'e
+        # atlanır — seçimdeki DİĞER (temiz) dosyaların onaylanmasını
+        # engellemez.
+        db = DBManager()
+        moved_rows: list[int] = []
+        moved = skipped = 0
         try:
-            db = DBManager()
-            for fid in file_ids:
+            for row, fid in zip(rows, file_ids):
+                if son_tarama_verdict(db, fid) != "clean":
+                    skipped += 1
+                    continue
                 db.execute("UPDATE files SET label = 'Genel' WHERE id = ?", (fid,))
                 db.log("file_label_changed", target_type="file", target_id=fid,
                        detail=f"hwid={self._hwid} from=Karantina to=Genel auto=False bulk=True")
+                moved_rows.append(row)
+                moved += 1
         except Exception as exc:
             QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
             return
-        for row in sorted(rows, reverse=True):
+        for row in sorted(moved_rows, reverse=True):
             self._table.removeRow(row)
         self._refresh_live_counts()
-        QMessageBox.information(self, "Taşındı",
-                                f"{len(file_ids)} dosya Genel etiketine taşındı.")
+        mesaj = f"{moved} dosya Genel etiketine taşındı."
+        if skipped:
+            mesaj += f"\n{skipped} dosya taranmadığı/temiz çıkmadığı için atlandı."
+        QMessageBox.information(self, "Taşındı", mesaj)
 
     def _on_ctx_bulk_move_to_kritik(
         self, rows: list[int], file_ids: list[int], labels: list[str],

@@ -138,6 +138,31 @@ def scan_by_hash(sha256: str, file_id: int | None = None) -> ScanResult:
     return result
 
 
+def son_tarama_verdict(db: "DBManager", file_id: int) -> str | None:
+    """
+    Dosyanın EN SON tarama sonucunun verdict'i — `quarantine.reason`'daki
+    JSON'dan (bkz. `_save_to_db`). Dosya HİÇ taranmadıysa (hiç `quarantine`
+    satırı yoksa, ya da `reason` ayrıştırılamıyorsa) `None` döner — bu,
+    "clean" ile KARIŞTIRILMAMALI (B-146): taranmamış bir dosya temiz
+    SAYILMAZ.
+
+    `CORE/file_queries.py`'nin `scan_reason` alt sorgusuyla AYNI kaynağı
+    (en son `quarantined_at`) okuyor — ikinci bir sorgu şekli İCAT
+    EDİLMEDİ.
+    """
+    row = db.fetchone(
+        "SELECT reason FROM quarantine WHERE file_id = ?"
+        " ORDER BY quarantined_at DESC LIMIT 1",
+        (file_id,),
+    )
+    if row is None or not row["reason"]:
+        return None
+    try:
+        return json.loads(row["reason"]).get("verdict")
+    except (TypeError, ValueError):
+        return None
+
+
 # Tanılama --------------------------------------------------------------------
 
 def _rapor(backend: ScannerBackend) -> list[str]:

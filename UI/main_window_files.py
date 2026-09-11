@@ -52,7 +52,7 @@ from CORE.folders import (
     assign_file_to_folder,
 )
 from CORE.disposal import EarlyDeletionBlocked, move_to_imha
-from CORE.scanner import ScanResult
+from CORE.scanner import ScanResult, son_tarama_verdict
 from DB.db_manager import DBManager
 
 from CORE.secret_store import load_totp_secret_for_hwid
@@ -421,6 +421,20 @@ class FileActionsMixin:
         if file_id is None:
             QMessageBox.warning(self, "Taşıma Hatası", "Dosya kimliği bulunamadı.")
             return
+        # B-146: "Onaylama" (Karantina → Genel) yönü, dosyayı sıradan
+        # erişime açıyor — tarama hiç yapılmamışsa ya da temiz çıkmamışsa
+        # engellenir. "Reddetme" (→ İmha) yönü zaten daha kısıtlayıcıya
+        # gidiyor, buraya dahil değil (bkz. modül docstring'i/BACKLOG B-146).
+        if new_label == "Genel":
+            verdict = son_tarama_verdict(DBManager(), file_id)
+            if verdict != "clean":
+                QMessageBox.warning(
+                    self, "Onaylanamadı",
+                    "Dosya temiz olarak taranmadan Genel'e taşınamaz.\n"
+                    f"Mevcut tarama durumu: {verdict or 'hiç taranmadı'}.\n"
+                    "Önce '🔍 Tara' ile dosyayı tarayın.",
+                )
+                return
         label_display = "Genel" if new_label == "Genel" else "İmha Odası"
         if not auto:
             fname_item = self._table.item(row, 0)
