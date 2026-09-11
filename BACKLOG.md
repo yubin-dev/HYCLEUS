@@ -9010,28 +9010,70 @@ bulgu değil):**
 
 | Madde | Konu (özet) | Durum |
 |---|---|---|
-| B-127 | DEK için zayıf/sıfır anahtar denetleyicisi yok | Açık |
+| B-127 | DEK için zayıf/sıfır anahtar denetleyicisi yok | **Kapalı** |
 | B-128 | `decrypt_file()` için bellek/boyut tavanı yok | Açık |
 | B-129 | Bandit B608 susturması + semgrep'te SQLi kuralı yok | Açık |
-| B-130 | Oturum `master_key`'i bellekte sıfırlanmıyor | Açık |
+| B-130 | Oturum `master_key`'i bellekte sıfırlanmıyor | **Kapalı** |
 | B-131 | `audit_log.action` için enum/allowlist doğrulaması yok | Açık |
 | B-132 | `audit_log` her rol tarafından `DELETE` edilebiliyordu | **Kapalı** |
 | B-133 | `register_new_user()` username doğrulaması yok | Açık |
 | B-134 | İmha Odası kalıcı silme shred değil düz `unlink()` kullanıyordu | **Kapalı** |
-| B-136 | `token_kayitlarini_getir()` LIKE deseni HWID'deki `_`/`%` ile çarpışabilir | Açık |
+| B-136 | `token_kayitlarini_getir()` LIKE deseni HWID'deki `_`/`%` ile çarpışabilir | **Kapalı** |
 | B-137 | `scan_by_hash()` DB hatasını sessizce yutuyor | Açık |
 | B-138 | Vault metadata'sının KEK/hash türevi taşımadığını garanti eden yapısal test yok | Açık |
 | B-139 ★ | `kek`/`master_key` bellekte zeroize edilmiyordu | **Kapalı** |
 | B-140 ★ | Dosya şifreleme per-file HKDF subkey kullanmıyordu | **Kapalı** |
-| B-141 | TOTP kodlarında replay-önleme yok | Açık |
+| B-141 | TOTP kodlarında replay-önleme yok | **Kapalı** |
 | B-142 | Vault dosyası atomic/dayanıklı yazılmıyordu | **Kapalı** |
 | B-143 | Kapanışta bekleyen toplu-yükleme worker'ları için `waitForDone()` yoktu | **Kapalı** |
 | B-144 | Kurtarma parçası ekranında shoulder-surfing blur'u yoktu | **Kapalı** |
-| B-145 | Üç "İmha Odası'na taşı" UI giriş noktası `move_to_imha()`'yı çağırmıyor (erken-silme onayı UI'dan ulaşılamıyor) | Açık |
-| B-146 | Karantina "Onayla → Genel" eylemi tarama durumunu hiç kontrol etmiyor | Açık |
+| B-145 | Üç "İmha Odası'na taşı" UI giriş noktası `move_to_imha()`'yı çağırmıyor (erken-silme onayı UI'dan ulaşılamıyor) | **Kapalı** |
+| B-146 | Karantina "Onayla → Genel" eylemi tarama durumunu hiç kontrol etmiyor | **Kapalı** |
 
-19 madde, 7'si kapalı (B-132, B-134, B-139, B-140, B-142, B-143, B-144),
-12'si açık — karar/uygulama bekliyor.
+19 madde, 13'ü kapalı (B-127, B-130, B-132, B-134, B-136, B-139, B-140,
+B-141, B-142, B-143, B-144, B-145, B-146 — 2026-09-11'de altısı [B-127,
+B-130, B-136, B-141, B-145, B-146] tek bir oturumda kapatıldı), 6'sı
+açık (B-128, B-129, B-131, B-133, B-137, B-138) — karar/uygulama
+bekliyor.
+
+### 2026-09-11 kapatma turu — 6 güvenlik maddesi, sırayla
+
+Kullanıcı isteğiyle: B-127, B-130, B-136, B-141, B-145, B-146 sırayla
+kapatıldı — her biri için önce gerçek davranış kanıtlandı (mutasyon ya
+da doğrudan deney), sonra düzeltildi, sonra mutasyon-kanıtlı bir test
+yazılıp KIRMIZI (düzeltme geri alınmış/no-op'a çevrilmiş haliyle) →
+YEŞİL (gerçek kod) olarak doğrulandı, her madde AYRI bir commit'e
+girdi. Akademik tam kapsama hedeflenmedi — yalnızca "gerçek riski
+kapat" (ör. B-127'de istatistiksel zayıf-anahtar testleri BİLEREK
+yapılmadı, yalnızca ucuz/bariz dejenere anahtar kontrolü eklendi).
+
+**Beklenmeyen yan etkiler (üçü de düzeltildi, ayrı ele alınmadı):**
+- B-127'nin dejenere-anahtar kontrolü 7 test dosyasının `b"K"*32` gibi
+  tek-tekrarlayan-bayt test-anahtarı kalıbını kırdı — hepsi iki-baytlı
+  bir kalıba (`b"K"*16+b"k"*16`) çevrildi, aynı commit içinde.
+- B-130/B-145'in `self._user_id`/`user_id=` geçişleri, `users` tablosunda
+  karşılığı olmayan varsayılan `user_id=1` kullanan hafif test
+  fixture'larında `audit_log.user_id`'nin FK kısıtını ihlal etti —
+  üç UI giriş noktasından `user_id=` YAZILMASINDAN vazgeçildi (yalnızca
+  `approved_by` kalıyor, o bir FK değil salt okunur bir sorgu); üretim
+  davranışı DEĞİŞMEDİ çünkü eski kod da bu alanı hiç yazmıyordu.
+- B-145'in `move_folder_to_imha()`/bulk-imha refactor'ü, eski çağıranların
+  kendi denetim-detayı etiketlerini (`"via=folder folder_id=N"`,
+  `"bulk=True"`) kaybediyordu — `move_to_imha()`'ya yeni bir `kaynak=`
+  parametresi eklenerek korundu.
+
+Tam suite bu altı maddenin TAMAMI bittikten sonra bir kez çalıştırıldı
+(bkz. bu dosyanın sonundaki commit geçmişi) — İLK çalıştırmada iki
+alakasız-görünen ama gerçek düzenleme gerektiren bulgu çıktı: `CORE/
+totp_guard.py`'nin `DBManager` tip ipucu `ruff`'ın F821'ini (tanımsız
+ad) tetikliyordu (string tırnaklı ama içe aktarılmamış — `CORE/
+disposal.py`'nin zaten kurduğu `TYPE_CHECKING` deseni izlenerek
+düzeltildi) ve yeni modül `main.py::_SELFTEST_MODULLERI`'ne hiç
+eklenmemişti (`tests/test_packaging.py`'nin kendi regresyon denetimi
+yakaladı). İkisi de ayrı bir commit'te (`547206b`) düzeltildi. İKİNCİ
+(son) çalıştırma: **3490 → 3522 passed, 4 skipped, 0 failed** — 32 yeni
+test, sıfır regresyon. Tüm commit'ler YEREL kaldı, push edilmedi
+(kullanıcının kendi kararı).
 
 ### Diğer, ayrı turlar (yukarıdaki 300'lük toplama dahil değil)
 
@@ -9978,15 +10020,21 @@ ayrı B-NNN'ye not düşüldü).
 
 ## B-127 — DEK/anahtar için "zayıf/sıfır anahtar" denetleyicisi yok (B-126 senaryo 15)
 
-**Durum:** Açık — karar bekliyor (yeni güvenlik kontrolü, kapsam dışı).
-**Öncelik:** Düşük (DEK'ler yalnızca `CORE.crypto.generate_key()` =
-`os.urandom(32)` ile üretiliyor; kullanıcı girdisinden DOĞRUDAN gelmiyor,
-bu yüzden `b"\x00"*32` gibi dejenere bir anahtar yalnızca `os.urandom`'un
-kendisinin KATASTROFİK şekilde bozulması ya da saklanan anahtar
-materyalinin (Shamir payları/TPM mührü) yanlış birleştirilmesi/çözülmesi
-durumunda ortaya çıkabilir — ikisi de kendi başına ayrı ve daha ciddi bir
-arıza belirtisi olurdu).
+**Durum:** KAPANDI (2026-09-11) — `CORE/crypto.py::_degenere_anahtar_mi()`
+eklendi (`len(set(key)) == 1`, yalnızca tüm sıfır/tüm 0xFF/herhangi bir
+tekrarlayan bayt — istatistiksel bir zayıflık testi DEĞİL, bilerek dar
+tutuldu) ve `encrypt_file`/`verify_file`/`decrypt_file`'ın üçünde de
+32-byte uzunluk kontrolünden hemen sonra çağrılıyor. Mutasyon-kanıtlı
+test: `tests/test_crypto.py::test_dejenere_32_byte_anahtar_reddedilir`
+(tüm sıfır/tüm 0xFF/tekrarlayan bayt × üç fonksiyon).
 **Bulundu:** 2026-09-10 (B-126 mutasyon testi turu).
+
+**Yan etki — test fixture'ları düzeltildi:** Bu kontrol, 7 test
+dosyasının `_KEY = b"K" * 32` (ve benzeri tek-tekrarlayan-bayt) kalıbını
+kırdı — geniş, önceden bilinmeyen bir kullanım kalıbıydı. Hepsi
+`b"K"*16 + b"k"*16` gibi iki-baytlı, dejenere OLMAYAN ama "yanlış
+anahtar" testlerinin ihtiyaç duyduğu ayırt ediciliği koruyan bir kalıba
+çevrildi (bkz. `git log` — commit `089eff2`).
 
 `CORE/crypto.py::encrypt_file/verify_file/decrypt_file` anahtarın 32 byte
 olup olmadığını kontrol ediyor ama İÇERİĞİNİN dejenere (tüm sıfır, tüm
@@ -9994,9 +10042,7 @@ olup olmadığını kontrol ediyor ama İÇERİĞİNİN dejenere (tüm sıfır, 
 olarak bilinen bir "zayıf anahtar" sınıfı YOK (DES'in aksine) — yani bu
 gerçek bir kriptografik zafiyet değil, saf bir SANITY/defense-in-depth
 kontrolü olurdu ("anahtar bu kadar dejenereyse bir yerde ciddi bir hata
-var, işlemi durdur"). Eklenip eklenmeyeceği ve eşiğin ne olacağı
-("tamamen sıfır" mı, yoksa genel bir entropi testi mi) bir ürün/güvenlik
-kararı — bu turda YAZILMADI.
+var, işlemi durdur").
 
 ## B-128 — `decrypt_file()` için dosya boyutu / bellek tavanı yok (B-126 senaryo 19)
 
@@ -10174,7 +10220,19 @@ gerçek bir eksik kontrol, B-130'a yazıldı, kod bu turda YAZILMADI).
 
 ## B-130 — Oturum master_key'i (`HycleusWindow._key`) USB çıkarıldığında/kilitte bellekte sıfırlanmıyor
 
-**Durum:** Açık — karar bekliyor (yeni güvenlik kontrolü + olası refactor, kapsam dışı).
+**Durum:** KAPANDI (2026-09-11) — `self._key` artık `bytearray` (bkz.
+`UI/main_window.py::__init__`); `UI/main_window_lock.py::_lock()`
+`zero_bytearray()` ile sıfırlıyor. Üç PIN'li açılış yolu (hareketsizlik/
+manuel/USB-yeniden-takma) artık `read_vault_role()` yerine `open_vault()`
+çağırıp döndürdüğü `master_key`'i yeni `_refill_session_key()` yardımcı
+metoduyla AYNI bytearray nesnesine geri dolduruyor. `_trigger_usb_reauth()`
+için bu ayrıca BAĞIMSIZ bir ikinci düzeltme oldu: eskiden USB TAMAMEN
+değişince bile `self._key` hiç güncellenmiyordu (oturum sessizce ESKİ
+vault'un anahtarında kalıyordu) — artık doğru vault'un anahtarına geçiyor.
+Mutasyon-kanıtlı testler: `tests/test_lock_overlay.py::test_lock_
+gercekten_self_key_i_sifirliyor` ve `::test_trigger_usb_reauth_basarili_
+olunca_self_key_yeni_vaultin_anahtarina_gunceleniyor` (gerçek vault,
+gerçek PIN, farklı HWID).
 **Öncelik:** Orta (bellek dökümü/adli erişim senaryosu — SECURITY.md §3'ün
 zaten kabul ettiği bir sınırın devamı, ama azaltılabilir bir yüzey).
 **Bulundu:** 2026-09-10 (B-126 senaryo 69).
@@ -10187,14 +10245,6 @@ zaten kabul ettiği bir sınırın devamı, ama azaltılabilir bir yüzey).
 düz bellekte duruyor. `CORE/crypto.py::zero_bytearray()` yalnızca
 `CORE/export.py`'nin dosya-başına KISA ömürlü arabelleğinde kullanılıyor;
 oturum boyu yaşayan `_key` hiç bu mekanizmadan geçmiyor.
-
-Kapatmak GERÇEK bir refactor gerektiriyor: `self._key` bugün `bytes`
-(değiştirilemez, `zero_bytearray()` üzerinde ÇALIŞMAZ) — `bytearray`'e
-çevrilmesi, `CORE.crypto.encrypt_file/decrypt_file/verify_file`'a
-geçirilen her yerin buna uyarlanması ve kilitten ÇIKARKEN (PIN'le tekrar
-açılışta) anahtarın NASIL yeniden kurulacağının (yeniden `open_vault()`
-mü, yoksa bir kopyası ayrı mı tutulacak) tasarlanması gerekiyor —
-bu turda YAZILMADI, yalnızca bulgu belgelendi.
 
 Kapsam notu: SECURITY.md §3 zaten "bellek dökümü düz metin içerebilir"
 sınırını kabul ediyor (decrypt edilen DOSYA içeriği için) — bu madde
@@ -10652,7 +10702,15 @@ kırmızı→yeşil doğrulandı, sonra üretim kodu istisnasız geri alındı).
 
 ## B-136 — `CORE.usb_tokens.token_kayitlarini_getir()` LIKE deseni HWID'deki `_`/`%` ile ÇARPIŞABİLİR
 
-**Durum:** Açık — karar bekliyor (kapsam dışı, SQL değişikliği gerektiriyor).
+**Durum:** KAPANDI (2026-09-11) — `REPLACE(u.hwid, '_', '\_') ... ESCAPE
+'\'` eklendi; `_sanitize_hwid()`'in izin verdiği tek LIKE joker'i (`_`)
+artık desene girmeden önce kaçışlanıyor. `\` kaçış karakteri güvenle
+seçildi çünkü HWID charset'i (`[a-zA-Z0-9_-]`) zaten `\` içeremiyor —
+kaçış karakterinin kendisiyle çarpışma riski yok. Mutasyon-kanıtlı
+testler (yeni `tests/test_usb_tokens.py`, bu modül için önceden hiç
+dedike bir test dosyası yoktu): `USB_001` sorgusunun artık `USBX001`'in
+kaydını görmediğini, `USBX001`'in kendi sorgusunun etkilenmediğini, ve
+filtre'siz (tüm token'lar) modunun da çarpışmadığını kanıtlıyor.
 **Öncelik:** Düşük-orta (yalnızca BİLGİLENDİRME alanlarını — rol/son giriş
 görüntüsünü — etkiliyor; erişim kontrolü BUNA dayanmıyor, gerçek ince
 taneli rol vault dosyasının içinde saklanıyor, bkz. `CORE/usb_takeover.py`
@@ -11171,8 +11229,21 @@ test_authz_invariants.py: 23 passed (22+1 yeni test).
 
 ## B-141 — TOTP kodlarında replay-önleme yok (`UI/login_dialog.py` + 3 dosya-erişim TOTP kapısı)
 
-**Durum:** Açık — düşük-orta öncelik (gerçek tasarım boşluğu, üretim kodu
-değişikliği gerektiriyor — bu mutasyon turunun kapsamı dışında).
+**Durum:** KAPANDI (2026-09-11) — önerilen paylaşılan yardımcı fonksiyon
+AYNEN uygulandı: yeni `CORE/totp_guard.py::verify_totp_no_replay()`
+(hwid başına "son kullanılan adım" — `DB/migrations.py` Migration 28,
+`totp_replay_guard` tablosu) artık 4 kapının TEK ortak yolu (kayıt/
+kurulum onayı + giriş — `UI/login_dialog.py`, bulk/tekli/klasör indirme
+— `main_window_bulk/files/tree.py`). Kabul kriteri BİREBİR aynı
+(`valid_window=1`); tek fark, eşleşen adım daha önce kabul edilmişse
+reddetmesi. `tests/test_authz_invariants.py`'nin M039/M045'i yakalayan
+AST regresyon testleri artık bu tek dosyayı tarıyor VE üç UI dosyasının
+paylaşılan yolu ATLAYIP yerel bir `pyotp.TOTP(...)` çağrısı YAPMADIĞINI
+da doğruluyor. Mutasyon-kanıtlı testler: yeni `tests/test_totp_guard.py`
+— gerçek `pyotp`, aynı kodun ikinci kez reddedildiğini, gecikmeli
+replay'in de reddedildiğini, meşru sonraki-adım ilerlemesinin hâlâ
+çalıştığını, yanlış kodun replay durumunu kirletmediğini ve farklı
+hwid'lerin bağımsız olduğunu kanıtlıyor.
 **Bulundu:** 2026-09-10 (MC-Kataloğu, MC-M040) — kod incelemesiyle,
 mutasyona gerek kalmadan: şu anki kod ZATEN bu durumda.
 
@@ -11904,8 +11975,22 @@ düşüldü — kod bu turda DEĞİŞTİRİLMEDİ.
 
 ## B-145 — Üç "İmha Odası'na taşı" UI giriş noktası `CORE/disposal.py::move_to_imha()`'yı hiç çağırmıyor — erken-silme onay kapısı UI'dan ulaşılamaz
 
-**Durum:** Açık — karar bekliyor (UI'yı CORE'a bağlamak, kapsam dışı bu turda).
-**Öncelik:** Orta-düşük (veri kaybı YOK — aşağıdaki "gerçek etki" bölümüne bakın — ama gerçek bir UX/savunma-derinliği boşluğu).
+**Durum:** KAPANDI (2026-09-11) — üç girişin ÜÇÜ de artık `move_to_imha()`
+çağırıyor (`main_window_tree.py` → `CORE/folders.py::move_folder_to_imha()`
+üzerinden, o da dosya başına `move_to_imha()`'yı çağırıyor). Mevcut onay
+diyaloğu `user_confirmed=True` olarak geçiyor; `approved_by=self._user_id`
+gerçek yöneticilik `is_admin()` ile DB'den doğrulanıyor. Engellenen bir
+dosya seçimdeki/klasördeki DİĞERLERİNİN taşınmasını durdurmuyor — atlanıp
+kendi `early_disposal_blocked` denetim kaydını bırakıyor. `move_to_imha()`
+yeni bir `kaynak=` parametresi kazandı (`"bulk=True"`/`"via=folder
+folder_id=N"`) ki çağıranların mevcut denetim-etiketleri kaybolmasın.
+Mutasyon-kanıtlı testler: `tests/test_folders.py` (korumalı bir dosyanın
+yönetici-olmayan onayla atlandığını, yönetici onayıyla taşındığını,
+gerçek `retention_profiles` ile kanıtlıyor) + `tests/test_disposal.py`
+(AST: üç giriş noktasının HİÇBİRİNİN artık ham `UPDATE files SET
+label='Imha'` SQL'i yazmadığını, hepsinin `move_to_imha`/`move_folder_
+to_imha` çağırdığını doğruluyor).
+**Öncelik:** Orta-düşük (veri kaybı YOK — aşağıdaki "gerçek etki" bölümüne bakın — ama gerçek bir UX/savunma-derinliği boşluğuydu).
 **Bulundu:** 2026-09-11 (MC-Kataloğu 4. parça, MC-M181 araştırması sırasında).
 
 `CORE/disposal.py::move_to_imha()` bir dosyayı İmha Odası'na taşımadan
@@ -12001,8 +12086,20 @@ turda değiştirilmedi.
 
 ## B-146 — "Onayla → Genel'e taşı" (Karantinadan çıkarma) hiçbir tarama durumu kontrolü yapmıyor
 
-**Durum:** Açık — karar bekliyor (UI'ya yeni bir uyarı/kural eklemek, kapsam dışı bu turda).
-**Öncelik:** Orta-düşük (yalnızca yönetici erişebiliyor, bilerek tetiklenen bir eylem — ama gerçek bir savunma-derinliği boşluğu).
+**Durum:** KAPANDI (2026-09-11) — `CORE/scanner.py::son_tarama_verdict()`
+eklendi (`quarantine.reason` JSON'undaki `verdict`'i, `CORE/file_queries.
+py`'nin `scan_reason` alt sorgusuyla AYNI kaynaktan, en son taramaya göre
+okuyor). Hem tekli (`_on_ctx_move_label`) hem toplu
+(`_on_ctx_bulk_approve`) onay artık verdict TAM OLARAK `"clean"` değilse
+(taranmamış dahil) engelliyor; toplu onayda engellenen bir dosya
+DİĞERLERİNİN taşınmasını durdurmuyor. "Reddet → İmha" yönü BİLEREK
+dokunulmadı (zaten daha kısıtlayıcıya gidiyor). Mutasyon-kanıtlı testler:
+yeni `tests/test_quarantine_approve.py` — taranmamış/malicious/timeout/
+unknown/suspicious'ın hepsinin engellendiğini, gerçekten temiz bir
+dosyanın YİNE DE onaylanabildiğini (yanlış-pozitif yok), iki kez taranan
+bir dosyada EN SON sonucun geçerli olduğunu, ve toplu onayda temiz
+dosyanın taşınıp diğerlerinin atlandığını kanıtlıyor.
+**Öncelik:** Orta-düşük (yalnızca yönetici erişebiliyor, bilerek tetiklenen bir eylem — ama gerçek bir savunma-derinliği boşluğuydu).
 **Bulundu:** 2026-09-11 (MC-Kataloğu 4. parça, MC-M196 araştırması sırasında).
 
 `UI/main_window_files.py`'nin Karantina sağ-tık menüsünde "Onayla →
