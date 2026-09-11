@@ -11953,3 +11953,24 @@ user_confirmed/approved_by parametrelerini UI'dan geçirmeyi, ayrıca
 onay diyaloğu ya da yönetici-onay isteği — kurmayı) gerektiriyor;
 kod-taraması/mutasyon turunun kapsamı dışında, bilinçli bir UI
 tasarım kararı istiyor.
+
+### Bölüm 24 (MC-M184–MC-M191) — Yedek / geri yükleme (`CORE/backup.py`, `CORE/backup_reminder.py`)
+
+Test alt kümesi: `tests/test_backup.py` + `tests/test_backup_cli.py` +
+`tests/test_backup_verify_ui.py` + `tests/test_backup_reminder.py`
+(baseline 141).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M184 | WAL checkpoint: kopyadan SONRA çalıştır (K1-28 sıra) | **Kapsam dışı — hedef kod yok** | `create_backup()` veritabanı dosyasını HİÇ ham kopyalamıyor — bunun yerine `BEGIN`/`COMMIT` ile WAL'ın kendi anlık-görüntü izolasyonundan yararlanan bir tablo-dökümü (`_dump_tables()`) kullanıyor. "Checkpoint sonra çalıştır" hatasının varsaydığı dosya-kopyalama deseni yapısal olarak yok |
+| MC-M185 | Manifest hash: ciphertext → plaintext özeti | **Kapsam dışı — hedef kod yok** | Yedekleme hiçbir dosyayı ÇÖZMÜYOR — `.hcl` dosyaları zaten şifreli hâlleriyle kopyalanıyor ve manifestodaki `sha256` her zaman diskteki şifreli baytların özeti. "Plaintext özeti" üretecek bir kod yolu (decrypt-then-hash) mevcut değil |
+| MC-M186 | `.hclv` (anahtar kasası) yedeğe dahil et (KARAR 3'ü bozan bir mutasyon) | **Kapsam dışı — bilinçli sınır** | KARAR 3 açıkça belgelenmiş, kasıtlı bir tasarım kararı. `.hclv` dosyaları yapısal olarak `.hcl` karantina dizininden AYRI bir dizinde yaşıyor (`data/vaults/`); `create_backup()`'ın `kaynak.glob("*.hcl")` taraması o dizine hiç girmiyor — dizin ayrımının kendisi koruma, bir filtre değil |
+| MC-M187 | `verify_backup()`: `if not yol.is_file():` (eksik dosya kontrolü) atlandı | **Killed** | 5 test düşüyor (bazıları `FileNotFoundError` ile çöküyor — sessizce `True` dönmek yerine daha da sert biçimde yakalanıyor) |
+| MC-M188 | `restore_backup()`: `if not skip_verify:` (yazmadan önce doğrulama) atlandı | **Killed** | `test_restore_refuses_a_corrupt_backup` düşüyor |
+| MC-M189 | `restore_backup()`: hedef dolu dizin koruması (`overwrite` kontrolü) atlandı | **Killed** | 2 test düşüyor (`test_restore_refuses_a_non_empty_destination` dahil) |
+| MC-M190 | `_manifest_sekli_gecersiz_mi()`: `entries[i]["size"]` tip kontrolü `int` → `(int, str)` (string kabul) | **Killed** | `test_an_entry_with_an_unexpected_field_type_is_refused_not_crashed` tam bu senaryoyu hedefliyor |
+| MC-M191 | `yedek_durumu()`: `if esik == 0:` (eşik kapalı sentineli) → `if esik >= 0:` (her zaman kapalı) | **Killed** | 14 test düşüyor — bu alan zaten B-126'nın (M006 kökenli) yoğun testli bölgesi |
+
+**Bölüm 24 özet:** 8 senaryo → Killed 5, Kapsam dışı 3 (M184/M185
+hedef kod yok, M186 bilinçli sınır). Yeni test yok — blok TAMAMEN
+doygun. Üretim kodunda değişiklik yok.
