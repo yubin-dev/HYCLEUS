@@ -38,7 +38,7 @@ def _eslesen_adimi_bul(totp: "pyotp.TOTP", code: str, simdi: float | None = None
     t = simdi if simdi is not None else time.time()
     for delta in (-1, 0, 1):
         aday_zaman = t + delta * 30
-        if totp.at(aday_zaman) == code:
+        if totp.at(int(aday_zaman)) == code:
             return int(aday_zaman // 30)
     return None
 
