@@ -61,8 +61,13 @@ def token_kayitlarini_getir(db: DBManager, *, hwid: str | None = None) -> list[T
     """
     kosul = "WHERE u.hwid = ?" if hwid is not None else ""
     params: tuple = (hwid,) if hwid is not None else ()
+    # B-136: u.hwid ham hâliyle bir LIKE deseninin PARÇASI — `_sanitize_
+    # hwid()` `_`'a bilerek izin veriyor ama `_`, LIKE'ın "herhangi BİR
+    # karakter" joker'i. REPLACE(...,'_','\_') + ESCAPE '\' HER `_`'ı
+    # LİTERAL yapıyor; hwid'de zaten `\` olamaz (_sanitize_hwid charset'i
+    # [a-zA-Z0-9_-]) yani kaçış karakterinin kendisiyle çarpışma riski yok.
     rows = db.fetchall(
-        f"""
+        rf"""
         SELECT
             u.hwid,
             u.token_id,
@@ -70,11 +75,11 @@ def token_kayitlarini_getir(db: DBManager, *, hwid: str | None = None) -> list[T
             u.created_at,
             (SELECT a.detail FROM audit_log a
              WHERE a.action IN ({",".join("?" for _ in _ROL_EYLEMLERI)})
-               AND a.detail LIKE 'hwid=' || u.hwid || '%'
+               AND a.detail LIKE 'hwid=' || REPLACE(u.hwid, '_', '\_') || '%' ESCAPE '\'
              ORDER BY a.timestamp DESC LIMIT 1)  AS role_detail,
             (SELECT a.timestamp FROM audit_log a
              WHERE a.action = ?
-               AND a.detail LIKE 'hwid=' || u.hwid || '%'
+               AND a.detail LIKE 'hwid=' || REPLACE(u.hwid, '_', '\_') || '%' ESCAPE '\'
              ORDER BY a.timestamp DESC LIMIT 1)  AS last_login
         FROM usb_tokens u
         {kosul}
