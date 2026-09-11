@@ -15,6 +15,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from CORE.console import ensure_utf8_console
 from CORE.scanner_backends import (
@@ -24,6 +25,9 @@ from CORE.scanner_backends import (
     select_backend,
     sha256_of,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from DB.db_manager import DBManager
 
 _log = logging.getLogger("hycleus.scanner")
 
@@ -138,7 +142,7 @@ def scan_by_hash(sha256: str, file_id: int | None = None) -> ScanResult:
     return result
 
 
-def son_tarama_verdict(db: "DBManager", file_id: int) -> str | None:
+def son_tarama_verdict(db: DBManager, file_id: int) -> str | None:
     """
     Dosyanın EN SON tarama sonucunun verdict'i — `quarantine.reason`'daki
     JSON'dan (bkz. `_save_to_db`). Dosya HİÇ taranmadıysa (hiç `quarantine`
