@@ -8976,17 +8976,17 @@ değil, bu yüzden bu turda UYGULANMADI — ayrı bir madde olarak açıldı.
 
 Bu başlık, projede bugüne kadar yapılan TÜM elle-mutasyon test turlarının
 tek noktadan görülebildiği bir üst-özettir. Alt bölümler (B-110, B-126,
-B-135, MC-Kataloğu 1-3. parça) olduğu gibi korunuyor — bu yalnızca
+B-135, MC-Kataloğu 1-4. parça) olduğu gibi korunuyor — bu yalnızca
 üstlerine eklenen bir toplam tablo, hiçbir mevcut madde numarası ya da
 metin değiştirilmedi.
 
 ### Ana iki tur — toplam özet tablosu
 
 `B-126` (100 senaryo, kullanıcı tarafından tarif edilen sabit liste) ve
-`MC-Kataloğu` 1-3. parça (MC-M001–MC-M150, önceden hazırlanmış 200'lük
-kripto-primitif kataloğunun ilk 150'si) aynı yöntemle (gerçek mutasyon →
-hedef test → Survived ise yeni test + kırmızı→yeşil kanıt → prod kodu
-geri al) yürütüldü ve doğrudan karşılaştırılabilir:
+`MC-Kataloğu` (MC-M001–MC-M200, önceden hazırlanmış 200'lük
+kripto-primitif kataloğunun TAMAMI, 4 parça) aynı yöntemle (gerçek
+mutasyon → hedef test → Survived ise yeni test + kırmızı→yeşil kanıt →
+prod kodu geri al) yürütüldü ve doğrudan karşılaştırılabilir:
 
 | Tur | Öğe sayısı | Killed | Survived-Fixed | Eşdeğer mutant | Kapsam dışı | Diğer |
 |---|---|---|---|---|---|---|
@@ -8994,16 +8994,18 @@ geri al) yürütüldü ve doğrudan karşılaştırılabilir:
 | MC-Kataloğu 1. Parça (MC-M001–050) | 50 | 26 | 6 | 2 | 15 | Kontrol yok 1 (→B-138) |
 | MC-Kataloğu 2. Parça (MC-M051–100) | 50 | 6 | 11 | 1 | 32 | — |
 | MC-Kataloğu 3. Parça (MC-M101–150) | 50 | 28 | 8 | 2 | 12 | — |
-| **TOPLAM** | **250** | **115** | **49** | **12** | **73** | **1** |
+| MC-Kataloğu 4. Parça (MC-M151–200) | 50 | 32 | 2 | 0 | 15 | Kontrol yok 1 (→B-146) |
+| **TOPLAM** | **300** | **147** | **51** | **12** | **88** | **2** |
 
-Yani 250 mutasyonun 164'ü (Killed + Survived-Fixed) test paketinin
-gerçekten kanıtladığı davranışlar; 49'u bu turlarda yeni test yazılarak
-kapatılan gerçek boşluklardı; 73'ü kapsam dışı (hedef mekanizma hiç yok
-ya da bilinçli mimari sınır); 12'si eşdeğer mutant; 1'i ("kontrol yok")
-uygulama boşluğu olarak B-138'e düştü.
+Yani 300 mutasyonun 198'i (Killed + Survived-Fixed) test paketinin
+gerçekten kanıtladığı davranışlar; 51'i bu turlarda yeni test yazılarak
+kapatılan gerçek boşluklardı; 88'i kapsam dışı (hedef mekanizma hiç yok
+ya da bilinçli mimari sınır); 12'si eşdeğer mutant; 2'si ("kontrol yok")
+uygulama boşluğu olarak backlog'a düştü (B-138, ve dolaylı olarak
+M196'dan B-146).
 
 **Gerçek boşluktan doğan, üretim kodu değişikliği gerektiren BACKLOG
-maddeleri (B-127 – B-144 aralığı, B-135 hariç — o bir tur başlığı,
+maddeleri (B-127 – B-146 aralığı, B-135 hariç — o bir tur başlığı,
 bulgu değil):**
 
 | Madde | Konu (özet) | Durum |
@@ -9025,11 +9027,13 @@ bulgu değil):**
 | B-142 | Vault dosyası atomic/dayanıklı yazılmıyordu | **Kapalı** |
 | B-143 | Kapanışta bekleyen toplu-yükleme worker'ları için `waitForDone()` yoktu | **Kapalı** |
 | B-144 | Kurtarma parçası ekranında shoulder-surfing blur'u yoktu | **Kapalı** |
+| B-145 | Üç "İmha Odası'na taşı" UI giriş noktası `move_to_imha()`'yı çağırmıyor (erken-silme onayı UI'dan ulaşılamıyor) | Açık |
+| B-146 | Karantina "Onayla → Genel" eylemi tarama durumunu hiç kontrol etmiyor | Açık |
 
-17 madde, 7'si kapalı (B-132, B-134, B-139, B-140, B-142, B-143, B-144),
-10'u açık — karar/uygulama bekliyor.
+19 madde, 7'si kapalı (B-132, B-134, B-139, B-140, B-142, B-143, B-144),
+12'si açık — karar/uygulama bekliyor.
 
-### Diğer, ayrı turlar (yukarıdaki 250'lik toplama dahil değil)
+### Diğer, ayrı turlar (yukarıdaki 300'lük toplama dahil değil)
 
 - **B-110** (2026-09-08, `crypto.py`/`timestamp.py`/`merkle.py`/`hclx.py`,
   54 hedefli mutasyon) — bu iki ana turdan ÖNCE, ayrı bir oturumda
@@ -9042,7 +9046,7 @@ bulgu değil):**
   tabloda yer alıyor). Kalan M047–M200 hiç işlenmedi.
 
 Genel toplam (B-110 + B-135'in tamamlanan kısmı + iki ana tur):
-100 + 150 + 54 + 46 = **350 mutasyon senaryosu** bugüne kadar gerçek
+100 + 200 + 54 + 46 = **400 mutasyon senaryosu** bugüne kadar gerçek
 kod üzerinde elle uygulanıp test edildi.
 
 ## B-110 — Sistematik mutasyon testi turu: CORE/crypto.py, timestamp.py, merkle.py, hclx.py — 54 hedefli mutasyon, 12 gerçek boşluk bulundu ve kapatıldı
@@ -12030,3 +12034,81 @@ gerektiği (taranmamış dosya için engelle mi, yalnızca uyar mı;
 `"malicious"`/`"timeout"` verdict'i olan bir dosyanın "Onayla"
 seçeneğini tamamen gizle mi) bir ürün/UX kararı — mutasyon turunun
 kapsamı dışında.
+
+### Bölüm 26 (MC-M197–MC-M200) — Oturum / TPM / migration / meta (`UI/main_window_lock.py`, `CORE/idle_lock.py`, `CORE/secret_store.py`, `DB/migrations.py`, `tests/test_ui_yasakli_iddia_terimleri.py`)
+
+Test alt kümesi: `tests/test_ui_yasakli_iddia_terimleri.py` + `tests/
+test_tpm_sealing.py` + `tests/test_secret_store.py` + `tests/test_
+secret_migration.py` + `tests/test_migrations.py` + `tests/test_idle_
+lock.py` + `tests/test_lock_overlay.py` (baseline 212).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M197 | Hareketsizlik "kapalı": USB çekilince kilidi de kaldır | **Kapsam dışı — hedef kod yok** | `CORE/idle_lock.py::reconfigure()`/`should_lock()` `_lock_reasons`/USB kilidine hiç dokunmuyor; `_tick_idle()` yalnızca `should_lock()` False iken ERKEN ÇIKIYOR, hiçbir `_unlock()` çağırmıyor. "idle kapalıyken USB kilidi de kalkar" deseni yapısal olarak yok |
+| MC-M198 | `_reseal_firsatci()`: `load()`'daki çağrısı kaldırıldı (ilk açılışta yeniden mühürleme atlandı, K0-3) | **Killed** | 5 test düşüyor — `test_ESKI_kurulum_ILK_ACILISTA_otomatik_yeniden_muhurleniyor` dahil, tam bu senaryoyu adıyla hedefliyor |
+| MC-M199 | `bekleyenler()`: `uygulananlar()` filtresi atlandı (sürüm/defter kontrolü yok sayıldı, tüm göçler her açılışta yeniden "bekliyor" sayılır) | **Killed** | 4 test düşüyor — `test_yeni_goc_IKINCI_acilista_tekrar_calismiyor` dahil |
+| MC-M200 | `test_ui_yasakli_iddia_terimleri.py`: `_KOSULSUZ_YASAKLILAR` sözlüğünden `"AIR-GAPPED"` anahtarı çıkarıldı | **Killed** | 9 test düşüyor — `test_tarayici_enjekte_edilen_AIR_GAPPED_terimini_yakaliyor` (kendi kendini doğrulayan negatif-kontrol testi, `tmp_path`'e gerçekten "AIR-GAPPED" enjekte edip yakalandığını ölçüyor) dahil |
+
+**Bölüm 26 özet:** 4 senaryo → Killed 3, Kapsam dışı 1 (M197, hedef
+kod yok). Yeni test yok — blok TAMAMEN doygun. Üretim kodunda ve
+test dosyalarında değişiklik yok.
+
+## MC-Kataloğu — 4. Parça (MC-M151–MC-M200) TAMAMLANDI — KATALOĞUN TAMAMI BİTTİ (200/200)
+
+200/200 tamamlandı — 200'lük MC-Kataloğu'nun 4 parçası da bitti (1.
+parça M001-050, 2. parça M051-100, 3. parça M101-150, önceki
+oturumlarda push edildi; bu oturum 4. parçayı M151-200 tamamladı, 7
+bölüm: 20-26). Bu parça (M151-M200) toplamı: Killed 32, Survived-Fixed
+2, Kapsam dışı 15, Kontrol yok 1.
+
+**En önemli 3 bulgu (bu parça):**
+1. **MC-M158 (RBAC, Bölüm 20)** — `main_window_tree.py::
+   _load_folder_files()`'ın `include_private=is_admin_role(self._role)`
+   ile çağırdığı hiçbir testte uçtan uca ölçülmüyordu; canlı bir
+   Standart oturum klasöre tıklayınca mahrem etiketli dosyayı
+   görebilirdi (CORE katmanı test edilmişti, UI kablolaması değil).
+2. **MC-M181/B-145 (İmha odası, Bölüm 23)** — üç "İmha Odası'na taşı"
+   UI giriş noktasının (tekli/toplu/klasör) HİÇBİRİ `CORE.disposal.
+   move_to_imha()`'yı çağırmıyor; erken-silme onay kapısı UI'dan hiç
+   ulaşılamıyor. Veri kaybı yok (`purge_expired_file()`'ın bağımsız
+   retention kontrolü koruyor) ama gerçek bir savunma-derinliği
+   boşluğu, backlog'a düşüldü.
+3. **MC-M196/B-146 (Karantina, Bölüm 25)** — "Onayla → Genel'e taşı"
+   eylemi dosyanın hiç taranıp taranmadığını ya da verdict'ini hiç
+   kontrol etmiyor; malicious/timeout sonuçlu bir dosya bile elle
+   Genel'e taşınabiliyor.
+
+**Diğer gerçek bulgular:** M165 (audit_chain, `_utcnow()`'un gerçekten
+UTC döndürdüğü hiç ölçülmüyordu), M166 (anchor iç-zincir hash'inin
+tam SHA-256 olduğu pinlenmemişti), M168 (denetim günlüğü bitiş-tarihi
+filtresi son saniyeyi dışlıyordu), M180 (İmha Odası TTL biriminin
+gerçekten saat olduğu sayısal ölçülmüyordu).
+
+**Doygunluk notu:** RFC 3161/Merkle/.hclx (Bölüm 22), Yedek/geri
+yükleme (Bölüm 24) ve Oturum/TPM/migration/meta (Bölüm 26) TAMAMEN ya
+da neredeyse tamamen doygun çıktı (22'de 7/8, 24'te 5/8, 26'da 3/4
+Killed — geri kalanı hedef kod yok ya da bilinçli sınır). Bu parçanın
+en verimli bloğu RBAC (Bölüm 20) ve Denetim zinciri (Bölüm 21) oldu.
+
+**KATALOĞUN TAMAMI (MC-M001–MC-M200) — 4 parça birden, yalnızca
+MC-Kataloğu (B-126 hariç; ikisi birlikte için dosyanın başındaki
+"## Mutasyon Araştırmaları" üst-özetine bakın):**
+
+| Parça | Öğe sayısı | Killed | Survived-Fixed | Eşdeğer mutant | Kapsam dışı | Diğer |
+|---|---|---|---|---|---|---|
+| 1. Parça (MC-M001–050) | 50 | 26 | 6 | 2 | 15 | Kontrol yok 1 |
+| 2. Parça (MC-M051–100) | 50 | 6 | 11 | 1 | 32 | — |
+| 3. Parça (MC-M101–150) | 50 | 28 | 8 | 2 | 12 | — |
+| 4. Parça (MC-M151–200) | 50 | 32 | 2 | 0 | 15 | Kontrol yok 1 |
+| **TOPLAM** | **200** | **92** | **27** | **5** | **74** | **2** |
+
+200 mutasyonun 119'u (Killed + Survived-Fixed) test paketinin
+gerçekten kanıtladığı davranışlar; 27'si bu turlarda yeni test
+yazılarak kapatılan gerçek boşluklardı; 74'ü kapsam dışı; 5'i eşdeğer
+mutant; 2'si ("kontrol yok") uygulama boşluğu olarak backlog'a düştü
+(B-138, ve — bu parçadan — dolaylı olarak B-145/B-146 gibi ek
+bulgulara da yol açtı, onlar "kontrol yok" değil ayrı gerçek boşluk
+sınıfında).
+
+MC-Kataloğu artık tamamen kapandı. Kalan iş: kullanıcının onayıyla
+push.
