@@ -111,6 +111,56 @@ def test_allocate_returns_a_path_inside_the_safezone(isolate_safezone: Path):
     assert p.suffix == ".pdf"
 
 
+# ── Pentest turu (2026-09-12): suffix üzerinden path traversal ─────────────────
+#
+# CANLI KANIT (düzeltmeden önce): `root / f"...{suffix}"` — pathlib'in `/`
+# operatörü, verilen string'in İÇİNDEKİ `/`/`\` dizilerini de gerçek yol
+# bileşenleri olarak ayrıştırıyordu. `suffix="/../../../../evil.txt"`
+# `allocate()`'in SafeZone kökünün TAMAMEN DIŞINA çıkan, `.resolve()` ile
+# doğrulanmış bir yol ürettiği ölçüldü. Bugünkü tek canlı çağıran
+# (`CORE/checkout.py`) `suffix`'i `Path(original_name).suffix`'ten alıyor —
+# yapısal olarak ayırıcı içeremez, zaten güvenli — ama bu, `allocate()`'in
+# KENDİSİNİN güvenli olduğu anlamına gelmiyordu; gelecekteki bir çağıran
+# (modülün kendi docstring'i "aç/önizle akışı" için hazır altyapı diyor) ham
+# bir suffix geçebilirdi.
+
+@pytest.mark.parametrize("kotu_suffix", [
+    "/../../../../evil_escape.txt",
+    "../../evil.txt",
+    "..\\..\\evil.txt",
+    "/etc/evil",
+    "\\evil",
+])
+def test_allocate_suffix_path_traversal_REDDEDILIYOR(isolate_safezone: Path, kotu_suffix: str) -> None:
+    """
+    ASIL DÜZELTME: ayırıcı ya da '..' içeren bir suffix reddedilmeli —
+    SafeZone dışına yazma denemesi anında (dosya oluşturulmadan) engellenmeli.
+    """
+    with pytest.raises(ValueError, match="ayırıcı|\\.\\."):
+        allocate(suffix=kotu_suffix)
+
+
+def test_allocate_suffix_gercekten_safezone_disina_TASMIYOR(isolate_safezone: Path) -> None:
+    """Kanıtın kendisi: reddedilmeseydi üretilecek yol SafeZone'un dışına çıkardı."""
+    kotu_suffix = "/../../../../evil_escape.txt"
+    # Aynı f-string deseni, allocate()'in KENDİSİ kullanılmadan doğrudan
+    # ölçülüyor — düzeltmenin gerçekten neyi önlediğini belgelemek için.
+    kacan_yol = (isolate_safezone / f"hycleus_x{kotu_suffix}").resolve()
+    assert not str(kacan_yol).startswith(str(isolate_safezone.resolve())), (
+        "bu senaryo SafeZone dışına taşmıyorsa üstteki reddetme testi anlamsız"
+    )
+    with pytest.raises(ValueError):
+        allocate(suffix=kotu_suffix)
+
+
+def test_allocate_normal_suffixler_hala_calisiyor(isolate_safezone: Path) -> None:
+    """Yeni kontrol gerçek, meşru suffix'leri bozmamalı."""
+    for suffix in (".hcl", ".json", ".pdf", ".hcl-rewrite-tmp", ""):
+        p = allocate(suffix=suffix)
+        assert p.parent == isolate_safezone
+        assert str(p).endswith(suffix) if suffix else True
+
+
 def test_allocate_does_not_create_the_file(isolate_safezone: Path):
     assert not allocate().exists()
 

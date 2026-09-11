@@ -144,7 +144,27 @@ def allocate(suffix: str = "", prefix: str = "hycleus") -> Path:
     Ad rastgele: orijinal dosya adı SafeZone'da görünmemeli. Dizin listesi
     bile "şu belge açıldı" bilgisini sızdırır ve bu bilgi dosya imha
     edildikten sonra da dizin girdisinde kalabilir.
+
+    `suffix` ayırıcı/`..` İÇEREMEZ (pentest turu, 2026-09-12): `root /
+    f"...{suffix}"` — pathlib'in `/` operatörü, verilen string'in İÇİNDEKİ
+    `/`/`\\` dizilerini de gerçek yol bileşenleri olarak ayrıştırıyor.
+    Kanıtlandı: `suffix="/../../../../evil.txt"` SafeZone kökünün TAMAMEN
+    DIŞINA çıkan bir yol üretiyordu. Bugünkü TEK canlı çağıran
+    (`CORE/checkout.py`) `suffix`'i `Path(original_name).suffix`'ten alıyor
+    — pathlib'in `.suffix`'i yapısal olarak ayırıcı içeremez, zaten güvenli
+    — ama modülün kendi docstring'i bunu "gelecekteki aç/önizle akışı" için
+    hazır altyapı diye tanımlıyor; bu kontrol o gelecekteki bir çağıranın
+    ham/filtrelenmemiş bir suffix geçmesi durumunda şifresi çözülmüş
+    içeriğin SafeZone dışına yazılmasını önlüyor.
+
+    Raises:
+        ValueError — suffix bir ayırıcı (`/` ya da `\\`) ya da `..` içeriyorsa.
     """
+    if suffix and ("/" in suffix or "\\" in suffix or ".." in suffix):
+        raise ValueError(
+            f"allocate(): suffix bir yol ayırıcı ya da '..' içeremez: "
+            f"{suffix!r} — SafeZone dizini dışına yazmaya çalışıyor olabilir."
+        )
     root = safezone_dir()
     while True:
         candidate = root / f"{prefix}_{secrets.token_hex(16)}{suffix}"
