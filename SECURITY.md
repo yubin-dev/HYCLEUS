@@ -392,6 +392,34 @@ credential-store entry (`delete_usb_token()`) and re-keying the vault.
 > calls `open_vault()` directly and only `authenticate_usb()` consulted the
 > blacklist. Fixed after this document first reported it.
 
+**A third entry path had the same shape of bug, undetected until mutation
+testing found it (2026-09-11).** `UI/main_window_lock.py`'s
+`_trigger_usb_reauth(new_hwid)` — fired by `_poll_usb()` whenever the
+plugged-in USB's HWID changes mid-session — is the *third* place session
+state can advance past device identity, alongside `authenticate_usb()` and
+`open_vault()` above. It calls `authenticate_usb(new_hwid)` first (which is
+what actually consults the blacklist) and only proceeds to
+`read_vault_role(new_hwid, pin)` — the state-mutating step that flips
+`self._hwid`/`self._role`/`self._locked` — if that call succeeds. The bug
+class recurs here for the same structural reason as the login gap above:
+**the blacklist check and the state transition live in two different
+functions**, so nothing stops a future edit from calling
+`read_vault_role()` without first calling `authenticate_usb()` — and no
+test previously would have caught it. Removing the `authenticate_usb()`
+call from `_trigger_usb_reauth()` broke zero tests in a 3485-test suite:
+the function had never been exercised end-to-end by anything except a
+method-existence check. A blacklisted device presenting the *correct* PIN
+would then unlock the session under the new HWID, bypassing §4.1's
+guarantee entirely for the re-insertion path. A regression test now drives
+`_trigger_usb_reauth()` against a real blacklisted vault and asserts the
+session stays locked on the original HWID
+(`tests/test_lock_overlay.py::test_trigger_usb_reauth_kara_listedeki_cihazi_DOGRU_pinle_bile_ACMIYOR`).
+No production code changed — `authenticate_usb()` was already being called
+correctly; the gap was in coverage, not behavior. Treat this as the
+standing lesson: any future refactor of `_trigger_usb_reauth()`,
+`open_vault()`, or `authenticate_usb()` that separates "check the
+blacklist" from "advance the session" reopens this class of bug.
+
 ### 4.2 The vault HMAC key is derived from share_2, not the HWID
 
 > **Attacker models:** M2 · M3
@@ -4404,6 +4432,34 @@ tutarlı biçimde uygulanıyor. Gerçek iptal, kasadaki kaydın silinmesini
 > `open_vault()`'u doğrudan çağırıyor ve kara listeye yalnızca
 > `authenticate_usb()` bakıyordu. Bu belge sorunu ilk raporladıktan sonra
 > düzeltildi.
+
+**Üçüncü bir giriş yolunda da aynı şekilde bir açık vardı, mutasyon
+testiyle bulundu (2026-09-11).** `UI/main_window_lock.py`'nin
+`_trigger_usb_reauth(new_hwid)`'i — oturum ortasında takılı USB'nin HWID'i
+değiştiğinde `_poll_usb()` tarafından tetiklenir — yukarıdaki
+`authenticate_usb()` ve `open_vault()`'un yanında, oturum durumunun cihaz
+kimliğinin ÖNÜNE geçebileceği ÜÇÜNCÜ yerdir. Önce `authenticate_usb(new_hwid)`
+çağırır (kara listeyi FİİLEN kontrol eden budur), ve durum-değiştiren adıma —
+`self._hwid`/`self._role`/`self._locked`'ı çeviren
+`read_vault_role(new_hwid, pin)`'e — yalnızca bu çağrı başarılı olursa geçer.
+Bu hata sınıfı burada da AYNI yapısal nedenle tekrar ediyor: **kara liste
+kontrolü ile durum geçişi iki AYRI fonksiyonda yaşıyor**, yani gelecekteki
+bir düzenleme `authenticate_usb()`'u çağırmadan `read_vault_role()`'u
+çağırırsa hiçbir şey bunu durdurmaz — ve daha önce hiçbir test bunu
+yakalamazdı. `_trigger_usb_reauth()`'tan `authenticate_usb()` çağrısı
+kaldırıldığında 3485 testlik takımda SIFIR test kırıldı: fonksiyon o ana
+kadar bir metot-varlığı kontrolü dışında uçtan uca hiç çalıştırılmamıştı.
+Kara listedeki bir cihaz DOĞRU PIN'i girdiğinde oturum yeni HWID altında
+açılır, §4.1'in garantisini yeniden-takma yolunda tamamen atlardı. Artık
+gerçek kara listeli bir vault'a karşı `_trigger_usb_reauth()`'u çalıştıran
+ve oturumun eski HWID'de kilitli kaldığını doğrulayan bir regresyon testi
+var
+(`tests/test_lock_overlay.py::test_trigger_usb_reauth_kara_listedeki_cihazi_DOGRU_pinle_bile_ACMIYOR`).
+Üretim kodunda değişiklik yok — `authenticate_usb()` zaten doğru çağrılıyordu;
+boşluk davranışta değil, kapsamdaydı. Kalıcı ders: `_trigger_usb_reauth()`,
+`open_vault()` ya da `authenticate_usb()`'un gelecekteki herhangi bir
+yeniden düzenlemesi "kara listeyi kontrol et" ile "oturumu ilerlet"i
+birbirinden ayırırsa bu hata sınıfı yeniden açılır.
 
 ### 4.2 Vault HMAC anahtarı share_2'den türetiliyor, HWID'den değil
 

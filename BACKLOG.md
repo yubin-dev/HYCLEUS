@@ -8972,6 +8972,79 @@ değil, bu yüzden bu turda UYGULANMADI — ayrı bir madde olarak açıldı.
 
 ---
 
+## Mutasyon Araştırmaları
+
+Bu başlık, projede bugüne kadar yapılan TÜM elle-mutasyon test turlarının
+tek noktadan görülebildiği bir üst-özettir. Alt bölümler (B-110, B-126,
+B-135, MC-Kataloğu 1-3. parça) olduğu gibi korunuyor — bu yalnızca
+üstlerine eklenen bir toplam tablo, hiçbir mevcut madde numarası ya da
+metin değiştirilmedi.
+
+### Ana iki tur — toplam özet tablosu
+
+`B-126` (100 senaryo, kullanıcı tarafından tarif edilen sabit liste) ve
+`MC-Kataloğu` 1-3. parça (MC-M001–MC-M150, önceden hazırlanmış 200'lük
+kripto-primitif kataloğunun ilk 150'si) aynı yöntemle (gerçek mutasyon →
+hedef test → Survived ise yeni test + kırmızı→yeşil kanıt → prod kodu
+geri al) yürütüldü ve doğrudan karşılaştırılabilir:
+
+| Tur | Öğe sayısı | Killed | Survived-Fixed | Eşdeğer mutant | Kapsam dışı | Diğer |
+|---|---|---|---|---|---|---|
+| B-126 (100 senaryo, 8 bölüm) | 100 | 55 | 24 | 7 | 14 | — |
+| MC-Kataloğu 1. Parça (MC-M001–050) | 50 | 26 | 6 | 2 | 15 | Kontrol yok 1 (→B-138) |
+| MC-Kataloğu 2. Parça (MC-M051–100) | 50 | 6 | 11 | 1 | 32 | — |
+| MC-Kataloğu 3. Parça (MC-M101–150) | 50 | 28 | 8 | 2 | 12 | — |
+| **TOPLAM** | **250** | **115** | **49** | **12** | **73** | **1** |
+
+Yani 250 mutasyonun 164'ü (Killed + Survived-Fixed) test paketinin
+gerçekten kanıtladığı davranışlar; 49'u bu turlarda yeni test yazılarak
+kapatılan gerçek boşluklardı; 73'ü kapsam dışı (hedef mekanizma hiç yok
+ya da bilinçli mimari sınır); 12'si eşdeğer mutant; 1'i ("kontrol yok")
+uygulama boşluğu olarak B-138'e düştü.
+
+**Gerçek boşluktan doğan, üretim kodu değişikliği gerektiren BACKLOG
+maddeleri (B-127 – B-144 aralığı, B-135 hariç — o bir tur başlığı,
+bulgu değil):**
+
+| Madde | Konu (özet) | Durum |
+|---|---|---|
+| B-127 | DEK için zayıf/sıfır anahtar denetleyicisi yok | Açık |
+| B-128 | `decrypt_file()` için bellek/boyut tavanı yok | Açık |
+| B-129 | Bandit B608 susturması + semgrep'te SQLi kuralı yok | Açık |
+| B-130 | Oturum `master_key`'i bellekte sıfırlanmıyor | Açık |
+| B-131 | `audit_log.action` için enum/allowlist doğrulaması yok | Açık |
+| B-132 | `audit_log` her rol tarafından `DELETE` edilebiliyordu | **Kapalı** |
+| B-133 | `register_new_user()` username doğrulaması yok | Açık |
+| B-134 | İmha Odası kalıcı silme shred değil düz `unlink()` kullanıyordu | **Kapalı** |
+| B-136 | `token_kayitlarini_getir()` LIKE deseni HWID'deki `_`/`%` ile çarpışabilir | Açık |
+| B-137 | `scan_by_hash()` DB hatasını sessizce yutuyor | Açık |
+| B-138 | Vault metadata'sının KEK/hash türevi taşımadığını garanti eden yapısal test yok | Açık |
+| B-139 ★ | `kek`/`master_key` bellekte zeroize edilmiyordu | **Kapalı** |
+| B-140 ★ | Dosya şifreleme per-file HKDF subkey kullanmıyordu | **Kapalı** |
+| B-141 | TOTP kodlarında replay-önleme yok | Açık |
+| B-142 | Vault dosyası atomic/dayanıklı yazılmıyordu | **Kapalı** |
+| B-143 | Kapanışta bekleyen toplu-yükleme worker'ları için `waitForDone()` yoktu | **Kapalı** |
+| B-144 | Kurtarma parçası ekranında shoulder-surfing blur'u yoktu | **Kapalı** |
+
+17 madde, 7'si kapalı (B-132, B-134, B-139, B-140, B-142, B-143, B-144),
+10'u açık — karar/uygulama bekliyor.
+
+### Diğer, ayrı turlar (yukarıdaki 250'lik toplama dahil değil)
+
+- **B-110** (2026-09-08, `crypto.py`/`timestamp.py`/`merkle.py`/`hclx.py`,
+  54 hedefli mutasyon) — bu iki ana turdan ÖNCE, ayrı bir oturumda
+  yapıldı. 12 gerçek boşluk bulundu ve **aynı oturumda kapatıldı**
+  (Durum: Kapalı).
+- **B-135** (200'lük mutasyon turu, M001–M200, kendi numaralandırması —
+  MC-Kataloğu'nunkiyle ÇAKIŞMAZ, tamamen ayrı bir katalog) — 8 bölüm
+  hâlinde 46/200 senaryo (M001–M046) tamamlandı, **hâlâ devam ediyor
+  (durdu, tamamlanmadı)**. Bu turdan B-136 ve B-137 doğdu (yukarıdaki
+  tabloda yer alıyor). Kalan M047–M200 hiç işlenmedi.
+
+Genel toplam (B-110 + B-135'in tamamlanan kısmı + iki ana tur):
+100 + 150 + 54 + 46 = **350 mutasyon senaryosu** bugüne kadar gerçek
+kod üzerinde elle uygulanıp test edildi.
+
 ## B-110 — Sistematik mutasyon testi turu: CORE/crypto.py, timestamp.py, merkle.py, hclx.py — 54 hedefli mutasyon, 12 gerçek boşluk bulundu ve kapatıldı
 
 **Durum:** Kapalı.
@@ -11562,6 +11635,24 @@ b058_ilk_kurulum.py` + `tests/test_kayit_kurumsal_referans.py` +
 Eşdeğer mutant 1 (M117 — gerçek çalıştırmayla kanıtlandı), Kapsam dışı
 4 (M112→B-141, M114/M116/M118 hedef kod yok). Yeni testler: `tests/
 test_totp_gorunen_ad.py` (+2). Üretim kodunda değişiklik yok.
+
+**M116 flaky/kararsızlık kontrolü (2026-09-11, sonradan istendi):**
+M116 ("saat kaynağı `time.time()` → sabit") hiçbir mutasyon
+uygulanmadan, tamamen statik grep temelli "Kapsam dışı" kararıydı —
+`login_dialog.py`, `totp_enrollment.py`, `main_window_bulk/tree/
+files.py` içindeki 5 `pyotp.TOTP(...).verify()` çağrısının HİÇBİRİ
+`for_time=` geçmiyor, yani saat kaynağı tamamen `pyotp`'nin kendi iç
+`time.time()`'ına devrediliyor — uygulama kodunda mutasyona
+uğratılacak bir "sabit saat" ifadesi yok (mutasyon üçüncü-parti
+kütüphanenin içine inmek zorunda kalırdı, bu kataloğun kapsamı dışı).
+Codebase genelinde `time.time()` yalnızca `checkout.py:592` ve
+`scanner_backends.py:180`'de geçiyor, ikisi de TOTP ile alakasız —
+grep bunu iki kez (ilk turda ve bu doğrulamada) birebir aynı sonuçla
+verdi. Gerçek saatle yarışan bir mock da yok, dolayısıyla yapısal
+olarak flaky risk taşımıyor. Doğrulama için Bölüm 15'in tüm test alt
+kümesi (`test_totp_gorunen_ad.py` + ilişkili TOTP testleri, 27 test)
+ayrıca tekrar çalıştırıldı — tutarlı yeşil. Sonuç değişmedi: **Kapsam
+dışı**, kararsız değil.
 
 ### Bölüm 16 (MC-M119–MC-M126) — AES-256-GCM ileri sınırlar (`CORE/crypto.py`)
 
