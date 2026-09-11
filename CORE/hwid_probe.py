@@ -409,23 +409,63 @@ def read_linux() -> list[UsbIdentity]:
     return sonuc
 
 
-def _read_linux_sysfs() -> list[UsbIdentity]:
+def _usb_aygit_kok_dizini(dev_resolved: Path) -> Path | None:
+    """
+    `/sys/block/<ad>/device`'ın çözüldüğü yapraktan yukarı doğru yürüyüp
+    GERÇEK USB aygıt düğümünü (`idVendor`/`idProduct`/`serial`'ı taşıyan
+    dizin) bulur.
+
+    2026-09-11'e KADAR bu sabit `.parent.parent` idi — yalnızca aygıt
+    doğrudan USB interface düğümünün BİR alt seviyesindeyse doğruydu.
+    GERÇEK donanımla ÖLÇÜLDÜ (bu makineye takılı iki gerçek USB flash
+    sürücü, usb-storage/SCSI sürücüsü üzerinden): zincir aslında
+    `<usbN>/<X-Y>/<X-Y:1.0>/hostN/targetN:0:0/N:0:0:0` — yani `idVendor`
+    NORMAL SCSI-köprülü bir USB depolama aygıtında dört seviye yukarıda,
+    iki değil. Sabit `.parent.parent` bu yüzden `_read_linux_sysfs()`'i
+    HER durumda sessizce boş liste döndürüyordu (istisna YOK, hata YOK —
+    yalnızca `serial` dosyası hiç bulunamıyordu). `pyudev` paketlenmiş
+    derlemede hiç YOK (requirements.txt'te yok, `HYCLEUS-linux.spec`'in
+    `hiddenimports`'unda yok), yani bu fallback GERÇEK paketlenmiş Linux
+    derlemesinde HER ZAMAN devrede — B-112/B-114'ün "Linux'ta USB HWID
+    artık okunuyor" düzeltmesi bu hata yüzünden fiilen HİÇ çalışmıyordu.
+
+    Sabit derinlik yerine yukarı doğru `idVendor` dosyası aranıyor — sysfs
+    ağacı sınırlı olduğu için yürüme 12 seviyeyle sınırlandı (güvenlik
+    payı; gerçek USB hiyerarşisi bundan çok daha sığ).
+    """
+    aday = dev_resolved
+    for _ in range(12):
+        if (aday / "idVendor").is_file():
+            return aday
+        ust = aday.parent
+        if ust == aday:
+            return None
+        aday = ust
+    return None
+
+
+def _read_linux_sysfs(kok: Path | None = None) -> list[UsbIdentity]:
     """
     pyudev olmadan sysfs'ten okur.
 
-    `/sys/block/sdX/device` SCSI aygıtına, iki üst dizin USB aygıtına
-    çıkıyor; oradaki `serial`, `idVendor`, `idProduct` doğrudan USB
-    tanımlayıcısından geliyor — udev kurallarının belirsizliği yok.
-    """
-    from pathlib import Path
+    GERÇEK USB aygıt dizini (`serial`/`idVendor`/`idProduct`'ı taşıyan)
+    `_usb_aygit_kok_dizini()` ile bulunuyor — bkz. o fonksiyonun
+    docstring'i, "2026-09-11'e KADAR" notu: sabit `.parent.parent`
+    varsayımı yanlıştı.
 
+    `kok`: yalnızca TESTLER için — sentetik bir `/sys/block` ağacı
+    (`tmp_path`) geçirilebilir. `None` (üretim varsayılanı) gerçek
+    `/sys/block`'u kullanır.
+    """
     sonuc: list[UsbIdentity] = []
-    kok = Path("/sys/block")
+    kok = kok if kok is not None else Path("/sys/block")
     if not kok.is_dir():
         return sonuc
 
     for blok in sorted(kok.iterdir()):
-        usb = (blok / "device").resolve().parent.parent
+        usb = _usb_aygit_kok_dizini((blok / "device").resolve())
+        if usb is None:
+            continue
         seri_yolu = usb / "serial"
         if not seri_yolu.is_file():
             continue
