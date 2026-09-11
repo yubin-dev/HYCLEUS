@@ -93,6 +93,33 @@ def win(qapp, db, isolate_safezone, monkeypatch):
         window.deleteLater()
 
 
+@pytest.fixture
+def win_standart(qapp, db, isolate_safezone, monkeypatch):
+    """`win` ile aynı kurulum, yalnızca rol Standart (B-007/MC-M158)."""
+    from UI import main_window as mw
+
+    monkeypatch.setattr(mw, "get_usb_hwid", lambda: _HWID)
+    cur = db.execute(
+        "INSERT INTO users (username, password_hash, hwid, role) VALUES (?, ?, ?, ?)",
+        ("standart.kullanici", "argon2$sahte", _HWID, "user"),
+    )
+    uid = int(cur.lastrowid)
+    window = HycleusWindow(hwid=_HWID, key=_KEY, role="Standart", username="standart.kullanici", user_id=uid)
+    window._usb_timer.stop()
+    try:
+        yield window
+    finally:
+        for ad in ("_usb_timer", "_expiry_timer", "_idle_timer"):
+            timer = getattr(window, ad, None)
+            if timer is not None:
+                timer.stop()
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(window)
+        window.close()
+        window.deleteLater()
+
+
 def _dosya_ekle(db, folder_id: int, ad: str = "a.pdf") -> int:
     cur = db.execute(
         "INSERT INTO files (filename, filepath, label, folder_id) VALUES (?,?,?,?)",
@@ -138,6 +165,33 @@ def test_sidebar_klasor_basina_dosya_sayisini_gosteriyor(win, db) -> None:
     win._refresh_folder_sidebar()
 
     assert win._folder_btns[fid].text().rstrip().endswith("2")
+
+
+def test_load_folder_files_standart_rol_icin_mahrem_dosyayi_gizliyor(win_standart, db) -> None:
+    """MC-M158 (B-007'nin aynısı, bu kez klasör kenar çubuğu tıklama yolu).
+
+    `CORE.file_queries.files_by_folder(include_private=...)`'ın kendisi
+    zaten `test_file_queries.py`'de sınanıyor — ama `main_window_tree.py::
+    _load_folder_files()`'ın GERÇEKTEN `is_admin_role(self._role)` ile
+    çağırdığı, yani canlı bir Standart oturumun klasöre tıklayınca mahrem
+    etiketli dosyayı GÖRMEDİĞİ, hiçbir testte uçtan uca ölçülmüyordu.
+    """
+    fid = create_folder(db, "Belgeler", owner_id=win_standart._user_id)
+    normal_id = _dosya_ekle(db, fid, "fatura.pdf")
+    mahrem_id = _dosya_ekle(db, fid, "gizli.pdf")
+
+    mahrem_tag = int(
+        db.execute("INSERT INTO tags (name, is_private) VALUES (?, 1)", ("Mahrem",)).lastrowid
+    )
+    db.execute("INSERT INTO file_tags (file_id, tag_id) VALUES (?, ?)", (mahrem_id, mahrem_tag))
+
+    win_standart._load_folder_files(fid)
+
+    gorunen = {win_standart._table.item(r, 0).text() for r in range(win_standart._table.rowCount())}
+    assert gorunen == {"🔒  fatura.pdf"}, (
+        f"Standart rol klasörde mahrem dosyayı görmemeli: {gorunen}"
+    )
+    assert normal_id  # sadece kurulumun gerçekten iki dosya eklediğini belgeler
 
 
 # ══════════════════════════════════════════════════════════════════════════════

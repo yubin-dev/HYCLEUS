@@ -11793,3 +11793,34 @@ bulgu, biri bu OTURUMUN en ciddi bulgusu (M147).
 
 MC-M151–MC-M200 (50 senaryo, son parça): sonraki oturumda devam
 edecek.
+
+## MC-Kataloğu — 4. Parça (MC-M151–MC-M200, SON)
+
+Aynı katalog, aynı yöntem — bu, 200'lük kataloğun son parçası.
+Kapsam: RBAC/db_manager/oturum (G), Denetim zinciri/dış çıpa (H),
+RFC 3161/Merkle/.hclx (I), İmha odası/TTL (J), Yedek/geri yükleme (K),
+AV tarama/karantina (L), Oturum/TPM/migration/meta (M).
+
+### Bölüm 20 (MC-M151–MC-M158) — RBAC / db_manager / oturum (`DB/db_manager.py`, `CORE/roles.py`, `UI/main_window.py`, `CORE/app_mode.py`, `UI/main_window_tree.py`)
+
+Test alt kümesi: `tests/test_db_manager_rbac.py` + `tests/test_bulk_
+toolbar_rbac.py` + `tests/test_authz_invariants.py` + `tests/test_
+roles.py` + `tests/test_role_decision_point.py` + `tests/test_app_
+mode.py` + `tests/test_app_mode_ui.py` + `tests/test_klasor_hiyerarsisi_
+ui.py` (baseline 3485).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M151 | `_yazma_yetkisini_dogrula()`: `if can_write(self._role):` → `if True:` (kontrolü ATLA) | **Killed** | 14 test düşüyor (`test_db_manager_rbac.py`) — DB katmanı RBAC'i UI'dan bağımsız, doğrudan ölçülüyor |
+| MC-M152 | `_katla()`: `.lower()` adımı kaldırıldı (büyük/küçük harf duyarlı) | **Killed** | 24 test düşüyor — `test_roles.py` + `test_authz_invariants.py` |
+| MC-M153 | Rol eksik: `None` → varsayılan Yönetici | **Kapsam dışı — hedef kod yok** | Kod tabanında "rol yoksa Yönetici say" deseni HİÇ yok; `normalize_role(None)` her zaman `""` (en dar yetki) döner, bilerek — `roles.py`'nin kendi docstring'i bunu açıkça belgeliyor, `test_roles.py` zaten sabitliyor |
+| MC-M154 | Kayıt onayı (`_on_approve`): talep edilen rolü yok say, hep Yönetici ata | **Kapsam dışı — hedef kod yok** | `PendingRegistrationsView._on_approve()` YAPISAL olarak `role` sütununa hiç dokunmuyor — tek satırlık `UPDATE users SET status='approved'`. Rol tamamen `register_new_user()` anında sabitleniyor, o da `is_admin_role(role)` ile Yönetici üretimini zaten reddediyor (`test_kayit_akisindan_asla_admin_uretilemez`) — onay adımının rolü DEĞİŞTİRECEĞİ bir kod yolu yok |
+| MC-M155 | Toplu işlem: rol kontrolünü yalnızca ilk dosyada yap (F4-1) | **Kapsam dışı — hedef kod yok** | `UI/main_window_bulk.py`'de dosya bazlı/döngü-başı bir rol kontrolü hiç yok (grep doğrulandı) — RBAC tamamen `DB/db_manager.py::_yazma_yetkisini_dogrula()`'da, HER TEK SQL yazımında (döngüdeki her dosya kendi INSERT/UPDATE'ini tetikler) uygulanıyor; "yalnızca ilk dosyada kontrol" deseni mimari olarak mümkün değil |
+| MC-M156 | `app_mode`: Bireysel modda RBAC'i gevşet | **Kapsam dışı — bilinçli sınır** | `CORE/app_mode.py`'nin kendi docstring'i: "RBAC bu moddan hiç haberdar değil ve olmamalı" — grep doğrulandı, `app_mode`/`is_bireysel` hiçbir yerde `can_write`/`is_admin_role`/`_yazma_yetkisini_dogrula` ile birlikte geçmiyor |
+| MC-M157 | `_apply_role_restrictions()`: `DBManager().set_active_role(self._role)` çağrısını kaldır | **Killed** | 2 test düşüyor (`test_bulk_toolbar_rbac.py::test_salt_okunur_toplu_*`) — bu tam olarak K1-14/B-094'ün kendi test dosyasının docstring'inde "çağırmasaydı rol hiç kontrol edilmeden geçerdi" diye açıkça uyardığı senaryo, ve gerçekten test edilmiş durumda |
+| MC-M158 | `_load_folder_files()`: `include_private=is_admin_role(self._role)` → `include_private=True` | **Survived-Fixed** ★ | Gerçek bulgu: `CORE.file_queries.files_by_folder(include_private=...)`'ın KENDİSİ `test_file_queries.py`'de sınanıyordu, ama `main_window_tree.py`'nin sidebar'da klasöre tıklama akışının bunu GERÇEKTEN `is_admin_role(self._role)` ile çağırdığı hiçbir testte uçtan uca ölçülmüyordu — canlı bir Standart oturum klasöre tıklayınca mahrem etiketli dosyayı görebilirdi. `tests/test_klasor_hiyerarsisi_ui.py::test_load_folder_files_standart_rol_icin_mahrem_dosyayi_gizliyor` eklendi (+ `win_standart` fixture) |
+
+**Bölüm 20 özet:** 8 senaryo → Killed 3 (M151,M152,M157), Survived-Fixed
+1 (M158★), Kapsam dışı 4 (M153,M154,M155 — hedef kod yok; M156 —
+bilinçli sınır). Yeni test: `tests/test_klasor_hiyerarsisi_ui.py` (+1
+test, +1 `win_standart` fixture). Üretim kodunda değişiklik yok.
