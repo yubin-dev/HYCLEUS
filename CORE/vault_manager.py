@@ -697,13 +697,23 @@ def create_vault(
     Raises:
         OSError      — dosya yazma hatası
         RuntimeError — DB bağlantısı yoksa (DBManager.connect() çağrılmamış)
-        USBAuthError — hwid zayıf bağlıysa (UUID yedeği) — taze kayıtta da,
-                       kurtarma sonrası yeniden kurulumda (anchor_share
-                       verilmiş) da geçerli; bkz. _reject_if_weak_binding.
+        USBAuthError — hwid kara listedeyse VEYA zayıf bağlıysa (UUID yedeği)
+                       — taze kayıtta da, kurtarma sonrası yeniden kurulumda
+                       (anchor_share verilmiş) da geçerli; bkz.
+                       _reject_if_weak_binding/_reject_if_blacklisted.
                        master_key'in KENDİSİNİN kurtarılması (recover_
                        master_key) ayrı ve muaftır — burada reddedilen
                        yalnızca yeni hwid'in vault'a YAZILMASI.
     """
+    # Kara liste EN BAŞTA — bkz. CORE/vault_manager.py'deki diğer üç kardeş
+    # kontrol (read_vault_role/change_vault_role/change_vault_pin) ve
+    # SECURITY.md §4.1. Taze kayıtta (henüz usb_tokens satırı yok) bu bir
+    # no-op'tur (_reject_if_blacklisted'in kendi sözleşmesi); yalnızca
+    # KARA LİSTEDEKİ bir hwid'e (ör. kurtarma sonrası aynı, iptal edilmiş
+    # cihaza yeniden kurulum) yeni bir vault YAZILMASINI engeller — tıpkı
+    # weak_binding kontrolünün altındaki "bu bir TRUST kararı" gerekçesiyle
+    # aynı sınıfta.
+    _reject_if_blacklisted(hwid)
     # BOTH dalda reddedilir. anchor_share verilmesi ("bu bir reprovisioning")
     # yalnızca YAZILACAK master_key/polinomun korunacağı anlamına gelir —
     # master_key'in nereden geldiği (recover_master_key, muaf) ile YENİ
@@ -1062,11 +1072,17 @@ def read_vault_role(hwid: str, pin: str) -> str:
         Vault'ta kayıtlı rol string'i
 
     Raises:
-        USBAuthError       — hwid zayıf bağlıysa (UUID yedeği)
+        USBAuthError       — hwid kara listedeyse VEYA zayıf bağlıysa (UUID yedeği)
         FileNotFoundError  — vault dosyası yoksa
         VaultTamperedError — HMAC doğrulaması başarısızsa
         ValueError         — PIN yanlış veya vault formatı geçersizse
     """
+    # Kara liste EN BAŞTA — _decrypt_vault()/authenticate_usb() ile AYNI
+    # sıra/gerekçe: PIN doğru olsa bile açılmamalı. Bu fonksiyon eskiden bu
+    # kontrolü hiç yapmıyordu — open_vault() için bir kez bulunup düzeltilen
+    # "iki giriş yolu senkron değil" hatasının üçüncü tekrarı (bkz. SECURITY.md
+    # §4.1, "Kara liste kontrolü — üç kez tekrarlayan bir hata").
+    _reject_if_blacklisted(hwid)
     _reject_if_weak_binding(hwid, "vault açma")
     verify_vault(hwid)  # HMAC önce doğrulanır
 
@@ -1126,7 +1142,7 @@ def change_vault_role(hwid: str, pin: str, new_role: str) -> None:
         new_role — Yazılacak yeni rol string'i
 
     Raises:
-        USBAuthError       — hwid zayıf bağlıysa (UUID yedeği)
+        USBAuthError       — hwid kara listedeyse VEYA zayıf bağlıysa (UUID yedeği)
         FileNotFoundError  — vault dosyası yoksa
         VaultTamperedError — HMAC doğrulaması başarısızsa
         ValueError         — PIN yanlış, vault formatı geçersiz veya rol boşsa
@@ -1134,6 +1150,11 @@ def change_vault_role(hwid: str, pin: str, new_role: str) -> None:
     if not new_role:
         raise ValueError("Yeni rol boş olamaz.")
 
+    # Kara liste EN BAŞTA — bkz. read_vault_role() üstündeki not/SECURITY.md
+    # §4.1. Bu kontrol olmadan kara listedeki bir USB, sahibi PIN'i biliyorsa
+    # kendi rolünü Yönetici'ye YÜKSELTEBİLİYORDU (UI/UsbTokensView.py'nin
+    # "Rol Değiştir" ekranı bu fonksiyonu doğrudan çağırıyor).
+    _reject_if_blacklisted(hwid)
     _reject_if_weak_binding(hwid, "rol değişikliği")
     verify_vault(hwid)
 
@@ -1196,7 +1217,7 @@ def change_vault_pin(hwid: str, old_pin: str, new_pin: str) -> None:
     Master key ve Shamir payları korunur; yalnızca şifreleme anahtarı yenilenir.
 
     Raises:
-        USBAuthError       — hwid zayıf bağlıysa (UUID yedeği)
+        USBAuthError       — hwid kara listedeyse VEYA zayıf bağlıysa (UUID yedeği)
         FileNotFoundError  — vault dosyası yoksa
         VaultTamperedError — HMAC doğrulaması başarısızsa
         ValueError         — eski PIN yanlış, vault formatı geçersiz veya yeni PIN boşsa
@@ -1204,6 +1225,12 @@ def change_vault_pin(hwid: str, old_pin: str, new_pin: str) -> None:
     if not new_pin:
         raise ValueError("Yeni PIN boş olamaz.")
 
+    # Kara liste EN BAŞTA — bkz. read_vault_role() üstündeki not/SECURITY.md
+    # §4.1. Bu kontrol olmadan kara listedeki bir USB, sahibi PIN'i biliyorsa
+    # PIN'i kendi kendine YENİLEYEBİLİYORDU (CORE/pin_rotation.py'nin
+    # self-servis PIN yenileme akışı bu fonksiyonu doğrudan çağırıyor) — kara
+    # listenin "PIN doğru olsa bile artık hiçbir şey yapamaz" amacını bozardı.
+    _reject_if_blacklisted(hwid)
     _reject_if_weak_binding(hwid, "PIN değişikliği")
     verify_vault(hwid)
 

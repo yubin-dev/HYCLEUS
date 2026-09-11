@@ -420,6 +420,47 @@ standing lesson: any future refactor of `_trigger_usb_reauth()`,
 `open_vault()`, or `authenticate_usb()` that separates "check the
 blacklist" from "advance the session" reopens this class of bug.
 
+**The same shape of bug, found in four more places at once by an
+attacker-perspective audit (2026-09-12).** `CORE/vault_manager.py` has
+four more functions that decrypt a vault or write a new one given a
+correct PIN — `read_vault_role()`, `change_vault_role()`,
+`change_vault_pin()`, and `create_vault()` (the last one reachable with an
+*existing* HWID through `reprovision_vault()`) — and **none of them called
+`_reject_if_blacklisted()`.** Two of the four are reachable from live UI
+with nothing more than the correct PIN: `UI/UsbTokensView.py`'s "Change
+Role" action calls `change_vault_role()` directly, so a blacklisted
+device's owner who still has the PIN could have their role raised to
+Administrator by an admin who has no on-screen indication the HWID is
+blacklisted; `CORE/pin_rotation.py`'s self-service PIN-rotation flow calls
+`change_vault_pin()` directly, so a device blacklisted mid-session could
+rotate its own PIN and stay usable indefinitely. `read_vault_role()` and
+`create_vault()` were reachable from `CORE/setup_usb.py`'s `--reset` CLI
+and from `reprovision_vault()` respectively. Proven live before the fix
+(`tests/test_blacklist.py`, isolated fixture): blacklisting a device, then
+calling each of the four with the correct PIN, succeeded on all four —
+`change_vault_role()` actually raised the role to "Yönetici" in the
+process. All four now call `_reject_if_blacklisted()` first, identical in
+shape to `_decrypt_vault()`'s existing call.
+
+**This is the third time this exact bug class has appeared this week** —
+the login path above, `_trigger_usb_reauth()` above, and now these four
+functions, all the same root cause: *the blacklist check and the
+PIN-authenticated operation live in different functions, so adding a new
+function that skips the shared helper is a silent, untested regression.*
+Rather than trust memory to catch a fourth occurrence,
+`tests/test_blacklist.py::test_hwid_ve_pin_alan_her_fonksiyon_kara_liste_kontrolune_ulasiyor`
+now parses `CORE/vault_manager.py` with `ast`, finds every function whose
+signature takes both an `hwid` parameter and a PIN-shaped parameter (`pin`,
+`old_pin`, `new_pin`, ...), and asserts each one's call graph reaches
+`_reject_if_blacklisted()` — directly or through a helper (`_decrypt_vault`,
+`_read_share_1`, `create_vault`). One function, `recover_master_key()`, is
+an explicit, commented exemption in that test (`_MUAF`): it only *reads*
+key material for a user who has lost their vault, by the same reasoning
+`_reject_if_weak_binding()` already exempts it, and writing a fresh vault
+under a blacklisted HWID (which *is* gated) is a separate decision. Adding
+a function to that signature shape without also reaching the shared guard
+now fails CI by name, not by silence.
+
 ### 4.2 The vault HMAC key is derived from share_2, not the HWID
 
 > **Attacker models:** M2 · M3
@@ -4460,6 +4501,47 @@ boşluk davranışta değil, kapsamdaydı. Kalıcı ders: `_trigger_usb_reauth()
 `open_vault()` ya da `authenticate_usb()`'un gelecekteki herhangi bir
 yeniden düzenlemesi "kara listeyi kontrol et" ile "oturumu ilerlet"i
 birbirinden ayırırsa bu hata sınıfı yeniden açılır.
+
+**Aynı şekildeki hata, saldırgan-bakış-açılı bir denetimde DÖRT yerde
+birden bulundu (2026-09-12).** `CORE/vault_manager.py`'de doğru PIN
+verildiğinde bir vault'u çözen ya da yenisini yazan dört fonksiyon daha
+var — `read_vault_role()`, `change_vault_role()`, `change_vault_pin()` ve
+(mevcut bir HWID'e `reprovision_vault()` üzerinden ulaşılabilen)
+`create_vault()` — ve **hiçbiri `_reject_if_blacklisted()`'i
+çağırmıyordu.** Dördünden ikisi doğru PIN'den başka hiçbir şey
+gerektirmeden CANLI UI'dan erişilebiliyordu: `UI/UsbTokensView.py`'nin
+"Rol Değiştir" eylemi `change_vault_role()`'u doğrudan çağırıyor — yani
+kara listedeki bir cihazın sahibi, PIN'i hâlâ biliyorsa, ekranda HWID'in
+kara listede olduğuna dair HİÇBİR uyarı olmadan rolünü Yönetici'ye
+yükseltebiliyordu; `CORE/pin_rotation.py`'nin self-servis PIN yenileme
+akışı `change_vault_pin()`'i doğrudan çağırıyor — yani oturum ortasında
+kara listeye alınan bir cihaz PIN'ini yenileyip süresiz canlı kalabiliyordu.
+`read_vault_role()` ve `create_vault()`'a sırasıyla `CORE/setup_usb.py`'nin
+`--reset` CLI'sinden ve `reprovision_vault()`'tan ulaşılıyordu. Düzeltmeden
+önce canlı olarak kanıtlandı (`tests/test_blacklist.py`, izole fixture):
+bir cihazı kara listeye alıp doğru PIN'le dördünü de çağırmak DÖRDÜNDE DE
+BAŞARILI oldu — `change_vault_role()` süreçte rolü fiilen "Yönetici"ye
+yükseltti. Dördü de artık ilk iş olarak `_reject_if_blacklisted()`'i
+çağırıyor — `_decrypt_vault()`'un zaten yaptığıyla BİREBİR aynı şekilde.
+
+**Bu, aynı hata sınıfının bu hafta ÜÇÜNCÜ ortaya çıkışı** — yukarıdaki
+giriş yolu, yukarıdaki `_trigger_usb_reauth()`, ve şimdi bu dört fonksiyon
+— hepsi AYNI kök nedenden: *kara liste kontrolü ile PIN'le doğrulanan
+işlem farklı fonksiyonlarda yaşıyor, yani bu paylaşılan yardımcıyı atlayan
+yeni bir fonksiyon eklemek sessiz, testsiz bir gerilemeye dönüşüyor.*
+Dördüncü bir tekrarı hafızaya güvenerek yakalamak yerine,
+`tests/test_blacklist.py::test_hwid_ve_pin_alan_her_fonksiyon_kara_liste_kontrolune_ulasiyor`
+artık `CORE/vault_manager.py`'yi `ast` ile ayrıştırıyor, imzasında hem bir
+`hwid` parametresi hem de PIN-şekilli bir parametre (`pin`, `old_pin`,
+`new_pin`, ...) olan HER fonksiyonu buluyor ve her birinin çağrı grafiğinin
+`_reject_if_blacklisted()`'e ulaştığını doğruluyor — doğrudan ya da bir
+yardımcı üzerinden (`_decrypt_vault`, `_read_share_1`, `create_vault`). Tek
+bir fonksiyon, `recover_master_key()`, bu testte açık ve gerekçeli bir
+muafiyet (`_MUAF`): yalnızca vault'unu kaybetmiş bir kullanıcı için anahtar
+materyalini OKUYOR, `_reject_if_weak_binding()`'in onu zaten muaf tuttuğu
+AYNI gerekçeyle — kara listedeki bir HWID'e YENİ bir vault YAZMAK (ki bu
+KAPILI) ayrı bir karar. Bu imza şeklinde bir fonksiyon ekleyip paylaşılan
+kapıya ulaşmamak artık CI'ı sessizce değil, isim vererek kırıyor.
 
 ### 4.2 Vault HMAC anahtarı share_2'den türetiliyor, HWID'den değil
 
