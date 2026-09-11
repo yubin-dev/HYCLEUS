@@ -51,7 +51,7 @@ from CORE.audit_chain import audit_log_entry_count
 from CORE.file_queries import count_files_by_label, vault_summary
 
 _HWID = "TEST-HWID-DB"
-_KEY = b"K" * 32
+_KEY = b"K" * 16 + b"k" * 16
 
 
 # ══════════════════════════════════════════════════════════════════════════════

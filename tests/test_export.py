@@ -25,7 +25,7 @@ from CORE.export import (
     unique_path,
 )
 
-_KEY = b"K" * 32
+_KEY = b"K" * 16 + b"k" * 16
 _HWID = "TEST-HWID-DB"
 
 
@@ -171,7 +171,7 @@ def test_zip_of_an_empty_selection_produces_an_empty_archive(db, tmp_path: Path)
 
 def test_zip_wrong_key_fails_every_file(db, tmp_path: Path):
     _add_encrypted(db, tmp_path, "a.txt", b"x")
-    sonuc = export_to_zip(db, _rows(db), b"Y" * 32, tmp_path / "c.zip", hwid_fallback=_HWID)
+    sonuc = export_to_zip(db, _rows(db), b"Y" * 16 + b"y" * 16, tmp_path / "c.zip", hwid_fallback=_HWID)
     assert sonuc.saved == 0
     assert "bütünlük hatası" in sonuc.errors[0]
 

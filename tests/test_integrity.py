@@ -36,7 +36,7 @@ from CORE.integrity import (
     sweep_integrity,
 )
 
-_KEY = b"K" * 32
+_KEY = b"K" * 16 + b"k" * 16
 _PLAINTEXT = b"HYCLEUS gizli belge icerigi - BENZERSIZ_IMZA_9d4f2a - " + b"dolgu " * 500
 
 
@@ -163,7 +163,7 @@ def test_verify_file_detects_edited_aad(tmp_path: Path):
 def test_verify_file_rejects_a_wrong_key(tmp_path: Path):
     hcl = _make_hcl(tmp_path)
     with pytest.raises(AuthenticationError):
-        verify_file(hcl, b"X" * 32)
+        verify_file(hcl, b"X" * 16 + b"x" * 16)
 
 
 def test_verify_file_rejects_a_bad_magic(tmp_path: Path):
@@ -618,7 +618,7 @@ def test_tampering_with_a_sweep_entry_breaks_the_chain(db, tmp_path: Path):
 def test_wrong_key_does_not_mark_the_whole_vault_corrupt(db, tmp_path: Path):
     ids = [_register(db, _make_hcl(tmp_path, name=f"d{i}.txt")) for i in range(4)]
 
-    rapor = sweep_integrity(db, b"Y" * 32)
+    rapor = sweep_integrity(db, b"Y" * 16 + b"y" * 16)
 
     assert rapor.suspected_wrong_key
     assert rapor.corrupt == 0
@@ -675,7 +675,7 @@ def test_wrong_key_guard_tam_esik_degerinde_devreye_giriyor(db, tmp_path: Path):
     for i in range(_WRONG_KEY_MIN_FILES):
         _register(db, _make_hcl(tmp_path, name=f"d{i}.txt"))
 
-    rapor = sweep_integrity(db, b"Y" * 32)
+    rapor = sweep_integrity(db, b"Y" * 16 + b"y" * 16)
 
     assert rapor.suspected_wrong_key, "tam eşik değerinde guard devreye girmedi"
 
@@ -780,7 +780,7 @@ def test_wrong_key_run_does_not_advance_the_weekly_gate(db, tmp_path: Path):
     for i in range(4):
         _register(db, _make_hcl(tmp_path, name=f"d{i}.txt"))
 
-    rapor = maybe_run_weekly_sweep(db, b"Z" * 32)
+    rapor = maybe_run_weekly_sweep(db, b"Z" * 16 + b"z" * 16)
     assert rapor is not None and rapor.suspected_wrong_key
     assert sweep_due(db) is True
 

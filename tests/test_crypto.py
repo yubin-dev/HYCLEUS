@@ -543,6 +543,39 @@ def test_anahtar_uzunlugu_tam_32_byte_disinda_reddedilir(
 
 
 @pytest.mark.parametrize(
+    "dejenere_anahtar",
+    [b"\x00" * 32, b"\xff" * 32, b"\xab" * 32],
+    ids=["tum_sifir", "tum_ff", "tekrarlayan_bayt"],
+)
+def test_dejenere_32_byte_anahtar_reddedilir(
+    plain_file: Path, key: bytes, dejenere_anahtar: bytes
+) -> None:
+    """
+    B-127: 32 byte UZUNLUĞUNDA ama tüm baytları AYNI olan bir anahtar
+    (tüm sıfır, tüm 0xFF, herhangi bir tekrarlayan bayt) — `len(key) != 32`
+    kontrolünü geçiyor ama kriptografik olarak dejenere. AES-256'nın
+    DES'teki gibi bilinen bir "zayıf anahtar" sınıfı yok; bu gerçek bir
+    şifre kırılganlığı değil, saf bir sanity kontrolü: anahtar bu kadar
+    dejenereyse (rastgele üretim/Shamir birleştirme/TPM çözme zincirinde
+    ciddi bir hata varsa oluşabilir) işlem burada durmalı.
+
+    Mutasyon-kanıt: `_degenere_anahtar_mi()` çağrıları kaldırılınca (ya da
+    `_degenere_anahtar_mi`'nin gövdesi `return False` yapılınca) üç
+    fonksiyon da (`encrypt_file`/`verify_file`/`decrypt_file`) bu anahtarı
+    sessizce kabul ediyordu — ölçüldü, düzeltilmeden önce test buradaydı
+    ve GEÇİYORDU (yanlış-yeşil).
+    """
+    hcl_path, _sha, _aad = encrypt_file(plain_file, key, _USER_ID, hwid=_HWID)
+
+    with pytest.raises(ValueError, match="dejenere"):
+        encrypt_file(plain_file, dejenere_anahtar, _USER_ID, hwid=_HWID)
+    with pytest.raises(ValueError, match="dejenere"):
+        crypto.verify_file(hcl_path, dejenere_anahtar, hwid=_HWID)
+    with pytest.raises(ValueError, match="dejenere"):
+        decrypt_file(hcl_path, dejenere_anahtar, hwid=_HWID)
+
+
+@pytest.mark.parametrize(
     "islem",
     ["blok_takasi", "blok_atlama", "blok_ortasinda_kesme", "sona_bayt_ekleme"],
 )

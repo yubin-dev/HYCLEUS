@@ -46,7 +46,7 @@ except ImportError as _exc:  # pragma: no cover — ortama bağlı
 from CORE import secret_store
 from CORE.crypto import encrypt_file
 
-_KEY = b"K" * 32
+_KEY = b"K" * 16 + b"k" * 16
 _HWID = "BULK-LOCK-HWID"
 
 

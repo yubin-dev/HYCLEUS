@@ -233,7 +233,7 @@ def test_create_backup_damgayi_yaziyor(db, tmp_path: Path):
     assert son_yedek(db) is None
     vault = tmp_path / "vault"
     vault.mkdir()
-    create_backup(db, tmp_path / "yedek", b"k" * 32, vault_dir=vault)
+    create_backup(db, tmp_path / "yedek", b"k" * 16 + b"K" * 16, vault_dir=vault)
 
     assert son_yedek(db) is not None
     assert yedek_durumu(db).durum is YedekDurum.GUNCEL
@@ -245,7 +245,7 @@ def test_create_backup_damgasi_raporun_zamaniyla_ayni(db, tmp_path: Path):
 
     vault = tmp_path / "vault"
     vault.mkdir()
-    rapor = create_backup(db, tmp_path / "yedek", b"k" * 32, vault_dir=vault)
+    rapor = create_backup(db, tmp_path / "yedek", b"k" * 16 + b"K" * 16, vault_dir=vault)
     assert db.get_setting(LAST_BACKUP_SETTING, "") == rapor.created_at
 
 
@@ -265,7 +265,7 @@ def test_damga_yazimi_yedegi_dusurmuyor(db, tmp_path: Path, monkeypatch):
     vault = tmp_path / "vault"
     vault.mkdir()
 
-    rapor = create_backup(db, tmp_path / "yedek", b"k" * 32, vault_dir=vault)
+    rapor = create_backup(db, tmp_path / "yedek", b"k" * 16 + b"K" * 16, vault_dir=vault)
     assert rapor.path.exists()
 
 

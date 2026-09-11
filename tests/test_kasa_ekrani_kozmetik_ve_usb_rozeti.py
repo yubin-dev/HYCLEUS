@@ -37,7 +37,7 @@ except ImportError as _exc:  # pragma: no cover — ortama bağlı
     )
 
 _HWID = "TEST-HWID-DB"
-_KEY = b"K" * 32
+_KEY = b"K" * 16 + b"k" * 16
 
 
 @pytest.fixture(scope="module")

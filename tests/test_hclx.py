@@ -45,8 +45,8 @@ from CORE.hclx import (
 
 KOK = Path(__file__).resolve().parent.parent
 
-_KEY = b"k" * 32
-_BASKA_KEY = b"x" * 32
+_KEY = b"k" * 16 + b"K" * 16
+_BASKA_KEY = b"x" * 16 + b"X" * 16
 _AN = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 _SAAT = 24
 

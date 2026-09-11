@@ -213,6 +213,15 @@ def generate_key() -> bytes:
     return os.urandom(32)
 
 
+def _degenere_anahtar_mi(key: bytes) -> bool:
+    """Anahtarın TÜM baytları aynıysa True (tüm sıfır, tüm 0xFF, herhangi
+    bir tekrarlayan bayt). AES-256'nın DES'teki gibi bilinen bir "zayıf
+    anahtar" sınıfı yok — bu saf bir sanity kontrolü: anahtar bu kadar
+    dejenereyse bir yerde (rastgele üretim, Shamir birleştirme, TPM
+    çözme) ciddi bir hata var demektir, işlem burada durmalı."""
+    return len(set(key)) == 1
+
+
 def _trailer_offset(fin: IO[bytes], file_size: int, body_start: int) -> int | None:
     """
     Zaman damgası fragmanının başladığı ofset — yoksa None.
@@ -420,6 +429,8 @@ def encrypt_file(
     src = Path(src)
     if len(key) != 32:
         raise ValueError(f"Anahtar 32 byte olmalı, {len(key)} byte verildi.")
+    if _degenere_anahtar_mi(key):
+        raise ValueError("Anahtar dejenere (tüm baytları aynı) — reddedildi.")
 
     # SHA-256 şifrelemeden önce hesaplanır — orijinal içeriği doğrular ve
     # DB'ye kaydedilmek üzere döndürülür. B-092/B-099: AAD'YE YAZILMIYOR —
@@ -566,6 +577,8 @@ def verify_file(
     src = Path(src)
     if len(key) != 32:
         raise ValueError(f"Anahtar 32 byte olmalı, {len(key)} byte verildi.")
+    if _degenere_anahtar_mi(key):
+        raise ValueError("Anahtar dejenere (tüm baytları aynı) — reddedildi.")
 
     with open(src, "rb") as fin:
         version, nonce, aad, body_start = _read_header(fin)
@@ -717,6 +730,8 @@ def decrypt_file(
     src = Path(src)
     if len(key) != 32:
         raise ValueError(f"Anahtar 32 byte olmalı, {len(key)} byte verildi.")
+    if _degenere_anahtar_mi(key):
+        raise ValueError("Anahtar dejenere (tüm baytları aynı) — reddedildi.")
 
     with open(src, "rb") as fin:
         version, nonce, aad, body_start = _read_header(fin)
