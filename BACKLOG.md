@@ -11878,3 +11878,78 @@ test_timestamp_report.py` + `tests/test_deneysel_bagli_degil.py`
 **Bölüm 22 özet:** 8 senaryo → Killed 7, Kapsam dışı 1 (M176, hedef
 kod yok). Yeni test yok — blok TAMAMEN doygun. Üretim kodunda
 değişiklik yok.
+
+### Bölüm 23 (MC-M177–MC-M183) — İmha odası / disposal / TTL (`CORE/disposal.py`, `UI/main_window_files.py`, `UI/main_window_bulk.py`, `UI/main_window_tree.py`, `CORE/folders.py`)
+
+Test alt kümesi: `tests/test_disposal.py` (baseline 80).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M177 | `_require_approval()`: `DECISION_NEEDS_WARNING` dalında `if not user_confirmed:` kontrolü atlandı | **Killed** | `test_korumasiz_onaysiz_engelleniyor` düşüyor |
+| MC-M178 | `purge_file()`: `shred_file(Path(filepath))` → çıplak `unlink()` | **Killed** | 2 test düşüyor — B-134'ün kendi doğrudan-hedefli testleri |
+| MC-M179 | `main.py`: açılışta `resume_pending_disposals()` çağrısı kaldırıldı | **Killed** | `test_main_yarim_kalan_imhalari_acilista_tamamliyor` (AST tabanlı wiring testi) düşüyor |
+| MC-M180 | `move_to_imha()`: `timedelta(hours=ttl_hours)` → `timedelta(minutes=ttl_hours)` | **Survived-Fixed** ★ | Gerçek bulgu: mevcut `test_ttl_sayaci_kuruluyor` yalnızca `expires_at is not None` diyordu, SAYISAL farkı hiç ölçmüyordu — birim saatten dakikaya düşse fark edilmezdi. `test_ttl_sayaci_gercekten_saat_biriminde` eklendi (24 saatlik TTL'in gerçekten ~24 saat sonrasını hedeflediğini ölçüyor) |
+| MC-M181 | İmha onayı: "ayar açıkken de dialogu atla" | **Kapsam dışı — hedef kod yok** | UI'daki `_on_ctx_move_to_imha`/`_on_ctx_bulk_move_to_imha`/`_on_folder_move_to_imha`'nın onay diyaloğu KOŞULSUZ (hiçbir ayarla kapatılamıyor) — "ayar açıkken atla" senaryosunun varsaydığı bir açma/kapama ayarı hiç yok. Ama bu araştırma sırasında AYRI, gerçek bir yapısal boşluk bulundu → **B-145** |
+| MC-M182 | `_require_approval()`: `DECISION_NEEDS_ADMIN` dalında `if not is_admin(db, approved_by):` kontrolü atlandı | **Killed** | 7 test düşüyor |
+| MC-M183 | `purge_file()`: `db.log("file_purged", ...)` çağrısı kaldırıldı (dosya + DB satırı yine de silinir) | **Killed** | `test_suresi_dolmus_onayla_siliniyor` düşüyor |
+
+**Bölüm 23 özet:** 7 senaryo → Killed 6, Survived-Fixed 1 (M180★).
+Yeni test: `tests/test_disposal.py` (+1). Üretim kodunda değişiklik
+yok. M181 araştırması sırasında B-145 (aşağıda) bulundu ve backlog'a
+düşüldü — kod bu turda DEĞİŞTİRİLMEDİ.
+
+## B-145 — Üç "İmha Odası'na taşı" UI giriş noktası `CORE/disposal.py::move_to_imha()`'yı hiç çağırmıyor — erken-silme onay kapısı UI'dan ulaşılamaz
+
+**Durum:** Açık — karar bekliyor (UI'yı CORE'a bağlamak, kapsam dışı bu turda).
+**Öncelik:** Orta-düşük (veri kaybı YOK — aşağıdaki "gerçek etki" bölümüne bakın — ama gerçek bir UX/savunma-derinliği boşluğu).
+**Bulundu:** 2026-09-11 (MC-Kataloğu 4. parça, MC-M181 araştırması sırasında).
+
+`CORE/disposal.py::move_to_imha()` bir dosyayı İmha Odası'na taşımadan
+önce `check_disposal()`/`_require_approval()` ile ERKEN SİLME kontrolü
+yapıyor: saklama süresi henüz dolmamış bir dosya için ya kullanıcı
+onayı (`DECISION_NEEDS_WARNING`) ya da yönetici onayı
+(`DECISION_NEEDS_ADMIN`) istiyor, yoksa `EarlyDeletionBlocked`
+fırlatıp dosyaya DOKUNMUYOR.
+
+Ama modülün kendi docstring'i zaten itiraf ediyor: *"UI bağlantısı (bu
+adımda değil)... main_window.py bugün silme işlemlerini satır içi SQL
+ile yapıyor."* Bu, o notun yazıldığı tarihten bugüne kadar hâlâ
+geçerli — üç UI giriş noktasının ÜÇÜ de `CORE.disposal.move_to_imha()`'yı
+import bile etmiyor (`grep -rn "move_to_imha(" UI/*.py` yalnızca yerel
+UI metotlarının TANIMLARINI/çağrılarını buluyor, CORE fonksiyonunu
+hiç):
+
+- `UI/main_window_files.py::_on_ctx_move_to_imha()` — koşulsuz
+  `QMessageBox.question()` + doğrudan `UPDATE files SET label='Imha',
+  expires_at=?`.
+- `UI/main_window_bulk.py::_on_ctx_bulk_move_to_imha()` — aynı desen,
+  toplu.
+- `UI/main_window_tree.py::_on_folder_move_to_imha()` →
+  `CORE/folders.py::move_folder_to_imha()` — aynı desen, klasör bazlı.
+
+Üçü de `expiry_from_now()` (yalnızca TTL hesaplayan saf fonksiyon) ile
+sayacı kuruyor ve `db.log("file_moved_to_imha", ...)` ile denetime
+düşüyor — ama `check_disposal()`/`_require_approval()`'ı HİÇ
+çağırmıyor. Saklama süresi henüz dolmamış bir dosya, hiçbir uyarı ya
+da onay istenmeden İmha Odası'na taşınabiliyor.
+
+**Gerçek etki — neden bu bir veri kaybı DEĞİL:** `purge_expired_file()`
+(otomatik süpürme, hem `CORE/scheduler.py` hem `UI/main_window_table.py::
+_tick_expiry`'den tetikleniyor) sayaç sıfırlanınca dosyayı silmeden
+ÖNCE kendi BAĞIMSIZ `is_retention_protected(db, file_id)` kontrolünü
+yapıyor ve korumalı bir dosyayı atlayıp `retention_hold` diye
+logluyor (kod DEĞİL). Yani bu boşluk üzerinden BİLDİRİLMEDEN
+taşınan korumalı bir dosya diskten asla silinmiyor — yalnızca İmha
+Odası'nda süresiz, sayacı hiç sıfırlanmayan (her tikte `retention_hold`
+ile reddedilen) kafa karıştırıcı bir durumda kalıyor. Kullanıcı/yönetici
+ise `move_to_imha()`'nın sağlayacağı "bu dosya saklama politikası
+altında, emin misiniz" uyarısını ya da yönetici-onayı adımını hiç
+görmüyor.
+
+**Neden bu turda düzeltilmedi:** UI'yı `CORE.disposal.move_to_imha()`'ya
+bağlamak üç çağrı yerinin de imzasını değiştirmeyi (user_id/
+user_confirmed/approved_by parametrelerini UI'dan geçirmeyi, ayrıca
+`EarlyDeletionBlocked` için yeni bir UI akışı — muhtemelen ikinci bir
+onay diyaloğu ya da yönetici-onay isteği — kurmayı) gerektiriyor;
+kod-taraması/mutasyon turunun kapsamı dışında, bilinçli bir UI
+tasarım kararı istiyor.

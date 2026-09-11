@@ -284,6 +284,24 @@ class TestProfilsizDosyaEskiDavranis:
         expires = db.fetchone("SELECT expires_at FROM files WHERE id = ?", (fid,))["expires_at"]
         assert expires is not None and expires.endswith("Z")
 
+    def test_ttl_sayaci_gercekten_saat_biriminde(self, db, tmp_path):
+        """MC-M180: `ttl_hours` gerçekten SAAT mi, yoksa yanlışlıkla
+        dakika/saniye mi kullanılıyor — `expires_at` var olduğunu
+        kanıtlamak yeterli değil, SAYISAL farkı ölçmek gerekiyor.
+        """
+        from datetime import datetime, timezone
+
+        fid, _ = _mk_file(db, tmp_path)
+        onceki = datetime.now(timezone.utc)
+        move_to_imha(db, fid, ttl_hours=24)
+        expires = db.fetchone("SELECT expires_at FROM files WHERE id = ?", (fid,))["expires_at"]
+        bitis = datetime.strptime(expires, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        fark_saat = (bitis - onceki).total_seconds() / 3600
+        assert 23.9 < fark_saat < 24.1, (
+            f"ttl_hours=24 verildi ama expires_at yalnızca {fark_saat:.4f} saat sonrasını "
+            "gösteriyor — birim saat değil"
+        )
+
     def test_onaysiz_kalici_siliniyor(self, db, tmp_path):
         fid, hcl = _mk_file(db, tmp_path)
         purge_file(db, fid)
