@@ -772,6 +772,44 @@ def test_daily_anchor_writes_once_per_day(db, tmp_path: Path, monkeypatch):
     assert kayitlar[1]["anchored_at"].startswith("2026-08-14")
 
 
+def test_utcnow_gercekten_utc_donduruyor_yerel_saat_degil():
+    """MC-M165: `_utcnow()`'un GERÇEK (monkeypatch'siz) hâli UTC olmalı.
+
+    Diğer TÜM testler `_utcnow()`'u monkeypatch'liyor — gerçek gövdenin
+    `datetime.now(timezone.utc)` mi yoksa saf `datetime.now()` (yerel,
+    tz-naive) mi döndürdüğünü hiçbiri ölçmüyordu. Fark, anchor kayıtlarının
+    `anchored_at` alanının ve `maybe_write_daily_anchor()`'ın "bugün zaten
+    yazıldı mı" karşılaştırmasının makineye/DST'ye göre kaymasına yol açar.
+    """
+    from datetime import timezone
+
+    from CORE.audit_chain import _utcnow
+
+    simdi = _utcnow()
+    assert simdi.tzinfo is not None, "_utcnow() tz-naive dönüyor — UTC etiketi yok"
+    assert simdi.utcoffset().total_seconds() == 0, "_utcnow() UTC'den farklı bir ofset taşıyor"
+    assert simdi.tzinfo is timezone.utc or simdi.utcoffset() == timezone.utc.utcoffset(None)
+
+
+def test_line_hash_tam_sha256_donduruyor_kisaltilmis_degil():
+    """MC-M166: `_line_hash()`'in anchor iç-zincir gücü hiç doğrulanmıyordu.
+
+    Zincirleme davranışı (bir satır değişince sonraki doğrulamanın
+    bozulması) başka testlerde dolaylı sınanıyor, ama fonksiyonun
+    GERÇEKTEN tam 32 baytlık SHA-256 mi yoksa kısaltılmış/zayıflatılmış
+    bir özet mi ürettiği hiçbir yerde pinlenmemişti.
+    """
+    import hashlib
+
+    from CORE.audit_chain import _line_hash
+
+    ornek = '{"seq":1,"version":"HYCLEUS-ANCHOR-V1"}'
+    beklenen = hashlib.sha256(ornek.encode("utf-8")).hexdigest()
+    sonuc = _line_hash(ornek)
+    assert sonuc == beklenen
+    assert len(sonuc) == 64, "SHA-256 hex özeti 64 karakter olmalı (32 bayt)"
+
+
 def test_shutdown_anchor_is_written_even_on_the_same_day(db, tmp_path: Path, monkeypatch):
     """Günlük çıpa varken bile kapanış çıpası yazılmalı — write_anchor koşulsuzdur."""
     from datetime import datetime, timezone

@@ -11824,3 +11824,34 @@ ui.py` (baseline 3485).
 1 (M158★), Kapsam dışı 4 (M153,M154,M155 — hedef kod yok; M156 —
 bilinçli sınır). Yeni test: `tests/test_klasor_hiyerarsisi_ui.py` (+1
 test, +1 `win_standart` fixture). Üretim kodunda değişiklik yok.
+
+### Bölüm 21 (MC-M159–MC-M168) — Denetim zinciri / dış çıpa (`CORE/audit_chain.py`, `UI/AuditLogView.py`, `UI/security_actions.py`)
+
+Test alt kümesi: `tests/test_audit_chain.py` + `tests/test_audit_log_
+view.py` + `tests/test_recovery_share_anchor.py` + `tests/test_
+recovery_share_ui.py` + `tests/test_kurtarma_usb_kapisi.py` + `tests/
+test_audit_log_immutable.py` (baseline 138 çekirdek + geniş alt küme).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M159 | `compute_entry_hash()`: `prev_raw + canonical_bytes(entry)` → yalnızca `canonical_bytes(entry)` (prev_hash'i hesaba katma) | **Killed** | 4 test düşüyor — `test_compute_entry_hash_uses_raw_bytes_of_prev_hash` dahil |
+| MC-M160 | `ensure_chain_started()`: `if existing is not None: return existing` guard'ı kaldırıldı (her açılışta yeni genesis) | **Killed** | 2 test düşüyor — `test_ensure_chain_started_is_idempotent`, `test_chain_survives_a_reopened_database` |
+| MC-M161 | `verify_audit_chain()`: dönüş `ok=not breaks` → `ok=True` (ilk kopukta bulunsa bile sağlam raporla) | **Killed** | 8 test düşüyor — zincirin KENDİ bütünlük testlerinin tamamı bu alanı doğrudan ölçüyor |
+| MC-M162 | `verify_against_anchor()`: hash uyuşmazlığı `elif` dalı devre dışı (karşılaştırmayı atla) | **Killed** | `test_anchor_detects_a_rewritten_chain` düşüyor |
+| MC-M163 | `write_anchor()`: USB kopyası `_append_anchor_line(usb_target, base)` çağrısı kaldırıldı | **Killed** | 11 test düşüyor — B-090'ın kendi geniş test seti (USB kopyası/replica karşılaştırması) |
+| MC-M164 | `AuditLogView._log_disa_aktarim()`: `DBManager().log("audit_log_exported", ...)` çağrısı kaldırıldı | **Killed** | 3 test düşüyor (`test_her_uc_format_da_indirme_eylemini_denetim_kaydina_yaziyor`, TXT/CSV/PDF) |
+| MC-M165 | `_utcnow()`: `datetime.now(timezone.utc)` → `datetime.now()` (yerel, tz-naive) | **Survived-Fixed** ★ | Gerçek bulgu: TÜM testler `_utcnow()`'u monkeypatch'liyordu, gerçek gövdenin UTC mi yerel mi döndürdüğünü hiçbiri ölçmüyordu. `test_utcnow_gercekten_utc_donduruyor_yerel_saat_degil` eklendi |
+| MC-M166 | `_line_hash()`: `hexdigest()` → `hexdigest()[:16]` (32 bayt → 8 bayt) | **Survived-Fixed** ★ | Gerçek bulgu: anchor dosyasının iç-zincir hash'inin GERÇEKTEN tam SHA-256 olduğu (kısaltılmamış) hiçbir yerde pinlenmemişti — yalnızca zincirleme DAVRANIŞI dolaylı test ediliyordu. `test_line_hash_tam_sha256_donduruyor_kisaltilmis_degil` eklendi |
+| MC-M167 | `kurtarma_parcasini_goster()`: `write_anchor(db, EYLEM_KURTARMA_GORUNTULENDI)` çağrısı kaldırıldı (K4-23, "silinemez işaret") | **Killed** | 4 test düşüyor — `tests/test_recovery_share_anchor.py` bu TAM senaryo için ayrı bir dosya (ilk denemede dar bir alt kümeyle test edilip yanlışlıkla "Survived" sanıldı, bu dosya subset'e eklenince gerçek sonuç ortaya çıktı) |
+| MC-M168 | `AuditLogView._load()`'un SQL'i: `a.timestamp <= ?` → `a.timestamp < ?` (bitiş sınırı hariç) | **Survived-Fixed** ★ | Gerçek bulgu: `end_iso` ve `audit_log.timestamp` İKİSİ de aynı saniye-hassasiyetli biçimde (`...T23:59:59Z`); bitiş tarihinin TAM son saniyesinde yazılan bir kayıt `<` ile sessizce filtreden düşerdi. `test_bitis_tarihinin_son_saniyesindeki_kayit_filtrede_kayboluyor_mu` eklendi |
+
+**Bölüm 21 özet:** 10 senaryo → Killed 7 (M159,M160,M161,M162,M163,
+M164,M167), Survived-Fixed 3 (M165★,M166★,M168★). Yeni testler: `tests/
+test_audit_chain.py` (+2), `tests/test_audit_log_view.py` (+1). Üretim
+kodunda değişiklik yok. Not: M167 ilk turda dar bir test alt kümesiyle
+(`test_recovery_share_ui.py`+`test_kurtarma_usb_kapisi.py`) yanlışlıkla
+"Survived" sanıldı — `kurtarma_parcasini_goster()`'in KENDİ ayrı test
+dosyası (`test_recovery_share_anchor.py`) subset'e dahil edilince
+gerçek sonucun Killed olduğu görüldü; bu, ilgili modülün TÜM test
+dosyalarının (yalnızca "belirgin" olanların değil) subset'e girmesi
+gerektiğinin somut bir hatırlatıcısı.

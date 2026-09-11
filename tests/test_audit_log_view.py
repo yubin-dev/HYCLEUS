@@ -341,6 +341,39 @@ def test_gecmis_zincir_disi_kayit_KAPSAM_DISI_gosterilir(gorunum: AuditLogView, 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 4b. Bitiş tarihi filtresi — sınır dahil mi (MC-M168)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_bitis_tarihinin_son_saniyesindeki_kayit_filtrede_kayboluyor_mu(gorunum, db) -> None:
+    """`_load()`'un SQL'i `a.timestamp <= ?` kullanıyor — bitiş tarihinin
+    TAM son saniyesinde (`...T23:59:59Z`) yazılmış bir kayıt bile
+    görünmeli. `_date_end` varsayılanı zaten bugün; DB'nin kendi
+    `strftime('%Y-%m-%dT%H:%M:%SZ','now')` varsayılanıyla AYNI biçimde,
+    ELLE bugünün son saniyesine yazılmış bir kayıt ekleyip filtrenin onu
+    GERÇEKTEN gösterdiği doğrulanıyor."""
+    from datetime import datetime, timezone
+
+    bugun = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    son_saniye = f"{bugun}T23:59:59Z"
+    db.conn.execute(
+        "INSERT INTO audit_log (timestamp, action, detail) VALUES (?, ?, ?)",
+        (son_saniye, "sinir_testi_action", "MC-M168"),
+    )
+    db.conn.commit()
+
+    gorunum.yenile()
+
+    eylemler = {
+        gorunum._table.item(row, 1).text()
+        for row in range(gorunum._table.rowCount())
+    }
+    assert "sinir_testi_action" in eylemler, (
+        f"Bitiş tarihinin son saniyesindeki kayıt filtreden düştü: {eylemler}"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 5. Dışa aktarım tutarlılığı — B-073 devamı, bu sayfaya taşındı
 # ══════════════════════════════════════════════════════════════════════════════
 
