@@ -49,8 +49,7 @@ from PySide6.QtWidgets import (
     QPushButton,
 )
 
-import pyotp
-
+from CORE.totp_guard import verify_totp_no_replay
 from CORE.folders import (
     create_folder,
     delete_folder,
@@ -431,7 +430,7 @@ class TreeMixin:
         totp_ok = (
             code.isdigit()
             and len(code) == 6
-            and pyotp.TOTP(secret).verify(code, valid_window=1)
+            and verify_totp_no_replay(secret, code, self._hwid)
         )
         if not totp_ok:
             DBManager().log("folder_download_totp_failed", detail=f"folder={folder_name}")

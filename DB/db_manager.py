@@ -164,6 +164,11 @@ class YazmaYetkisiYokError(PermissionError):
 #:                       ham SQL yazabilen biri zaten RBAC'ın koruduğu her
 #:                       şeyi de yazabilir — tek tabloyu korumak ek güvenlik
 #:                       kazandırmaz (bkz. DB/migrations.py::_m26_file_locks).
+#:   totp_replay_guard — TOTP doğrulaması (CORE/totp_guard.py) rol
+#:                       bağımsız çalışmalı — Salt Okunur bir oturum da
+#:                       dosya indirirken bu kapıdan geçiyor; login_attempts
+#:                       ile AYNI gerekçe (bkz. DB/migrations.py::_m28_
+#:                       totp_replay_guard).
 #:
 #: Yönetici-vs-Standart ayrımı (ör. yalnızca yöneticinin retention_profiles
 #: şablonu değiştirebilmesi) bu kümenin kapsamı DIŞINDA: `can_write()` o

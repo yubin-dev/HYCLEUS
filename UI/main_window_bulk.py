@@ -87,10 +87,9 @@ from PySide6.QtWidgets import (
     QProgressDialog,
 )
 
-import pyotp
-
 from CORE.export import export_to_directory, format_errors
 from CORE.expiry import expiry_from_now
+from CORE.totp_guard import verify_totp_no_replay
 from DB.db_manager import DBManager
 
 from CORE.secret_store import load_totp_secret_for_hwid
@@ -271,7 +270,7 @@ class BulkActionsMixin:
             return
         code = code.strip()
         if not (code.isdigit() and len(code) == 6
-                and pyotp.TOTP(secret).verify(code, valid_window=1)):
+                and verify_totp_no_replay(secret, code, self._hwid)):
             DBManager().log("bulk_download_totp_failed",
                             detail=f"hwid={self._hwid} count={len(file_ids)}")
             QMessageBox.warning(self, "Erişim Reddedildi", "Authenticator kodu geçersiz.")

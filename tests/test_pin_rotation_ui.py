@@ -79,6 +79,10 @@ def totp_gecerli(monkeypatch):
     class _SahteTOTP:
         def __init__(self, *a, **kw) -> None: ...
         def verify(self, *a, **kw) -> bool: return True
+        # B-141: verify_totp_no_replay() .verify() DEĞİL .at() çağırıyor
+        # (hangi 30sn adımın eşleştiğini bulmak için) — sabit _TOTP ile
+        # tutarlı, HERHANGİ bir zaman için aynı kodu döndürüyor.
+        def at(self, *a, **kw) -> str: return _TOTP
 
     monkeypatch.setattr(ld.pyotp, "TOTP", _SahteTOTP)
     monkeypatch.setattr(ld, "_load_secret", lambda: "A" * 32)

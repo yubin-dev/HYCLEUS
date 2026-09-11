@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from CORE.app_mode import BIREYSEL, KURUMSAL, get_app_mode, set_app_mode
+from CORE.totp_guard import verify_totp_no_replay
 from CORE.referans_id import generate_referans_id, get_referans_id, set_referans_id
 from CORE.registration import (
     HwidAlreadyRegisteredError,
@@ -1304,7 +1305,7 @@ class LoginDialog(QDialog):
             self._show_error("6 haneli sayısal kod girin")
             self._totp_input.setFocus()
             return
-        if not pyotp.TOTP(self._secret).verify(code, valid_window=1):
+        if self._hwid is None or not verify_totp_no_replay(self._secret, code, self._hwid):
             self._show_error("Authenticator kodu geçersiz — tekrar deneyin")
             self._totp_input.setFocus()
             return
@@ -1430,7 +1431,8 @@ class LoginDialog(QDialog):
         # patlar; None'ı "kod hiçbir zaman doğrulanmaz" olarak ele alıyoruz.
         totp_ok = (
             self._secret is not None
-            and pyotp.TOTP(self._secret).verify(code, valid_window=1)
+            and self._hwid is not None
+            and verify_totp_no_replay(self._secret, code, self._hwid)
         )
 
         if not pin_ok or not totp_ok:

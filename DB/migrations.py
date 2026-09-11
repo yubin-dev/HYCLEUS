@@ -659,6 +659,29 @@ def _m27_audit_log_immutable(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _m28_totp_replay_guard(conn: sqlite3.Connection) -> None:
+    """
+    `totp_replay_guard` tablosu — TOTP kodu replay-önleme (B-141).
+
+    `CORE/totp_guard.py::verify_totp_no_replay()`'in TEK durumu: hwid
+    başına en son KABUL EDİLMİŞ 30 saniyelik TOTP adımı. `valid_window=1`
+    bir kodu ~90 saniye geçerli tutuyor — bu pencerede yakalanıp tekrar
+    gönderilen bir kod, bu tablo olmadan defalarca kabul edilebilirdi.
+
+    `_RBAC_KORUMALI_TABLOLAR`'a BİLEREK EKLENMEDİ — `file_locks`/
+    `login_attempts`/`usb_tokens` ile AYNI gerekçe: TOTP doğrulaması rol
+    bağımsız çalışmalı (Salt Okunur bir oturum da dosya indirirken bu
+    kapıdan geçiyor), bkz. DB/db_manager.py "BİLEREK DIŞARIDA
+    BIRAKILANLAR".
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS totp_replay_guard (
+            hwid     TEXT PRIMARY KEY,
+            son_adim INTEGER NOT NULL
+        )
+    """)
+
+
 #: Numaralı, SIRALI, değişmez göç listesi. Sıra anlamlıdır: 11 numara
 #: `folders` tablosuna referans veriyor, yani 10'dan sonra gelmek ZORUNDA.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -761,6 +784,11 @@ MIGRATIONS: tuple[Migration, ...] = (
               "append-only'e zorluyor. Yalnızca append_entry()'nin kendi "
               "entry_hash ataması ve users ON DELETE SET NULL FK eylemi muaf.",
               _m27_audit_log_immutable),
+    Migration(28, "totp-replay-guard",
+              "TOTP kodu replay-önleme (B-141) — hwid başına son kabul "
+              "edilen 30 saniyelik adımı tutar, aynı/daha eski bir adıma "
+              "denk gelen bir kod ikinci kez kabul edilmez.",
+              _m28_totp_replay_guard),
 )
 
 

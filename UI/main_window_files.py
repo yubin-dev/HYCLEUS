@@ -46,9 +46,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
-import pyotp
-
 from CORE.crypto import AuthenticationError, decrypt_file
+from CORE.totp_guard import verify_totp_no_replay
 from CORE.folders import (
     assign_file_to_folder,
 )
@@ -289,13 +288,13 @@ class FileActionsMixin:
         if not ok:
             return
         code = code.strip()
+        db = DBManager()
         totp_ok = (
             code.isdigit()
             and len(code) == 6
-            and pyotp.TOTP(secret).verify(code, valid_window=1)
+            and verify_totp_no_replay(secret, code, self._hwid, db=db)
         )
 
-        db = DBManager()
         if not totp_ok:
             db.log("download_totp_failed", target_type="file", target_id=file_id,
                    detail=f"hwid={self._hwid}")

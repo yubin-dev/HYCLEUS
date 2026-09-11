@@ -342,21 +342,28 @@ def test_login_dialog_totp_penceresi_dar_tutuluyor() -> None:
     B-126 senaryo 94: Giriş ekranındaki GERÇEK TOTP doğrulama çağrılarının
     `valid_window=1` (±30 sn) taşıdığını KAYNAKTAN doğrudan doğrular.
 
+    B-141 (2026-09-11) güncellemesi: `pyotp.TOTP(...).verify(...)` çağrısı
+    artık `UI/login_dialog.py`'de DEĞİL, o dosyanın da (diğer 3 dosya-erişim
+    TOTP kapısıyla BİRLİKTE) çağırdığı tek paylaşılan `CORE/totp_guard.py::
+    verify_totp_no_replay()`'de yaşıyor (replay-önleme eklendi — aynı kod
+    ikinci kez kabul edilmiyor). Bu test artık O dosyayı tarıyor; denetlediği
+    ŞEY (pencere genişletilmesin) değişmedi, yalnızca KAYNAĞI taşındı.
+
     Bu satırı gerçek bir uçtan-uca girişle (gerçek vault + gerçek TOTP
     sırrı + zaman manipülasyonu) sınamak yerine AST/kaynak-metni
     denetimi seçildi: `tests/test_authz_invariants.py`'nin buradaki
     KENDİ testleri (bir üstteki) `pyotp.TOTP(...).verify(kod,
     valid_window=1)`'i DOĞRUDAN, kendi sabit değeriyle çağırıyor —
-    `UI/login_dialog.py::_on_login()`'in GERÇEKTE hangi pencereyi
-    kullandığını hiç ÖLÇMÜYOR. Mutasyon-kanıt: `_on_login()`'deki
+    gerçek doğrulama yolunun GERÇEKTE hangi pencereyi kullandığını hiç
+    ÖLÇMÜYOR. Mutasyon-kanıt: `verify_totp_no_replay()`'deki
     `valid_window=1` değeri `10`'a çıkarılınca test_totp_gorunen_ad.py +
     test_authz_invariants.py + test_kayit_ekrani.py + test_pin_rotation_
-    ui.py (54 test) hiçbiri fark etmedi.
+    ui.py (54 test) hiçbiri fark etmedi (B-141 öncesi ölçüldü).
     """
     # Modülü içe aktarmak yerine kaynağı doğrudan dosyadan okuyor — bu
     # dosya bilerek Qt'siz (yalnızca CORE), PySide6'yı ZORUNLU KILMAMALI
     # (bkz. tests/test_layering.py'nin katman kuralı).
-    yol = Path(__file__).resolve().parent.parent / "UI" / "login_dialog.py"
+    yol = Path(__file__).resolve().parent.parent / "CORE" / "totp_guard.py"
     kaynak = yol.read_text(encoding="utf-8")
     agac = ast.parse(kaynak)
 
@@ -371,9 +378,9 @@ def test_login_dialog_totp_penceresi_dar_tutuluyor() -> None:
                 if kw.arg == "valid_window" and isinstance(kw.value, ast.Constant):
                     pencereler.append(kw.value.value)
 
-    assert pencereler, "login_dialog.py'de valid_window= geçen bir .verify() çağrısı bulunamadı"
+    assert pencereler, "totp_guard.py'de valid_window= geçen bir .verify() çağrısı bulunamadı"
     assert all(p == 1 for p in pencereler), (
-        f"login_dialog.py'de valid_window=1 dışında bir değer var: {pencereler} "
+        f"totp_guard.py'de valid_window=1 dışında bir değer var: {pencereler} "
         "— TOTP kabul penceresi genişletilmiş olabilir."
     )
 
@@ -395,13 +402,24 @@ def test_dosya_erisimi_totp_kapilari_pencere_ve_algoritma_sertlestirilmis() -> N
     test_pin_rotation_ui.py + test_b058_ilk_kurulum.py + test_kayit_
     kurumsal_referans.py + test_usb_weak_binding_ui.py (78 test) M045'i
     HİÇ yakalamadı.
+
+    B-141 (2026-09-11) güncellemesi: bu üç dosya artık KENDİ
+    `pyotp.TOTP(...)` çağrısını YAPMIYOR — hepsi paylaşılan
+    `CORE/totp_guard.py::verify_totp_no_replay()`'i çağırıyor (replay-
+    önleme dahil, kopyaların birbirinden sapmasını önlemek için TEK
+    yol). Bu test artık İKİ şeyi birden koruyor: (1) bu üç dosyanın
+    HİÇBİRİNİN yerel bir `pyotp.TOTP(...)` çağrısıyla paylaşılan yolu
+    ATLAMADIĞI (bir gerileme bunu sessizce yeniden açabilirdi), (2) o TEK
+    paylaşılan yolun (`totp_guard.py`) kendisinin pencere/algoritma
+    açısından sertleştirilmiş kaldığı.
     """
-    kok = Path(__file__).resolve().parent.parent / "UI"
-    for dosya_adi in ("main_window_bulk.py", "main_window_tree.py", "main_window_files.py"):
+    kok = Path(__file__).resolve().parent.parent
+
+    for dosya_adi in ("UI/main_window_bulk.py", "UI/main_window_tree.py", "UI/main_window_files.py"):
         kaynak = (kok / dosya_adi).read_text(encoding="utf-8")
         agac = ast.parse(kaynak)
 
-        totp_cagrilari = [
+        yerel_totp_cagrisi = [
             n for n in ast.walk(agac)
             if isinstance(n, ast.Call)
             and isinstance(n.func, ast.Attribute)
@@ -409,31 +427,63 @@ def test_dosya_erisimi_totp_kapilari_pencere_ve_algoritma_sertlestirilmis() -> N
             and isinstance(n.func.value, ast.Name)
             and n.func.value.id == "pyotp"
         ]
-        assert len(totp_cagrilari) == 1, (
-            f"{dosya_adi}'de {len(totp_cagrilari)} adet pyotp.TOTP(...) "
-            "çağrısı var — TOTP doğrulaması için TEK, açık algoritmalı bir "
-            "yol bekleniyor (birden fazlası, bir fallback/OR yolu eklendiğine "
-            "işaret edebilir)."
-        )
-        digest_kw = [kw for kw in totp_cagrilari[0].keywords if kw.arg == "digest"]
-        assert not digest_kw, (
-            f"{dosya_adi}'de pyotp.TOTP(..., digest=...) açıkça geçiliyor — "
-            "varsayılan SHA1 dışında bir algoritma EK kabul yolu açabilir."
+        assert not yerel_totp_cagrisi, (
+            f"{dosya_adi}'de {len(yerel_totp_cagrisi)} adet YEREL pyotp.TOTP(...) "
+            "çağrısı var — TOTP doğrulaması paylaşılan CORE/totp_guard.py::"
+            "verify_totp_no_replay()'i ATLAYIP burada yeniden mi uygulanmış?"
         )
 
-        pencereler = [
-            kw.value.value
+        guvenli_cagri_var = any(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "verify_totp_no_replay"
             for n in ast.walk(agac)
-            if isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Attribute)
-            and n.func.attr == "verify"
-            for kw in n.keywords
-            if kw.arg == "valid_window" and isinstance(kw.value, ast.Constant)
-        ]
-        assert pencereler, f"{dosya_adi}'de valid_window= geçen bir .verify() çağrısı bulunamadı"
-        assert all(p == 1 for p in pencereler), (
-            f"{dosya_adi}'de valid_window=1 dışında bir değer var: {pencereler}"
         )
+        assert guvenli_cagri_var, (
+            f"{dosya_adi}'de verify_totp_no_replay() çağrısı bulunamadı — "
+            "bu dosyanın TOTP kapısı paylaşılan replay-önleme yolundan "
+            "geçmiyor olabilir."
+        )
+
+    # Paylaşılan TEK yolun kendisi: tek pyotp.TOTP(...) inşası, digest=
+    # fallback'i yok, valid_window genişletilmemiş.
+    guard_kaynak = (kok / "CORE" / "totp_guard.py").read_text(encoding="utf-8")
+    guard_agac = ast.parse(guard_kaynak)
+
+    totp_cagrilari = [
+        n for n in ast.walk(guard_agac)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "TOTP"
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id == "pyotp"
+    ]
+    assert len(totp_cagrilari) == 1, (
+        f"CORE/totp_guard.py'de {len(totp_cagrilari)} adet pyotp.TOTP(...) "
+        "çağrısı var — TOTP doğrulaması için TEK, açık algoritmalı bir "
+        "yol bekleniyor (birden fazlası, bir fallback/OR yolu eklendiğine "
+        "işaret edebilir)."
+    )
+    digest_kw = [kw for kw in totp_cagrilari[0].keywords if kw.arg == "digest"]
+    assert not digest_kw, (
+        "CORE/totp_guard.py'de pyotp.TOTP(..., digest=...) açıkça geçiliyor "
+        "— varsayılan SHA1 dışında bir algoritma EK kabul yolu açabilir."
+    )
+
+    pencereler = [
+        kw.value.value
+        for n in ast.walk(guard_agac)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "verify"
+        for kw in n.keywords
+        if kw.arg == "valid_window" and isinstance(kw.value, ast.Constant)
+    ]
+    assert pencereler, "CORE/totp_guard.py'de valid_window= geçen bir .verify() çağrısı bulunamadı"
+    assert all(p == 1 for p in pencereler), (
+        f"CORE/totp_guard.py'de valid_window=1 dışında bir değer var: {pencereler} "
+        "— TOTP kabul penceresi genişletilmiş olabilir."
+    )
 
 
 def test_migration_eski_global_sir_ilk_onayli_kullaniciya_devrediyor(
