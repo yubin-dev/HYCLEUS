@@ -410,6 +410,13 @@ _KESIK_DOSYALAR = [
     ("aad_len yarim",  _MAGIC_B + _V2 + bytes(12) + bytes(2),      "AAD uzunluğu"),
     ("aad eksik",      _MAGIC_B + _V2 + bytes(12)
                        + bytes([0, 0, 0, 64]) + b"ab",             "AAD bloğu eksik"),
+    # Pentest turu (2026-09-12): aad_len GCM tag'inin kapsamadığı, hiç
+    # doğrulanmamış bir alan. Bu satır olmadan fin.read(0xFFFFFFFF) 39
+    # baytlık bir dosyada ~4.3 GB bellek ayırıyordu (bkz.
+    # test_aad_len_sahte_devasa_deger_bellek_patlatmiyor).
+    ("aad_len sahte devasa", _MAGIC_B + _V2 + bytes(12)
+                       + struct.pack(">I", 0xFFFFFFFF) + b"kisa-govde",
+                       "AAD bloğu eksik"),
 ]
 
 _KESIK_IDS = [ad for ad, _, _ in _KESIK_DOSYALAR]
@@ -512,6 +519,55 @@ def test_iki_okuma_yolu_ayni_basligi_kullaniyor() -> None:
             f"{ad}() icinde dogrudan _MAGIC karsilastirmasi var — baslik "
             "okumasi `_read_header()` icinde kalmali."
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Pentest turu (2026-09-12) — aad_len ile bellek amplifikasyonu (DoS)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_aad_len_sahte_devasa_deger_bellek_patlatmiyor(tmp_path: Path) -> None:
+    """
+    CANLI KANIT (düzeltmeden önce): 39 baytlık sahte bir dosya, aad_len
+    alanına 0xFFFFFFFF (~4.29 GB) yazılınca `_read_header()`'ın
+    `fin.read(aad_len)` çağrısında GERÇEKTEN ~4.3 GB Python belleği
+    ayırdığı `tracemalloc` ile ölçüldü — dosyanın disk üzerindeki gerçek
+    boyutundan TAMAMEN bağımsız, ucuz bir amplifikasyon. `aad_len`, GCM
+    tag'inin KAPSAMADIĞI, hiç doğrulanmamış bir alan; `verify_file()`
+    (haftalık bütünlük taramasının kullandığı yol, CORE/integrity.py) ya
+    da `decrypt_file()`'a (herhangi bir dosya açma/indirme) böyle bir
+    dosya verilmesi yeterliydi.
+
+    Bu test dosya boyutundan BAĞIMSIZ bir üst sınır koymuyor — `_read_
+    header()` artık aad_len'i OKUMADAN ÖNCE dosyada gerçekten o kadar
+    bayt kalıp kalmadığını `seek`'le kontrol ediyor, yani küçük bir
+    dosyada büyük bir aad_len anında (allocate etmeden) reddediliyor.
+    """
+    import tracemalloc
+
+    yol = tmp_path / "sahte_devasa_aad.hcl"
+    yol.write_bytes(
+        crypto._MAGIC + bytes([2]) + bytes(12)
+        + struct.pack(">I", 0xFFFFFFFF) + b"kisa-govde-verisi"
+    )
+    assert yol.stat().st_size < 100, "test dosyası küçük kalmalı — asıl nokta bu"
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match="AAD bloğu eksik"):
+            with open(yol, "rb") as fin:
+                crypto._read_header(fin)
+        _current, tepe = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    # Eşik cömert: gerçek bellek < 1 MB (dosya + sabit yükler). Düzeltme
+    # kaldırılırsa (mutasyon) bu birkaç GB'a fırlar.
+    assert tepe < 1_000_000, (
+        f"_read_header() {tepe} bayt bellek ayırdı (~{tepe / 1e6:.1f} MB) — "
+        "aad_len, okunmadan ÖNCE dosyanın gerçek kalan boyutuyla "
+        "karşılaştırılmıyor olabilir (bellek-amplifikasyonu DoS'u geri "
+        "gelmiş olabilir)."
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════

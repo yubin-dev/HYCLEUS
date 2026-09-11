@@ -325,6 +325,23 @@ def _read_header(fin: IO[bytes]) -> tuple[int, bytes, bytes, int]:
         raise ValueError("Dosya çok kısa: AAD uzunluğu okunamadı.")
     (aad_len,) = struct.unpack(">I", raw_aad_len)
 
+    # aad_len HENÜZ doğrulanmamış bir alan — GCM tag'i yalnızca ciphertext'i
+    # korur, bu başlığı değil. Doğrulamadan doğrudan fin.read(aad_len)
+    # çağırmak, saldırganın 4 baytlık bu alana yazdığı HERHANGİ bir uint32
+    # değeri kadar bellek ayrılmasına yol açıyordu: 39 baytlık sahte bir
+    # dosyada aad_len=0xFFFFFFFF verilince ~4.3 GB ayrıldığı ÖLÇÜLDÜ (bkz.
+    # pentest turu, 2026-09-12) — dosyanın gerçek boyutundan TAMAMEN
+    # bağımsız, ucuz bir amplifikasyon. Bu satırlar dosyada aad_len kadar
+    # bayt GERÇEKTEN kalıp kalmadığını `read()` çağrılmadan ÖNCE kontrol
+    # ediyor; kalmıyorsa aşağıdaki "AAD bloğu eksik" hatasıyla AYNI mesajla
+    # hemen reddediyor.
+    konum = fin.tell()
+    fin.seek(0, os.SEEK_END)
+    dosya_boyu = fin.tell()
+    fin.seek(konum)
+    if aad_len > dosya_boyu - konum:
+        raise ValueError("AAD bloğu eksik, dosya bozulmuş.")
+
     aad = fin.read(aad_len)
     if len(aad) != aad_len:
         raise ValueError("AAD bloğu eksik, dosya bozulmuş.")
