@@ -121,7 +121,7 @@ class _Sahne(OpenMixin, QWidget):
 
     def __init__(self, key: bytes) -> None:
         super().__init__()
-        self._key = key
+        self._key = bytearray(key)  # HycleusWindow.__init__ ile aynı (B-130)
         self._user_id = _USER
         self._hwid = _HWID
         self._role = "Yönetici"

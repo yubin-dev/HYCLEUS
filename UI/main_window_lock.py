@@ -62,12 +62,13 @@ from CORE.session_user import (
     sync_session_user,
     vault_username,
 )
+from CORE.crypto import zero_bytearray
 from CORE.usb_manager import DEV_MODE as _DEV_MODE, get_usb_hwid
 from CORE.vault_manager import (
     USBAuthError,
     VaultTamperedError,
     authenticate_usb,
-    read_vault_role,
+    open_vault,
 )
 from DB.db_manager import DBManager
 
@@ -245,7 +246,13 @@ class LockMixin:
             return
 
         try:
-            new_role = read_vault_role(new_hwid, pin.strip())
+            # B-130: read_vault_role() DEĞİL open_vault() — bkz.
+            # _unlock_idle()'daki AYNI not. USB TAMAMEN DEĞİŞTİĞİ için
+            # burada ayrıca ÖNEMLİ: yeni HWID'in vault'u farklı bir
+            # master_key'e sahip — eskiden bu fonksiyon self._key'i HİÇ
+            # güncellemiyordu (self._key eski vault'un anahtarında
+            # KALIYORDU); _refill_session_key() bunu da düzeltiyor.
+            new_role, master_key = open_vault(new_hwid, pin.strip())
         except ValueError as exc:
             QMessageBox.warning(self, "PIN Hatalı", str(exc))
             self._authenticating = False
@@ -284,6 +291,7 @@ class LockMixin:
         self._role     = new_role
         self._username = new_username
         self._user_id  = new_user_id
+        self._refill_session_key(master_key)
         self._apply_role_restrictions()
         self._apply_theme()
         self._unlock()
@@ -309,6 +317,14 @@ class LockMixin:
                 self._close_all_checkouts(reason=f"lock:{reason}")
             except Exception as exc:
                 _log.error("kilit check-in basarisiz: %s", exc)
+        # B-130: oturumun DEK'i (self._key) kilitliyken düz bellekte
+        # kalmasın — aynı zero_bytearray() deseni CORE/vault_manager.py'nin
+        # B-139 zeroize'ıyla tutarlı. `getattr` koruması, bu mixin'i tam
+        # pencere kurulumu olmadan çalıştıran test double'ları için (bkz.
+        # yukarıdaki _checkouts koruması, tests/test_lock_overlay.py).
+        _key = getattr(self, "_key", None)
+        if _key:
+            zero_bytearray(_key)
         title, sub = self._LOCK_MESSAGES.get(reason, self._LOCK_MESSAGES["usb"])
         if reason == "revoked":
             # Sebep DB'den geliyor (rol/durum/kara liste) — sabit
@@ -342,6 +358,16 @@ class LockMixin:
             self.centralWidget().setEnabled(True)
         self.centralWidget().setGraphicsEffect(None)
         self._overlay.hide()
+
+    def _refill_session_key(self, master_key: bytes) -> None:
+        """B-130: `_lock()`'un `zero_bytearray()` ile sıfırladığı
+        `self._key`'i, PIN'in `open_vault()` ile YENİDEN doğrulandığı her
+        başarılı açılışta doldurur. AYNI `bytearray` nesnesi korunur
+        (kimlik değil, İÇERİK değişir) — `getattr` koruması `_lock()`'takiyle
+        aynı sebepten (tam pencere kurulumu olmadan çalışan test double'ları)."""
+        _key = getattr(self, "_key", None)
+        if _key is not None:
+            _key[:] = master_key
 
     # ── Hareketsizlik kilidi ──────────────────────────────────────────────────
     #
@@ -429,13 +455,20 @@ class LockMixin:
         if not ok or not pin.strip():
             return
         try:
-            read_vault_role(self._hwid, pin.strip())
+            # B-130: read_vault_role() DEĞİL open_vault() — PIN'i AYNI
+            # şekilde doğruluyor ama master_key'i de döndürüyor, _lock()'un
+            # sıfırladığı self._key'i doldurabilelim diye (bkz.
+            # _refill_session_key). Hata sözleşmesi (ValueError/
+            # VaultTamperedError/...) birebir aynı, ikisi de aynı
+            # _decrypt_vault()'u çağırıyor.
+            _role, master_key = open_vault(self._hwid, pin.strip())
         except Exception as exc:
             QMessageBox.warning(self, "PIN Hatalı", str(exc))
             DBManager().log(
                 "idle_unlock_failed", detail=f"hwid={self._hwid} reason={exc}"
             )
             return
+        self._refill_session_key(master_key)
         DBManager().log("idle_unlock_success", detail=f"hwid={self._hwid}")
         self._idle.rearm()
         self._unlock("idle")
@@ -468,13 +501,15 @@ class LockMixin:
         if not ok or not pin.strip():
             return
         try:
-            read_vault_role(self._hwid, pin.strip())
+            # B-130: bkz. _unlock_idle()'daki AYNI open_vault() notu.
+            _role, master_key = open_vault(self._hwid, pin.strip())
         except Exception as exc:
             QMessageBox.warning(self, "PIN Hatalı", str(exc))
             DBManager().log(
                 "manual_unlock_failed", detail=f"hwid={self._hwid} reason={exc}"
             )
             return
+        self._refill_session_key(master_key)
         DBManager().log("manual_unlock_success", detail=f"hwid={self._hwid}")
         self._idle.rearm()
         self._unlock("manual")

@@ -282,6 +282,7 @@ class _UcTanUcaSahne:
     _poll_usb = HycleusWindow._poll_usb
     _refresh_usb_badge = HycleusWindow._refresh_usb_badge
     _trigger_usb_reauth = HycleusWindow._trigger_usb_reauth
+    _refill_session_key = HycleusWindow._refill_session_key
 
     def __init__(self, hwid: str) -> None:
         self._central = QWidget()
@@ -298,6 +299,7 @@ class _UcTanUcaSahne:
         self._usb_badge = QWidget()
         self._usb_badge.setText = lambda *a, **k: None
         self._checkouts = None
+        self._key: bytearray | None = None
 
     def centralWidget(self):
         return self._central
@@ -443,6 +445,99 @@ def test_trigger_usb_reauth_kara_listedeki_cihazi_DOGRU_pinle_bile_ACMIYOR(
     assert sahne._hwid == hwid_a, (
         "oturumun HWID'i kara listedeki cihaza değişti — reddedilen bir "
         "yeniden kimlik doğrulama session state'i değiştirmemeli"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# B-130 (2026-09-11) — self._key kilitliyken sıfırlanıyor, açılışta doluyor
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_lock_gercekten_self_key_i_sifirliyor(qapp) -> None:
+    """
+    B-130: `_lock()` — USB çekilme/hareketsizlik/manuel/revoked, HANGİ
+    nedenle çağrılırsa çağrılsın AYNI tek metot — artık oturumun DEK'ini
+    (`self._key`) `zero_bytearray()` ile sıfırlıyor. CORE/vault_manager.py
+    B-139 zeroize'ı `create_vault`/`open_vault` içindeki YEREL kek/
+    master_key kopyalarını kapsıyordu ama `open_vault()`'un DÖNÜŞ
+    değerinin — `UI/main_window.py`'de `self._key` olarak oturum boyu
+    YAŞAYAN TEK referans — hiç dokunulmadığını BİLEREK belgeliyordu
+    (bkz. BACKLOG.md B-139: "çağırana canlı geçiyor"). Kilit ekranının
+    ARKASINDA bu anahtar artık düz bellekte kalmıyor.
+
+    Mutasyon-kanıt: `_lock()`'taki `zero_bytearray(_key)` çağrısı
+    kaldırılınca (ya da `if _key:` `if False:`'a çevrilince) bu test
+    KIRMIZIYA düşüyor — `self._key` kilitliyken hâlâ gerçek değerini
+    taşır.
+    """
+    sahne = _UcTanUcaSahne("B130-DIREKT-HWID")
+    sahne._key = bytearray(b"\xab" * 32)
+
+    sahne._lock()
+
+    assert bytes(sahne._key) == b"\x00" * 32, (
+        "self._key kilitliyken hâlâ gerçek anahtar değerini taşıyor"
+    )
+
+
+def test_trigger_usb_reauth_basarili_olunca_self_key_yeni_vaultin_anahtarina_gunceleniyor(
+    qapp, db, tmp_path, monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    B-130'un ikinci yarısı: `_lock()` `self._key`'i sıfırladıktan SONRA,
+    başarılı bir PIN doğrulaması (`_unlock_idle`/`_unlock_manual`/
+    `_trigger_usb_reauth` — üçü de AYNI `_refill_session_key()` yardımcı
+    metodunu paylaşıyor) `self._key`'i YENİDEN doldurmalı — yoksa oturum
+    kalıcı olarak sıfır bir anahtarla kilitlenmiş kalır (bir sonraki
+    dosya işlemi ya B-127'nin "dejenere anahtar" ValueError'una ya da
+    yanlış-anahtar AuthenticationError'una çarpar).
+
+    `_trigger_usb_reauth()` özellikle seçildi: TAMAMEN FARKLI bir vault'a
+    (farklı master_key) geçiyor, yani `self._key`'in yalnızca sıfırdan
+    kurtulması değil, DOĞRU (yeni vault'un) değerine dolması gerektiğini
+    kanıtlıyor — eski davranışta (B-130'dan ÖNCE) bu fonksiyon
+    `self._key`'e HİÇ dokunmuyordu, oturum sessizce ESKİ vault'un
+    anahtarında kalıyordu.
+
+    Mutasyon-kanıt: `_trigger_usb_reauth()`'taki `self._refill_session_
+    key(master_key)` çağrısı kaldırılınca bu test KIRMIZIYA düşüyor —
+    `sahne._key` ya `_lock()`'un bıraktığı sıfırlarda ya da testin
+    başında koyduğu eski (yanlış) sahte değerde kalır.
+    """
+    from CORE import vault_manager
+
+    hwid_a = "B130-MEVCUT-OTURUM"
+    hwid_b = "B130-YENI-USB"
+    pin_b = "yeni-usb-pin-654321"
+
+    monkeypatch.setattr(vault_manager, "_VAULT_DIR", tmp_path / "vaults")
+    monkeypatch.setattr(vault_manager, "_VAULT_PATH_LEGACY", tmp_path / ".hcl_vault")
+    vault_manager.create_vault(hwid_b, pin_b, "Yönetici")
+
+    db.execute(
+        "INSERT INTO users (username, password_hash, role, status, hwid)"
+        " VALUES (?, ?, 'admin', 'approved', ?)",
+        ("b130.kullanici", "x", hwid_b),
+    )
+
+    _beklenen_role, beklenen_master_key = vault_manager.open_vault(hwid_b, pin_b)
+
+    sahne = _UcTanUcaSahne(hwid_a)
+    sahne._key = bytearray(b"\xee" * 32)  # eski (yanlış) oturumun anahtarı
+
+    monkeypatch.setattr(_mwl_modulu.QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(_mwl_modulu.QMessageBox, "critical", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(_mwl_modulu.QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(
+        _mwl_modulu.QInputDialog, "getText",
+        staticmethod(lambda *a, **k: (pin_b, True)),
+    )
+
+    sahne._trigger_usb_reauth(hwid_b)
+
+    assert sahne._locked is False, "reauth başarısız oldu — bu testin konusu değil"
+    assert bytes(sahne._key) == beklenen_master_key, (
+        "self._key reauth sonrası YENİ vault'un gerçek master_key'i DEĞİL"
     )
 
 

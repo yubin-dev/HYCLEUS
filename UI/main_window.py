@@ -108,7 +108,10 @@ class HycleusWindow(
                  username: str = "Kullanıcı", user_id: int = 1):
         super().__init__()
         self._hwid               = hwid
-        self._key                = key
+        # B-130: bytearray, bytes DEĞİL — kilitliyken zero_bytearray() ile
+        # sıfırlanabilsin diye (bkz. main_window_lock.py::_lock/_unlock_*).
+        # Aynı desen CORE/vault_manager.py'nin B-139 zeroize'ı ile tutarlı.
+        self._key                = bytearray(key)
         self._role               = role
         self._username           = username
         self._user_id            = user_id
