@@ -11855,3 +11855,26 @@ dosyası (`test_recovery_share_anchor.py`) subset'e dahil edilince
 gerçek sonucun Killed olduğu görüldü; bu, ilgili modülün TÜM test
 dosyalarının (yalnızca "belirgin" olanların değil) subset'e girmesi
 gerektiğinin somut bir hatırlatıcısı.
+
+### Bölüm 22 (MC-M169–MC-M176) — RFC 3161 / Merkle / .hclx (`CORE/timestamp.py`, `CORE/timestamp_verify.py`, `CORE/timestamp_report.py`, `CORE/trusted_roots.py`, `CORE/merkle.py`, `CORE/hclx.py`)
+
+Test alt kümesi: `tests/test_merkle.py` + `tests/test_timestamp.py` +
+`tests/test_timestamp_verify.py` + `tests/test_trusted_roots.py` +
+`tests/test_trusted_roots_builtin.py` + `tests/test_hclx.py` + `tests/
+test_timestamp_report.py` + `tests/test_deneysel_bagli_degil.py`
+(baseline 367, 1 skip).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M169 | TSA yanıtı: `if stamped != digest:` imza/dosya özeti karşılaştırması atlandı | **Killed** | 2 test düşüyor (`test_a_response_for_another_digest_is_rejected` dahil) |
+| MC-M170 | `aciklama()`: `if sonuc.anchor_trusted` → `if True` (güvenilmeyen kökü "tam güvenilir" göster) | **Killed** | 5 test düşüyor — `test_timestamp_report.py` + `test_trusted_roots.py` |
+| MC-M171 | `timestamp_verify.py`: `anchor_trusted = False` varsayılanı → `True` (kök listesi boşken bile güvenilir say) | **Killed** | 7 test düşüyor |
+| MC-M172 | Sertifika geçerlilik penceresi kontrolü (`not (baslangic <= an <= bitis)`) atlandı | **Killed** | 2 test düşüyor — süresi dolmuş/henüz başlamamış sertifika artık kabul ediliyordu |
+| MC-M173 | `node_hash()`: sol/sağ sırası kayboldu (`sorted((left, right))`) — yaprak sırası aynı kökü üretsin | **Killed** | `test_yon_yanlis_olursa_kok_tutmuyor` doğrudan yakalıyor (sıra-bağımsız kanıtları reddediyor) |
+| MC-M174 | `build_tree()`: tek kalan düğüm YÜKSELTME yerine KENDİSİYLE ÇİFTLENDİ (CVE-2012-2459 deseni) | **Killed** | 36 test düşüyor — proof yapısı kökten uyumsuzlaşıyor |
+| MC-M175 | `.hclx` manifest uzunluk sınırı (`_AZAMI_MANIFEST`) kontrolü kaldırıldı | **Killed** | `test_manifest_uzunlugu_tam_sinirda_kabul_asilinca_reddediliyor` düşüyor |
+| MC-M176 | `.hclx` paket açma: dosya adından `../` yol geçişi kontrolünü kaldır | **Kapsam dışı — hedef kod yok** | İki bağımsız gerekçe: (1) `open_package()` manifest'teki dosya adlarını HİÇBİR ZAMAN bir dosya sistemi yoluna çevirmiyor — içerik bellekte `PaketDosya.veri` olarak kalıyor, çağırana döndürülüyor, hiçbir yere `open(ad, "wb")` ile yazılmıyor; (2) `.hclx` yazma/okuma tarafı (`create_package`/`open_package`) zaten üretime hiç bağlı değil (B-043), `test_deneysel_bagli_degil.py` bunu her koşuda AST ile yeniden doğruluyor |
+
+**Bölüm 22 özet:** 8 senaryo → Killed 7, Kapsam dışı 1 (M176, hedef
+kod yok). Yeni test yok — blok TAMAMEN doygun. Üretim kodunda
+değişiklik yok.
