@@ -12394,3 +12394,164 @@ yapmak en basit yol; alternatif olarak gerçek bir sembolik bağ yerine
 `_read_linux_sysfs()`'in dizin-yürüme mantığını `os.path.islink`/
 `os.readlink`'i `monkeypatch`'leyerek simüle etmek (sembolik bağ hiç
 KURULMADAN) daha platform-bağımsız olurdu.
+
+---
+
+## B-149 — Kara listedeki bir USB, doğru PIN'le hâlâ rol yükseltebiliyor ve PIN'ini değiştirebiliyordu: bulundu ve aynı turda kapatıldı
+
+**Durum:** KAPANDI (2026-09-12).
+**Öncelik:** Kritik (kimlik doğrulama bypass + yetki yükseltme).
+**Bulundu:** 2026-09-12, saldırgan-bakış-açılı pentest turu (Aşama 1: statik
+okuma, Aşama 2: canlı doğrulama — mutasyon turlarından FARKLI bir yöntem,
+BACKLOG'daki bilinen 148 maddenin hiçbiriyle örtüşmeyen YENİ açıklar arandı).
+
+`CORE/vault_manager.py`'nin `open_vault()`/`_decrypt_vault()`/
+`authenticate_usb()` DIŞINDAKİ dört kardeş fonksiyonu —
+`read_vault_role()`, `change_vault_role()`, `change_vault_pin()`,
+`create_vault()` (ikincisi mevcut bir HWID'e `reprovision_vault()`
+üzerinden ulaşılabiliyor) — hiçbiri `_reject_if_blacklisted()`'i
+çağırmıyordu. Canlı kanıtlandı (izole fixture): bir vault'u kara listeye
+alıp doğru PIN'le dördünü de çağırmak DÖRDÜNDE DE başarılı oldu —
+`change_vault_role()` rolü fiilen "Yönetici"ye yükseltti.
+
+İkisi doğrudan canlı UI'dan erişilebiliyordu: `UI/UsbTokensView.py`'nin
+"Rol Değiştir" eylemi (`change_vault_role()`) ve `CORE/pin_rotation.py`'nin
+self-servis PIN yenileme akışı (`change_vault_pin()`) — ekranda HWID'in
+kara listede olduğuna dair hiçbir uyarı yokken. Bu, kara liste kontrolünün
+bir yerde bulunup kardeş fonksiyonlara YAYILMAMASI yüzünden bu hafta
+ÜÇÜNCÜ kez tekrarlayan bir hata sınıfıydı (önce giriş akışı/`open_vault`,
+sonra `_trigger_usb_reauth()`/MC-M147, şimdi bu dördü — SECURITY.md §4.1).
+
+**Düzeltme.** Dördü de artık ilk iş olarak `_reject_if_blacklisted(hwid)`
+çağırıyor — `_decrypt_vault()`'un zaten yaptığıyla birebir aynı desen.
+**Kalıcı muhafız (dördüncü tekrarı önlemek için).**
+`tests/test_blacklist.py::test_hwid_ve_pin_alan_her_fonksiyon_kara_liste_kontrolune_ulasiyor`
+`CORE/vault_manager.py`'yi `ast` ile ayrıştırıp `hwid` + PIN-şekilli bir
+parametre alan HER fonksiyonun çağrı grafiğinin `_reject_if_blacklisted()`'e
+ulaştığını doğruluyor (bir yardımcı üzerinden dolaylı olsa bile) — tek
+gerekçeli muafiyet `recover_master_key()` (yalnızca OKUYOR,
+`_reject_if_weak_binding()`'in onu zaten muaf tuttuğu aynı gerekçeyle).
+Yeni fonksiyon eklenip paylaşılan kapıya ulaşmazsa artık CI isim vererek
+kırılıyor. SECURITY.md (EN+TR) §4.1 üçüncü tekrar olarak güncellendi.
+
+Testler: 4 fonksiyonun her biri için ayrı mutasyon-kanıtlı test (kırmızı→
+yeşil, tek tek), artı 4'ünü birden sınayan bir test, artı AST muhafızı —
+hepsi tek tek mutasyonla doğrulandı. Commit: `1e4be70`.
+
+---
+
+## B-150 — Sahte `aad_len` alanı 39 baytlık bir dosyayla ~4.3 GB bellek ayırtabiliyordu: bulundu ve aynı turda kapatıldı
+
+**Durum:** KAPANDI (2026-09-12).
+**Öncelik:** Yüksek (ucuz, otomatik tetiklenen bellek-tükenmesi DoS'u).
+**Bulundu:** 2026-09-12, saldırgan-bakış-açılı pentest turu.
+
+`CORE/crypto.py::_read_header()`'daki `aad_len` alanı (4 bayt, GCM tag'inin
+KAPSAMADIĞI, hiç doğrulanmamış bir alan) doğrudan `fin.read(aad_len)`'e
+veriliyordu. Canlı ölçüldü (`tracemalloc`): 39 baytlık elle üretilmiş bir
+dosyada `aad_len=0xFFFFFFFF` verilince 0,18 saniyede **4295,1 MB** Python
+belleği ayrıldı — dosyanın disk üzerindeki GERÇEK boyutundan tamamen
+bağımsız, ucuz bir amplifikasyon. B-128 ("`decrypt_file()`'ın gerçek büyük
+bir dosyada orantılı bellek kullanması") ile KARIŞTIRILMASIN — bu, dosya
+boyutundan bağımsız, çok daha ucuz ve farklı bir açık.
+
+`verify_file()`, `CORE/integrity.py`'nin OTOMATİK/haftalık bütünlük
+taramasının kullandığı yol — kullanıcı hiçbir şey yapmasa bile, dizine
+(ör. `restore_backup()`'ın kopyaladığı bir yedekten) düşen TEK bir küçük
+kötü niyetli dosya, bir sonraki taramada çok GB'lık bir bellek sıçramasına
+yol açıyordu.
+
+**Düzeltme.** `_read_header()` artık `aad_len`'i OKUMADAN ÖNCE dosyanın
+gerçek kalan boyutuyla (`seek(0, SEEK_END)` ile ölçülüp) karşılaştırıyor;
+uymuyorsa aynı "AAD bloğu eksik" mesajıyla anında reddediyor. Canlı
+doğrulandı: aynı 39 baytlık dosyada tepe bellek 4295 MB'den 0,13 MB'a,
+süre 0,18 sn'den 0,004 sn'ye düştü.
+
+Testler: `tests/test_crypto.py`'nin mevcut `_KESIK_DOSYALAR` tablosuna yeni
+bir satır (iki okuma yolunun da aynı davrandığını ÜCRETSİZ doğruluyor) +
+`tracemalloc` tabanlı özel bir test (`test_aad_len_sahte_devasa_deger_
+bellek_patlatmiyor`, tepe belleğin 1 MB altında kaldığını doğruluyor —
+YALNIZCA mesaj kontrol eden testler bu hatayı YAKALAMAZDI, çünkü eski kod
+da AYNI mesajı veriyordu, yalnızca zararı yaptıktan SONRA). Mutasyonla
+doğrulandı: kontrol devre dışı bırakılınca yalnızca bellek testi kırmızı
+oldu (mesaj testleri yeşil kaldı) — tam da bu ayrımın neden gerekli
+olduğunu kanıtlıyor. Commit: `da78c31`.
+
+---
+
+## B-151 — `apply_metadata()`'da sütun adı üzerinden SQL enjeksiyonu (bugün ölü kod): bulundu ve aynı turda kapatıldı
+
+**Durum:** KAPANDI (2026-09-12).
+**Öncelik:** Orta (kanıtlanmış açık, ama bugün hiçbir canlı yoldan
+tetiklenmiyor — B-129'un işaret ettiği "SQL enjeksiyonu kör noktası"
+sınıfının SOMUT bir örneği).
+**Bulundu:** 2026-09-12, saldırgan-bakış-açılı pentest turu.
+
+`CORE/backup.py::apply_metadata()` geri yüklenen bir yedeğin JSON alan
+adlarını (`satirlar[0].keys()`) hiçbir doğrulamadan geçirmeden doğrudan
+`INSERT`'in sütun listesine ekliyordu. Canlı kanıtlandı: `{"id": 1,
+"label) SELECT id, password_hash FROM users -- ": "x"}` gibi bir satır,
+fonksiyonun KENDİ SQL inşa mantığı kullanılarak `users.password_hash`'i
+`files` tablosuna sızdıran bir enjeksiyona dönüştü.
+
+`apply_metadata()` bugün hiçbir UI/CLI'dan çağrılmıyor (`restore_backup()`,
+tek bağlı yol, dosyaları + düz bir `metadata.json` yazıp duruyor) — ama
+`metadata` parametresi tanım gereği "bir yedeğin içeriği", yani nihayetinde
+dosyadan/USB'den gelen güvenilmeyen veri, ve fonksiyon zaten bunu canlı
+DB'ye uygulamak İÇİN var. B-129'un genel "SQL enjeksiyonu kör noktası"
+bulgusunun SOMUT, kanıtlanmış bir örneği.
+
+**Düzeltme.** Her satırın sütun adları artık `PRAGMA table_info(tablo)`'dan
+okunan gerçek şemaya karşı doğrulanıyor (`tablo`'nun kendisi sabit
+`RESTORABLE_TABLES` listesinden geliyor, güvenli); bilinmeyen bir sütun
+adı varsa `BackupError` fırlatılıyor, hiçbir satır YAZILMADAN.
+
+Testler: canlı istismarın aynısı artık reddediliyor VE hiçbir satırın
+yazılmadığı doğrulanıyor + gerçek/meşru sütun adlarının hâlâ çalıştığını
+doğrulayan bir pozitif test. Mutasyonla doğrulandı (kontrol devre dışı →
+kırmızı → geri alındı). Commit: `4ca78f4`.
+
+---
+
+## B-152 — `SafeZone.allocate()`'in `suffix` parametresi dizin dışına taşabiliyordu (bugün hiçbir çağıran etkilenmiyor): bulundu ve aynı turda kapatıldı
+
+**Durum:** KAPANDI (2026-09-12).
+**Öncelik:** Orta (kanıtlanmış açık, ama bugünkü tek canlı çağıran zaten
+güvenli bir değer geçiriyor — ileriye dönük bir mayın).
+**Bulundu:** 2026-09-12, saldırgan-bakış-açılı pentest turu.
+
+`CORE/safezone.py::allocate()`, dönüş yolunu `root / f"{prefix}_{token}
+{suffix}"` olarak kuruyordu — pathlib'in `/` operatörü, verilen string'in
+İÇİNDEKİ `/`/`\` dizilerini de gerçek yol bileşenleri olarak ayrıştırıyor.
+Canlı kanıtlandı: `suffix="/../../../../evil_escape.txt"`, `.resolve()` ile
+doğrulanmış, SafeZone kökünün TAMAMEN DIŞINA çıkan bir yol üretti.
+
+Bugünkü tek canlı çağıran (`CORE/checkout.py`) `suffix`'i
+`Path(original_name).suffix`'ten alıyor — pathlib'in `.suffix`'i yapısal
+olarak ayırıcı içeremez, zaten güvenli. Ama modülün kendi docstring'i
+SafeZone'u "gelecekteki aç/önizle akışı (plan 3.2) için hazır altyapı"
+diye tanımlıyor; `allocate()`'in KENDİSİ o gelecekteki çağırana karşı
+hiçbir savunma taşımıyordu — etkisi, şifresi çözülmüş içeriğin SafeZone
+dışına, keyfi bir yola yazılması olurdu.
+
+**Düzeltme.** `allocate()` artık `/`, `\` ya da `..` içeren bir `suffix`'i
+`ValueError` ile anında reddediyor.
+
+Testler: 5 farklı traversal deseni + bir "gerçekten dışarı taşıyor muydu"
+kanıt testi (`.resolve()` ile) + gerçek suffix'lerin (`.hcl`, `.json`,
+`.pdf`, `.hcl-rewrite-tmp`, boş) hâlâ çalıştığını doğrulayan bir pozitif
+test. Mutasyonla doğrulandı (kontrol devre dışı → 6 test kırmızı → geri
+alındı). Commit: `59743c0`.
+
+### Yöntem notu — bu dört madde nasıl bulundu
+
+Standart mutasyon turlarından (kod satırını boz, test yakalıyor mu) FARKLI
+bir yöntem: "gerçek bir saldırgan normal kullanım dışı girdi/zamanlamayla
+saldırırsa ne olur" sorusuyla, iki aşamalı bir pentest turu — (1) kod
+tabanını saldırgan gözüyle statik oku (girdi sınırları, race condition,
+auth bypass, kriptografik yanlış kullanım, DoS yüzeyi, bilgi sızıntısı),
+BACKLOG'daki 148 bilinen maddeyi hariç tutarak; (2) her adayı izole bir
+ortamda GERÇEKTEN çalıştırıp kanıtla. Dördü de Aşama 2'de canlı kanıtlandı
+(teorik değil) önce kodlanmadan; kullanıcı önceliklendirilmiş listeyi
+görüp dördünün de düzeltilmesine karar verdi. Tam suite: 3524 → 3543
+passed, 15 skipped, 0 yeni başarısızlık (3 mevcut B-148 hatası ilgisiz).
