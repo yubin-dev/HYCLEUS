@@ -451,6 +451,7 @@ def move_to_imha(
     approved_by: int | None = None,
     ttl_hours: int | None = None,
     hwid: str | None = None,
+    kaynak: str | None = None,
 ) -> DisposalCheck:
     """
     Dosyayı İmha Odası'na taşır — erken silme kontrolünden geçirerek.
@@ -464,6 +465,11 @@ def move_to_imha(
         approved_by:    koruma AÇIK profillerde onaylayan yöneticinin user_id'si.
                         Yöneticilik DB'den doğrulanır.
         ttl_hours:      İmha Odası sayacı; None ise `imha_ttl_hours` ayarı.
+        kaynak:         Denetim kaydına eklenecek serbest metin (ör.
+                        "via=folder folder_id=5") — B-145: `CORE/folders.py::
+                        move_folder_to_imha()` gibi çağıranların KENDİ
+                        bağlamını kaybetmeden bu ortak fonksiyona
+                        geçebilmesi için; verilmezse davranış değişmez.
 
     Returns:
         Uygulanan DisposalCheck — çağıran ne olduğunu loglayabilsin diye.
@@ -493,6 +499,8 @@ def move_to_imha(
         (LABEL_IMHA, expires_at, file_id),
     )
     detail = f"hwid={hwid} expires_at={expires_at} decision={check.decision}"
+    if kaynak:
+        detail = f"{detail} {kaynak}"
     if note:
         detail = f"{detail} onay={note}"
     db.log(

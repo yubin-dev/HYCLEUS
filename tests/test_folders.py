@@ -26,6 +26,7 @@ from CORE.folders import (
     move_folder,
     move_folder_to_imha,
 )
+from CORE.retention import START_UPLOAD, UNIT_YEAR, assign_profile, create_profile
 
 _HWID = "TEST-HWID"
 
@@ -317,6 +318,78 @@ def test_move_to_imha_leaves_other_folders_alone(db):
     move_folder_to_imha(db, a)
 
     assert db.fetchone("SELECT label FROM files WHERE id = ?", (korunan,))["label"] == "Genel"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4b. B-145 — move_folder_to_imha() artık move_to_imha()'yı çağırıyor,
+#     erken-silme onay kapısını UYGULUYOR (ham SQL DEĞİL)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _add_protected_file(db, name: str, *, folder_id: int | None) -> int:
+    """Saklama süresi HENÜZ dolmamış (10 yıl, bugün yüklendi), koruma
+    AÇIK (erken silme yönetici onayı ister) bir dosya."""
+    fid = _add_file(db, name, folder_id=folder_id)
+    pid = create_profile(
+        db, name=f"korumali-{name}", duration_value=10, duration_unit=UNIT_YEAR,
+        start_type=START_UPLOAD, early_delete_protection=True,
+    )
+    assign_profile(db, fid, pid)
+    return fid
+
+
+def test_move_folder_to_imha_erken_silme_korumali_dosyayi_yonetici_olmayan_onayla_ATLAR(db):
+    """
+    B-145: `move_folder_to_imha()` artık her dosya için `move_to_imha()`
+    çağırıyor — bu da `check_disposal()`/`_require_approval()`'ı devreye
+    sokuyor. Saklama süresi dolmamış, koruma AÇIK bir dosya, yönetici
+    OLMAYAN bir `approved_by` ile ATLANMALI; aynı klasördeki korumasız
+    dosya yine de taşınmalı (bir dosyanın engellenmesi diğerlerini
+    durdurmamalı).
+
+    Mutasyon-kanıt: `move_folder_to_imha()` eski ham
+    `UPDATE files SET label = 'Imha' ...` SQL'ine dönerse (ya da
+    `EarlyDeletionBlocked` yutulup `continue` yerine dosya yine de
+    taşınırsa) bu test KIRMIZIYA düşer — korumalı dosya da "Imha"
+    etiketine geçer ve `tasinan == 2` olur.
+    """
+    uid = _add_user(db)  # varsayılan rol 'user' — YÖNETİCİ DEĞİL
+    fid_folder = create_folder(db, "Karisik", owner_id=uid)
+    korumali_id = _add_protected_file(db, "korumali.pdf", folder_id=fid_folder)
+    serbest_id = _add_file(db, "serbest.pdf", folder_id=fid_folder)
+
+    tasinan = move_folder_to_imha(
+        db, fid_folder, user_id=uid, user_confirmed=True, approved_by=uid,
+    )
+
+    assert tasinan == 1, "yalnızca korumasız dosya taşınmalıydı"
+    assert db.fetchone(
+        "SELECT label FROM files WHERE id = ?", (korumali_id,)
+    )["label"] == "Genel", "erken-silme korumalı dosya YİNE DE İmha'ya taşınmış"
+    assert db.fetchone(
+        "SELECT label FROM files WHERE id = ?", (serbest_id,)
+    )["label"] == "Imha"
+
+
+def test_move_folder_to_imha_yonetici_onayiyla_korumali_dosyayi_da_tasir(db):
+    """Aynı senaryo, ama `approved_by` GERÇEKTEN yönetici — korumalı
+    dosya da taşınmalı. Kapının kendisini değil, sadece yetkiyi sınıyor."""
+    admin_cur = db.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')",
+        ("yonetici", "x"),
+    )
+    admin_id = int(admin_cur.lastrowid)
+    fid_folder = create_folder(db, "Korumali", owner_id=admin_id)
+    korumali_id = _add_protected_file(db, "korumali2.pdf", folder_id=fid_folder)
+
+    tasinan = move_folder_to_imha(
+        db, fid_folder, user_id=admin_id, user_confirmed=True, approved_by=admin_id,
+    )
+
+    assert tasinan == 1
+    assert db.fetchone(
+        "SELECT label FROM files WHERE id = ?", (korumali_id,)
+    )["label"] == "Imha"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

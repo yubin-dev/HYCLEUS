@@ -47,7 +47,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from CORE.expiry import expiry_from_now
+from CORE.disposal import EarlyDeletionBlocked, move_to_imha
 
 _log = logging.getLogger("hycleus.folders")
 
@@ -233,33 +233,49 @@ def delete_folder(db: Any, folder_id: int, folder_name: str) -> int:
 
 
 def move_folder_to_imha(
-    db: Any, folder_id: int, *, hwid: str | None = None
+    db: Any,
+    folder_id: int,
+    *,
+    hwid: str | None = None,
+    user_id: int | None = None,
+    user_confirmed: bool = False,
+    approved_by: int | None = None,
 ) -> int:
     """
     Klasördeki tüm dosyaları İmha Odası'na taşır ve sayacı kurar.
 
-    Returns:
-        Taşınan dosya sayısı.
+    B-145: artık her dosya için `CORE.disposal.move_to_imha()`'yı çağırıyor
+    — ham `UPDATE files SET label = 'Imha' ...` DEĞİL. Erken-silme onay
+    kapısı (saklama süresi dolmamış dosyalar için) klasör-bazlı toplu
+    taşımada da uygulanıyor: `user_confirmed`/`approved_by` çağırana
+    (UI'daki tek onay diyaloğu) AYNEN geçiyor. Koruma altındaki bir dosya
+    ATLANIR — klasördeki DİĞER dosyaların taşınmasını engellemez;
+    `move_to_imha()`'nın kendi `early_disposal_blocked` denetim kaydı
+    zaten yazılır.
 
-    Her dosya için AYRI denetim kaydı yazılıyor — mevcut davranış. Tek bir
-    özet kayıt daha derli toplu olurdu ama dosya bazlı sorgulanabilirliği
-    kaybederdi (`target_id` ile hangi dosyanın ne zaman imhaya gittiği).
+    Returns:
+        GERÇEKTEN taşınan dosya sayısı (erken-silme koruması nedeniyle
+        atlananlar hariç).
+
+    Her taşınan dosya için AYRI denetim kaydı yazılıyor — mevcut davranış.
+    Tek bir özet kayıt daha derli toplu olurdu ama dosya bazlı
+    sorgulanabilirliği kaybederdi (`target_id` ile hangi dosyanın ne
+    zaman imhaya gittiği).
     """
-    expires_at = expiry_from_now(db)
     rows = db.fetchall("SELECT id FROM files WHERE folder_id = ?", (folder_id,))
+    tasinan = 0
     for row in rows:
-        db.execute(
-            "UPDATE files SET label = 'Imha', expires_at = ? WHERE id = ?",
-            (expires_at, row["id"]),
-        )
-        db.log(
-            "file_moved_to_imha", target_type="file", target_id=row["id"],
-            detail=(
-                f"hwid={hwid} via=folder folder_id={folder_id}"
-                f" expires_at={expires_at}"
-            ),
-        )
-    return len(rows)
+        try:
+            move_to_imha(
+                db, row["id"],
+                user_id=user_id, user_confirmed=user_confirmed,
+                approved_by=approved_by, hwid=hwid,
+                kaynak=f"via=folder folder_id={folder_id}",
+            )
+        except EarlyDeletionBlocked:
+            continue
+        tasinan += 1
+    return tasinan
 
 
 def assign_file_to_folder(

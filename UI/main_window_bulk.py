@@ -87,8 +87,8 @@ from PySide6.QtWidgets import (
     QProgressDialog,
 )
 
+from CORE.disposal import EarlyDeletionBlocked, move_to_imha
 from CORE.export import export_to_directory, format_errors
-from CORE.expiry import expiry_from_now
 from CORE.totp_guard import verify_totp_no_replay
 from DB.db_manager import DBManager
 
@@ -230,26 +230,40 @@ class BulkActionsMixin:
         )
         if confirm != QMessageBox.Yes:
             return
-        expires_at = expiry_from_now(DBManager())
-        moved = 0
+        # B-145: move_to_imha() çağrılıyor — ham SQL DEĞİL. Yukarıdaki
+        # onay diyaloğu "koruma kapalı" profillerin kullanıcı onayını
+        # karşılıyor (user_confirmed=True); "koruma açık" profillerde bu
+        # oturumun GERÇEKTEN yönetici olması gerekiyor. Engellenen bir
+        # dosya SEÇİMDEKİ DİĞERLERİNİN taşınmasını durdurmaz — atlanır,
+        # move_to_imha()'nın kendi early_disposal_blocked denetim kaydı
+        # zaten düşer.
+        db = DBManager()
+        moved_rows: list[int] = []
+        moved = blocked = 0
         try:
-            db = DBManager()
-            for fid in file_ids:
-                db.execute(
-                    "UPDATE files SET label = 'Imha', expires_at = ? WHERE id = ?",
-                    (expires_at, fid),
-                )
-                db.log("file_moved_to_imha", target_type="file", target_id=fid,
-                       detail=f"hwid={self._hwid} expires_at={expires_at} bulk=True")
+            for row, fid in zip(rows, file_ids):
+                try:
+                    move_to_imha(
+                        db, fid,
+                        user_confirmed=True,
+                        approved_by=self._user_id, hwid=self._hwid,
+                        kaynak="bulk=True",
+                    )
+                except EarlyDeletionBlocked:
+                    blocked += 1
+                    continue
+                moved_rows.append(row)
                 moved += 1
         except Exception as exc:
             QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
             return
-        for row in sorted(rows, reverse=True):
+        for row in sorted(moved_rows, reverse=True):
             self._table.removeRow(row)
         self._refresh_live_counts()
-        QMessageBox.information(self, "İmha Odasına Taşındı",
-                                f"{moved} dosya İmha Odası'na taşındı.")
+        mesaj = f"{moved} dosya İmha Odası'na taşındı."
+        if blocked:
+            mesaj += f"\n{blocked} dosya erken silme koruması nedeniyle atlandı."
+        QMessageBox.information(self, "İmha Odasına Taşındı", mesaj)
 
     def _on_ctx_bulk_download(
         self, file_ids: list[int], filepaths: list[str],

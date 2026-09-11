@@ -814,6 +814,73 @@ class TestKarantinaTemizligiKorumasi:
         assert purge_expired_file(db, 9999, source="test") in (True, False)
 
 
+def test_uc_imha_UI_giris_noktasi_move_to_imha_yi_cagiriyor_ham_SQL_yazmiyor():
+    """
+    B-145 (2026-09-11): "İmha Odası'na taşı" işleminin ÜÇ UI giriş
+    noktası (`UI/main_window_files.py::_on_ctx_move_to_imha`,
+    `UI/main_window_bulk.py::_on_ctx_bulk_move_to_imha`, ve
+    `CORE/folders.py::move_folder_to_imha` — üçüncüsü CORE'da ama
+    `UI/main_window_tree.py::_on_folder_move_to_imha`'nın TEK çağırdığı
+    fonksiyon) `move_to_imha()`'nın erken-silme onay kapısını (bkz.
+    `check_disposal()`/`_require_approval()`) hiç ÇAĞIRMIYORDU — ham
+    `UPDATE files SET label = 'Imha' ...` SQL'iyle yeniden uyguluyordu.
+    Bu, modülün kendi docstring'inin ("UI bağlantısı — bu adımda değil")
+    açıkça ERTELENMİŞ olarak işaretlediği adımdı, hiç YAPILMAMIŞTI.
+
+    KAYNAKTAN doğrudan doğrulanıyor (`move_folder_to_imha()`'nın kendi
+    onay-kapısı davranışı `tests/test_folders.py`'de gerçek bir senaryoyla
+    zaten kanıtlanıyor — bu test o davranışı DEĞİL, üç giriş noktasının
+    HANGİ fonksiyonu çağırdığını sınıyor).
+
+    Mutasyon-kanıt: bu üç dosyadan biri `move_to_imha`/`move_folder_to_
+    imha` çağrısını kaldırıp yerine tekrar `"UPDATE files SET label = "
+    "'Imha'"` yazarsa bu test KIRMIZIYA düşer.
+    """
+    import ast
+    from pathlib import Path as _P
+
+    kok = _P(__file__).resolve().parent.parent
+    hedefler = (
+        ("UI/main_window_files.py", "_on_ctx_move_to_imha", "move_to_imha"),
+        ("UI/main_window_bulk.py", "_on_ctx_bulk_move_to_imha", "move_to_imha"),
+        ("CORE/folders.py", "move_folder_to_imha", "move_to_imha"),
+    )
+    for yol, fn, beklenen_cagri in hedefler:
+        src = (kok / yol).read_text(encoding="utf-8")
+        agac = ast.parse(src)
+        hedef = next(
+            n for n in ast.walk(agac)
+            if isinstance(n, ast.FunctionDef) and n.name == fn
+        )
+        govde = ast.get_source_segment(src, hedef) or ""
+        assert beklenen_cagri in govde, (
+            f"{yol}::{fn}, {beklenen_cagri}() çağırmıyor — erken-silme "
+            "onay kapısını atlıyor olabilir"
+        )
+
+        # Docstring/yorum İÇİNDE geçen SQL METNİ (ör. bu testin kendi
+        # açıklaması) yanlış pozitif üretmesin diye ham metin yerine AST:
+        # `execute(...)`'a geçen bir string SABİTİ "SET label" içeriyor mu?
+        ham_execute_cagrisi = [
+            n for n in ast.walk(hedef)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "execute"
+            and n.args
+            and isinstance(n.args[0], (ast.Constant, ast.JoinedStr))
+            and "SET label" in (
+                n.args[0].value
+                if isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)
+                else ast.dump(n.args[0])
+            )
+        ]
+        assert not ham_execute_cagrisi, (
+            f"{yol}::{fn} hâlâ ham bir `db.execute(\"UPDATE files SET "
+            "label ...\")` çağrısı içeriyor — ikinci bir uygulama geri "
+            "gelmiş olabilir"
+        )
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # B-004 — İmha sayacı arka planda da işliyor
 # ──────────────────────────────────────────────────────────────────────────────

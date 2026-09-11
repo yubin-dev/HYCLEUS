@@ -348,8 +348,16 @@ class TreeMixin:
         )
         if confirm != QMessageBox.Yes:
             return
+        # B-145: move_folder_to_imha() artık her dosya için move_to_imha()
+        # çağırıyor — yukarıdaki tek onay diyaloğu "koruma kapalı"
+        # profillerin kullanıcı onayını karşılıyor; "koruma açık"
+        # profillerde bu oturumun GERÇEKTEN yönetici olması gerekiyor.
         try:
-            tasinan = move_folder_to_imha(DBManager(), folder_id, hwid=self._hwid)
+            tasinan = move_folder_to_imha(
+                DBManager(), folder_id,
+                hwid=self._hwid,
+                user_confirmed=True, approved_by=self._user_id,
+            )
         except Exception as exc:
             QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
             return

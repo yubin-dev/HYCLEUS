@@ -51,7 +51,7 @@ from CORE.totp_guard import verify_totp_no_replay
 from CORE.folders import (
     assign_file_to_folder,
 )
-from CORE.expiry import expiry_from_now
+from CORE.disposal import EarlyDeletionBlocked, move_to_imha
 from CORE.scanner import ScanResult
 from DB.db_manager import DBManager
 
@@ -481,15 +481,21 @@ class FileActionsMixin:
         )
         if confirm != QMessageBox.Yes:
             return
-        expires_at = expiry_from_now(DBManager())
+        # B-145: move_to_imha() çağrılıyor — ham SQL DEĞİL. Yukarıdaki
+        # onay diyaloğu "koruma kapalı" (needs_warning) profillerin
+        # kullanıcı onayını karşılıyor (user_confirmed=True); "koruma
+        # açık" (needs_admin) profillerde bu oturumun GERÇEKTEN yönetici
+        # olması gerekiyor (approved_by kontrolü move_to_imha() içinde).
         try:
             db = DBManager()
-            db.execute(
-                "UPDATE files SET label = 'Imha', expires_at = ? WHERE id = ?",
-                (expires_at, file_id),
+            move_to_imha(
+                db, file_id,
+                user_confirmed=True,
+                approved_by=self._user_id, hwid=self._hwid,
             )
-            db.log("file_moved_to_imha", target_type="file", target_id=file_id,
-                   detail=f"hwid={self._hwid} expires_at={expires_at}")
+        except EarlyDeletionBlocked as exc:
+            QMessageBox.warning(self, "Erken Silme Engellendi", str(exc))
+            return
         except Exception as exc:
             QMessageBox.critical(self, "Veritabanı Hatası", str(exc))
             return
