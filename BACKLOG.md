@@ -11974,3 +11974,59 @@ Test alt kümesi: `tests/test_backup.py` + `tests/test_backup_cli.py` +
 **Bölüm 24 özet:** 8 senaryo → Killed 5, Kapsam dışı 3 (M184/M185
 hedef kod yok, M186 bilinçli sınır). Yeni test yok — blok TAMAMEN
 doygun. Üretim kodunda değişiklik yok.
+
+### Bölüm 25 (MC-M192–MC-M196) — AV tarama / karantina (`CORE/scanner_backends.py`, `CORE/scanner.py`, `UI/main_window_files.py`, `UI/main_window_table.py`)
+
+Test alt kümesi: `tests/test_scan_timeout_dacl.py` + `tests/test_scan_
+timeout_handle_leak.py` + `tests/test_scan_timeout_ui.py` + `tests/
+test_scan_timeout_worker_pool.py` + `tests/test_scanner_backends.py`
++ `tests/test_scanner_flow.py` + `tests/test_main_window_smoke.py`
+(baseline 192, 2 skip).
+
+| # | Mutasyon | Sonuç | Not |
+|---|----------|-------|-----|
+| MC-M192 | `DefenderBackend.scan()`: `except subprocess.TimeoutExpired:` dalı `None` dönecek şekilde daraltıldı (zaman aşımı yok sayıldı) | **Killed** | `test_defender_zaman_asimi_ayirt_edici_timeout_verdictiyle_doner` düşüyor |
+| MC-M193 | `DefenderBackend.scan()`: `if proc.returncode == 2:` (tehdit) kontrolü kaldırıldı | **Killed** | `test_defender_rc2_zararli` düşüyor |
+| MC-M194 | Sonuç cache: aynı hash'te ikinci taramayı atla | **Kapsam dışı — hedef kod yok** | Hiçbir sonuç-önbelleği (hash → önceki verdict) mekanizması yok — `scan_file()` HER çağrıda arka ucu gerçekten çalıştırıyor, `scan_by_hash()` zaten hep `mock_result()` döndürüyor (dosya erişilemez varsayımıyla) |
+| MC-M195 | Timeout sonucu: karantina yerine Genel'e bırak | **Kapsam dışı — hedef kod yok** | Hiçbir verdict otomatik olarak `label`'ı DEĞİŞTİRMİYOR — TÜM yeni dosyalar taramadan ÖNCE zaten `label="Karantina"` varsayılanıyla ekleniyor (`_handle_dropped_file`/`_handle_dropped_folder`); "Genel"e geçiş yalnızca ayrı, elle bir yönetici eylemi (bkz. M196) |
+| MC-M196 | Karantinadan çıkarma: yeniden tarama atla | **HAYATTA KALDI — kontrol yok** | Gerçek uygulama boşluğu → **B-146** |
+
+**Bölüm 25 özet:** 5 senaryo → Killed 2, Kapsam dışı 2 (M194/M195,
+hedef kod yok), Kontrol yok 1 (M196 → B-146). Yeni test yok, kod bu
+turda değiştirilmedi.
+
+## B-146 — "Onayla → Genel'e taşı" (Karantinadan çıkarma) hiçbir tarama durumu kontrolü yapmıyor
+
+**Durum:** Açık — karar bekliyor (UI'ya yeni bir uyarı/kural eklemek, kapsam dışı bu turda).
+**Öncelik:** Orta-düşük (yalnızca yönetici erişebiliyor, bilerek tetiklenen bir eylem — ama gerçek bir savunma-derinliği boşluğu).
+**Bulundu:** 2026-09-11 (MC-Kataloğu 4. parça, MC-M196 araştırması sırasında).
+
+`UI/main_window_files.py`'nin Karantina sağ-tık menüsünde "Onayla →
+Genel'e taşı" (`act_approve` → `_on_ctx_move_label(row, file_id,
+"Genel")`) bir dosyayı Karantina'dan Genel'e taşıyor. Aynı menüde
+AYRI bir "🔍 Tara" eylemi (`act_scan`) var ama ikisi arasında HİÇBİR
+bağ yok:
+
+- `_on_ctx_move_label()` yalnızca genel bir "Devam edilsin mi?"
+  onayı istiyor (`QMessageBox.question`) — dosyanın hiç taranıp
+  taranmadığını, taranmışsa verdict'inin ne olduğunu (`"malicious"`,
+  `"timeout"`, `"unknown"`/mock) SORMUYOR, GÖSTERMİYOR.
+- Bir yönetici, hiç "🔍 Tara" demeden, doğrudan "Onayla"ya basıp
+  dosyayı Genel'e taşıyabilir.
+- Daha kötüsü: `act_scan` çalıştırılıp sonuç `"malicious"` ya da
+  `"timeout"` çıksa BİLE, yönetici yine de ayrı olarak "Onayla"yı
+  seçip dosyayı Genel'e taşıyabilir — `_on_ctx_scan_done()` yalnızca
+  `"malicious"` verdict'inde OTOMATİK olarak İmha'ya taşıyor
+  (`auto=True`); "Onayla" düğmesinin kendisi hiçbir zaman devre dışı
+  bırakılmıyor/gizlenmiyor.
+
+**Karşılaştırma:** Aynı menünün "Reddet → İmha Odası'na taşı"
+(`act_reject`) eylemi de aynı şekilde korumasız, ama YÖN GÜVENLİ
+(daha kısıtlayıcıya gidiyor) — asıl risk "Onayla" yönü, çünkü mahrem/
+tarama-kapsamı dışı bir dosyayı sıradan `Genel` erişimine açıyor.
+
+**Neden bu turda düzeltilmedi:** Doğru davranışın ne olması
+gerektiği (taranmamış dosya için engelle mi, yalnızca uyar mı;
+`"malicious"`/`"timeout"` verdict'i olan bir dosyanın "Onayla"
+seçeneğini tamamen gizle mi) bir ürün/UX kararı — mutasyon turunun
+kapsamı dışında.
