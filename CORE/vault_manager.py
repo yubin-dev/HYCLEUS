@@ -166,11 +166,12 @@ _FILE_ATTRIBUTE_NORMAL   = 0x80   # readonly dahil tüm bitleri sıfırlar
 # kernel32 yalnızca Windows'ta bağlanır — `import ctypes.wintypes` ve
 # `ctypes.windll` diğer platformlarda import anında patlar.
 #
-# HYCLEUS bir Windows uygulamasıdır ve readonly biti NTFS'e özgüdür; bu modülün
-# kripto katmanı (Shamir, Argon2id, HMAC, AES-GCM) ise platformdan bağımsızdır.
-# Bağlamayı koşullu yaparak CI'ın Linux ayağı modülü import edip kripto
-# testlerini çalıştırabiliyor. Windows dışında _k32 None kalır ve aşağıdaki üç
-# readonly yardımcısı no-op'a döner.
+# Readonly biti NTFS'e özgüdür (HYCLEUS Linux/macOS'ta da çalışır, bkz.
+# B-112/B-114/B-147 — ama bu özellik hâlâ yalnızca Windows'ta anlamlı); bu
+# modülün kripto katmanı (Shamir, Argon2id, HMAC, AES-GCM) ise platformdan
+# bağımsızdır. Bağlamayı koşullu yaparak CI'ın Linux ayağı modülü import edip
+# kripto testlerini çalıştırabiliyor. Windows dışında _k32 None kalır ve
+# aşağıdaki üç readonly yardımcısı no-op'a döner.
 _k32: Any = None
 
 if sys.platform == "win32":

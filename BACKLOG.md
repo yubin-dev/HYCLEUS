@@ -11005,7 +11005,7 @@ zayıf bulgular üretmek yerine.
 
 M047–M060: sonraki oturumda/talepte devam edecek.
 
-## MC-Kataloğu — KDF/AES-GCM/Shamir/TOTP/TPM Mutasyon Turu (MC-M001–MC-M200), devam ediyor
+## MC-Kataloğu — KDF/AES-GCM/Shamir/TOTP/TPM Mutasyon Turu (MC-M001–MC-M200), TAMAMLANDI (200/200)
 
 B-135'ten (200'lük mutasyon turu, M001-M200) TAMAMEN AYRI ve BAĞIMSIZ,
 önceden hazırlanmış sabit bir katalog — kod taraması değil, kullanıcı
@@ -12209,3 +12209,72 @@ sınıfında).
 
 MC-Kataloğu artık tamamen kapandı. Kalan iş: kullanıcının onayıyla
 push.
+
+## B-147 — `_read_linux_sysfs()` sabit `.parent.parent` varsayımı: B-112/B-114'ün Linux düzeltmesi paketlenmiş derlemede fiilen HİÇ çalışmıyordu
+
+**Durum:** KAPANDI (2026-09-11) — `CORE/hwid_probe.py::_usb_aygit_kok_dizini()`
+eklendi, sabit derinlik yerine `idVendor` dosyasını arayarak yukarı
+yürüyor. `_read_linux_sysfs()` artık test edilebilir (opsiyonel `kok`
+parametresi). 4 yeni regresyon testi: `tests/test_hwid_probe.py`
+(`test_sysfs_iki_seviye_...`, `test_sysfs_dort_seviye_...`,
+`test_sysfs_idvendor_hic_bulunamazsa_...`, `test_sysfs_bos_kok_...`) —
+sentetik `/sys/block` ağacıyla, donanım gerektirmeden.
+**Bulundu:** 2026-09-11 — Linux'a özgü bir test turu yazılırken (bkz.
+`tests/test_linux_platform_specifics.py`, madde 3), test GERÇEK donanıma
+karşı çalıştırıldı ve `read_linux()` beklenmedik biçimde boş liste
+döndürdü.
+
+### Kök neden
+
+`CORE/hwid_probe.py::read_linux()`, `pyudev` kurulu değilse
+`_read_linux_sysfs()`'e düşüyor (bkz. modülün kendi docstring'i,
+"pyudev yoksa sysfs'e düşüyor"). O fonksiyon USB aygıt düğümünü
+(`idVendor`/`idProduct`/`serial`'ı taşıyan dizin) sabit bir varsayımla
+buluyordu:
+
+```python
+usb = (blok / "device").resolve().parent.parent
+```
+
+Bu yalnızca aygıt USB interface düğümünün DOĞRUDAN bir alt seviyesinde
+duruyorsa doğru. Gerçek donanımla (bu oturumda, iki gerçek USB flash
+sürücüyle) ölçüldü: `usb-storage`/SCSI sürücüsü üzerinden bağlı sıradan
+bir USB depolama aygıtında zincir
+
+```
+<usbN>/<X-Y>/<X-Y:1.0>/hostN/targetN:0:0/N:0:0:0
+```
+
+— yani `idVendor`/`serial` **dört** seviye yukarıda, iki değil.
+`.parent.parent` bu durumda `host1` gibi bir SCSI ara-dizine düşüyor,
+`serial` dosyası orada YOK, `seri_yolu.is_file()` `False` dönüyor, döngü
+sessizce hiçbir şey eklemeden devam ediyor — istisna YOK, log uyarısı
+YOK, yalnızca boş liste.
+
+### Neden bu, B-112/B-114'ü fiilen geçersiz kılıyordu
+
+`pyudev` **hiçbir yerde bundle edilmiyor**: `requirements.txt`'te yok,
+`requirements-build.txt`'te yok, `HYCLEUS-linux.spec`'in
+`hiddenimports`'unda yok (doğrulandı, grep). Yani paketlenmiş bir
+AppImage derlemesi `pyudev`'i HİÇ İÇERMEZ ve `read_linux()` üretimde HER
+ZAMAN `_read_linux_sysfs()` dalına düşer. B-114'ün "get_usb_hwid()
+artık Linux'ta da çalışıyor" kapanışı, o oturumdaki doğrulama ortamında
+`pyudev`'in (bir şekilde, muhtemelen elle kurulmuş) mevcut olmasına
+bağlıydı — `pyudev` olmadan (yani gerçek paketlenmiş build'de) fonksiyon
+B-112'nin orijinal bulgusuyla AYNI sonucu (`None`, USB takılı olsun
+olmasın) veriyordu. B-112'nin kapanışı bu yüzden ERKEN sayılmalı;
+kök neden şimdi gerçekten kapandı.
+
+### Düzeltme ve doğrulama
+
+`_usb_aygit_kok_dizini()`: sabit derinlik yerine yukarı doğru yürüyüp
+`idVendor` dosyası taşıyan İLK dizini buluyor (sysfs ağacı sınırlı
+olduğu için 12 seviyeyle sınırlı — güvenlik payı, gerçek USB hiyerarşisi
+çok daha sığ). Gerçek donanımla yeniden ölçüldü: `read_linux()` artık
+`pyudev` YOKKEN de iki gerçek USB sürücüyü (`C87F54C69E2FE85109441C9D`,
+`4C530301470118102554`) doğru okuyor — `get_usb_hwid()` bu okumadan
+TÜREYEN, `hwid_probe`'un bağımsız okumasıyla eşleşen bir değer veriyor.
+
+Tam suite: 3465 passed, 41 skipped, 2 deselected (ikisi de bu değişiklikle
+ilgisiz, ortam artığı: yerel klonun eski git etiketleri ve bir alt-süreç
+PATH sorunu — ayrıntı commit mesajında).

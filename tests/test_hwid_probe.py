@@ -18,6 +18,8 @@ aynı şey değil ve bu modülde arası açık.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from CORE.hwid_probe import (
@@ -855,3 +857,116 @@ def test_linux_bilinmeyen_udev_alanlari_kimlige_karismiyor(
     assert not any(IZ in v for v in degerler), (
         f"bağlama noktası/aygıt düğümü kimlik alanlarından birine sızmış: {degerler}"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Linux — sysfs (pyudev YOKKEN düşülen fallback, 2026-09-11 regresyonu)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# `pyudev` paketlenmiş derlemede hiç YOK (`requirements.txt`'te yok,
+# `HYCLEUS-linux.spec`'in `hiddenimports`'unda yok) — yani üretimde
+# `read_linux()` HER ZAMAN aşağıdaki `_read_linux_sysfs()` dalına düşer.
+# Bu bölümden ÖNCE bu dal hiç test edilmiyordu (yukarıdaki modül
+# docstring'i "CI'da fiziksel USB yok" diyordu — ama `_read_linux_sysfs()`
+# donanım OLMADAN da, sentetik bir `/sys/block` ağacıyla test edilebilir).
+#
+# Gerçek donanımla (bu makineye takılı iki USB flash sürücü, usb-storage/
+# SCSI sürücüsü üzerinden) ölçüldü: eski `.parent.parent` varsayımı HER
+# ZAMAN boş liste döndürüyordu, çünkü zincir gerçekte
+# `<usbN>/<X-Y>/<X-Y:1.0>/hostN/targetN:0:0/N:0:0:0` — `idVendor`/`serial`
+# dört seviye yukarıda, iki değil. B-112/B-114'ün "Linux'ta USB HWID artık
+# okunuyor" düzeltmesi bu yüzden paketlenmiş bir derlemede fiilen HİÇ
+# çalışmıyordu. Düzeltme: `_usb_aygit_kok_dizini()`, sabit derinlik yerine
+# `idVendor` dosyasını arayarak yukarı yürüyor.
+
+
+def _sahte_sysfs_usb_agaci(tmp_path, *, derinlik: int) -> Path:
+    """
+    `/sys/block/sda` → `device` (sembolik bağ) → SCSI yaprağı, ve
+    yapraktan `derinlik` seviye yukarıda `idVendor`/`idProduct`/`serial`
+    taşıyan gerçek USB düğümü içeren sentetik bir ağaç kurar.
+
+    `derinlik=2`: eski (yanlış) `.parent.parent` varsayımının doğru
+    olduğu basit durum. `derinlik=4`: bu makinede GERÇEKTEN ölçülen,
+    SCSI-köprülü usb-storage durumu — eski kod burada başarısız oluyordu.
+    """
+    kok = tmp_path / "sys_block"
+    blok = kok / "sda"
+    blok.mkdir(parents=True)
+
+    usb_dugumu = tmp_path / "gercek_usb_dugumu"
+    usb_dugumu.mkdir(parents=True)
+    (usb_dugumu / "idVendor").write_text("0951\n")
+    (usb_dugumu / "idProduct").write_text("1666\n")
+    (usb_dugumu / "serial").write_text("C87F54C69E2FE85109441C9D\n")
+
+    yaprak = usb_dugumu
+    for i in range(derinlik):
+        yaprak = yaprak / f"ara-kademe-{i}"
+        yaprak.mkdir()
+
+    (blok / "device").symlink_to(yaprak)
+    return kok
+
+
+def test_sysfs_iki_seviye_yukaridaki_eski_basit_durumda_calisir(tmp_path) -> None:
+    """Eski `.parent.parent` varsayımının doğru olduğu (basit, USB
+    interface'inin doğrudan altında) durum — bu HÂLÂ çalışmalı."""
+    from CORE.hwid_probe import _read_linux_sysfs
+
+    kok = _sahte_sysfs_usb_agaci(tmp_path, derinlik=2)
+    sonuc = _read_linux_sysfs(kok)
+
+    assert len(sonuc) == 1
+    assert sonuc[0].descriptor_serial == "C87F54C69E2FE85109441C9D"
+    assert sonuc[0].vendor_id == "0951"
+    assert sonuc[0].product_id == "1666"
+
+
+def test_sysfs_dort_seviye_yukaridaki_gercek_usb_storage_durumunda_calisir(
+    tmp_path,
+) -> None:
+    """
+    REGRESYON — bu makinede GERÇEK donanımla ölçülen durum:
+    `<usbN>/<X-Y>/<X-Y:1.0>/hostN/targetN:0:0/N:0:0:0` — dört ara kademe.
+    Eski `.parent.parent` (yalnızca iki seviye) burada `idVendor`'ı hiç
+    BULAMAZDI ve `_read_linux_sysfs()` sessizce boş liste dönerdi —
+    istisna yok, hata yok, yalnızca "USB bulunamadı".
+    """
+    from CORE.hwid_probe import _read_linux_sysfs
+
+    kok = _sahte_sysfs_usb_agaci(tmp_path, derinlik=4)
+    sonuc = _read_linux_sysfs(kok)
+
+    assert len(sonuc) == 1, (
+        "dört seviye derinlikte GERÇEK USB aygıtı bulunamadı — "
+        "_usb_aygit_kok_dizini() regresyonu"
+    )
+    assert sonuc[0].descriptor_serial == "C87F54C69E2FE85109441C9D"
+
+
+def test_sysfs_idvendor_hic_bulunamazsa_sessizce_atlaniyor_cokme_yok(
+    tmp_path,
+) -> None:
+    """USB olmayan bir blok aygıtı (ör. `nvme0n1`, `zram0`) hiçbir zaman
+    `idVendor` içermez — yürüme sınırına (12 seviye) çarpıp `None` ile
+    sessizce atlanmalı, istisna FIRLATMAMALI."""
+    from CORE.hwid_probe import _read_linux_sysfs
+
+    kok = tmp_path / "sys_block"
+    blok = kok / "nvme0n1"
+    blok.mkdir(parents=True)
+    yaprak = tmp_path / "pci_agaci_idvendorsiz" / "cok" / "derin" / "bir" / "yol"
+    yaprak.mkdir(parents=True)
+    (blok / "device").symlink_to(yaprak)
+
+    sonuc = _read_linux_sysfs(kok)
+
+    assert sonuc == []
+
+
+def test_sysfs_bos_kok_dizininde_cokmeden_bos_liste_donuyor(tmp_path) -> None:
+    """`/sys/block` boşsa (ya da hiç yoksa) `_read_linux_sysfs()` çökmemeli."""
+    from CORE.hwid_probe import _read_linux_sysfs
+
+    assert _read_linux_sysfs(tmp_path / "hic_olmayan_dizin") == []
