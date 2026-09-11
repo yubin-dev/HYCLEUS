@@ -771,6 +771,20 @@ def apply_metadata(db: Any, metadata: dict, *, user_id: int | None = None) -> di
     değişiyor. Bu, "yedek doğru olan" varsayımı; çağıran bunu bilerek
     seçmeli.
 
+    Sütun adları PRAGMA table_info() ile doğrulanır (pentest turu,
+    2026-09-12) — `metadata`'daki her satırın JSON alan adları hiçbir
+    allowlist'ten geçmeden doğrudan SQL sütun listesine ekleniyordu.
+    Kanıtlandı: `{"id": 1, "label) SELECT id, password_hash FROM users -- ":
+    "x"}` gibi bir satır, `users.password_hash`'i `files` tablosuna
+    sızdıran bir SQL enjeksiyonuna dönüşüyordu. `apply_metadata()` bugün
+    hiçbir UI/CLI'dan çağrılmıyor (bkz. BACKLOG.md) ama `metadata`
+    parametresi tanım gereği "geri yüklenen bir yedeğin içeriği" —
+    dolayısıyla nihayetinde dosyadan/ağdan gelen, güvenilmeyen veri.
+
+    Raises:
+        BackupError — bir satırda `tablo`'nun gerçek şemasında olmayan bir
+            sütun adı varsa.
+
     Returns:
         {tablo: yazılan_satır_sayısı}
     """
@@ -780,11 +794,23 @@ def apply_metadata(db: Any, metadata: dict, *, user_id: int | None = None) -> di
         if not satirlar:
             yazilan[tablo] = 0
             continue
+
+        gercek_sutunlar = {
+            satir["name"]
+            for satir in db.fetchall(f"PRAGMA table_info({tablo})")  # noqa: S608 — tablo adı sabit listeden (RESTORABLE_TABLES)
+        }
         sutunlar = list(satirlar[0].keys())
+        bilinmeyen = [c for c in sutunlar if c not in gercek_sutunlar]
+        if bilinmeyen:
+            raise BackupError(
+                f"{tablo!r} tablosunda olmayan sütun adı bulundu: {bilinmeyen} "
+                "— yedek metadata'sı bozuk ya da kurcalanmış olabilir."
+            )
+
         yer = ", ".join("?" for _ in sutunlar)
         sql = (
             f"INSERT OR REPLACE INTO {tablo} ({', '.join(sutunlar)}) VALUES ({yer})"
-        )  # noqa: S608 — tablo adı sabit listeden
+        )  # noqa: S608 — tablo adı sabit listeden, sütun adları yukarıda PRAGMA table_info() ile doğrulandı
         n = 0
         for satir in satirlar:
             db.execute(sql, tuple(satir.get(c) for c in sutunlar))

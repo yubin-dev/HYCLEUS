@@ -866,6 +866,47 @@ def test_apply_metadata_never_writes_excluded_tables(dolu_db, vault, tmp_path, k
     assert dolu_db.fetchone("SELECT id FROM users WHERE id = 99") is None
 
 
+# ── Pentest turu (2026-09-12): sütun adı üzerinden SQL enjeksiyonu ─────────────
+#
+# CANLI KANIT: `metadata`'daki bir satırın JSON alan adları hiçbir
+# allowlist'ten geçmeden doğrudan SQL sütun listesine ekleniyordu. Sahte bir
+# `users`/`files` çiftiyle (aynı `apply_metadata()`'nın kendi SQL inşa
+# mantığı kullanılarak) `password_hash`'i `files`'a sızdıran bir enjeksiyon
+# ÇALIŞTIRILDI. `apply_metadata()` bugün hiçbir UI/CLI'dan çağrılmıyor ama
+# `metadata` parametresi tanım gereği "bir yedeğin içeriği" — güvenilmeyen
+# veri. PRAGMA table_info() doğrulaması bunu artık en baştan reddediyor.
+
+def test_apply_metadata_bilinmeyen_sutun_adini_REDDEDIYOR(dolu_db) -> None:
+    """
+    ASIL DÜZELTME: `metadata`'daki bir satırın sütun adı hedef tablonun
+    gerçek şemasında yoksa `apply_metadata()` hiçbir şey YAZMADAN reddetmeli.
+    """
+    kotu = {
+        "files": [
+            {
+                "id": 999,
+                "filename) SELECT id, password_hash FROM users -- ": "x",
+            }
+        ]
+    }
+    with pytest.raises(BackupError, match="olmayan sütun adı"):
+        apply_metadata(dolu_db, kotu, user_id=_USER)
+
+    # Hiçbir satır yazılmamış olmalı — bypass'ın kısmen başarılı kalmadığını
+    # doğrular.
+    assert dolu_db.fetchone("SELECT id FROM files WHERE id = 999") is None
+
+
+def test_apply_metadata_gercek_sutun_adiyla_hala_calisiyor(dolu_db) -> None:
+    """Yeni PRAGMA doğrulaması gerçek, meşru sütun adlarını bozmamalı."""
+    satir = dolu_db.fetchone("SELECT * FROM files LIMIT 1")
+    assert satir is not None
+    kotu_olmayan = {"files": [dict(satir)]}
+
+    yazilan = apply_metadata(dolu_db, kotu_olmayan, user_id=_USER)
+    assert yazilan["files"] == 1
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 7. Eşzamanlı yazma altında tutarlılık — TÜM tablolar TEK bir anlık görüntü
 # ══════════════════════════════════════════════════════════════════════════════
