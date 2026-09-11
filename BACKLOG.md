@@ -7927,6 +7927,80 @@ zaman yapılabilecek. Kullanıcıdan, erişilemeyen ham günlüğün son
 satırlarını (GitHub Actions arayüzünden) paylaşması istendi — paylaşılırsa
 teşhis bu turu beklemeden hemen tamamlanabilir.
 
+### 2026-09-11 takip — sessiz 30 dk takılma BİR DAHA GÖRÜLMEDİ, ama kök neden HÂLÂ teşhis edilemedi
+
+Görev: "gh run list ile geçmiş çalışmalarda hâlâ uzun süren/asılan job
+var mı kontrol et... kök neden bulunursa düzelt, bulunamazsa dürüstçe
+güncelle — tahmin yürütüp kapatma."
+
+**Erişim durumu değişmedi.** `gh` CLI bu oturumda da kurulu değil (hem
+Bash hem PowerShell'de `command not found`). Kimliksiz `curl` ile genel
+API (`/actions/runs`, `/actions/runs/{id}/jobs`) hâlâ erişilebilir; ama
+`/actions/jobs/{id}/logs` (`403 Must have admin rights to Repository`)
+VE artifact indirme (`/actions/artifacts/{id}/zip`, `401 Requires
+authentication`) hâlâ kilitli — ham günlüğün TEK satırı bile
+okunamıyor, tıpkı ilk turdaki gibi. Ortamda `GH_TOKEN`/`GITHUB_TOKEN`
+yok (kontrol edildi).
+
+**Ölçülebilen kısım — iş/adım zaman damgaları (`/actions/runs/{id}/jobs`
+JSON'undaki `steps[].started_at/completed_at`).** Düzeltme commit'i
+(`33618606056`, 2026-09-02 10:16) SONRASINDAKİ ~27 çalıştırmanın TAMAMI
+tarandı (2026-09-02 → 2026-09-11, 9 gün). Bulgular:
+
+  - **`cancelled` sonucu SIFIR.** Düzeltmeden önceki dönemde
+    (2026-08-30) görülen "iş 30 dk'ya tam oturup `cancelled`" deseni bir
+    daha hiç tekrarlanmadı — ne bu haftaki B-127..B-146 turunda, ne
+    ondan önceki mutasyon turlarında.
+  - **`windows-latest` işinin `Test (pytest)` adımı** örneklenen 8
+    çalıştırmada 7dk20sn ile 16dk04sn arasında değişti (bkz. örnekler:
+    `34209290866`→7:20, `34342271050`→9:35, `34358252221`→12:33,
+    `34492528582`→16:04, `34509770210`→15:55, `34530899819`→15:46,
+    `34587629233`→13:25) — HİÇBİRİ 30 dk sınırına yaklaşmadı, hepsi
+    gerçek bir sonuçla (başarı/gerçek test hatası) bitti, `cancelled`
+    ile değil.
+  - **`ubuntu-latest`'in aynı adımı tutarlı biçimde 2-3 dk** — yani
+    Windows koşucusu Linux'a göre kalıcı olarak ~5-8× yavaş, ama bu
+    SINIRLI bir yavaşlık, sınırsız bir takılma DEĞİL.
+  - **İstisna — bugünkü SON çalıştırma (`34641189039`, `92f9c83` birleştirme
+    commit'i).** Hem `ubuntu-latest` hem `windows-latest` ~1 dakikada
+    başarısız oldu — ama nedeni yavaşlık/takılma DEĞİLDİ: `Type check
+    (mypy)` adımı kırmızıydı (`CORE/totp_guard.py:41` — `TOTP.at()`'e
+    `float` geçiriliyordu, stub `int | datetime` istiyor), bu da `pytest`
+    adımının hiç ÇALIŞMADAN `skipped` geçmesine yol açtı. Bu B-098'le
+    İLGİSİZ, ayrı ve gerçek bir regresyon — bu turun bir PARÇASI olarak
+    bulunup düzeltildi (`CORE/totp_guard.py`, `int(aday_zaman)`), mypy/
+    ruff/hedefli testler yeşil, ayrı commit (`c710a1b`) ile kapatıldı.
+    Not: bu, B-127..B-146 turunun altı commit'inin GERÇEKTE hiçbir zaman
+    CI'da uçtan uca doğrulanmadığı anlamına geliyordu (mypy adımı
+    `pytest`'ten ÖNCE çalışıyor, kırmızıysa `pytest` hiç başlamıyor) —
+    yerel `python -m pytest` çalıştırmaları GERÇEKTİ ama CI'ın kendi
+    onayı bu düzeltmeye kadar hiç gelmemişti.
+
+**Yerel doğrulama (aynı bu makinede, gerçek Windows).** Tam paket
+(`python -m pytest -q --durations=40`) 441,77 sn'de (7dk22sn) bitti — 3
+kalıcı-olmayan (B-098'le ilgisiz, ayrıca B-148 olarak kaydedildi) hata
+dışında 3524 geçti. En yavaş TEK test 18,80 sn
+(`test_run_tool_torun_surec_pipe_tutsa_bile_tanitici_ve_thread_
+SIZDIRMIYOR`) — 120 sn'lik zaman aşımının ÇOK altında, HİÇBİR test
+zaman aşımına takılmadı. Yani bu makinede B-098'in orijinal semptomu
+(gerçek bir takılma) YENİDEN ÜRETİLEMEDİ.
+
+**Dürüst sonuç — kök neden hâlâ BULUNAMADI, ama semptom artık
+GÖZLEMLENMİYOR.** `pytest-timeout` (B-098'in ilk turu) görevini yapıyor:
+30 dakikalık sessiz/iz bırakmayan takılma deseni 9 gündür ve ~27
+çalıştırmadır bir daha görülmedi. Ama Windows koşucusunun Linux'a göre
+kalıcı ~5-8× yavaşlığının TEK bir kesin nedeni (ki bu B-098'in asıl
+sorusuydu — "hangi testte/adımda takılıyor") hâlâ teyit edilemedi;
+`ci.yml`'deki mevcut hipotez (dosya sistemi + Windows Defender gerçek
+zamanlı taraması, süreç başlatma maliyeti) makul ve yerel gözlemle
+ÇELİŞMİYOR ama ham CI günlüğü okunamadan KANITLANAMIYOR. Bu turda
+TAHMİN YÜRÜTÜLÜP KAPATILMADI — B-098 **Açık** kalıyor. İleride kesin
+teşhis için: depo üzerinde yazma yetkisi olan biri `gh auth login`
+yapıp (ya da `GH_TOKEN` ortam değişkeniyle) bir sonraki yavaş
+`windows-latest` çalıştırmasının ham `Test (pytest)` günlüğünü
+indirirse, bu oturumun ulaşabildiği teşhis tavanının ÖTESİNE geçilebilir
+— o günlük olmadan bu sınırın ötesine geçilemiyor.
+
 ---
 
 ## B-099 — B-092'nin kararı UYGULANDI: `original_sha256` AAD'den kaldırıldı, anahtarsız RFC 3161 doğrulaması KALICI olarak feda edildi
@@ -12278,3 +12352,45 @@ TÜREYEN, `hwid_probe`'un bağımsız okumasıyla eşleşen bir değer veriyor.
 Tam suite: 3465 passed, 41 skipped, 2 deselected (ikisi de bu değişiklikle
 ilgisiz, ortam artığı: yerel klonun eski git etiketleri ve bir alt-süreç
 PATH sorunu — ayrıntı commit mesajında).
+
+---
+
+## B-148 — `tests/test_hwid_probe.py`'nin sahte sysfs ağacı `Path.symlink_to()`'ya dayanıyor: sembolik-bağ ayrıcalığı olmayan Windows'ta 3 test yerel olarak FAIL
+
+Görev: B-098'in "Windows CI'da hâlâ uzun süren/asılan iş var mı"
+denetimi sırasında bulundu — B-098'in KAPSAMI DIŞINDA, ayrı bir
+bulgu olarak burada kaydediliyor, bu turda DÜZELTİLMEDİ.
+
+**Bulgu.** `_sahte_sysfs_usb_agaci()` yardımcısı
+(`tests/test_hwid_probe.py:883`) ve `test_sysfs_idvendor_hic_
+bulunamazsa_sessizce_atlaniyor_cokme_yok`'un kendi içindeki satır
+(`:961`) gerçek bir Linux sysfs ağacını (`/sys/block/sda/device` →
+sembolik bağ → SCSI yaprağı) simüle etmek için `Path.symlink_to()`
+çağırıyor. Windows'ta sembolik bağ oluşturmak
+`SeCreateSymbolicLinkPrivilege` (yönetici) ya da Geliştirici Modu
+gerektiriyor; ikisi de yoksa `OSError: [WinError 1314] Gereken
+ayrıcalık istemci tarafından sağlanmıyor` fırlıyor. Bu makinede
+(bu oturumun çalıştığı Windows 11 kutusu, yönetici OLMAYAN kabuk,
+Geliştirici Modu KAPALI) 3 test bu yüzden FAIL:
+`test_sysfs_iki_seviye_yukaridaki_eski_basit_durumda_calisir`,
+`test_sysfs_dort_seviye_yukaridaki_gercek_usb_storage_durumunda_
+calisir`, `test_sysfs_idvendor_hic_bulunamazsa_sessizce_atlaniyor_
+cokme_yok`.
+
+**CI'ı etkiliyor mu — TEYİT EDİLEMEDİ.** GitHub'ın `windows-latest`
+koşucuları genelde yönetici haklarıyla çalışıyor (bilinen platform
+davranışı), yani CI'da muhtemelen sorun yok — ama B-098'in aynı
+turunda tespit edildiği gibi ham CI günlüğüne bu oturumdan erişim YOK
+(`gh` CLI kurulu değil, token yok), yani bu YALNIZCA bir varsayım,
+doğrulanmadı.
+
+**Neden düzeltilmedi.** B-098'in kapsamı "CI'da asılan/uzun süren iş"
+idi, bu ise yerel-ortam-özel bir ayrıcalık sorunu — plan dışı bulgu,
+sessizce düzeltilmedi (proje kuralı).
+
+**Öneri (ileride ele alınırsa).** `symlink_to()` çağrısını
+`try/except OSError` ile sarıp yetkisiz ortamda `pytest.skip(...)`
+yapmak en basit yol; alternatif olarak gerçek bir sembolik bağ yerine
+`_read_linux_sysfs()`'in dizin-yürüme mantığını `os.path.islink`/
+`os.readlink`'i `monkeypatch`'leyerek simüle etmek (sembolik bağ hiç
+KURULMADAN) daha platform-bağımsız olurdu.
