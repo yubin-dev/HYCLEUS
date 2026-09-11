@@ -110,12 +110,11 @@ def safezone_dir(*, create: bool = True) -> Path:
 
     HYCLEUS_SAFEZONE tanımlıysa o kullanılır, değilse `data/safezone/`.
 
-    İZİN NOTU — dürüst sınır: POSIX'te dizin 0o700 ile oluşturuluyor.
-    Windows'ta `mode` yok sayılır ve dizin üst dizinin ACL'ini devralır;
-    yani orada SafeZone'u koruyan şey `data/` dizininin izinleridir, bu kod
-    değil. HYCLEUS bir Windows uygulaması olduğu için pratikte geçerli olan
-    da budur — SECURITY.md §1'deki "oturum açmış OS kullanıcısı güvenilir"
-    varsayımıyla tutarlı.
+    İZİN NOTU — dürüst sınır: POSIX'te (Linux/macOS) dizin 0o700 ile
+    oluşturuluyor ve bu gerçek bir koruma. Windows'ta `mode` yok sayılır
+    ve dizin üst dizinin ACL'ini devralır; yani orada SafeZone'u koruyan
+    şey `data/` dizininin izinleridir, bu kod değil — SECURITY.md §1'deki
+    "oturum açmış OS kullanıcısı güvenilir" varsayımıyla tutarlı.
     """
     override = os.getenv(SAFEZONE_ENV_VAR)
     target = Path(override) if override else data_dir() / SAFEZONE_DIRNAME
