@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import ctypes
 import hmac as _stdlib_hmac
+import logging
 import os
 import secrets
 import struct
@@ -83,6 +84,8 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from CORE import secret_store
 from CORE.crypto import zero_bytearray
 from DB.db_manager import DBManager
+
+_log = logging.getLogger("hycleus.vault_manager")
 
 # ── Sabitler ──────────────────────────────────────────────────────────────────
 _MAGIC = b"HCLV"
@@ -1450,27 +1453,59 @@ def recover_master_key(
 
     Raises:
         ValueError — kurtarma payı geçersizse veya kalan pay okunamıyorsa
+
+    Başarısız her deneme (yanlış PIN, bozuk/geçersiz kurtarma payı, eşik
+    altı/yanlış indisli bir pay, kasada olmayan share_2) denetim kaydına
+    "vault_recovery_rejected" olarak yazılır — B-037. Reddin nedeni
+    YALNIZCA istisna TÜRÜ olarak kaydedilir (`type(exc).__name__`,
+    ör. "ValueError"), ASLA `str(exc)`: `_parse_share()`'in bazı hata
+    mesajları payın İLK 16 KARAKTERİNİ doğrudan mesaja gömüyor (bkz. o
+    fonksiyonun `share[:16]!r` satırı) — `str(exc)`'i kaydetmek payın bir
+    kısmını denetim izine sızdırırdı. PIN zaten hiçbir hata mesajına
+    girmiyor (`_decrypt_vault`'un GCM hatası PIN'i YANSITMIYOR) ama aynı
+    kural (yalnızca tür, hiçbir zaman mesaj) her ikisi için de geçerli —
+    bkz. `tests/test_vault_manager.py`'nin bu ikisinin negatif kanıtı.
     """
-    kurtarma_indisi, _y = _parse_share(recovery_share)  # biçim + aralık
+    try:
+        kurtarma_indisi, _y = _parse_share(recovery_share)  # biçim + aralık
 
-    # Kurtarma parçası 3 indisli OLMALI. `_parse_share` 1/2/3'ün üçünü de
-    # kabul ediyor (üçü de geçerli pay indisi), ama bu fonksiyonun sözleşmesi
-    # dar: "kullanıcının elindeki basılı parça". share_1 ya da share_2'yi
-    # buraya vermek bir bypass değil — onlar zaten geçerli paylar ve veren
-    # kişi onlara sahip demektir — ama sessizce çalışması akışı bulanıklaştırır
-    # ve denetim kaydına "kurtarma" diye yanlış bir olay düşer.
-    if kurtarma_indisi != _SSS_RECOVERY_INDEX:
-        raise ValueError(
-            f"Kurtarma parçası {_SSS_RECOVERY_INDEX} indisli olmalı, "
-            f"{kurtarma_indisi} indisli bir pay verildi."
-        )
+        # Kurtarma parçası 3 indisli OLMALI. `_parse_share` 1/2/3'ün üçünü
+        # de kabul ediyor (üçü de geçerli pay indisi), ama bu fonksiyonun
+        # sözleşmesi dar: "kullanıcının elindeki basılı parça". share_1 ya
+        # da share_2'yi buraya vermek bir bypass değil — onlar zaten
+        # geçerli paylar ve veren kişi onlara sahip demektir — ama
+        # sessizce çalışması akışı bulanıklaştırır ve denetim kaydına
+        # "kurtarma" diye yanlış bir olay düşer.
+        if kurtarma_indisi != _SSS_RECOVERY_INDEX:
+            raise ValueError(
+                f"Kurtarma parçası {_SSS_RECOVERY_INDEX} indisli olmalı, "
+                f"{kurtarma_indisi} indisli bir pay verildi."
+            )
 
-    if pin is not None:
-        kalan = _read_share_1(hwid, pin)
-    else:
-        kalan = _load_share_2(hwid)
+        if pin is not None:
+            kalan = _read_share_1(hwid, pin)
+        else:
+            kalan = _load_share_2(hwid)
 
-    master_key = _sss_recover(kalan, recovery_share)
+        master_key = _sss_recover(kalan, recovery_share)
+    except Exception as exc:
+        # Log çağrısının KENDİSİ ayrı bir try/except'te: bir DB hıçkırığı
+        # asıl hatayı (ör. "PIN yanlış") bir DB bağlantı hatasıyla
+        # DEĞİŞTİRMEMELİ — `main_window_lock.py::_poll_usb()`'daki AYNI
+        # desen.
+        try:
+            DBManager().log(
+                "vault_recovery_rejected",
+                detail=(
+                    f"hwid={hwid} "
+                    f"kaynak={'share_1+share_3' if pin else 'share_2+share_3'} "
+                    f"sebep={type(exc).__name__}"
+                ),
+            )
+        except Exception as log_exc:
+            _log.error("Kurtarma reddi denetime yazılamadı: %s", log_exc)
+        raise
+
     DBManager().log(
         "vault_recovered",
         detail=f"hwid={hwid} kaynak={'share_1+share_3' if pin else 'share_2+share_3'}",

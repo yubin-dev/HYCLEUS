@@ -132,7 +132,7 @@ _KATEGORI_KIMLIK = frozenset({
     EYLEM_ZORUNLU, EYLEM_ISTEGE_BAGLI,
     _HCLX_URETILDI, _HCLX_ACILDI, _HCLX_REDDEDILDI,
     EYLEM_ETKIN, EYLEM_DUSUS, EYLEM_YENIDEN_MUHUR, EYLEM_YENIDEN_MUHUR_BASARISIZ,
-    "vault_recovered", "vault_reprovisioned",
+    "vault_recovered", "vault_reprovisioned", "vault_recovery_rejected",
     EYLEM_GOLGE_SILINDI,
     "user_registered",
 })

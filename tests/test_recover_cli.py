@@ -244,6 +244,105 @@ def test_recover_aborts_on_foreign_share(vault, db, capsys, monkeypatch) -> None
     )
 
 
+# ── B-037: başarısız kurtarma denemeleri denetim kaydına "reddedildi"
+#    yazılıyor — payın/PIN'in KENDİSİ asla yazılmıyor (negatif kanıt) ────────
+#
+# `vault_manager.recover_master_key()` doğrudan çağrılıyor (CLI katmanı
+# DEĞİL) — üç senaryo da (yanlış PIN, bozuk pay, eşik dışı indisli pay)
+# doğrudan o fonksiyonun kendi `except Exception` sarmalayıcısını sınıyor.
+# `_cmd_recover()` zaten bu üçünü de yukarıdaki testlerde CLI seviyesinde
+# kapsıyor; burada odak DENETİM KAYDI.
+
+
+def test_recover_yanlis_pin_denetim_kaydina_reddedildi_yaziyor(vault, db) -> None:
+    """Yanlış PIN → `_decrypt_vault`'un GCM hatası (`ValueError`) →
+    "vault_recovery_rejected" yazılmalı — PIN'in KENDİSİ hiçbir `detail`
+    alanında olmamalı."""
+    share_3 = export_recovery_share(vault, _PIN)
+    yanlis_pin = "YANLIS-PIN-000-ASLA-YAZILMAMALI"
+
+    with pytest.raises(ValueError):
+        vault_manager.recover_master_key(vault, recovery_share=share_3, pin=yanlis_pin)
+
+    satir = db.fetchone(
+        "SELECT detail FROM audit_log WHERE action = 'vault_recovery_rejected' "
+        "ORDER BY id DESC LIMIT 1"
+    )
+    assert satir is not None, "reddedilen kurtarma denemesi denetime yazılmadı"
+    assert "ValueError" in satir["detail"]
+    assert yanlis_pin not in satir["detail"]
+
+    # NEGATİF KANIT: audit_log'un HİÇBİR satırının detail'inde PIN yok —
+    # yalnızca son satır değil, TÜMÜ tarandı.
+    tum_detaylar = " ".join(
+        r["detail"] or "" for r in db.fetchall("SELECT detail FROM audit_log")
+    )
+    assert yanlis_pin not in tum_detaylar
+    assert _PIN not in tum_detaylar
+
+
+def test_recover_bozuk_pay_denetim_kaydina_reddedildi_yaziyor(vault, db) -> None:
+    """Biçimi bozuk bir kurtarma payı → `_parse_share`'in `ValueError`'ı →
+    "vault_recovery_rejected" yazılmalı; payın KENDİSİ — ya da bir PARÇASI,
+    `_parse_share` hata mesajına payın İLK 16 KARAKTERİNİ gömüyor — hiçbir
+    detail alanında olmamalı."""
+    bozuk_pay = "BU-TAMAMEN-GECERSIZ-BIR-KURTARMA-PAYI-DEGERI-ASLA-YAZILMAMALI"
+
+    with pytest.raises(ValueError):
+        vault_manager.recover_master_key(vault, recovery_share=bozuk_pay, pin=_PIN)
+
+    satir = db.fetchone(
+        "SELECT detail FROM audit_log WHERE action = 'vault_recovery_rejected' "
+        "ORDER BY id DESC LIMIT 1"
+    )
+    assert satir is not None
+    assert "ValueError" in satir["detail"]
+    assert bozuk_pay not in satir["detail"]
+    assert bozuk_pay[:16] not in satir["detail"], (
+        "_parse_share'in hata mesajına gömdüğü pay parçası denetime sızmış"
+    )
+
+    tum_detaylar = " ".join(
+        r["detail"] or "" for r in db.fetchall("SELECT detail FROM audit_log")
+    )
+    assert bozuk_pay[:16] not in tum_detaylar
+
+
+def test_recover_esik_disi_indisli_pay_denetim_kaydina_reddedildi_yaziyor(
+    vault, db,
+) -> None:
+    """`recovery_share` olarak share_1/share_2 verilmesi (indis kontrolü,
+    bkz. `tests/test_vault_manager.py::
+    test_recover_master_key_yalnizca_3_indisli_parcayi_kabul_ediyor`) de
+    AYNI "vault_recovery_rejected" yolundan geçmeli."""
+    s1, _s2, _s3 = vault_manager._sss_split(b"\x77" * 32)
+
+    with pytest.raises(ValueError, match="3 indisli olmalı"):
+        vault_manager.recover_master_key(vault, recovery_share=s1, pin=_PIN)
+
+    satir = db.fetchone(
+        "SELECT detail FROM audit_log WHERE action = 'vault_recovery_rejected' "
+        "ORDER BY id DESC LIMIT 1"
+    )
+    assert satir is not None
+    assert "ValueError" in satir["detail"]
+
+
+def test_recover_basarili_denemede_reddedildi_YAZILMIYOR(vault, db) -> None:
+    """Kontrast: başarılı bir kurtarma "vault_recovery_rejected" DEĞİL
+    yalnızca "vault_recovered" yazmalı — iki olay birbirine karışmamalı."""
+    share_3 = export_recovery_share(vault, _PIN)
+
+    vault_manager.recover_master_key(vault, recovery_share=share_3, pin=_PIN)
+
+    assert db.fetchone(
+        "SELECT 1 FROM audit_log WHERE action = 'vault_recovery_rejected'"
+    ) is None
+    assert db.fetchone(
+        "SELECT 1 FROM audit_log WHERE action = 'vault_recovered'"
+    ) is not None
+
+
 # ── --takeover (B-11X, Madde 2) ─────────────────────────────────────────────
 #
 # `--recover`'dan FARKLI senaryo: `vault` fixture'ının HWID'i (_HWID) burada
