@@ -1605,7 +1605,10 @@ açık, hâlâ karar bekliyor.
 
 ## B-037 — Kurtarma ve yedek CLI'ları dağıtılan pakete GİRMİYOR
 
-**Durum:** Açık — DÜZELTİLMEDİ, önce rapor
+**Durum:** KISMEN KAPANDI (2026-09-24) — kurtarma yarısı (`recover_vault.py`)
+paketlendi; yedek/kurulum/damga yarısı (`backup_cli.py`/`setup_usb.py`/
+`verify_timestamp_cli.py`) BİLEREK kapsam dışı bırakıldı, hâlâ açık
+(bkz. KAPANIŞ notu).
 **Öncelik:** Orta-Yüksek (kurtarma yolunun ulaşılabilirliği)
 **Bulundu:** 2026-08-20 — kullanıcı rehberi yazılırken
 
@@ -1723,6 +1726,175 @@ güncellendi** (talimat gereği). Önerilen çözüm hâlâ B-037'nin kendi
 "Öneri" bölümünde yazılı (`hycleus-kurtar` konsol EXE'si, `console=True`,
 PySide6'yı ikinci kez pakete sokmadan) — uygulanması ayrı bir kararla
 onaylanmalı.
+
+---
+
+## KAPANIŞ (2026-09-24) — kurtarma yarısı paketlendi, altı ayrı commit, kanıtlarla
+
+**Kapsam kararı — İLK CÜMLEDE:** yalnızca `CORE/recover_vault.py`nin
+DÖRT bayrağı (`--recover`/`--takeover`/`--export`/`--status`)
+paketlendi. `CORE/backup_cli.py` (`--restore`/`--verify`),
+`CORE/setup_usb.py` (`--reset` dahil ilk kurulum) ve `CORE/
+verify_timestamp_cli.py` HÂLÂ pakete girmedi — bu madde başlığının
+"ve yedek CLI'ları" kısmı hâlâ AÇIK. Bilinçli daraltma: istenen görev
+özellikle kurtarma bayraklarını hedefliyordu; yedek/kurulum araçlarını
+da paketlemek ayrı bir spec/CI/dokümantasyon turu ister. Yeniden
+açılırsa aynı ikinci-EXE deseni (`HYCLEUS-Kurtarma.exe`, aynı
+`Analysis`/`pyz`) doğrudan genişletilebilir — B-037'nin başlığı bu
+yüzden "KISMEN KAPANDI" ile işaretlendi, tam kapanmadı.
+
+### Adım 1 — Uyarı metinleri dürüstleştirildi (commit `4df5a77`)
+
+`main.py::_kurtarma_parcasi_uyari_dialogu()`'nun "python CORE/
+recover_vault.py --export" satırı, gerçek paketlenmiş üründe var olan
+tek yola (Yönetim Paneli → Ayarlar → "Kurtarma Parçasını Göster…")
+çevrildi. Aynı taramada `UI/main_window_open.py`'nin yedek tamamlanma
+mesajında AYNI sınıftan iki referans daha bulundu (`python CORE/
+backup_cli.py --verify`, `recover_vault.py --export`) ve düzeltildi.
+
+`tests/test_ui_yasakli_iddia_terimleri.py`'nin (K0-6) yasaklı-iddia
+taraması `UI/` + `main.py`'yi kapsayacak şekilde genişletildi: herhangi
+bir ".py" referansı (docstring/QSS yorumları HARİÇ — ölçüldü, dahil
+edilselerdi 60+ ve 3 yanlış pozitif) artık CI'ı kırıyor. `CORE/`
+BİLEREK kapsam dışı — oradaki CLI betiklerinin kendi `argparse` yardım
+metinleri "python x.py" yazması MEŞRU. Mutasyonla doğrulandı: eski
+metin geçici geri konup iki test de KIRMIZI oldu, sonra geri alındı
+(`git diff` boş).
+
+### Adım 2 — Tek kod yolu, paketlenmiş giriş noktası (commit `b7c10d9`)
+
+`main.py::_erken_komut()` artık `--recover`/`--takeover`/`--export`
+(sonradan `--status` de, aşağıya bkz.) bayraklarını tanıyor ve
+`QApplication` kurulmadan `CORE.recover_vault.main()`'e DEVREDİYOR —
+mantık kopyalanmadı.
+
+**Windows için seçilen yol: AYNI `Analysis`/`pyz`'den İKİNCİ bir EXE,
+`HYCLEUS-Kurtarma.exe` (`console=True`).** Gerekçe: `HYCLEUS.exe`
+`console=False` (GUI alt sistemi) derleniyor; `getpass()`/`input()`
+Windows'ta gerçek bir konsol tutamacı (`CONIN$`/`CONOUT$`) istiyor,
+`console=False` bir süreçte bu YOK — DOĞRUDAN doğrulandı: yönlendirilmiş
+stdout çalışıyor (`--selftest`in duman testi zaten böyle okuyor) ama
+etkileşimli girdi ÇALIŞMIYOR. Değerlendirilen alternatif: `console=False`
+EXE'de çalışma anında `AttachConsole`/`AllocConsole` (pywin32) ile konsol
+iliştirmek — PyInstaller'ın `console=False` bootloader'ı stdio
+tutamaçlarını bağlanmadan kapatıyor, çalışma anında yeniden açmak
+kırılgan ve platforma özgü ek kod ister; iki EXE üretmek PyInstaller'ın
+zaten YERLEŞİK desteklediği, sıfır ek çalışma zamanı kodu gerektiren
+yoldu, o seçildi. `HYCLEUS.spec`'e tek bir `pyinstaller HYCLEUS.spec`
+çağrısının ikisini BİRDEN ürettiği ikinci bir `EXE()` bloğu eklendi.
+**Linux'ta ikinci bir ikili gerekmedi** — `AppRun` zaten `exec` ile
+stdio'yu miras alıyor, bir terminalden `--recover` vb. çağrıldığında
+normal bir CLI aracı gibi davranıyor (koda dokunulmadı, yalnızca
+doğrulandı).
+
+Gerçek bir yapıyla doğrulandı: tek `pyinstaller HYCLEUS.spec` çağrısı
+`HYCLEUS.exe` VE `HYCLEUS-Kurtarma.exe`'yi BİRDEN üretti,
+`smoke-test.ps1` `HYCLEUS.exe`'ye karşı değişmeden yeşil kaldı (16/16),
+`HYCLEUS-Kurtarma.exe --export` gerçekten `recover_vault.main()`'e
+ulaşıp beklenen hatayı verdi.
+
+**Gerçek regresyon, doğrulama sırasında ÖLÇÜLDÜ ve düzeltildi:** çıplak
+`-h`/`--help` hiçbir bayrakla eşleşmiyordu, `_erken_komut()` `None`
+dönüp normal GUI açılışına düşüyordu — USB yokken açılan bir
+QMessageBox'ta 30 saniye ASILI KALDI (gerçek EXE'ye karşı ölçüldü, süreç
+elle sonlandırıldı). `-h`/`--help` de aynı devretme dalına eklendi;
+gerçek yeniden derlemeyle doğrulandı (kod 0, gerçek argparse yardım
+metni).
+
+PIN/pay HİÇBİR ZAMAN komut satırı argümanı değil —
+`recover_vault.py`'nin argparse'ı yalnızca bayrak (`store_true`) +
+`--qr-out DOSYA` tanımlıyor, ikisi de `getpass`/`input()` ile
+etkileşimli okunuyor; bu zaten var olan tasarımdı, değiştirilmedi.
+
+### Adım 3 — Reddedilen kurtarma denemeleri denetime yazılıyor (commit `3fbae50`)
+
+`CORE.vault_manager.recover_master_key()`'in HİÇBİR başarısızlık
+yolunda (yanlış PIN, bozuk/yanlış indisli pay, kasada olmayan
+`share_2`) denetim kaydı YOKTU — yalnızca başarı (`"vault_recovered"`)
+loglanıyordu. Artık her istisnada `"vault_recovery_rejected"` yazıp
+istisnayı DEĞİŞTİRMEDEN yeniden fırlatıyor. Kaydedilen `sebep` yalnızca
+`type(exc).__name__` — ASLA `str(exc)`: `_parse_share()`'in hata mesajı
+bozuk bir payın ilk 16 karakterini doğrudan mesaja gömüyor
+(`share[:16]!r`), mesajın kendisini kaydetmek pay parçasını denetim
+izine sızdırırdı. Negatif testle kanıtlandı: `audit_log`'un HER satırı
+(yalnızca son yazılan değil) hem PIN hem pay değeri için tarandı, hiçbiri
+bulunmadı. Log çağrısının kendisi ayrı bir `try/except`'te
+(`main_window_lock.py::_poll_usb()` ile AYNI desen) — bir DB hıçkırığı
+asıl hatayı maskelemesin diye. Mutasyonla doğrulandı: log çağrısı
+geçici kaldırılıp üç red testi de KIRMIZI oldu, geri alındı.
+
+### Adım 4 — Duman testi genişletildi (commit `a0e508a`)
+
+**İKİ platformda da yeni adımlar: `[7] --help` (kod 0, gerçek argparse
+yardım metni) ve `[8] --export` (USB YOKKEN, gerçek hata yoluna
+kadar).** [8]'in ilk yazılan hâli YANLIŞ tahmin ediyordu (`_require_
+hwid()`'in "USB tespit edilemedi" mesajını bekliyordu) — GERÇEK EXE'ye
+karşı çalıştırılıp DÜZELTİLDİ: hata daha ÖNCE, `recover_vault.main()`'in
+`DBManager().connect(hwid=None, ...)` çağrısından geliyor ("USB HWID
+eksik", `DB/db_manager.py:266`) — `_cmd_export()`'a hiç ulaşılmıyor.
+
+**Uçtan uca (gerçek PIN/pay round-trip'i) bir kurtarma CI'da
+KOŞAMIYOR VE KOŞMUYOR — istenen görevin öngördüğü sınır tam olarak
+budur, ama gerekçe görevin tahmininden FARKLI çıktı: engel "anahtar
+kasası" DEĞİL (Windows Credential Manager bu makinede sorunsuz
+çalışıyor, [4] adımı zaten bunu kanıtlıyor) — engel `_require_hwid()`nin
+GERÇEK bir USB istemesi ve CI koşucusunda hiçbirinin takılı olmaması.**
+Yeni bir HWID-baypas bayrağı BİLEREK EKLENMEDİ (B-154'ün `--test-
+data-dir` için verdiği AYNI karar — bir sürüm ikilisinde donanım
+varlığını sahtelemek korunan şeyi baltalardı). Bunun yerine [8], gerçek
+derlenmiş ikilinin donanım sınırına GERÇEKTEN ulaştığını (sessizce
+düşmediğini, asılı kalmadığını) kanıtlıyor — bu bir ERİŞİLEBİLİRLİK
+kanıtı, KURTARMA kanıtı değil.
+
+Mutasyonla doğrulandı, gerçek bir yeniden derlemeyle: `_erken_komut()`
+dan kurtarma/yardım yönlendirmesi geçici çıkarıldı, iki EXE yeniden
+derlendi, `HYCLEUS-Kurtarma.exe --export` GERÇEKTEN 30 sn+ ASILI KALDI
+(süreç elle sonlandırıldı) — tam olarak `--selftest`'in kaçındığı hata
+sınıfı. Geri alınıp yeniden derlendi, `smoke-test.ps1` 21/21'e döndü.
+
+### Adım 5 — Belgeler (commit `e06f16d`)
+
+SECURITY.md §4.4 (EN+TR) B-037'nin kapanışını, Windows/Linux
+paketleme kararını, `-h`/`--help` bulgusunu ve CI'da uçtan uca
+koşmama gerekçesini (anahtar kasası DEĞİL, USB/HWID) belgeliyor.
+**Kurtarma sonrası pay/anahtarın YENİLENMEDİĞİ ayrıca açıkça yazıldı
+— bu B-037'nin kapattığı şeyin parçası DEĞİL, ayrı ve hâlâ açık bir
+tasarım kararı** (döndürme isteniyorsa kendi BACKLOG maddesini
+gerektirir). §4.30 yeni duman testi kanıtını (erişilebilirlik, kurtarma
+DEĞİL) yansıtacak şekilde güncellendi.
+
+`docs/kullanici-rehberi.md`: kaynak-kontrolü varsayan komutlar
+(`python CORE/recover_vault.py ...`) `HYCLEUS-Kurtarma.exe`'ye
+(Windows) / doğrudan `.AppImage`'a (Linux) çevrildi, kaynak biçimi
+alternatif olarak korundu. **Bölüm 1'in "USB fiziksel kayıp" durumu
+"kendi başınıza yapabileceğiniz bir şey yok" diyordu — bu YANLIŞTI:**
+`--takeover` tam olarak bu senaryo için var ve rehber onu HİÇ
+anmıyordu; şimdi anıyor. `backup_cli.py --restore`'un pakete
+GİRMEDİĞİ (yukarıdaki kapsam kararıyla tutarlı) ayrıca not düşüldü.
+
+**`--status` sonradan eklendi (istenen ilk kapsamda YOKTU).**
+Rehberi yazarken ölçüldü: rehberin "önce durum kontrolü, sonra dışa
+aktarım" akışı `--status`'a dayanıyordu, o olmadan aynı asılı-kalma
+sınıfı rehberin ÖNERDİĞİ bir komutta yeniden üretilirdi. Salt okunur
+olduğu (`has_recovery_share()`, hiçbir yazma yok) için eklenmesi risksiz
+— aynı gerekçeyle `-h`/`--help` de eklenmişti (Adım 2). `_cmd_status()`
+'nin kendi "python CORE/recover_vault.py --export" mesajı da düzeltildi
+— artık paketlenmiş üründen erişilebildiği için Adım 1'deki AYNI kural
+orada da uygulandı.
+
+`docs/kullanici-rehberi.pdf` kaynaktan yeniden üretildi
+(`python CORE/rehber.py --uret`) — `tests/test_rehber_kopyalari.py`
+(PDF↔MD SHA-256 senkron denetimi, B-017'nin aynı dersi) bunu
+DOĞRULADI, eski PDF'le tam suite'te GERÇEKTEN KIRMIZI çıktı.
+
+### Sonuç
+
+Tam suite: 3575 geçti, 3 kaldı (`tests/test_hwid_probe.py`'nin
+sembolik-bağ testleri — B-148, bu depoda önceden bilinen, bu maddeyle
+İLGİSİZ, Windows'ta yönetici olmayan bir kabukta ayrıcalık eksikliği).
+Altı ayrı commit: `2e7e800` (yeniden doğrulama, düzeltme yok),
+`4df5a77` (adım 1), `b7c10d9` (adım 2), `3fbae50` (adım 3), `a0e508a`
+(adım 4), `e06f16d` (adım 5) + bu BACKLOG kaydıyla aynı commit (kapanış).
 
 ---
 
