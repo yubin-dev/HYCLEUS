@@ -139,6 +139,54 @@ if [ "${durum}" -eq 0 ] || ! echo "${hata}" | grep -q "HYCLEUS_TEST_DATA_DIR"; t
 fi
 kontrol sh -c "[ ! -e '${sahte}' ]"
 
+# ── 7) --help (B-037) ─────────────────────────────────────────────────────────
+#
+# Windows'un aksine Linux'ta İKİNCİ bir ikili YOK: AppRun bir terminalden
+# çağrıldığında stdio'yu doğal olarak miras alıyor (bkz. AppRun'ın kendi
+# yorumu), yani --recover/--takeover/--export AYNI AppRun'dan çalışıyor.
+echo "[7] --help"
+yardim_ciktisi="$("${KOK}/AppRun" --help 2>&1)" && yardim_durum=0 || yardim_durum=$?
+if [ "${yardim_durum}" -eq 0 ] \
+   && echo "${yardim_ciktisi}" | grep -q -- '--recover' \
+   && echo "${yardim_ciktisi}" | grep -q -- '--export' \
+   && echo "${yardim_ciktisi}" | grep -q -- '--takeover'; then
+  echo "  ✓ --help (çıkış=0, --recover/--export/--takeover listeleniyor)"
+  gecti=$((gecti + 1))
+else
+  echo "  ✗ --help (çıkış=${yardim_durum})"
+  echo "${yardim_ciktisi}" | sed 's/^/      /'
+  kaldi=$((kaldi + 1))
+fi
+
+# ── 8) --export — USB YOKKEN, gerçek hata yoluna kadar (B-037) ────────────────
+#
+# UÇTAN UCA bir kurtarma (gerçek pay/PIN'le master_key'i yeniden kurmak)
+# BU KOŞUCUDA KOŞULAMAZ — gerçek bir donanım sınırı, eksiklik değil:
+# `_require_hwid()` GERÇEK bir USB istiyor, CI koşucusunda hiçbiri takılı
+# değil. Bilerek yeni bir HWID-baypas bayrağı EKLENMİYOR (B-154'ün aynı
+# kararı). Ölçülen sınır "anahtar kasası" DEĞİL — Linux'ta `keyring`
+# arka ucu (SecretService/kwallet ya da düz dosya) sorunsuz çalışıyor;
+# asıl engel USB/HWID tespiti. Kod 1 VE beklenen "USB HWID eksik"
+# mesajı BİRLİKTE, paketlenmiş AppImage'ın gerçek main.py ->
+# _erken_komut() -> CORE.recover_vault.main() zincirinin SONUNA kadar
+# ulaştığını kanıtlıyor.
+#
+# ÖLÇÜLDÜ (Windows tarafında ilk yazılan sürüm YANLIŞ tahmin ediyordu):
+# hata `_cmd_export()`'un kendi `_require_hwid()`'inden DEĞİL, ondan
+# ÖNCE — `recover_vault.main()`'in `DBManager().connect(hwid=hwid,
+# key=None)` çağrısından geliyor (`hwid=None` olunca DB katmanı
+# REDDEDİYOR, `DB/db_manager.py:266`).
+echo "[8] --export (USB yok -- gerçek hata yoluna kadar)"
+disa_ciktisi="$("${KOK}/AppRun" --export 2>&1)" && disa_durum=0 || disa_durum=$?
+if [ "${disa_durum}" -eq 1 ] && echo "${disa_ciktisi}" | grep -q "USB HWID eksik"; then
+  echo "  ✓ --export (çıkış=1, \"USB HWID eksik\" mesajı var)"
+  gecti=$((gecti + 1))
+else
+  echo "  ✗ --export (çıkış=${disa_durum})"
+  echo "${disa_ciktisi}" | sed 's/^/      /'
+  kaldi=$((kaldi + 1))
+fi
+
 echo
 echo "geçti: ${gecti}  kaldı: ${kaldi}"
 [ "${kaldi}" -eq 0 ]

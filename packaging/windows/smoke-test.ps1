@@ -18,19 +18,24 @@
 .PARAMETER ExePath
     Sınanacak EXE. Verilmezse dist\HYCLEUS.exe.
 
+.PARAMETER ExeKurtarmaPath
+    Kurtarma konsol EXE'si (B-037). Verilmezse dist\HYCLEUS-Kurtarma.exe.
+
 .EXAMPLE
     .\packaging\windows\smoke-test.ps1
     .\packaging\windows\smoke-test.ps1 -ExePath dist\HYCLEUS.exe
 #>
 [CmdletBinding()]
 param(
-    [string]$ExePath
+    [string]$ExePath,
+    [string]$ExeKurtarmaPath
 )
 
 $ErrorActionPreference = 'Stop'
 
 $Kok = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if (-not $ExePath) { $ExePath = Join-Path $Kok 'dist\HYCLEUS.exe' }
+if (-not $ExeKurtarmaPath) { $ExeKurtarmaPath = Join-Path $Kok 'dist\HYCLEUS-Kurtarma.exe' }
 
 #: --selftest'in denemesi gereken EN AZ modül sayısı. Kesin sayı BİLEREK
 #: yazılmıyor: her yeni CORE/ modülü onu artırıyor ve sabit bir sayı, testi
@@ -213,6 +218,66 @@ if (-not ($cikisKoduReddetti -and $stderrMesajVar -and $dizinOlusmadi)) {
     $s.Cikti -split "`n" | ForEach-Object { if ($_.Trim()) { Write-Host "      $($_.TrimEnd())" } }
     Write-Host '      -- stderr --'
     $s.Hata -split "`n" | ForEach-Object { if ($_.Trim()) { Write-Host "      $($_.TrimEnd())" } }
+}
+
+# ── 7) HYCLEUS-Kurtarma.exe --help (B-037) ────────────────────────────────────
+#
+# `--recover`/`--takeover`/`--export`'in KENDİSİNİ (gerçek bir PIN/pay
+# istemi) burada koşturmuyoruz -- bu makine (CI koşucusu) GERÇEK bir USB
+# takılı değil, `_require_hwid()` her zaman reddedecek (bkz. [8]). --help
+# ise hiçbir donanım istemeden çalışması GEREKEN, argparse'ın kendi
+# ürettiği bir çıktı -- ikinci EXE'nin gerçekten VAR olduğunu VE
+# recover_vault.py'nin argparse'ına ulaştığını kanıtlıyor.
+Write-Host '[7] HYCLEUS-Kurtarma.exe --help'
+$kurtarmaVarMi = Test-Path $ExeKurtarmaPath -PathType Leaf
+Kontrol 'HYCLEUS-Kurtarma.exe var' $kurtarmaVarMi
+if ($kurtarmaVarMi) {
+    $sk = Calistir $ExeKurtarmaPath @('--help')
+    Kontrol '--help cikis kodu 0' ($sk.Kod -eq 0) "(kod=$($sk.Kod))"
+    Kontrol '--help --recover/--export/--takeover listeliyor' (
+        ($sk.Cikti -match '--recover') -and ($sk.Cikti -match '--export') -and ($sk.Cikti -match '--takeover')
+    )
+}
+
+# ── 8) HYCLEUS-Kurtarma.exe --export — USB YOKKEN, gerçek hata yoluna
+#    kadar (B-037) ────────────────────────────────────────────────────────────
+#
+# UÇTAN UCA bir kurtarma (gerçek pay/PIN'le master_key'i yeniden kurmak)
+# BU KOŞUCUDA KOŞULAMAZ -- gerçek bir donanım sınırı, bir eksiklik değil:
+# `_require_hwid()` GERÇEK bir USB (`get_usb_hwid()`) istiyor ve CI
+# koşucusunda hiçbiri takılı değil. Bu depo BİLEREK yeni bir HWID-baypas
+# bayrağı EKLEMİYOR (bkz. B-154'ün aynı kararı) -- --test-data-dir'in
+# TERSİNE, burada baypas edilecek bir dizin değil FİZİKSEL bir cihaz var,
+# sahtesi güvenlik modelini bozardı.
+#
+# Ölçülen sınır TAM OLARAK bu -- "anahtar kasası" DEĞİL (Windows
+# Credential Manager bu makinede sorunsuz çalışıyor, [4] zaten bunu
+# kanıtlıyor). Asıl engel USB/HWID tespiti.
+#
+# Yine de CI'nin GERÇEKTEN kanıtlayabileceği bir şey var: paketlenmiş
+# EXE, GERÇEK main.py -> _erken_komut() -> CORE.recover_vault.main()
+# zincirinin SONUNA kadar ulaşıyor mu, yoksa bir yerde sessizce mi
+# düşüyor (ör. GUI'ye kayıp asılı kalma)? Kod 1 VE beklenen "USB HWID
+# eksik" mesajı ikisi BİRDEN bunu kanıtlıyor.
+#
+# ÖLÇÜLDÜ (ilk yazılan sürüm YANLIŞ tahmin ediyordu): hata
+# `_cmd_export()`'un kendi `_require_hwid()`'inden DEĞİL, ondan ÖNCE —
+# `recover_vault.main()`'in `DBManager().connect(hwid=hwid, key=None)`
+# çağrısından geliyor (`hwid=None` olunca DB katmanı REDDEDİYOR,
+# `DB/db_manager.py:266`). Gerçek EXE'ye karşı çalıştırılıp DÜZELTİLDİ.
+Write-Host '[8] HYCLEUS-Kurtarma.exe --export (USB yok -- gercek hata yoluna kadar)'
+if ($kurtarmaVarMi) {
+    $se = Calistir $ExeKurtarmaPath @('--export')
+    Kontrol '--export USB yokken cikis kodu 1' ($se.Kod -eq 1) "(kod=$($se.Kod))"
+    Kontrol '--export "USB HWID eksik" mesaji stderrde' (
+        $se.Hata -match 'USB HWID eksik'
+    )
+    if (-not (($se.Kod -eq 1) -and ($se.Hata -match 'USB HWID eksik'))) {
+        Write-Host '      -- stdout --'
+        $se.Cikti -split "`n" | ForEach-Object { if ($_.Trim()) { Write-Host "      $($_.TrimEnd())" } }
+        Write-Host '      -- stderr --'
+        $se.Hata -split "`n" | ForEach-Object { if ($_.Trim()) { Write-Host "      $($_.TrimEnd())" } }
+    }
 }
 
 Write-Host ''
