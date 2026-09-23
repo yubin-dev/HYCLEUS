@@ -1644,6 +1644,86 @@ kipte `print()` çıktısı hiçbir yere gitmiyor.
 Ölçülmesi gereken: paket boyutu artışı (PySide6 ikinci kez girmemeli;
 kurtarma CLI'ları Qt kullanmıyor, `excludes` ile dışarıda tutulabilir).
 
+**EK — 2026-09-23 yeniden doğrulandı: bulgu DEĞİŞMEDİ, hâlâ AÇIK, hâlâ
+DÜZELTİLMEDİ.** İstek üzerine kod DEĞİŞTİRİLMEDEN yeniden kontrol
+edildi — "aradan geçen 34 günde biri sessizce düzeltti mi" sorusuna
+HAYIR cevabı.
+
+*Kanıt (2026-09-23):*
+- `HYCLEUS.spec:81` ve `HYCLEUS-linux.spec:90` — her iki dosyada da
+  TEK bir `Analysis(['main.py'], ...)`/`EXE(...)` çifti; `grep -c
+  "^a = Analysis"` her ikisinde de `1`. Önerilen ikinci konsol hedefi
+  (`hycleus-kurtar`) HÂLÂ eklenmemiş.
+- `.github/workflows/ci.yml` — `appimage` işi yalnızca `path: dist/*.
+  AppImage` (satır 469), `exe` işi yalnızca `path: dist/HYCLEUS.exe`
+  (satır 534) yüklüyor; ikinci bir CLI artefaktı YOK.
+- `main.py::_erken_komut()` (satır 275-294) yalnızca `--version` ve
+  `--selftest`'i tanıyor — `--recover`/`--takeover`/`--export`/
+  `--status` bayrağı main.py'de HİÇ YOK, `--recover` main.py'ye
+  bağlanmamış.
+- Paketlenmiş EXE'nin KENDİSİ, çalışırken, kullanıcıya imkânsız bir
+  komut söylüyor: `main.py::_kurtarma_parcasi_uyari_dialogu()` (satır
+  348-373) ekranda AYNEN şunu yazıyor: `"python CORE/recover_vault.py
+  --export"` — ama paketlenmiş bir EXE/AppImage'ın kullanıcısında ne
+  bir Python yorumlayıcısı (PyInstaller onefile/onedir'e gömülmüyor)
+  ne de erişilebilir bir `CORE/recover_vault.py` dosyası var (kaynak
+  PYZ arşivinde derlenmiş hâlde, çalıştırılabilir gevşek bir .py
+  DEĞİL). Yani uygulamanın KENDİSİ, kendi kullanıcısına kendi
+  paketinin desteklemediği bir komutu ÖNERİYOR.
+
+*SECURITY.md'deki kurtarma iddialarıyla çelişki listesi:*
+
+1. **§4.4 "The recovery share is a third path to the key" (EN ~747-854,
+   TR ~4955-5053) `recover_vault.py`'nin CLI giriş noktalarını
+   "standart giriş noktası" (`"standard CLI entry point"`, EN satır
+   788) olarak çerçeveliyor ve `_require_hwid()`'i "yalnızca kasa kendi
+   standart CLI giriş noktasından işletildiğinde gerçek bir savunma"
+   diye tanımlıyor** — bu çerçeveleme, o CLI'nin sıradan/meşru bir
+   ÇALIŞTIRILABİLİR yol olduğunu VARSAYIYOR. Paketlenmiş ürünün
+   kullanıcısı için bu yol hiç yok — bölüm bunu HİÇ AÇIKLAMIYOR.
+2. **Aynı bölümün "Losing the USB or the credential store no longer
+   means losing every file" (EN satır 755-756) / "USB'yi ya da kasayı
+   kaybetmek artık her dosyayı kaybetmek anlamına gelmiyor" (TR
+   karşılığı) cümlesi** — paketlenmiş ürünün kullanıcısı için bu ŞU AN
+   DOĞRU DEĞİL: iki paydan biri kaybolduğunda onları birleştirecek TEK
+   kod yolu (`recover_vault.py`), ellerindeki paketin dışında.
+3. **"Since v2.3.0 the share can also be exported from the Admin Panel,
+   not only the CLI" (EN satır 839)** — bu cümle CLI'yi ("not only the
+   CLI") hâlâ geçerli bir ikinci/asıl kanalmış gibi anıyor. Doğru olan
+   yalnızca EXPORT (share_3'ü üretip GÖSTERMEK) GUI'ye taşındı — bu
+   paketlenmiş üründe GERÇEKTEN var (`UI/RecoveryShareDialog.py`,
+   `main.py` üzerinden derleniyor). Ama RECOVER (2 paydan anahtarı
+   YENİDEN KURMAK) için hiçbir GUI karşılığı YOK ve CLI'nin kendisi de
+   pakette yok — okuyucu "export GUI'ye taşındıysa recover de
+   erişilebilirdir" diye YANLIŞ bir sonuç çıkarabilir.
+4. **Tehdit modeli satırları** ("2-of-3 is information-theoretically
+   secure", EN satır 288 ve TR karşılığı; `§1.2`'deki Shamir 2-of-3
+   satırı, EN satır 124) 2-of-3 eşiğini kullanıcı LEHİNE işleyen bir
+   güvence olarak sunuyor — saldırgan tarafı (M2/M3) için doğru
+   kalıyor, ama SAVUNMA tarafı (meşru kullanıcının payları birleştirip
+   kasasını kurtarması) paketlenmiş üründe FİİLEN çalışmıyor;
+   dokümanın hiçbir yerinde bu asimetri açıklanmıyor.
+5. **Çelişmeyen tek yer:** `docs/kullanici-rehberi.md`, B-036'nın
+   alıntıladığı gibi, zaten dürüst: "kendi başınıza yapabileceğiniz bir
+   şey yok, yöneticinize başvurun" — bu METIN bu maddenin bulgusuyla
+   TUTARLI. Asıl çelişki SECURITY.md'nin §4.4'ü ile rehber/gerçek kod
+   arasında: ikisi aynı mekanizmayı iki farklı erişilebilirlik
+   varsayımıyla anlatıyor.
+6. **B-036 ile ilişki, KARIŞTIRILMAMALI.** B-036 farklı bir soru
+   soruyor ("USB'nin kendisi kaybolursa yeni bir USB'ye taşınabilir mi
+   — tasarım kararı bekliyor"), bu madde (B-037) ise USB SORUNU
+   OLMASA BİLE (yalnızca PIN ya da yalnızca anahtar kasası
+   kaybolsa bile) paketlenmiş ürünün kullanıcısının kurtarma koduna
+   HİÇ ERİŞEMEDİĞİNİ söylüyor — B-036 tam çözülse bile B-037 tek
+   başına aynı sonucu (paketli üründe çalışan kurtarma yolu YOK)
+   doğurur.
+
+**Durum DEĞİŞMEDİ — DÜZELTMEYE BAŞLANMADI, yalnızca rapor
+güncellendi** (talimat gereği). Önerilen çözüm hâlâ B-037'nin kendi
+"Öneri" bölümünde yazılı (`hycleus-kurtar` konsol EXE'si, `console=True`,
+PySide6'yı ikinci kez pakete sokmadan) — uygulanması ayrı bir kararla
+onaylanmalı.
+
 ---
 
 ## B-038 — Bütünlük taramasının sonucu arayüzde HİÇBİR YERDE gösterilmiyor
