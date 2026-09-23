@@ -120,3 +120,44 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
+# ── HYCLEUS-Kurtarma.exe — İKİNCİ EXE, AYNI Analysis/PYZ'den (B-037) ──────────
+#
+# main.py TEK dosya, TEK kod yolu (_erken_komut() → --recover/--takeover/
+# --export CORE/recover_vault.py'ye devrediyor) — burada YENİDEN
+# DERLENMİYOR, yalnızca AYNI pyz'e İKİNCİ bir bootloader/giriş kabuğu
+# ekleniyor. Neden gerekli: `exe` (yukarısı) console=False — GUI alt
+# sistemi. `getpass.getpass()`/`input()` (recover_vault.py'nin PIN/pay
+# okuma yöntemi) Windows'ta bir CONSOLE tutamacı (CONIN$/CONOUT$)
+# istiyor; console=False bir EXE'de bu YOK — stdout/stderr yönlendirilmiş
+# bir PIPE/dosyaya (CI'nin --selftest'i böyle okuyor) yazabilir ama
+# ETKİLEŞİMLİ girdi göremez. `console=True` ikinci bir EXE bu farkı
+# çözüyor: aynı main.py, aynı _erken_komut(), farklı bootloader alt
+# sistemi.
+#
+# Alternatif değerlendirildi — TEK EXE + runtime'da AttachConsole/
+# AllocConsole çağırmak: PyInstaller'ın console=False bootloader'ı
+# stdio tutamaçlarını BAĞLANMADAN kapatıyor, çalışma anında yeniden
+# açmak (pywin32 ile) kırılgan ve platforma özgü ekstra kod ister;
+# iki EXE üretmek PyInstaller'ın zaten desteklediği, sıfır ek çalışma
+# zamanı kod gerektiren yol (bkz. BACKLOG B-037 "Öneri").
+exe_kurtarma = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas,
+    [],
+    name='HYCLEUS-Kurtarma',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)

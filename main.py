@@ -272,9 +272,29 @@ def _selftest() -> int:
     return 0
 
 
+#: B-037: paketlenmiş üründe de çalışan kurtarma giriş noktaları.
+#: `CORE/recover_vault.py`'nin KENDİ argparse'ı bu üçünü (+ --status,
+#: bilerek buraya EKLENMEDİ — istenen kapsam yalnızca bu üçü) zaten
+#: birbirini dışlayan ZORUNLU bir grup olarak tanımlıyor; burada yalnızca
+#: "bu bayraklardan biri varsa GUI'yi hiç açma, CORE/recover_vault.py'nin
+#: main()'ine devret" kararı veriliyor — mantık KOPYALANMIYOR.
+_KURTARMA_BAYRAKLARI = frozenset({"--recover", "--takeover", "--export"})
+
+#: `-h`/`--help` AYRI tutuluyor: ÖLÇÜLDÜ, `HYCLEUS-Kurtarma.exe --help`
+#: (hiçbir _KURTARMA_BAYRAKLARI üyesi YOKKEN) bu kümeye dahil edilmeden
+#: önce 30 saniye ASILI KALDI — `_erken_komut()` None dönüp normal GUI
+#: açılışına devam ediyordu, USB bulunamayınca bir QMessageBox açılıp
+#: tıklanmayı bekliyordu (`--selftest`in başta kaçındığı TAM AYNI duvar).
+#: `argparse`'ın kendi `-h`/`--help` işleyişi zaten `sys.exit(0)` çağırıyor,
+#: bu yüzden burada yalnızca YÖNLENDİRME kararı var — help METNİNİN
+#: KENDİSİ hâlâ `CORE/recover_vault.py`'nin argparse'ından geliyor.
+_YARDIM_BAYRAKLARI = frozenset({"-h", "--help"})
+
+
 def _erken_komut(args: list[str]) -> int | None:
     """GUI'siz bayrakları işler. `None` = normal açılışa devam."""
-    if not ({"--version", "--selftest"} & set(args)):
+    tum_bayraklar = {"--version", "--selftest"} | _KURTARMA_BAYRAKLARI | _YARDIM_BAYRAKLARI
+    if not (tum_bayraklar & set(args)):
         return None
 
     # Modül seviyesindeki basicConfig DEBUG'a ayarlı ve keyring'in arka uç
@@ -291,6 +311,24 @@ def _erken_komut(args: list[str]) -> int | None:
     if "--selftest" in args:
         ensure_utf8_console()
         return _selftest()
+    if (_KURTARMA_BAYRAKLARI | _YARDIM_BAYRAKLARI) & set(args):
+        # PIN/pay HİÇBİR ZAMAN burada YOK — recover_vault.main() ikisini
+        # de `getpass`/`input()` ile ETKİLEŞİMLİ okuyor (bkz. o modülün
+        # docstring'i), argv'de asla görünmüyorlar (işlem listesinde
+        # görünür olurlardı). Windows'ta bu yol yalnızca console=True
+        # derlenen HYCLEUS-Kurtarma.exe'den GERÇEKTEN etkileşimli
+        # çalışır (bkz. HYCLEUS.spec) — console=False HYCLEUS.exe'de
+        # `getpass`in ihtiyaç duyduğu CONIN$/CONOUT$ yok; Linux'ta AppRun
+        # zaten bir terminalden çağrıldığında stdio'yu doğal olarak
+        # miras alıyor, ikinci bir ikili gerekmiyor.
+        ensure_utf8_console()
+        from CORE.recover_vault import main as _recover_vault_main
+        try:
+            _recover_vault_main()
+        except SystemExit as exc:
+            kod = exc.code
+            return kod if isinstance(kod, int) else (0 if kod is None else 1)
+        return 0
     return None
 
 

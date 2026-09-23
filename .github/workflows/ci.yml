@@ -532,4 +532,15 @@ jobs:
         with:
           name: HYCLEUS-EXE
           path: dist/HYCLEUS.exe
+
+      # B-037: --recover/--takeover/--export için console=True ikinci EXE
+      # (aynı HYCLEUS.spec, aynı Analysis/pyz — bkz. spec'in kendi yorumu).
+      # Ayrı bir artefakt: HYCLEUS.exe'nin (console=False) İÇİNE KARIŞTIRILMASI
+      # yanlış olurdu, ikisi farklı bootloader alt sistemiyle derleniyor.
+      - name: EXE (kurtarma) yükle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HYCLEUS-Kurtarma-EXE
+          path: dist/HYCLEUS-Kurtarma.exe
           if-no-files-found: error

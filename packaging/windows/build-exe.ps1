@@ -50,9 +50,14 @@ if (Test-Path $DataDizini) {
 }
 
 # ── 2) PyInstaller ────────────────────────────────────────────────────────────
+# Tek `pyinstaller HYCLEUS.spec` çağrısı İKİ EXE üretiyor artık (B-037):
+# HYCLEUS.exe (console=False, GUI) ve HYCLEUS-Kurtarma.exe (console=True,
+# --recover/--takeover/--export için — aynı Analysis/pyz'den, bkz. spec'in
+# kendi yorumu). Ayrı bir PyInstaller çağrısı GEREKMİYOR.
 Write-Host "[2/3] PyInstaller"
 Remove-Item -Recurse -Force (Join-Path $Kok 'build\HYCLEUS') -ErrorAction SilentlyContinue
 Remove-Item -Force (Join-Path $Kok 'dist\HYCLEUS.exe') -ErrorAction SilentlyContinue
+Remove-Item -Force (Join-Path $Kok 'dist\HYCLEUS-Kurtarma.exe') -ErrorAction SilentlyContinue
 
 # --noconfirm: dist/ zaten varsa sormadan uzerine yazar (CI'da soru = takilma).
 #
@@ -86,3 +91,10 @@ if (-not (Test-Path $Exe)) {
 }
 $Mb = [math]::Round((Get-Item $Exe).Length / 1MB, 1)
 Write-Host "[3/3] hazir: $Exe  ($Mb MB)"
+
+$ExeKurtarma = Join-Path $Kok 'dist\HYCLEUS-Kurtarma.exe'
+if (-not (Test-Path $ExeKurtarma)) {
+    throw "dist\HYCLEUS-Kurtarma.exe uretilmedi (B-037 — --recover/--takeover/--export icin console=True ikinci EXE)"
+}
+$MbKurtarma = [math]::Round((Get-Item $ExeKurtarma).Length / 1MB, 1)
+Write-Host "       hazir: $ExeKurtarma  ($MbKurtarma MB)"
