@@ -12635,3 +12635,81 @@ constructor çağrısına indirir).
 Testler: `test_blacklist.py` (15), `test_pin_rotation.py` (33),
 `test_authz_invariants.py` (24) — hepsi yeşil. Commit: (bu BACKLOG
 kaydı ve SECURITY.md güncellemesiyle aynı commit).
+
+---
+
+## B-154 — `--test-data-dir`/`HYCLEUS_TEST_DATA_DIR`, DEV_MODE'un aksine, PAKETLENMİŞ EXE'de de etkin
+
+**Durum:** AÇIK — bulundu, DÜZELTİLMEDİ (kasıtlı: "paketlenmiş ürün duman
+testi" görevinin 0. adımı, bulunursa "dur ve raporla, bu adımı
+düzeltmeden devam etme" diyordu — bu yüzden 1-4. adımlar bu turda
+BAŞLATILMADI, yalnızca bu madde kaydedildi).
+**Öncelik:** Orta-Yüksek (M3 saldırgan modeli — yerel çalıştırma
+denetimi olan biri — için gerçek bir kapsam boşluğu; ama HWID sahteciliği
+DEĞİL, veri-dizini yönlendirmesi, ve zaten M3'te bu belgedeki birçok
+kontrol ❌).
+**Bulundu:** 2026-09-23, "paketlenmiş ürün duman testi" görevinin 0.
+adımı: "Sahte/test HWID enjeksiyonu (DEV-HWID, TOUR-HWID-0001,
+--test-data-dir vb.) nasıl etkinleşiyor? Release derlemesinde bu yol
+açılabiliyor mu?"
+
+**Üç mekanizma tek tek incelendi:**
+
+1. **`TOUR-HWID-0001`** — kod tabanında YOK. `grep -ri "tour"` sıfır
+   sonuç. Görevin verdiği örnek isim, gerçek bir mekanizmaya karşılık
+   gelmiyor.
+2. **`DEV_MODE`/`DEV-HWID-1234`** (`CORE/usb_manager.py`) — GÜVENLİ.
+   `get_usb_hwid()` (satır 184) ve bağlama-kökü yardımcısı (satır 293)
+   ikisi de `if DEV_MODE and not hasattr(sys, "frozen"):` ile korunuyor.
+   `sys.frozen`, PyInstaller'ın paketlenmiş EXE'de çalışma zamanında
+   KENDİSİNİN koyduğu bir bayrak — yani bir release binary'sinde
+   `DEV_MODE=true` ortam değişkeni ayarlansa bile bu dal HİÇ açılmıyor,
+   gerçek donanım okunuyor. Doğru tasarım.
+3. **`--test-data-dir` / `HYCLEUS_TEST_DATA_DIR`** (`main.py::
+   _test_data_dir_bayragini_coz`, `CORE/paths.py::data_dir()`) — **AÇIK,
+   `sys.frozen` KONTROLÜ YOK.** `main.py:75`'te, HERHANGİ bir HYCLEUS
+   modülü içe aktarılmadan önce, KOŞULSUZ çağrılıyor. `CORE/paths.py::
+   data_dir()` içindeki üç normal dal (AppImage / EXE-`sys.frozen` /
+   geliştirme) hangisi seçilecek diye bakmadan ÖNCE `TEST_DATA_DIR_ENV`
+   kontrol ediliyor (satır 84-85) — yani paketlenmiş bir EXE'de bu bayrak
+   AYNEN geliştirme ortamındaki gibi çalışıyor. Etkilenen HER ŞEY
+   (fonksiyonun kendi docstring'inin listesi): DB, vault dosyaları, TOTP
+   göç dosyası, USB kimliği önbelleği (`usb_ids.json`), PIN hash dosyası,
+   denetim çıpası, SafeZone.
+
+**Bu bir HWID sahteciliği DEĞİL — ayrı bir sınıf.** `--test-data-dir`
+gerçek USB donanımını taklit etmiyor (`get_usb_hwid()` bu bayraktan
+etkilenmiyor, gerçek seri numarayı okumaya devam ediyor); yaptığı,
+UYGULAMANIN TAMAMINI (imzalı, gerçek release EXE'si) başka, boş, izole
+bir veri dizinine yönlendirmek. Var olan iki güvenlik kuralı (üretim
+dizinini hedeflerse reddet; kullanımı DB bağlandıktan sonra audit log'a
+yaz) bunu KAZARA üretim verisini ezmeye karşı koruyor — ama İKİSİ DE
+`sys.frozen` sormuyor, yani release'te de dev'deki kadar açık.
+
+**Somut risk (M3 — yerel çalıştırma denetimi olan saldırgan/içeriden
+biri).** Meşru, imzalı `HYCLEUS.exe`'yi `HYCLEUS_TEST_DATA_DIR`
+ayarlanmış bir kısayoldan/betikten çalıştırmak, uygulamayı TAMAMEN ayrı,
+sıfırdan bir "gölge" örneğe döndürür — bu etkinleştirme ÜRETİM denetim
+kaydına (audit log) HİÇ YAZILMAZ, çünkü audit log da yeni izole DB'ye
+bağlanıyor (kod, `test_data_dir_active` olayını YENİ DB'ye yazıyor,
+üretim DB'sine değil — bkz. `main.py`'nin kendi B-067 yorumu). Yani
+üretim verisine/denetim izine bakan biri, aynı EXE'nin paralel bir
+"gölge" kopyasının çalıştırıldığını GÖREMEZ. İkincil bir senaryo: bir
+kurbanı, gerçek uygulamayı sandığı ama aslında saldırganın önceden
+hazırladığı bir dizine yönlendirilmiş bu bayrakla çalıştırmaya ikna etmek
+(kısayol/betik değişikliği) — kurban "gerçek" HYCLEUS'u kullandığını
+sanırken aslında saldırganın kontrolündeki boş bir kasaya kayıt
+oluyor/veri koyuyor olabilir.
+
+**Neden bu turda düzeltilmedi.** Görev talimatı açıkça "Açılabiliyorsa
+dur ve raporla, bu adımı düzeltmeden devam etme" diyordu — yani hem
+düzeltmeyi hem de asıl duman-testi işini (1-4. adımlar: `--self-check`
+bayrağı, yeni CI işi, mutasyon kanıtı, kapsam dürüstlüğü notu) bu
+madde çözülmeden başlatmamak kasıtlı bir karar. Olası düzeltme
+`DEV_MODE`'un zaten kullandığı desenin AYNISI olurdu — `data_dir()`'a
+`hasattr(sys, "frozen")` kontrolü eklemek — ama bunun İSTENEN bir
+düzenleme/QA akışını (ör. gerçek bir dağıtılmış EXE'yi izole verilerle
+elle test etmek) kırıp kırmadığına kullanıcı karar vermeli; bu yüzden
+kod DEĞİŞTİRİLMEDİ, yalnızca bulgu burada kayıt altına alındı.
+
+Commit: (bu BACKLOG kaydıyla aynı commit; kod değişikliği YOK).
