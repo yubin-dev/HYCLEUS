@@ -56,11 +56,20 @@ titizliği hak ediyor.
 from __future__ import annotations
 
 import ast
+import re
 import warnings
 from pathlib import Path
 
 KOK = Path(__file__).resolve().parent.parent
 _UI_DIZINI = KOK / "UI"
+
+#: B-037 kapanışı: paketlenmiş uygulamanın kendi diyalog metni bir gün
+#: gerçekten "python CORE/recover_vault.py --export" YAZMIŞTI
+#: (`main.py::_kurtarma_parcasi_uyari_dialogu()`) — paketlenmiş bir EXE/
+#: AppImage kullanıcısının çalıştıramayacağı bir komut. `main.py` `UI/`
+#: ALTINDA değil (kök dizinde), o yüzden yukarıdaki UI taramasına
+#: kendiliğinden girmiyor — ayrı, küçük bir dosya listesi.
+_ANA_DOSYA = KOK / "main.py"
 
 #: 2026-08-29'da genişletildi — CORE/ ve DB/'de tanımlı exception sınıflarının
 #: (`USBAuthError`, `VaultTamperedError`, `AuthenticationError`, `BackupError`,
@@ -130,6 +139,18 @@ def _ui_dosyalari() -> list[Path]:
     return sorted(
         p for p in _UI_DIZINI.rglob("*.py") if "__pycache__" not in p.parts
     )
+
+
+def _ui_ve_ana_dosyalar() -> list[Path]:
+    """`_ui_dosyalari()` + `main.py` — yalnızca aşağıdaki "çalıştırılamaz
+    CLI komutu" taraması için (koşulsuz yasaklılar/ÇEVRİMDIŞI taraması
+    hâlâ yalnızca `_ui_dosyalari()`'nı kullanıyor, kapsam GENİŞLETİLMEDİ).
+    `CORE/recover_vault.py` gibi GERÇEK CLI betiklerinin kendi `argparse`
+    yardım metninde "python CORE/recover_vault.py ..." yazması MEŞRU (o
+    betik gerçekten `python` ile çalıştırılıyor) — bu yüzden tarama
+    CORE/'ye GENİŞLETİLMEDİ, yalnızca son kullanıcıya paketlenmiş
+    uygulama içinden gösterilen iki kaynağa (`UI/`, `main.py`) sınırlı."""
+    return sorted(_ui_dosyalari() + [_ANA_DOSYA])
 
 
 def _core_db_dosyalari() -> list[Path]:
@@ -377,6 +398,33 @@ def _cevrimdisi_ihlali_mi(metin: str) -> bool:
     return any(v in kalan for v in _CEVRIMDISI_VARYANTLARI)
 
 
+#: `/* ... */` — QSS (Qt stylesheet) yorumları. `UI/main_window_theme.py`
+#: kendi stylesheet string'lerinin İÇİNDE, hangi sayfanın hangi QSS
+#: bloğuna karşılık geldiğini belgeleyen C-tarzı yorumlar taşıyor (ör.
+#: "/* Güvenlik sekmesi (UI/GuvenlikView.py) — ... */") — ÖLÇÜLDÜ, 3 yanlış
+#: pozitif ürettiler. Bunlar docstring DEĞİL (AST'te sıradan bir string
+#: sabiti) ama işlevsel olarak AYNI şey: Qt'nin CSS ayrıştırıcısı bu
+#: yorumları render ETMEDEN atıyor, kullanıcı asla görmüyor — yalnızca
+#: kaynağı okuyan bir geliştiriciye. Kontrol ETMEDEN önce çıkarılıyorlar.
+_QSS_YORUMU = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+#: B-037: paketlenmiş uygulamanın kullanıcıya bir ".py" kaynak dosyasına
+#: gitmesini/onu çalıştırmasını SÖYLEMESİ yasak — paketlenmiş bir EXE/
+#: AppImage'ın kullanıcısında ne bir Python yorumlayıcısı ne de erişilebilir
+#: bir .py dosyası var (bkz. BACKLOG B-037). Yalnızca ".py" aranıyor —
+#: "python " KELİMESİ TEK BAŞINA aranmıyor: ÖLÇÜLDÜ, `main.py --selftest`
+#: çıktısının kendi "Python    : 3.14.4" tanı satırı yanlış pozitif
+#: üretiyordu (bir komut önermiyor, yalnızca çalışma zamanı sürümünü
+#: raporluyor). ".py" çok daha güçlü/dar bir sinyal: bir kaynak dosyasına
+#: DOĞRUDAN referans. "py" Türkçe nokta sorunlu bir harf (I/İ)
+#: İÇERMEDİĞİNDEN `.lower()` burada GÜVENLİ — ÇEVRİMDIŞI'nin aksine elle
+#: yazılmış bir varyant listesi gerekmiyor.
+def _calistirilamaz_komut_ihlali_mi(metin: str) -> bool:
+    temiz = _QSS_YORUMU.sub("", metin)
+    return ".py" in temiz.lower()
+
+
 def _metindeki_ihlalleri_bul(metin: str) -> list[str]:
     """Bir tek string sabitindeki ihlalleri döndürür — terim adlarının
     listesi (rapor için)."""
@@ -387,6 +435,13 @@ def _metindeki_ihlalleri_bul(metin: str) -> list[str]:
     if _cevrimdisi_ihlali_mi(metin):
         bulunanlar.append("ÇEVRİMDIŞI (bağlam dışı)")
     return bulunanlar
+
+
+def _metindeki_calistirilamaz_komut_ihlalini_bul(metin: str) -> list[str]:
+    """`_metindeki_ihlalleri_bul`'un ayrı, dar karşılığı — yalnızca
+    `_ui_ve_ana_dosyalar()` taramasında kullanılıyor (bkz. o fonksiyonun
+    yorumu: CORE/'nin gerçek CLI yardım metinleri burada YOK)."""
+    return ["PYTHON/.PY YOLU"] if _calistirilamaz_komut_ihlali_mi(metin) else []
 
 
 def _core_db_dosyasi_mi(dosya: Path) -> bool:
@@ -413,6 +468,73 @@ def _tum_ihlalleri_tara(dosyalar: list[Path]) -> list[str]:
         )
         for metin, satir in toplayici(kaynak, bagil):
             for terim in _metindeki_ihlalleri_bul(metin):
+                ozet = metin if len(metin) <= 70 else metin[:67] + "..."
+                ihlaller.append(f"{bagil}:{satir} — {terim} — {ozet!r}")
+    return ihlaller
+
+
+def _docstring_dugum_idleri(agac: ast.AST) -> set[int]:
+    """Modül/sınıf/fonksiyon docstring'lerinin `Constant` düğümlerinin
+    `id()`'lerini toplar — B-037 taramasının bunları HARİÇ TUTMASI için.
+
+    Neden gerekli — ÖLÇÜLDÜ, 60+ yanlış pozitif
+    -------------------------------------------------------------------
+    Bir dosyanın kendi docstring'inde "bkz. UI/GuvenlikView.py" gibi bir
+    ÇAPRAZ REFERANS vermesi son derece yaygın ve tamamen meşru — bu metin
+    kullanıcıya HİÇ gösterilmiyor, yalnızca kaynağı okuyan bir geliştiriciye.
+    İlk sürüm (docstring'leri de tarayan) `_ui_ve_ana_dosyalar()`'a karşı
+    çalıştırıldığında hemen hemen HER UI dosyasının modül docstring'inde
+    bir ".py" yakaladı (dosyanın kendi üstündeki "UI/main_window.py'den
+    ayrıldı" gibi cümleler) — gerçek isabetler (main.py'nin eski kurtarma
+    metni, `UI/main_window_open.py`'nin yedek/kurtarma CLI referansları)
+    bu gürültüye gömülüyordu. Koşulsuz yasaklılar/ÇEVRİMDIŞI taraması
+    (yukarıdaki `_string_sabitlerini_topla`) docstring'leri BİLEREK
+    tarıyor — AIR-GAPPED/ZERO-TRUST'ın hiçbir meşru docstring kullanımı
+    yok, o yüzden orada sorun değil. "python "/'.py' ise TERSİ: neredeyse
+    HER docstring çapraz referansı bunu meşru şekilde içeriyor.
+    """
+    docstring_idleri: set[int] = set()
+    for dugum in ast.walk(agac):
+        if isinstance(dugum, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            govde = dugum.body
+            if (
+                govde
+                and isinstance(govde[0], ast.Expr)
+                and isinstance(govde[0].value, ast.Constant)
+                and isinstance(govde[0].value.value, str)
+            ):
+                docstring_idleri.add(id(govde[0].value))
+    return docstring_idleri
+
+
+def _string_sabitlerini_topla_docstringsiz(kaynak: str, dosya_adi: str) -> list[tuple[str, int]]:
+    """`_string_sabitlerini_topla` ile AYNI, yalnızca docstring düğümleri
+    (`_docstring_dugum_idleri`) sonuçtan ÇIKARILIYOR."""
+    agac = ast.parse(kaynak, filename=dosya_adi)
+    haric = _docstring_dugum_idleri(agac)
+    return [
+        (dugum.value, dugum.lineno)
+        for dugum in ast.walk(agac)
+        if isinstance(dugum, ast.Constant)
+        and isinstance(dugum.value, str)
+        and id(dugum) not in haric
+    ]
+
+
+def _tum_calistirilamaz_komut_ihlallerini_tara(dosyalar: list[Path]) -> list[str]:
+    """B-037'nin "çalıştırılamaz CLI komutu" taraması — AYRI bir toplama
+    yolu kullanıyor (`_string_sabitlerini_topla_docstringsiz`), yukarıdaki
+    `_tum_ihlalleri_tara`'yı DEĞİŞTİRMİYOR (o hâlâ AIR-GAPPED/ZERO-TRUST/
+    ÇEVRİMDIŞI için docstring'leri dahil ediyor, bilerek — bkz. üstteki not)."""
+    ihlaller: list[str] = []
+    for dosya in dosyalar:
+        try:
+            bagil = dosya.relative_to(KOK).as_posix()
+        except ValueError:
+            bagil = dosya.name
+        kaynak = dosya.read_text(encoding="utf-8")
+        for metin, satir in _string_sabitlerini_topla_docstringsiz(kaynak, bagil):
+            for terim in _metindeki_calistirilamaz_komut_ihlalini_bul(metin):
                 ozet = metin if len(metin) <= 70 else metin[:67] + "..."
                 ihlaller.append(f"{bagil}:{satir} — {terim} — {ozet!r}")
     return ihlaller
@@ -490,6 +612,64 @@ def test_mevcut_CORE_dosyalarindaki_docstring_mesru_kullanimlar_YANLIS_POZITIF_U
         f"CORE docstring'lerindeki meşru 'çevrimdışı' kullanımları "
         f"yanlışlıkla yakalandı: {yanlis_pozitif}"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1b. B-037: UI/`main.py` metinleri kullanıcıya çalıştırılamaz bir CLI
+#     komutu ("python ...", ".py" yolu) ÖNERMEMELİ. Gerçek regresyon:
+#     `main.py::_kurtarma_parcasi_uyari_dialogu()` paketlenmiş EXE/
+#     AppImage'ın kullanıcısına "python CORE/recover_vault.py --export"
+#     yazıyordu — o kullanıcıda ne Python ne erişilebilir bir .py dosyası
+#     var (BACKLOG B-037).
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_ui_ve_main_metinlerinde_calistirilamaz_python_cli_komutu_YOK() -> None:
+    """Asıl denetim — `_ui_ve_ana_dosyalar()`'daki (UI/ + main.py) HER
+    string sabitinde "python " ya da ".py" GEÇMEMELİ."""
+    ihlaller = _tum_calistirilamaz_komut_ihlallerini_tara(_ui_ve_ana_dosyalar())
+    assert not ihlaller, (
+        "UI/main.py string kaynaklarında çalıştırılamaz bir CLI komutu "
+        f"bulundu (paketlenmiş üründe ne Python ne .py dosyası var): {ihlaller}"
+    )
+
+
+def test_tarayici_enjekte_edilen_PYTHON_KOMUTUNU_yakaliyor(tmp_path: Path) -> None:
+    gecici = tmp_path / "sahte_uyari_dialogu.py"
+    gecici.write_text(
+        'metin = "Kurtarma parçasını almak için: python CORE/recover_vault.py --export"\n',
+        encoding="utf-8",
+    )
+    ihlaller = _tum_calistirilamaz_komut_ihlallerini_tara([gecici])
+    assert any("PYTHON/.PY YOLU" in i for i in ihlaller), (
+        f"Enjekte edilen python komutu yakalanmadı: {ihlaller}"
+    )
+
+
+def test_tarayici_python_komutu_kaldirilinca_YESILE_donuyor(tmp_path: Path) -> None:
+    """Aynı senaryo, düzeltilmiş metinle (gerçek `main.py` düzeltmesinin
+    aynısı) — sıfır ihlal beklenir."""
+    gecici = tmp_path / "sahte_uyari_dialogu.py"
+    gecici.write_text(
+        'metin = ('
+        '"Kurtarma parçasını almak için: "'
+        '"Yönetim Paneli → Ayarlar → \\"Kurtarma Parçasını Göster…\\""'
+        ')\n',
+        encoding="utf-8",
+    )
+    ihlaller = _tum_calistirilamaz_komut_ihlallerini_tara([gecici])
+    assert ihlaller == [], f"Temiz metinde ihlal bulundu (yanlış pozitif): {ihlaller}"
+
+
+def test_gercek_main_py_kurtarma_uyarisinda_python_komutu_YOK() -> None:
+    """Gerçek `main.py`'ye karşı doğrudan kanıt — bu regresyonun TEKRAR
+    main.py'ye sızmadığının kalıcı kaydı. Mutasyonla doğrulandı (BACKLOG
+    B-037): eski metin ("python CORE/recover_vault.py --export") geçici
+    olarak geri konulup bu test KIRMIZI olduğu görüldü, sonra geri
+    alındı — `git diff` bu commit'te main.py'nin YALNIZCA istenen
+    metin değişikliğini taşıdığını gösteriyor."""
+    ihlaller = _tum_calistirilamaz_komut_ihlallerini_tara([_ANA_DOSYA])
+    assert ihlaller == [], f"main.py'de çalıştırılamaz bir komut bulundu: {ihlaller}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

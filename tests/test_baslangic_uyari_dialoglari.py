@@ -100,7 +100,18 @@ def test_kurtarma_dialogu_erisim_engeli_cumlesi_EN_BASTA(qapp) -> None:
 
 def test_kurtarma_dialogu_export_komutu_hala_gorunur(qapp) -> None:
     """Bu kutuda gizlenecek teknik/hash bilgisi yok — eylem talimatı
-    (`--export`) doğrudan ana metinde kalmalı, ayrıntı arkasına GİZLENMEMELİ."""
+    doğrudan ana metinde kalmalı, ayrıntı arkasına GİZLENMEMELİ.
+
+    B-037 kapanışı (2026-09-23): eylem talimatı artık "python CORE/
+    recover_vault.py --export" DEĞİL — paketlenmiş bir EXE/AppImage'ın
+    kullanıcısında ne Python ne erişilebilir bir .py dosyası var, o
+    komut hiçbir zaman çalışmıyordu. Yerine GERÇEKTEN paketlenmiş
+    üründe var olan tek yol gösteriliyor: Yönetim Paneli → Ayarlar →
+    "Kurtarma Parçasını Göster…" (bkz. `UI/security_actions.py::
+    kurtarma_parcasini_goster()`, `tests/test_ui_yasakli_iddia_
+    terimleri.py`'nin buna paralel, genel taraması)."""
     kutu = main._kurtarma_parcasi_uyari_dialogu()
-    assert "python CORE/recover_vault.py --export" in kutu.text()
+    assert "Kurtarma Parçasını Göster" in kutu.text()
+    assert "python " not in kutu.text().lower()
+    assert ".py" not in kutu.text().lower()
     assert kutu.detailedText() == ""

@@ -367,7 +367,8 @@ def _kurtarma_parcasi_uyari_dialogu() -> QMessageBox:
         "anahtar kasası kaydınız kaybolursa dosyalarınıza bir daha "
         "erişemezsiniz.\n\n"
         "Kurtarma parçasını almak için:\n"
-        "    python CORE/recover_vault.py --export\n\n"
+        "    Yönetim Paneli → Ayarlar → \"Kurtarma Parçasını Göster…\"\n"
+        "(yönetici yetkisi ve vault PIN'iniz gerekir)\n\n"
         "Bu işlem vault'unuzu değiştirmez; mevcut paylarınız aynı kalır."
     )
     return kutu

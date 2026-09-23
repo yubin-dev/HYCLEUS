@@ -384,11 +384,13 @@ class BackupMixin:
             ]
         mesaj += [
             "Yedeği doğrulamak için menüden “Yedek Doğrula…” seçin.",
-            "Betikten çalıştırmak isterseniz (çıkış kodu döner):",
-            f"  python CORE/backup_cli.py --verify \"{yol}\" --deep",
+            "Betikten/otomasyondan çalıştırmak (çıkış kodu döner) yalnızca "
+            "kaynak/geliştirme ortamından mümkün — paketlenmiş sürüm bunu "
+            "içermez.",
             "",
-            "Not: anahtar kasası (.hclv) yedeğe DAHİL DEĞİL. Anahtar kaybı",
-            "için kurtarma parçasını kullanın (recover_vault.py --export).",
+            "Not: anahtar kasası (.hclv) yedeğe DAHİL DEĞİL. Anahtar kaybı "
+            "için Yönetim Paneli → Ayarlar → “Kurtarma Parçasını Göster…” "
+            "ile aldığınız kurtarma parçasını kullanın.",
         ]
         QMessageBox.information(self, "Yedek Tamamlandı", "\n".join(mesaj))
 
