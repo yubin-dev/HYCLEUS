@@ -1,16 +1,21 @@
 """
 HYCLEUS — main.py'nin paketlenmiş kurtarma giriş noktaları (B-037)
 
-`_erken_komut()`'un --recover/--takeover/--export dalı `CORE/recover_
-vault.py::main()`'e DEVREDİYOR, mantığı KOPYALAMIYOR — bu testler
-devretmenin kendisini doğruluyor (hangi bayrak hangi çağrıyı
-tetikliyor, `SystemExit` kodu nasıl geri dönüyor). `recover_vault.py`'nin
-kendi CLI davranışı (`_cmd_export`/`_cmd_recover`/`_cmd_takeover`/
-`_cmd_status`) zaten `tests/test_recover_cli.py`'de kapsamlı test
-ediliyor — burada TEKRAR EDİLMİYOR.
+`_erken_komut()`'un --recover/--takeover/--export/--status dalı
+`CORE/recover_vault.py::main()`'e DEVREDİYOR, mantığı KOPYALAMIYOR —
+bu testler devretmenin kendisini doğruluyor (hangi bayrak hangi
+çağrıyı tetikliyor, `SystemExit` kodu nasıl geri dönüyor).
+`recover_vault.py`'nin kendi CLI davranışı (`_cmd_export`/
+`_cmd_recover`/`_cmd_takeover`/`_cmd_status`) zaten
+`tests/test_recover_cli.py`'de kapsamlı test ediliyor — burada
+TEKRAR EDİLMİYOR.
 
---status BİLEREK bu kümede YOK: istenen kapsam yalnızca --recover/
---takeover/--export idi.
+--status SONRADAN eklendi: istenen kapsam ilk turda yalnızca
+--recover/--takeover/--export idi, ama `docs/kullanici-rehberi.md`'yi
+yazarken (B-037 adım 5) rehberin "önce durumu kontrol edin, sonra dışa
+aktarın" akışının `--status`'a dayandığı ölçüldü — o olmadan aynı
+30 sn'lik asılı-kalma sınıfına düşerdi (bkz. `main._YARDIM_BAYRAKLARI`
+üstündeki not). Salt okunur olduğu için ekleme risk taşımıyor.
 """
 from __future__ import annotations
 
@@ -34,14 +39,14 @@ def test_erken_komut_bilinmeyen_bayrakla_None_donup_normal_acilisa_devam_eder() 
     assert main._erken_komut(["--bilinmeyen-bayrak"]) is None
 
 
-def test_kurtarma_bayraklari_kumesi_tam_olarak_istenen_ucu_iceriyor() -> None:
-    """--status BİLEREK YOK — istenen kapsam yalnızca bu üçüydü."""
+def test_kurtarma_bayraklari_kumesi_dorduncu_status_ile_birlikte() -> None:
+    """--status SONRADAN eklendi (bkz. modül docstring'i) — kapsam artık dördü."""
     assert main._KURTARMA_BAYRAKLARI == frozenset(
-        {"--recover", "--takeover", "--export"}
+        {"--recover", "--takeover", "--export", "--status"}
     )
 
 
-@pytest.mark.parametrize("bayrak", ["--recover", "--takeover", "--export"])
+@pytest.mark.parametrize("bayrak", ["--recover", "--takeover", "--export", "--status"])
 def test_erken_komut_kurtarma_bayraklari_recover_vault_main_e_devrediyor(
     bayrak: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

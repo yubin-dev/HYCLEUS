@@ -273,12 +273,19 @@ def _selftest() -> int:
 
 
 #: B-037: paketlenmiş üründe de çalışan kurtarma giriş noktaları.
-#: `CORE/recover_vault.py`'nin KENDİ argparse'ı bu üçünü (+ --status,
-#: bilerek buraya EKLENMEDİ — istenen kapsam yalnızca bu üçü) zaten
+#: `CORE/recover_vault.py`'nin KENDİ argparse'ı bu dördünü zaten
 #: birbirini dışlayan ZORUNLU bir grup olarak tanımlıyor; burada yalnızca
 #: "bu bayraklardan biri varsa GUI'yi hiç açma, CORE/recover_vault.py'nin
 #: main()'ine devret" kararı veriliyor — mantık KOPYALANMIYOR.
-_KURTARMA_BAYRAKLARI = frozenset({"--recover", "--takeover", "--export"})
+#:
+#: `--status` SONRADAN eklendi: istenen kapsam yalnızca --recover/
+#: --takeover/--export idi, ama `docs/kullanici-rehberi.md`'yi (B-037
+#: adım 5) yazarken ölçüldü — rehberin "önce durumu kontrol edin, sonra
+#: dışa aktarın" akışı `--status`'a dayanıyor ve o olmadan aynı 30 sn'lik
+#: asılı-kalma sınıfına (bkz. `_YARDIM_BAYRAKLARI`'nın notu) düşerdi.
+#: `--status` salt okunur (`has_recovery_share()`, hiçbir şey yazmıyor),
+#: aynı desenle eklenmesi risk taşımıyor.
+_KURTARMA_BAYRAKLARI = frozenset({"--recover", "--takeover", "--export", "--status"})
 
 #: `-h`/`--help` AYRI tutuluyor: ÖLÇÜLDÜ, `HYCLEUS-Kurtarma.exe --help`
 #: (hiçbir _KURTARMA_BAYRAKLARI üyesi YOKKEN) bu kümeye dahil edilmeden

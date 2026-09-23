@@ -33,6 +33,15 @@ REHBER = KOK / "docs" / "kullanici-rehberi.md"
 
 #: Rehberde `python CORE/<betik>.py --<secenek>` biçimindeki her çağrı.
 _KOMUT = re.compile(r"python\s+CORE/(\w+)\.py([^\n`]*)")
+
+#: B-037: `recover_vault.py`'nin bayrakları artık PAKETLİ üründen de
+#: `HYCLEUS-Kurtarma.exe --bayrak` biçiminde çağrılıyor (main.py::
+#: _erken_komut() -> CORE.recover_vault.main(), devretme — bkz.
+#: main.py) ve rehber artık bu biçimi gösteriyor; tarayıcı da bunu
+#: tanımalı, aksi hâlde rehberin en sık kullandığı komut biçimi
+#: denetim dışı kalırdı.
+_KOMUT_PAKETLI = re.compile(r"HYCLEUS-Kurtarma\.exe([^\n`]*)")
+
 _SECENEK = re.compile(r"--[a-z][a-z-]*")
 
 
@@ -57,10 +66,15 @@ def _argparse_secenekleri(betik: Path) -> set[str]:
 
 
 def _rehberdeki_komutlar() -> list[tuple[str, set[str]]]:
-    """`(betik_adi, {seçenekler})` — rehberde geçen her komut satırı."""
+    """`(betik_adi, {seçenekler})` — rehberde geçen her komut satırı.
+
+    `HYCLEUS-Kurtarma.exe` çağrıları "recover_vault"a eşleniyor — ikisi
+    AYNI argparse'ı paylaşıyor, bkz. `_KOMUT_PAKETLI`'nin yorumu."""
     cikti: list[tuple[str, set[str]]] = []
     for betik, kuyruk in _KOMUT.findall(_metin()):
         cikti.append((betik, set(_SECENEK.findall(kuyruk))))
+    for kuyruk in _KOMUT_PAKETLI.findall(_metin()):
+        cikti.append(("recover_vault", set(_SECENEK.findall(kuyruk))))
     return cikti
 
 
@@ -113,6 +127,7 @@ def test_rehberdeki_HER_secenek_gercek():
         ("recover_vault", "--recover"),
         ("recover_vault", "--export"),
         ("recover_vault", "--status"),
+        ("recover_vault", "--takeover"),
         ("backup_cli", "--restore"),
         ("backup_cli", "--dest"),
     ],
@@ -304,3 +319,19 @@ def test_kayip_USB_icin_calismayan_bir_yol_ONERILMIYOR():
         "Rehber, USB'siz kurtarmanın çalışmadığını göstermiyor"
     )
     assert "yöneticinize" in govde.lower()
+
+
+def test_takeover_gercek_cozum_olarak_USB_kaybi_bolumunde_gosteriliyor():
+    """
+    B-037: `--recover` çalışmıyor OLSA da çaresiz değil — `--takeover`
+    tam olarak bu senaryo (USB fiziksel kayıp) için var. Önceki metin
+    "kendi başınıza yapabileceğiniz bir şey yok" diyordu; bu artık
+    yanlış — bu test o yanlışın GERİ GELMEDİĞİNİ doğruluyor.
+    """
+    metin = _metin()
+    bas = metin.index("\n## 1. ")
+    govde = metin[bas: metin.index("\n## 2. ")]
+    assert "--takeover" in govde, (
+        "USB kaybı bölümü --takeover'dan söz etmiyor"
+    )
+    assert "kendi başınıza yapabileceğiniz bir şey yok" not in govde.lower()

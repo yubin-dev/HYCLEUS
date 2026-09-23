@@ -35,13 +35,23 @@ def _args(**kw):
 # ── --status ──────────────────────────────────────────────────────────────────
 
 def test_status_warns_when_recovery_share_missing(vault, db, capsys) -> None:
-    """Kurtarma parçası alınmamışsa açıkça uyarmalı — sessiz 2-of-2 olmaz."""
+    """Kurtarma parçası alınmamışsa açıkça uyarmalı — sessiz 2-of-2 olmaz.
+
+    B-037: mesaj artık "python CORE/recover_vault.py --export" DEĞİL —
+    bu komut artık paketlenmiş üründen (`HYCLEUS-Kurtarma.exe --status`)
+    de çalıştırılabiliyor, "python "/".py" içeren bir metin orada
+    yanıltıcı olurdu (bkz. tests/test_ui_yasakli_iddia_terimleri.py'nin
+    aynı sınıf kontrolü — CORE/ bilerek o taramanın kapsamı dışında,
+    ama bu metin artık gerçekten PAKETLİ üründen erişildiği için aynı
+    kural burada da elle uygulandı)."""
     recover_vault._cmd_status(_args())
 
     cikti = capsys.readouterr().out
     assert "ALINMAMIS" in cikti
     assert "2-of-2" in cikti
-    assert "recover_vault.py --export" in cikti
+    assert "--export" in cikti
+    assert "python " not in cikti.lower()
+    assert ".py" not in cikti.lower()
 
 
 def test_status_reports_when_share_was_issued(vault, db, capsys) -> None:

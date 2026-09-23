@@ -915,6 +915,68 @@ regardless. That split is deliberate — a window a user cannot dismiss
 teaches nothing, it only forces a click, which is the lesson **B-003**
 left behind.
 
+**The CLI half of this — `--recover`/`--takeover`/`--export`/`--status` —
+now ships in the packaged product too (B-037, closed).** Until this was
+fixed, everything above about `recover_vault.py` being "the standard CLI
+entry point" was true only for a source checkout: `HYCLEUS.spec` and
+`HYCLEUS-linux.spec` packaged `main.py` alone, and a user holding only the
+distributed EXE/AppImage had no way to run any of these four flags — the
+running application's own warning dialog told them to run `python
+CORE/recover_vault.py --export`, a command their machine could not
+execute. `main.py::_erken_komut()` now recognizes these flags (plus `-h`/
+`--help`, added after a real hang was measured — see below) and delegates
+straight to `CORE.recover_vault.main()` before `QApplication` is ever
+constructed, same pattern as `--version`/`--selftest`; no recovery logic
+is duplicated. On Windows this required a second binary,
+`HYCLEUS-Kurtarma.exe` (`console=True`, built from the same
+`Analysis`/`pyz` as the `console=False` `HYCLEUS.exe` — one
+`pyinstaller HYCLEUS.spec` call still produces both): `getpass()`/
+`input()` need a real console handle that a `console=False` process does
+not have — verified directly, redirected stdout works (that is how
+`--selftest`'s own smoke test already reads it) but interactive input does
+not. On Linux no second binary is needed: `AppRun` just `exec`s the
+PyInstaller binary with inherited stdio, so a terminal invocation already
+behaves like a normal CLI tool. `-h`/`--help` needed the same dispatch for
+a concrete, measured reason: without it, `HYCLEUS-Kurtarma.exe --help`
+matched none of the recognized flags and fell through to a normal GUI
+launch, which hung on a "USB not found" dialog with no USB attached — the
+exact failure class `--selftest` exists to avoid, now also covered for
+this entry point. A true end-to-end recovery (a real PIN/share round
+trip) still cannot run in CI: `_require_hwid()` needs a real USB, and none
+is attached to a CI runner — no HWID-bypass flag was added to reach
+further, the same call already made for `--test-data-dir` (§4.30) — faking hardware presence in a release
+binary would undermine the thing being protected. The packaged smoke
+test instead proves the real compiled binary reaches
+`CORE.recover_vault.main()` and fails at the hardware boundary with the
+expected message, not silently or by hanging.
+
+**Failed recovery attempts are now logged too (same close, B-037).**
+`recover_master_key()` previously logged only success
+(`"vault_recovered"`); every failure path (wrong PIN, malformed or
+wrong-index recovery share, missing `share_2`) left no audit trail at
+all. It now writes `"vault_recovery_rejected"` on any exception and
+re-raises unchanged. The logged reason is the exception's *type*
+(`type(exc).__name__`), never `str(exc)`: `_parse_share()`'s own error
+message embeds the first 16 characters of a malformed share directly
+(`share[:16]!r`), so logging the message text would leak share
+fragments into the audit trail — proved with a test that scans every
+`audit_log` row, not just the one just written, for both the PIN and
+the attempted share value.
+
+**Recovery does not renew anything, on purpose — and that is a separate,
+still-open decision, not something this round changed.** As stated
+above, `reprovision_vault()` deliberately keeps `master_key` and the
+Shamir polynomial unchanged after a recovery — the printed share stays
+valid, and nothing is rotated. Whether recovery *should* instead trigger
+a fresh split (new `master_key`, new three shares, old printed share
+invalidated) is a real, unresolved design question with its own
+trade-offs (a rotated share that silently stops working is arguably
+worse than one that might have leaked — see the trade-off paragraph
+above) — it was **not** part of what B-037 closed, and closing the
+"the CLI doesn't ship" gap should not be read as also having settled
+this. If rotation-on-recovery is wanted, it needs its own deliberate
+decision and its own BACKLOG item.
+
 ### 4.5 Application-level controls are labelled as such
 
 > **Attacker models:** M2 · M3
@@ -3882,7 +3944,14 @@ root shape before a build ever ran.
 3. **The Shamir recovery flow end-to-end.** No automated job in this
    repository reconstructs a master key from a recovery share against a
    real, second physical USB and a real vault the way an actual recovery
-   would.
+   would. Since B-037 (§4.4), the packaged smoke test goes one step
+   further than it used to: it runs the real compiled recovery entry
+   point (`HYCLEUS-Kurtarma.exe --export` / AppImage `--export`) with no
+   USB attached and checks it fails at the expected hardware boundary
+   (`CORE.recover_vault.main()` really was reached, not silently skipped
+   or hung) — that is a reachability proof, not a recovery proof. It
+   still cannot exercise a real PIN/share round trip; that gap is
+   unchanged and still belongs to the drill below.
 
 None of these three are gaps this smoke test was ever meant to close —
 closing them requires physical hardware a CI runner doesn't have. They
@@ -5127,6 +5196,73 @@ güvenlik kontrolü değildir** ve öyle olması da amaçlanmadı: yalnızca
 düğmesi her durumda çalışıyor. Bu ayrım bilinçli — kullanıcının
 kapatamadığı bir pencere hiçbir şey öğretmez, yalnızca bir tıklamaya
 zorlar; bu da **B-003**'ün bıraktığı derstir.
+
+**Bunun CLI yarısı — `--recover`/`--takeover`/`--export`/`--status` —
+artık paketlenmiş üründe de var (B-037, kapandı).** Bu düzeltilmeden
+önce, yukarıda `recover_vault.py` için söylenen "standart CLI giriş
+noktası" olma iddiası yalnızca bir kaynak kontrolü için doğruydu:
+`HYCLEUS.spec` ve `HYCLEUS-linux.spec` yalnızca `main.py`'yi
+paketliyordu, elinde yalnızca dağıtılan EXE/AppImage olan bir kullanıcı
+bu dört bayraktan hiçbirini çalıştıramıyordu — üstelik çalışan
+uygulamanın KENDİ uyarı kutusu kullanıcıya "python CORE/recover_vault.py
+--export" çalıştırmasını söylüyordu, makinesinin çalıştıramayacağı bir
+komutu. `main.py::_erken_komut()` artık bu bayrakları (+ `-h`/`--help`,
+aşağıda anlatılan gerçek bir asılı-kalmadan sonra eklendi) tanıyor ve
+`QApplication` hiç kurulmadan doğrudan `CORE.recover_vault.main()`'e
+devrediyor — `--version`/`--selftest` ile AYNI desen; kurtarma mantığı
+hiçbir yerde KOPYALANMIYOR. Windows'ta bu ikinci bir ikili gerektirdi,
+`HYCLEUS-Kurtarma.exe` (`console=True`, `console=False` olan
+`HYCLEUS.exe` ile AYNI `Analysis`/`pyz`'den derleniyor — tek bir
+`pyinstaller HYCLEUS.spec` çağrısı hâlâ ikisini birden üretiyor):
+`getpass()`/`input()` `console=False` bir sürecin sahip OLMADIĞI gerçek
+bir konsol tutamacı istiyor — doğrudan doğrulandı, yönlendirilmiş
+stdout çalışıyor (`--selftest`in kendi duman testi onu zaten böyle
+okuyor) ama etkileşimli girdi ÇALIŞMIYOR. Linux'ta ikinci bir ikili
+gerekmiyor: `AppRun` PyInstaller ikilisini miras alınan stdio ile
+`exec` ediyor, yani bir terminalden çağrıldığında zaten normal bir CLI
+aracı gibi davranıyor. `-h`/`--help`'in aynı yönlendirmeye ihtiyacı
+somut, ÖLÇÜLEN bir nedenden: eklenmeden önce `HYCLEUS-Kurtarma.exe
+--help` tanınan hiçbir bayrakla eşleşmiyor, normal GUI açılışına
+düşüyor, takılı USB yokken bir "USB bulunamadı" kutusunda ASILI
+KALIYORDU — `--selftest`'in kaçınmak için var olduğu TAM AYNI hata
+sınıfı, şimdi bu giriş noktası için de kapatıldı. Gerçek bir uçtan uca
+kurtarma (gerçek bir PIN/pay round-trip'i) CI'da hâlâ koşamıyor:
+`_require_hwid()` gerçek bir USB istiyor ve CI koşucusuna hiçbiri takılı
+değil — daha ileri gitmek için yeni bir HWID-baypas bayrağı
+EKLENMEDİ, `--test-data-dir` için zaten verilen AYNI karar (§4.30) —
+bir sürüm ikilisinde donanım varlığını sahtelemek, korunan şeyi zaten
+baltalardı. Paketlenmiş duman testi bunun yerine gerçek derlenmiş
+ikilinin `CORE.recover_vault.main()`'e GERÇEKTEN ulaştığını ve donanım
+sınırında sessizce ya da asılı kalarak DEĞİL, beklenen mesajla
+düştüğünü kanıtlıyor.
+
+**Başarısız kurtarma denemeleri de artık kayda geçiyor (aynı kapanış,
+B-037).** `recover_master_key()` daha önce yalnızca BAŞARIYI
+logluyordu (`"vault_recovered"`); her başarısızlık yolu (yanlış PIN,
+bozuk ya da yanlış indisli kurtarma payı, kasada olmayan `share_2`)
+hiçbir denetim izi bırakmıyordu. Artık herhangi bir istisnada
+`"vault_recovery_rejected"` yazıyor ve istisnayı DEĞİŞTİRMEDEN yeniden
+fırlatıyor. Kaydedilen neden istisnanın yalnızca TÜRÜ
+(`type(exc).__name__`), ASLA `str(exc)` değil: `_parse_share()`'in
+kendi hata mesajı bozuk bir payın ilk 16 karakterini doğrudan mesaja
+gömüyor (`share[:16]!r`) — mesaj metnini kaydetmek pay parçalarını
+denetim izine sızdırırdı — bu, yalnızca son yazılan satırı değil
+`audit_log`'un HER satırını hem PIN hem denenen pay için tarayan bir
+testle kanıtlandı.
+
+**Kurtarma bilerek hiçbir şeyi yenilemiyor — ve bu ayrı, hâlâ açık bir
+karar, bu turun değiştirdiği bir şey DEĞİL.** Yukarıda belirtildiği
+gibi `reprovision_vault()` bilerek `master_key`'i ve Shamir polinomunu
+kurtarma SONRASINDA da DEĞİŞTİRMİYOR — basılı pay geçerli kalıyor,
+hiçbir şey döndürülmüyor. Kurtarmanın BUNUN YERİNE yeni bir bölme
+tetiklemesi GEREKİP gerekmediği (yeni `master_key`, yeni üç pay, eski
+basılı payın geçersiz kılınması) kendi ödünleşimleri olan gerçek, ÇÖZÜLMEMİŞ
+bir tasarım sorusu (döndürülen ama sessizce çalışmayı bırakan bir pay,
+sızmış olabilecek bir paydan muhtemelen DAHA KÖTÜ — bkz. yukarıdaki
+ödünleşim paragrafı) — bu, B-037'nin kapattığı şeyin BİR PARÇASI
+DEĞİLDİ, "CLI pakete girmiyor" boşluğunun kapanması bunun da
+çözüldüğü anlamına GELMEMELİ. Kurtarma-sonrası döndürme isteniyorsa
+kendi bilinçli kararını ve kendi BACKLOG maddesini gerektirir.
 
 ### 4.5 Uygulama seviyesi kontroller böyle etiketlenmiştir
 
@@ -8159,7 +8295,14 @@ derleme hiç çalışmadan yakalayacak tam olarak o statik katman.
 3. **Uçtan uca Shamir kurtarma akışı.** Bu depoda hiçbir otomatik iş, bir
    kurtarma parçasından master_key'i GERÇEK, ikinci bir fiziksel USB'ye ve
    gerçek bir kurtarmanın yapacağı gibi gerçek bir vault'a karşı yeniden
-   üretmiyor.
+   üretmiyor. B-037'den (§4.4) beri paketlenmiş duman testi eskisinden
+   bir adım daha ileri gidiyor: gerçek derlenmiş kurtarma giriş noktasını
+   (`HYCLEUS-Kurtarma.exe --export` / AppImage `--export`) USB TAKILI
+   DEĞİLKEN çalıştırıp beklenen donanım sınırında düştüğünü doğruluyor
+   (`CORE.recover_vault.main()`'e GERÇEKTEN ulaşıldığını, sessizce
+   atlanmadığını ya da asılı kalmadığını) — bu bir ERİŞİLEBİLİRLİK
+   kanıtı, bir KURTARMA kanıtı DEĞİL. Gerçek bir PIN/pay round-trip'ini
+   hâlâ koşturamıyor; o boşluk DEĞİŞMEDİ ve hâlâ aşağıdaki provaya ait.
 
 Bu üçü de bu duman testinin kapatması hiç amaçlanmamış boşluklar —
 kapatmak, bir CI koşucusunun sahip olmadığı fiziksel donanım gerektiriyor.

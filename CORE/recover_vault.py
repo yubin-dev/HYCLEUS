@@ -327,8 +327,7 @@ def _cmd_status(_args: argparse.Namespace) -> None:
             "\n  ! Bu vault su an 2-of-2 gibi davraniyor: share_1 (vault) veya\n"
             "    share_2 (anahtar kasasi) kaybolursa dosyalariniza BIR DAHA\n"
             "    ERISEMEZSINIZ.\n"
-            "\n    Kurtarma parcasini alin:\n"
-            "      python CORE/recover_vault.py --export"
+            "\n    Kurtarma parcasini almak icin --export ile calistirin."
         )
 
 

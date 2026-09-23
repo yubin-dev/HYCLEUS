@@ -41,10 +41,12 @@ kurulumu baştan kurmak içindir. Kaybettiğiniz bir şeyi geri getirmek için
 
 ## Başlamadan: komut penceresini açmak
 
-Aşağıdaki bazı çözümler komut satırı gerektiriyor. Üç adım:
+Aşağıdaki bazı çözümler komut satırı gerektiriyor. Kurtarma aracı
+paketin İÇİNDE, `HYCLEUS.exe` ile AYNI klasörde duran ayrı bir dosya:
+**`HYCLEUS-Kurtarma.exe`**.
 
-**1.** HYCLEUS'un kurulu olduğu klasörü bulun. İçinde `main.py` adında bir
-dosya ve `CORE` adında bir klasör görüyorsanız doğru yerdesiniz.
+**1.** HYCLEUS'un kurulu olduğu klasörü bulun. İçinde `HYCLEUS.exe` VE
+`HYCLEUS-Kurtarma.exe` adında iki dosya görüyorsanız doğru yerdesiniz.
 
 **2.** Klasörün adres çubuğuna tıklayın, yazanı silin, `cmd` yazıp
 Enter'a basın:
@@ -53,17 +55,24 @@ Enter'a basın:
 +------------------------------------------------------+
 |  [klasör]  cmd                              v    X   |   <-- buraya cmd yazıp Enter
 +------------------------------------------------------+
-|   main.py        CORE/        UI/                    |
+|   HYCLEUS.exe     HYCLEUS-Kurtarma.exe    data\       |
 +------------------------------------------------------+
 ```
 
-**3.** Siyah bir pencere açılır. Bu rehberdeki komutu buraya yapıştırıp
-(sağ tık → Yapıştır) Enter'a basın.
+**3.** Siyah bir pencere açılır. Bu rehberdeki komutları buraya
+yapıştırıp (sağ tık → Yapıştır) Enter'a basın — komutlar
+`HYCLEUS-Kurtarma.exe` ile BAŞLIYOR, `HYCLEUS.exe` DEĞİL:
+`HYCLEUS.exe` çift tıklayınca AÇILAN pencereli programdır, komut
+girdisini okuyamaz — bu yüzden kurtarma aracı AYRI, ikinci bir dosya.
 
-> **Elinizde yalnızca `HYCLEUS.exe` varsa** bu komutlar çalışmaz —
-> kurtarma araçları exe'nin içinde değildir, ayrı dosyalar hâlinde gelir.
-> Bu durumda kendi başınıza bir şey denemeyin, **sistem yöneticinize
-> başvurun.**
+> **Linux'ta** (`.AppImage`): ikinci bir dosya YOK, aynı `.AppImage`'ı
+> bir terminalden, başına `./` koyarak çalıştırın — ör.
+> `./HYCLEUS-2.4.0-x86_64.AppImage --recover`.
+
+> **Kaynak koddan çalıştırıyorsanız** (geliştirici/BT ortamı):
+> `python CORE/recover_vault.py --recover` de hâlâ aynı şekilde
+> çalışıyor — bu rehberdeki `HYCLEUS-Kurtarma.exe` yerine onu
+> kullanabilirsiniz, ikisi AYNI aracı çalıştırıyor.
 
 ---
 
@@ -89,9 +98,9 @@ olarak bu durumlar için yazıldı.
 
 **B) USB fiziksel olarak kayboldu** — çalındı, kırıldı, bulunamıyor:
 
-**Bu durumda kendi başınıza yapabileceğiniz bir şey yok.** Kurtarma
-aracının çalışması için **kayıtlı USB'nin takılı olması gerekiyor** —
-program kimliğinizi o USB'den okuyor. USB olmadan araç şunu yazar:
+`--recover` size YARDIMCI OLAMAZ — o, **kayıtlı** (kaybettiğiniz) USB'nin
+takılı olmasını istiyor, program kimliğinizi o USB'den okuyor. USB
+olmadan şunu yazar:
 
 ```
 Hata: USB tespit edilemedi.
@@ -99,19 +108,32 @@ Hata: USB tespit edilemedi.
   HWID'e bagli oldugu icin kayitli USB takili olmalidir.
 ```
 
-**Yapmanız gerekenler:**
+**Ama çaresiz değilsiniz.** Elinizde YENİ bir USB (herhangi biri, boş)
+**ve basılı kurtarma kâğıdınız** varsa hesabınızı o yeni USB'ye
+taşıyabilirsiniz — tam olarak bunun için ayrı bir komut var:
+
+```
+HYCLEUS-Kurtarma.exe --takeover
+```
+
+Kullanıcı adınızı, kurtarma kâğıdınızı ve yeni bir PIN isteyecek.
+**Bu işlem GERİ ALINAMAZ:** eski USB (bulunsa/onarılsa bile) işlemden
+sonra bir daha açılamaz — araç son bir onayla bunu size hatırlatıyor.
+
+**Kurtarma kâğıdınız da yoksa** — yalnızca bu durumda gerçekten
+çaresizsiniz:
 
 1. Hiçbir komut çalıştırmayın.
 2. Bilgisayarı olduğu gibi bırakın. HYCLEUS klasörünü ve içindeki `data`
    klasörünü **silmeyin, taşımayın, temizlemeyin.**
-3. Basılı kurtarma kâğıdınız varsa güvende tutun.
-4. **Sistem yöneticinize durumu bildirin.**
+3. **Sistem yöneticinize durumu bildirin.**
 
 > **Neden umut var:** Şifre anahtarınız üç parçaya bölünmüş ve herhangi
 > **ikisi** yeterli. USB kaybolsa bile bilgisayardaki parça ve basılı
-> kâğıt duruyor. Sorun parçaların yok olması değil, mevcut aracın onları
-> USB olmadan bulamaması. Bu bir onarım işi, veri kaybı değil — ama
-> yönetici müdahalesi gerektiriyor.
+> kâğıt duruyor — `--takeover` tam olarak bu ikisini birleştirip
+> hesabınızı yeni USB'ye bağlıyor. Kâğıt da yoksa geriye tek bir parça
+> kalıyor, ki bu ikiden az demek — o zaman gerçekten yönetici
+> müdahalesi gerekiyor.
 
 ---
 
@@ -136,7 +158,7 @@ Hata: USB tespit edilemedi.
 **Adım 2.** Komut penceresini açın ve şunu yapıştırın:
 
 ```
-python CORE/recover_vault.py --recover
+HYCLEUS-Kurtarma.exe --recover
 ```
 
 **Adım 3.** Kurtarma kâğıdındaki yazıyı isteyecek. **Yazarken ekranda
@@ -215,13 +237,13 @@ alabilirsiniz.
 **Adım 1.** Durumu kontrol edin:
 
 ```
-python CORE/recover_vault.py --status
+HYCLEUS-Kurtarma.exe --status
 ```
 
 **Adım 2.** Kâğıdı yeniden alın (PIN'inizi soracak):
 
 ```
-python CORE/recover_vault.py --export
+HYCLEUS-Kurtarma.exe --export
 ```
 
 **Adım 3.** Ekranda uzun bir yazı çıkacak (`HYCLEUS-R3-...` ile başlar).
@@ -338,6 +360,12 @@ python CORE/backup_cli.py --restore "D:\Yedekler\hycleus-2026-08-20" --dest "D:\
 > **Bu komut güvenlidir:** çalışan kasanıza **dokunmaz.** Dosyaları
 > seçtiğiniz boş klasöre çıkarır; içeriği inceleyip yerine siz
 > taşırsınız. Yanlış yedeği seçseniz bile bir kaybınız olmaz.
+
+> **Not:** yukarıdaki `HYCLEUS-Kurtarma.exe` komutlarının aksine bu
+> komut henüz pakete taşınmadı — yalnızca kaynak/geliştirici ortamından
+> (`python` kurulu bir makineden) çalışıyor. Elinizde yalnızca paket
+> varsa (yalnızca `HYCLEUS.exe`/`HYCLEUS-Kurtarma.exe`) sistem
+> yöneticinize başvurun.
 
 ---
 
