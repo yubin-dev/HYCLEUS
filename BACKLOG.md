@@ -12969,6 +12969,167 @@ Testler: `test_packaging.py` (45, mutasyonla doğrulandı). Commit: (bu
 BACKLOG kaydıyla aynı commit; `HYCLEUS.spec`'te kalıcı bir değişiklik
 YOK — yalnızca `packaging/*/smoke-test.*` ve dokümantasyon değişti).
 
+**EK 3 — Soğuk kurtarma provası için pay haritası (2026-09-23, kod
+DEĞİŞTİRİLMEDEN, yalnızca envanter).** Yukarıdaki maddenin "bir
+prosedür/checklist DEĞİL, yalnızca gerekliliğin kaydı" notu hâlâ
+geçerli — bu EK, bir sonraki turda gerçek bir prosedür yazılacaksa
+ihtiyaç duyacağı kod-seviyesi gerçekleri kaydediyor.
+
+*1. Üç pay nerede saklanıyor.* Şema `CORE/vault_manager.py:1-25`de
+belgeli: Shamir 2-of-3, `_SSS_PRIME = 2**256 + 297` (satır 119),
+`_SSS_THRESHOLD = 2` (satır 122), indeksler `(1,2,3)` (satır 123),
+kurtarma indeksi `3` (satır 127).
+
+| Pay | Ortam | Yazan | Okuyan |
+|---|---|---|---|
+| `share_1` | Vault dosyası (`<hwid>.hclv`), PIN'den türeyen Argon2id KEK'le AES-GCM şifreli | `create_vault()`/`_rewrite_vault()` | `_read_share_1()` → `_decrypt_vault()` (`CORE/vault_manager.py:1375-1377`) |
+| `share_2` | OS anahtar kasası (Windows: Credential Manager, `keyring` paketi üzerinden), TPM varsa `CORE/tpm_sealing.py` ile mühürlü değer olarak | `_save_usb_token()` (`CORE/vault_manager.py:478`: `secret_store.store(secret_store.share_2_username(hwid), share_2)`) | `_load_share_2()` (`CORE/vault_manager.py:496`) |
+| `share_3` | **Hiçbir yerde saklanmaz** — share_1+share_2'den anlık türetilir, bir kez base32/QR olarak gösterilir, kullanıcı FİZİKSEL olarak (kâğıt) saklar | türetilmez/yazılmaz — bkz. `export_recovery_share()` | `CORE/vault_manager.py:1414-1416`: `share_3 = _sss_derive_share(share_1, share_2, _SSS_RECOVERY_INDEX)` |
+
+`share_2`'nin DB'de `usb_tokens.share_2` sütunu VAR ama boş — şema
+uyumluluğu için duruyor, sır orada TUTULMUYOR (`CORE/vault_manager.py`
+satır 17-20'nin kendi yorumu). `share_3`'ün diske TEK yazılabileceği
+yer, CLI kullanıcısının bilerek `--qr-out <dosya>` vermesi
+(`CORE/recover_vault.py:97-102, 352`) — varsayılan davranış DEĞİL,
+`CORE/recovery_share.py:181`: "DİSKE HİÇBİR ŞEY YAZMAZ". `share_3`'ün
+YALNIZCA dışa aktarıldığı ZAMAN `usb_tokens.recovery_issued_at`'a
+yazılıyor, değerin kendisi asla (`CORE/vault_manager.py:1418-1424`).
+
+*2. Kodun gerçekten desteklediği kombinasyonlar.* Genel ilkel
+(`_sss_recover()`, `CORE/vault_manager.py:402-443`) HERHANGİ iki payı
+kabul ediyor, ama asıl giriş noktası `recover_master_key()`
+(`CORE/vault_manager.py:1428-1478`) bunu KISITLIYOR: `recovery_share`
+argümanı HER ZAMAN indeks-3 (basılı/QR pay) OLMAK ZORUNDA (satır
+1462-1466, aksi hâlde `ValueError`) — share_1/share_2'yi bu parametreye
+vermek "bypass değil ama denetim kaydına yanlış bir 'kurtarma' olayı
+düşürür" gerekçesiyle reddediliyor (satır 1456-1461). Diğer pay,
+`pin` argümanının varlığına göre ÖRTÜK seçiliyor:
+
+- `pin` verilirse → share_1 vault'tan okunur → **(1,3)** — senaryo:
+  "share_2 kayıp (kasa silinmiş/yeni makine)" (`CORE/vault_manager.py:
+  1437-1439`).
+- `pin` verilmezse → share_2 kasadan okunur → **(2,3)** — senaryo:
+  "share_1 kayıp (vault dosyası yok/bozuk)" (satır 1440-1441).
+
+Yani pratikte: basılı kurtarma payı (share_3) HER kurtarma yolunda
+ZORUNLU; share_1+share_2 ile "kurtarma" diye bir yol YOK (o zaten
+normal `open_vault()`). TOTP `recover_master_key()`'in kendisinde HİÇ
+sorulmuyor — yalnızca `--takeover` akışında (aşağıda) eski TOTP sırrı
+yeni HWID'e KOPYALANIYOR (`CORE/usb_takeover.py:158-163`), bir ön koşul
+olarak DOĞRULANMIYOR.
+
+Giriş noktaları:
+- `python CORE/recover_vault.py --recover` → `_cmd_recover()`
+  (`CORE/recover_vault.py:135-220`) — hangi payın kayıp olduğunu SORUYOR
+  (satır 147-150), koşullu PIN istiyor (satır 152), `recover_master_key(
+  hwid, recovery_share=share_3, pin=pin)` çağırıyor (satır 155).
+- `python CORE/recover_vault.py --takeover` → `_cmd_takeover()`
+  (satır 223-317) → `takeover_usb()` (`CORE/usb_takeover.py:70-181`,
+  `recover_master_key()` çağrısı satır 151) — kayıp/bozuk bir USB'nin
+  hesabını YENİ, FARKLI bir HWID'e taşıyor; TAM olarak "USB fiziksel
+  olarak kayboldu/kırıldı" senaryosunun karşılığı.
+- **GUI'de kurtarma YOK.** `UI/RecoveryShareDialog.py` ve
+  `UI/security_actions.py::kurtarma_parcasini_goster()` yalnızca
+  `export_recovery_share()`'i çağırıyor (payı ÜRETİP GÖSTERİYOR),
+  `recover_master_key()`'i hiç çağırmıyor. Gerekçe kodun kendi
+  yorumunda (`CORE/recover_vault.py:22-30`): GUI açılmak için TAKILI VE
+  KAYITLI bir USB istiyor (`main.py:385-393`: HWID yoksa
+  `QMessageBox.critical` + `sys.exit(1)`) — "USB'yi kaybettim"
+  senaryosunda GUI zaten AÇILAMIYOR.
+
+*3. Kurtarma sonrası.* `reprovision_vault()`
+(`CORE/vault_manager.py:1481-1547`) master_key'i VE polinomu KORUYOR —
+yeni PIN altında yeniden şifreliyor ama `f(1), f(2), f(3)` AYNI
+kalıyor (`create_vault(..., anchor_share=recovery_share)`, satır
+1534-1536). Sonuç: **elde tutulan basılı share_3 kurtarma sonrasında
+DA geçerliliğini koruyor** — CLI bunu kullanıcıya açıkça söylüyor:
+`CORE/recover_vault.py:216` ("--recover" sonrası) ve `:315`
+("--takeover" sonrası): "Elinizdeki basılı kurtarma parçası HÂLÂ
+GEÇERLİ — saklamaya devam edin." **Yeni bir 3'lü pay seti OTOMATİK
+üretilmiyor**, sürüm/nesil sayacı YOK — tasarım bilinçli olarak aynı
+polinomu sonsuza dek koruyor (payı DÖNDÜRMEK isteseydi kullanıcı ayrıca
+`setup_usb.py --reset` çalıştırmalı, ki bu TAMAMEN farklı/ilgisiz bir
+master_key üretip mevcut `.hcl` dosyalarını kilitler — CLI bunu
+YAPMAMASI için ayrıca uyarıyor, `CORE/recover_vault.py:177-183`).
+
+Denetim kaydı — BAŞARI: `recovery_share_exported`
+(`CORE/vault_manager.py:1424`), `vault_recovered`
+(satır 1474-1477, `detail`'de hangi kombinasyon kullanıldığı da var:
+`share_1+share_3` / `share_2+share_3`), `vault_reprovisioned`
+(satır 1543-1546), `usb_devralindi` (`CORE/usb_takeover.py:176-177`).
+`UI/security_actions.py`'de GUI'den payı GÖRÜNTÜLEMEK ayrıca
+`recovery_share_viewed` yazıyor VE günlük çıpa döngüsünü BEKLEMEDEN
+ANINDA `write_anchor()` çağırıyor (satır 216-221) — gerekçe: payın
+uygulamadan ÇIKTIĞI an en hassas an, sessiz kurcalamaya karşı hemen
+mühürleniyor.
+
+Denetim kaydı — BAŞARISIZLIK: **kurtarmaya özgü bir başarısızlık
+olayı YOK.** `_decrypt_vault()` (yanlış PIN → `ValueError`),
+`_load_share_2()` (kasada yok → `ValueError`), `recover_master_key()`
+(yanlış indeksli pay → `ValueError`) — bu üç fonksiyonun HİÇBİRİNDE
+`db.log()` çağrısı yok, doğrulandı (`CORE/vault_manager.py:1311-1372,
+485-503, 1428-1478`). Tek istisna: HWID kara listedeyse
+`_reject_if_blacklisted()` kendi başarısızlığını LOGLUYOR (satır
+954-969'un kendi yorumu: "audit log'a yazar") — ama bu kurtarmaya özgü
+değil, her kimlik doğrulama yolunda aynı. **Sonuç: başarısız bir
+kurtarma denemesinin (yanlış PIN, bozuk/yanlış pay, kasadan silinmiş
+share_2) denetim izinde HİÇBİR kaydı kalmıyor** — bir provada bu
+BEKLENMELİ, "neden günlükte görünmüyor" diye şaşırılmamalı.
+
+Kategori notu (`UI/AuditLogView.py:124-164`): `vault_recovered` ve
+`vault_reprovisioned` "Kimlik" sekmesinde, `recovery_share_exported`
+"Yönetim" sekmesinde — ama `recovery_share_viewed` ve `usb_devralindi`
+ÜÇ kategori kümesinin HİÇBİRİNDE yok, dolayısıyla yalnızca "Tümü"
+sekmesinde görünüyorlar (dosyanın kendi belgelediği kural, satır
+30-31: "Bilinmeyen bir action hiçbir kategoriye DÜŞMÜYOR"). Bir prova
+sırasında bu ikisini ararken "Kimlik"/"Yönetim" sekmesine değil
+"Tümü"ye bakılmalı.
+
+*4. Paketlenmiş EXE ile, gerçek kasaya dokunmadan prova — `--test-
+data-dir` ÖNERİLMİYOR (B-154 zaten reddediyor).* `CORE/paths.py:
+125-146`teki `data_dir()` paketlenmiş Windows EXE'de `Path(sys.
+executable).parent / "data"` döndürüyor (satır 145) — yani izolasyon
+zaten dizin bazlı ve KODA/ORTAM DEĞİŞKENİNE hiç ihtiyaç duymuyor:
+
+- **Önerilen (ek altyapı gerektirmez): ayrı bir "prova kimliği" ile uçtan
+  uca.** Gerçek/prodüksiyon USB'sine hiç dokunmadan, YEDEK/kullanılmayan
+  bir USB ile: (a) paketlenmiş EXE'yi ayrı bir klasöre kopyala (kendi
+  `data\` klasörünü orada oluşturur, gerçek kurulumun `data\`sıyla asla
+  karışmaz), (b) o yedek USB'yle normal kayıt akışından geç (yeni hwid,
+  atılabilir bir PIN), (c) `recover_vault.py --export` ile payı üret,
+  (d) o USB'yi "kaybetmiş" gibi davranıp `--recover`/`--takeover`'ı
+  GERÇEK ikinci bir USB'ye karşı çalıştır. Bu izolasyon KODA GÖMÜLÜ:
+  `share_1` dosya yolu, `share_2` kasa kullanıcı adı (`share_2:<hwid>`)
+  ve TPM'de mühürlü blob'un HEPSİ `hwid`'e göre anahtarlanıyor — farklı
+  bir hwid, gerçek prodüksiyon kaydına DOKUNAMAZ, çünkü zaten FARKLI bir
+  DB satırı/kasa girdisi/dosya. Bu tam olarak yukarıdaki maddenin (1)-(2)
+  adımlarının zaten tarif ettiği şey — yeni bir altyapı GEREKMİYOR.
+- **Ek izolasyon isteniyorsa (paylaşılan bir makinede kasa girdilerinin
+  birikmesini istemiyorsanız): ayrı bir Windows kullanıcı hesabı.**
+  Windows Credential Manager kullanıcı PROFİLİNE göre ayrılıyor — ayrı
+  bir hesapta çalıştırmak, prova sırasında oluşan `share_2:<prova-hwid>`
+  kasa kayıtlarının GERÇEK prodüksiyon hesabının kasasına hiç
+  uğramamasını garanti eder (yukarıdaki hwid-bazlı izolasyon zaten
+  yeterliyken, bu yalnızca "aynı hesapta biriken prova kalıntısını"
+  önlemek için).
+- **Daha da rahat tekrarlanabilirlik isteniyorsa: VM.** Prova sonrası
+  hiçbir iz bırakmama (anlık görüntüden geri dönüp defalarca
+  provalamak) isteniyorsa VM en rahat seçenek — ama YUKARIDAKİ iki
+  seçenek zaten gerçek kasaya SIFIR risk taşıyor, VM ZORUNLU DEĞİL.
+- **YAPILMAMASI gereken:** gerçek prodüksiyon `hwid`'iyle `--recover`
+  çalıştırıp sonunda "yeniden anahtarlamak" isteyip isteneni onaylamak
+  — `reprovision_vault()` GERÇEKTEN yeni PIN/salt/nonce yazar
+  (`CORE/vault_manager.py:1501-1505`); bir prova YANLIŞLIKLA gerçek
+  vault'u yeniden anahtarlayabilir. Prova SIRASINDA gerçek hwid
+  kullanılıyorsa `_cmd_recover()`'ın reprovision onayına HAYIR
+  denmeli, ya da baştan (yukarıdaki gibi) prova kimliği kullanılmalı.
+
+Bu envanter READ-ONLY — kod hiçbir şekilde değiştirilmedi
+(`git status`/`git diff` bu EK'in commit'inde yalnızca `BACKLOG.md`
+gösteriyor). Prosedürün kendisi (adım adım checklist, sıklık, sorumlu
+kişi) hâlâ ayrı bir kararla yazılmayı bekliyor — bu EK yalnızca o
+kararı kolaylaştıracak kod-seviyesi gerçekleri kaydediyor.
+
 ---
 
 ## B-156 — `test_tick_idle_esik_asilinca_gercekten_kilitliyor` gerçek `time.sleep()`'e dayanıyordu: CI'da (yalnızca windows-latest) üç kez kararsız düştü, saat enjekte edilebilir yapıldı
