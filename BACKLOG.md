@@ -12555,3 +12555,62 @@ ortamda GERÇEKTEN çalıştırıp kanıtla. Dördü de Aşama 2'de canlı kanı
 (teorik değil) önce kodlanmadan; kullanıcı önceliklendirilmiş listeyi
 görüp dördünün de düzeltilmesine karar verdi. Tam suite: 3524 → 3543
 passed, 15 skipped, 0 yeni başarısızlık (3 mevcut B-148 hatası ilgisiz).
+
+---
+
+## B-153 — B-149'un AST muhafızı doğrulandı: kapsamı yalnızca `vault_manager.py`, başka modüldeki aynı-imzalı fonksiyon görünmez
+
+**Durum:** AÇIK.
+**Öncelik:** Orta (bugün hiçbir canlı çağıran bu boşluktan geçmiyor —
+her ikisi de guard'ın koruduğu fonksiyona devrediyor — ama bu hiçbir test
+tarafından garanti edilmiyor, ileriye dönük bir mayın).
+**Bulundu:** 2026-09-23, B-149'un AST muhafızının (`tests/test_blacklist.py::
+test_hwid_ve_pin_alan_her_fonksiyon_kara_liste_kontrolune_ulasiyor`)
+üç ayrı mutasyonla doğrulanması sırasında.
+
+**Tarihçe düzeltildi.** Bir dış rapor guard'ın B-149'dan (3. tekrar,
+commit `1e4be70`) ÖNCE var olduğunu ve buna RAĞMEN 3. tekrarın yaşandığını
+iddia ediyordu. `git log -S"_reject_if_blacklisted"` ve
+`git log -S"_vault_manager_call_graph"` bunun tersini gösteriyor: guard
+`1e4be70`'te, B-149'un DÜZELTMESİYLE BİRLİKTE doğdu — 4. bir tekrarı
+önlemek için yazıldı, 3. tekrarı kaçırmadı (o an henüz yoktu). SECURITY.md
+§4.1 ve BACKLOG B-149 zaten bunu doğru anlatıyor ("dördüncü tekrarı
+önlemek için"); düzeltilecek yanlış metin bulunamadı, dış raporun bu
+maddesi hatalı.
+
+**Doğrulanan üç mutasyon (her biri tek başına, sırayla geri alındı):**
+
+1. `change_vault_role()`'dan `_reject_if_blacklisted(hwid)` çağrısı
+   silindi → hem guard hem doğrudan birim testi KIRMIZI oldu.
+2. `CORE/vault_manager.py`'ye `hwid`+`pin` alan, hiçbir yerden çağrılmayan
+   yeni bir fonksiyon (`_mutasyon_b_cagrisiz_fonksiyon`) eklendi → guard
+   fonksiyonu ADIYLA yakalayıp KIRMIZI oldu — guard'ın sabit bir isim
+   listesi DEĞİL, kural tabanlı (parametre şekli) olduğunu kanıtlıyor.
+3. Aynı fonksiyon `CORE/vault_manager.py` yerine `CORE/pin_rotation.py`'ye
+   eklendi → guard YEŞİL kaldı. Kanıtlanmış kapsam boşluğu: guard yalnızca
+   `Path(vault_manager.__file__)`'ı okuyor, başka hiçbir dosyayı taramıyor.
+
+Turdan sonra `git diff` boştu (üç mutasyon da tek tek geri alındı).
+
+**Bilinen kapsam boşluğu, bugün canlı ama garantisiz.**
+`CORE/pin_rotation.py::rotate_pin()` ve
+`CORE/registration.py::register_new_user()` ikisi de `hwid`+PIN-şekilli
+parametre alıyor ve guard'ın taradığı dosyanın DIŞINDA yaşıyor; guard
+onları hiç göremiyor. Bugün ikisi de ilk iş olarak guard'ın koruduğu bir
+`vault_manager` fonksiyonuna (`change_vault_pin()` / `create_vault()`)
+devrediyor, yani FİİLEN korunuyorlar — ama bu devir hiçbir testle
+garanti edilmiyor: biri o çağrıyı satır içine açıp guard'ı atlayarak
+yeniden yazsa, hiçbir CI adımı bunu yakalamaz. Guard ayrıca dolaylı
+çağrıları (değişkende tutulan fonksiyon, `getattr`, dispatch tablosu) ve
+parametre adı `hwid`/`*pin` kalıbından sapan fonksiyonları da göremiyor —
+bunlar SECURITY.md §4.1'e (EN+TR) "Bu muhafızın yakalamadığı" başlığıyla
+eklendi, VaultSession refactor'ünün (Divan Öneri 1) neden hâlâ gerekli
+olduğunun gerekçesiyle birlikte.
+
+**Önerilen düzeltme (bu turda YAPILMADI — kapsam dışı, yalnızca kayıt
+altına alınıyor):** ya guard'ın taradığı dosya kümesini `CORE/*.py`
+geneline (ya da en azından `pin_rotation.py`+`registration.py`'ye)
+genişletmek, ya da VaultSession refactor'ünü hayata geçirip guard'ın işini
+tek bir constructor çağrısına indirmek.
+
+Commit: (bu BACKLOG kaydı ve SECURITY.md güncellemesiyle aynı commit).
