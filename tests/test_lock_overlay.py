@@ -562,14 +562,32 @@ class _IdleSahne(_UcTanUcaSahne):
 def test_tick_idle_esik_asilinca_gercekten_kilitliyor(
     qapp, db, monkeypatch: pytest.MonkeyPatch,
 ):
+    """
+    Saat SAHTE — gerçek `time.sleep()` YOK (bkz. tests/test_idle_lock.py'nin
+    dosya docstring'i: aynı kural orada CORE katmanı için zaten geçerli).
+
+    Önceki sürüm `IdleTracker(timeout_seconds=0.001)` + `time.sleep(0.01)`
+    kullanıyordu — 1 ms eşiğe karşı 10 ms'lik gerçek pay. CI'da windows-latest
+    ayağında GERÇEKTEN üç kez (run'lar 6d79c73/2026-09-10, da18340/2026-09-11,
+    5f1b997/2026-09-23) aynı AssertionError'la düştü; bu makinede 300 kez
+    (200 boşta + 100 CPU yükü altında) hiç düşmedi — yani yalnızca CI'nin
+    kendi zamanlayıcı çözünürlüğü/jitter'ı altında ortaya çıkan, yerel olarak
+    zorlanamayan bir kararsızlık. `time.monotonic()`'i enjekte ederek payı
+    KALDIRMAK (10 ms'lik gerçek bir bekleyişe güvenmemek), payı büyütmekten
+    daha sağlam: `_tick_idle()`'ın KENDİSİ saati almıyor, `CORE.idle_lock`
+    içindeki `time.monotonic()` çağrısı burada monkeypatch'leniyor.
+    """
     from CORE.idle_lock import IdleTracker
+    import CORE.idle_lock as _idle_lock_modulu
+
+    sahte_saat = {"t": 1_000_000.0}
+    monkeypatch.setattr(_idle_lock_modulu.time, "monotonic", lambda: sahte_saat["t"])
 
     hwid = "TICK-IDLE-HWID"
-    sahne = _IdleSahne(hwid, IdleTracker(timeout_seconds=0.001))
+    sahne = _IdleSahne(hwid, IdleTracker(timeout_seconds=60.0))
     monkeypatch.setattr(_mwl_modulu, "log_idle_lock", lambda *a, **k: None)
 
-    import time as _time
-    _time.sleep(0.01)  # idle_seconds() eşiği kesin aşsın
+    sahte_saat["t"] += 61.0  # eşiği kesin aşsın — GERÇEK sleep YOK
     sahne._tick_idle()
 
     assert sahne._locked is True, "eşik aşıldığı hâlde _tick_idle() kilitlemedi"

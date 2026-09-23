@@ -12968,3 +12968,109 @@ sorumlu kişi) ayrı bir kararla yazılmalı.
 Testler: `test_packaging.py` (45, mutasyonla doğrulandı). Commit: (bu
 BACKLOG kaydıyla aynı commit; `HYCLEUS.spec`'te kalıcı bir değişiklik
 YOK — yalnızca `packaging/*/smoke-test.*` ve dokümantasyon değişti).
+
+---
+
+## B-156 — `test_tick_idle_esik_asilinca_gercekten_kilitliyor` gerçek `time.sleep()`'e dayanıyordu: CI'da (yalnızca windows-latest) üç kez kararsız düştü, saat enjekte edilebilir yapıldı
+
+**Durum:** KAPANDI (2026-09-23).
+**Öncelik:** Test altyapısı/QA — kök neden PRODUCTION kodda DEĞİL,
+testin kendi zamanlama tasarımında (aşağıda kanıtlandı).
+**İstendi:** "CI'da windows-latest'te test_lock_overlay::
+test_tick_idle_esik_asilinca_gercekten_kilitliyor düştü — yeniden
+çalıştırıp geçme, önce kararsız test mi gerçek hata mı kanıtla."
+
+**1. `git diff --stat 5f1b997` — bu commit bu yola dokunmuyor.**
+`git show --stat 5f1b997`: yalnızca `BACKLOG.md` ve `packaging/*`
+değişti; `UI/main_window_lock.py`, `CORE/idle_lock.py`,
+`tests/test_lock_overlay.py` bu commit'te YOK. Yani 5f1b997'nin bu
+testi KIRMASI mümkün değildi.
+
+**2. Bu test CI'da daha önce de düşmüş.** `gh` CLI yok, ham günlükler
+403 (auth gerektiriyor) — ama `ci.yml`'nin kendi "Başarısız testleri
+işaretle" adımı (bkz. o adımın yorumu: "annotation'lar check-run
+API'sinden YETKİSİZ okunuyor") tam bunun için var. GitHub'ın
+check-runs/annotations API'siyle depo geçmişindeki TÜM başarısız
+run'lar (206 run'ın 8'i) tarandı:
+
+| Run | Commit | Tarih | Düşen test |
+|---|---|---|---|
+| 34530899819 | 6d79c73 | 2026-09-10 | **aynı test, aynı hata** |
+| 34587629233 | da18340 | 2026-09-11 | **aynı test, aynı hata** |
+| 35902307812 | 5f1b997 | 2026-09-23 | **aynı test, aynı hata** (bu maddeyi doğuran) |
+| 34416529904 | b349c61 | 2026-09-09 | farklı test (`test_kasa_ekrani...`) |
+| 34641189039 | 92f9c83 | 2026-09-11 | `test-results.xml` hiç üretilmedi (ayrı sorun) |
+| 34492528582, 34509770210 | f02ce45, be4f800 | 2026-09-10 | yalnızca ubuntu-latest (bu testle ilgisiz) |
+
+Üçünde de annotation metni harfiyen aynı: `AssertionError: eşik
+aşıldığı hâlde _tick_idle() kilitlemedi`, üçü de YALNIZCA
+`windows-latest`'te. 3/206 run (~%1,5) — nadir ama TEKRARLAYAN,
+platforma özgü bir örüntü; tek seferlik bir kazâ değil.
+
+**3-4. Kod okundu — gerçek saate mi dayanıyor, olay filtresi hatalı
+mı?** `_tick_idle()` (`UI/main_window_lock.py:400`) süreyi
+`CORE/idle_lock.py::IdleTracker` ile ölçüyor; o sınıf `time.monotonic()`
+kullanıyor (modülün kendi gerekçesi: duvar saati geri alınabilir).
+`IdleTracker`'ın HER zaman-bağımlı metodu (`record_activity`/
+`idle_seconds`/`should_lock`/`remaining_seconds`/`reconfigure`)
+enjekte edilebilir bir `now` parametresi alıyor — ve
+`tests/test_idle_lock.py`'nin dosya docstring'i bunu açıkça bir KURAL
+olarak belgeliyor: *"Testlerin hiçbiri `time.sleep()` çağırmıyor."*
+Tek istisna tam bu testti: `_tick_idle()`'ın kendisi bir `now`
+parametresi almıyor (production imzası budur, DEĞİŞMEDİ), bu yüzden
+eski test gerçek `time.sleep(0.01)` (10 ms) ile `IdleTracker(
+timeout_seconds=0.001)` (1 ms eşik) arasındaki 9 ms'lik gerçek paya
+güveniyordu.
+
+Olay filtresi (`_ACTIVITY_EVENTS`, aynı dosya) ise TEMİZ: yalnızca
+`MouseButtonPress/Release/DblClick`, `MouseMove`, `KeyPress/Release`,
+`Wheel`, `TouchBegin/Update` sayacı sıfırlıyor — **Paint, Timer,
+FocusIn, WindowActivate, Move TÜRLERİNDEN HİÇBİRİ listede yok**, tek
+çağrı yeri (`eventFilter`) bu kümeyle sınırlı. Bu GERÇEK bir hata
+DEĞİL — istenen "dur ve raporla" koşulu (kullanıcı girdisi olmayan bir
+tür sayacı sıfırlıyorsa) tetiklenmedi.
+
+**5. Yerel tekrar — 300/300 geçti, CI'daki kararsızlık burada
+ZORLANAMADI.** Bu makinede (24 çekirdek, CI'nin 2 vCPU'luk
+`windows-latest` koşucusundan çok daha güçlü/az sanallaştırılmış)
+200 kez boşta + 100 kez 40 adet CPU'yu dolduran arka plan süreciyle
+yük altında çalıştırıldı: **gecti=300 kaldi=0**. Bu beklenen bir sonuç,
+kök nedeni ÇÜRÜTMÜYOR — CI'daki oran zaten ~%1,5 ve CI'nin kendi
+koşucusu (düşük çekirdek sayısı, Hyper-V sanallaştırması, zamanlayıcı
+çözünürlüğü/jitter farkı) bu makineden yapısal olarak farklı; 9 ms'lik
+bir gerçek-zaman payına güvenmek HİÇBİR ortamda sağlam değil, yerel
+olarak nadiren tetiklenmesi bunu değiştirmiyor.
+
+**6. Kök neden testin zamanlamasıydı — saat enjekte edilebilir
+yapıldı, gerçek sleep kaldırıldı, mutasyonla doğrulandı.**
+`tests/test_lock_overlay.py::test_tick_idle_esik_asilinca_
+gercekten_kilitliyor` artık `CORE.idle_lock.time.monotonic`'i
+`monkeypatch` ile sahte bir sayaca bağlıyor (`IdleTracker
+(timeout_seconds=60.0)` kuruluyor, sahte saat +61 saniye ileri
+alınıyor — GERÇEK `time.sleep()` YOK). Sonuç: 50 kez ardışık
+çalıştırıldı, `gecti=50 kaldi=0`, her koşu ~0,01 sn (öncekinin
+~1/4'ü, sleep gitti).
+
+Testi körleştirmediğini kanıtlamak için `_tick_idle()`'daki asıl
+kilit çağrısı (`self._lock("idle")`, satır 422) GEÇİCİ olarak
+kaldırıldı → test KIRMIZI oldu (`AssertionError: eşik aşıldığı hâlde
+_tick_idle() kilitlemedi` — aynı mesaj, artık gerçek bir mutasyondan).
+Geri alındıktan sonra `git diff -- UI/main_window_lock.py` BOŞ.
+Bu, Bölüm 6/M040'ın (bkz. yukarıda, "hareketsizlik kilidinin GERÇEK
+tetikleyicisi hiçbir testte hiç çağrılmamıştı") kapattığı boşluğun
+hâlâ kapalı kaldığını yeniden doğruluyor — saat enjeksiyonu testi
+YAVAŞLATMADI, yalnızca DETERMİNİSTİK yaptı.
+
+`tests/test_lock_overlay.py` (30), `tests/test_idle_lock.py` (39),
+`tests/test_main_window_smoke.py` (130) — toplam 199 test, hepsi
+yeşil (15,2 sn).
+
+Değişen dosya: `tests/test_lock_overlay.py` (yalnızca bu test).
+`UI/main_window_lock.py` ve `CORE/idle_lock.py`'de NET DEĞİŞİKLİK YOK
+— kök neden koddaydı ihtimaline karşı hazırlanan mutasyon adımı,
+kodun zaten doğru olduğunu (test'in kör olmadığını) kanıtlamak için
+kullanıldı, kalıcı bir kod değişikliği DOĞURMADI.
+
+Commit: (bu BACKLOG kaydıyla aynı commit).
+
+---
