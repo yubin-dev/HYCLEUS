@@ -54,9 +54,19 @@ function Kontrol {
 
 function Calistir {
     <#
-      EXE'yi çalıştırır, (ExitCode, Cikti) döndürür.
+      EXE'yi çalıştırır, (ExitCode, Cikti, Hata) döndürür.
       Çıktı UTF-8: main.py ensure_utf8_console() ile akışı yeniden
       yapılandırıyor (Türkçe karakterler, bkz. B-013).
+
+      `Cikti` (stdout) ve `Hata` (stderr) AYRI tutuluyor -- `--version`/
+      `--selftest` stdout'a yazıyor, ama CORE/paths.py::
+      reddet_paketlenmis_override() (B-154) reddi STDERR'e yazıyor.
+      Yalnızca `Cikti` döndüren önceki sürüm [6] adımını YANLIŞ KIRMIZI
+      yapıyordu (CI'da GERÇEKTEN ölçüldü, 2026-09-23: ret doğru çalışıyor
+      -- kod=2, hedef dizin oluşmuyor -- ama "reddedildi" denetimi
+      stderr'i hiç görmediği için KIRMIZI çıkıyordu). Linux karşılığı
+      (`smoke-test.sh`) bu hataya hiç düşmedi çünkü `2>&1` ile ikisini
+      zaten birleştiriyor.
     #>
     param([string]$Exe, [string[]]$Argumanlar, [hashtable]$Ortam = @{})
 
@@ -74,7 +84,10 @@ function Calistir {
         $metin = ''
         if (Test-Path $out) { $metin = Get-Content $out -Raw -Encoding utf8 }
         if (-not $metin) { $metin = '' }
-        return @{ Kod = $p.ExitCode; Cikti = $metin }
+        $hataMetni = ''
+        if (Test-Path $err) { $hataMetni = Get-Content $err -Raw -Encoding utf8 }
+        if (-not $hataMetni) { $hataMetni = '' }
+        return @{ Kod = $p.ExitCode; Cikti = $metin; Hata = $hataMetni }
     } finally {
         foreach ($anahtar in $eski.Keys) {
             [Environment]::SetEnvironmentVariable($anahtar, $eski[$anahtar])
@@ -177,10 +190,15 @@ Write-Host '[6] HYCLEUS_TEST_DATA_DIR paketlenmis yapida reddediliyor'
 $sahte = Join-Path ([System.IO.Path]::GetTempPath()) "hycleus-sahte-izole-$PID"
 if (Test-Path $sahte) { Remove-Item $sahte -Recurse -Force }
 $s = Calistir $ExePath @('--selftest') @{ HYCLEUS_TEST_DATA_DIR = $sahte }
-$reddedildi = ($s.Kod -ne 0) -and ($s.Cikti -match 'HYCLEUS_TEST_DATA_DIR')
+# reddet_paketlenmis_override() (CORE/paths.py, B-154) mesajı STDERR'e
+# yazıyor, stdout'a değil -- `Cikti` DEĞİL `Hata` kontrol edilmeli.
+$reddedildi = ($s.Kod -ne 0) -and ($s.Hata -match 'HYCLEUS_TEST_DATA_DIR')
 Kontrol 'reddedildi' $reddedildi "(kod=$($s.Kod))"
 if (-not $reddedildi) {
+    Write-Host '      -- stdout --'
     $s.Cikti -split "`n" | ForEach-Object { if ($_.Trim()) { Write-Host "      $($_.TrimEnd())" } }
+    Write-Host '      -- stderr --'
+    $s.Hata -split "`n" | ForEach-Object { if ($_.Trim()) { Write-Host "      $($_.TrimEnd())" } }
 }
 Kontrol 'hedef dizin OLUSTURULMADI' (-not (Test-Path $sahte))
 

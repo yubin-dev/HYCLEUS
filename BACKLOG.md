@@ -12771,6 +12771,28 @@ Testler: `test_paths.py` (19), `test_audit_chain.py` (+1),
 `test_packaging.py` (45) — hepsi yeşil. Tam suite ayrıca koşuldu, 0 yeni
 başarısızlık (ayrıntı: bu maddenin commit'i).
 
+**EK — CI GERÇEKTEN bir hata yakaladı, `[6]` adımı düzeltildi
+(2026-09-23, commit `7c1e7b8` push'undan sonra).** Yukarıdaki tahmin
+doğru çıktı ama beklenenin ötesinde: `exe` işi KIRMIZI oldu — "AppImage
+yapısı (Linux)" ve diğer tüm işler yeşilken yalnızca "EXE yapısı
+(Windows)"'nin "Duman testi" adımı düştü (GitHub API ile doğrulandı, run
+`35895896456`). Kök neden `smoke-test.ps1`'in KENDİSİNDE, üretim
+kodunda DEĞİL: paylaşılan `Calistir` yardımcısı yalnızca STDOUT'u
+yakalayıp `Cikti` olarak döndürüyordu; `CORE/paths.py::
+reddet_paketlenmis_override()`'ın ret mesajı ise STDERR'e yazılıyor —
+`[6]`'nin "reddedildi" denetimi `$s.Cikti -match 'HYCLEUS_TEST_DATA_DIR'`
+hiçbir zaman eşleşmiyordu (ret GERÇEKTEN oluyordu — kod=2, hedef dizin
+oluşmuyordu — ama denetim bunu GÖREMİYORDU). Linux script'i (`2>&1` ile
+iki akışı zaten birleştiriyor) bu yüzden hiç etkilenmedi — CI'nin
+`appimage` işi tam olarak bu nedenle yeşil kaldı.
+
+Bu ortamda GERÇEK bir PyInstaller derlemesi yapılıp (`dist\HYCLEUS.exe`,
+88,2 MB) `smoke-test.ps1` ona karşı çalıştırılarak hata YERİNDE
+üretildi ve doğrulandı — bir önceki paragrafın "kapsam dışı bırakıldı"
+notu bu turda kapatıldı. `Calistir` artık `Hata` (stderr metni) alanını
+da döndürüyor; `[6]` artık `$s.Hata`'yı kontrol ediyor. Aynı gerçek
+EXE'ye karşı YENİDEN çalıştırıldı: `gecti: 15  kaldi: 0`, çıkış kodu 0.
+
 Commit: (bu BACKLOG kaydıyla aynı commit).
 
 ---
