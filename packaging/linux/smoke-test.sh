@@ -112,13 +112,30 @@ fi
 echo "[6] HYCLEUS_TEST_DATA_DIR paketlenmiş yapıda reddediliyor"
 sahte="${CALISMA}/sahte-izole"
 hata="$(HYCLEUS_TEST_DATA_DIR="${sahte}" "${KOK}/AppRun" --selftest 2>&1)" && durum=0 || durum=$?
-if [ "${durum}" -ne 0 ] && echo "${hata}" | grep -q "HYCLEUS_TEST_DATA_DIR"; then
-  echo "  ✓ reddedildi (çıkış=${durum})"
+
+# Üç koşul AYRI AYRI ve ÜÇÜ DE ZORUNLU denetleniyor -- tek başına mesaj
+# kontrolü YETERLİ DEĞİL: bir mutant/regresyon "geçersiz dizin" gibi
+# zararsız bir metin yazıp çıkış kodu 0 ile devam edebilir VE dizini
+# yine de oluşturabilirdi. Üçü birden geçmezse adım KIRMIZI -- bkz.
+# packaging/linux/smoke-test-mutasyon-kaniti.sh (mutasyon kanıtı, stub
+# "önceki/korumasız" davranışı taklit ediyor: sessizce kabul + dizin
+# oluştur + çıkış 0 + stderr'de ret mesajı YOK).
+if [ "${durum}" -ne 0 ]; then
+  echo "  ✓ çıkış kodu sıfır DEĞİL (reddetti) (çıkış=${durum})"
   gecti=$((gecti + 1))
 else
-  echo "  ✗ reddedilmedi (çıkış=${durum}) — ÜRETİM VERİSİ RİSK ALTINDA:"
-  echo "${hata}" | sed 's/^/      /'
+  echo "  ✗ çıkış kodu sıfır DEĞİL (reddetti) (çıkış=${durum})"
   kaldi=$((kaldi + 1))
+fi
+if echo "${hata}" | grep -q "HYCLEUS_TEST_DATA_DIR"; then
+  echo "  ✓ stderr/stdout'ta HYCLEUS_TEST_DATA_DIR mesajı var"
+  gecti=$((gecti + 1))
+else
+  echo "  ✗ stderr/stdout'ta HYCLEUS_TEST_DATA_DIR mesajı var"
+  kaldi=$((kaldi + 1))
+fi
+if [ "${durum}" -eq 0 ] || ! echo "${hata}" | grep -q "HYCLEUS_TEST_DATA_DIR"; then
+  echo "${hata}" | sed 's/^/      /'
 fi
 kontrol sh -c "[ ! -e '${sahte}' ]"
 

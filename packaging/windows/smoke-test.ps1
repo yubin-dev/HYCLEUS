@@ -190,17 +190,30 @@ Write-Host '[6] HYCLEUS_TEST_DATA_DIR paketlenmis yapida reddediliyor'
 $sahte = Join-Path ([System.IO.Path]::GetTempPath()) "hycleus-sahte-izole-$PID"
 if (Test-Path $sahte) { Remove-Item $sahte -Recurse -Force }
 $s = Calistir $ExePath @('--selftest') @{ HYCLEUS_TEST_DATA_DIR = $sahte }
+
+# Uc kosul AYRI AYRI ve UCU DE ZORUNLU denetleniyor -- tek basina stderr
+# mesaj kontrolu YETERLI DEGIL: bir mutant/regresyon "gecersiz dizin"
+# gibi zararsiz bir metin yazip cikis kodu 0 ile devam edebilir VE
+# dizini yine de olusturabilirdi. Ucu birden gecmezse adim KIRMIZI --
+# bkz. packaging/windows/smoke-test-mutasyon-kaniti.ps1 (mutasyon kaniti, stub
+# "onceki/korumasiz" davranisi taklit ediyor: sessizce kabul + dizin
+# olustur + cikis 0 + stderr'de ret mesaji YOK).
+$cikisKoduReddetti = ($s.Kod -ne 0)
 # reddet_paketlenmis_override() (CORE/paths.py, B-154) mesajı STDERR'e
 # yazıyor, stdout'a değil -- `Cikti` DEĞİL `Hata` kontrol edilmeli.
-$reddedildi = ($s.Kod -ne 0) -and ($s.Hata -match 'HYCLEUS_TEST_DATA_DIR')
-Kontrol 'reddedildi' $reddedildi "(kod=$($s.Kod))"
-if (-not $reddedildi) {
+$stderrMesajVar = ($s.Hata -match 'HYCLEUS_TEST_DATA_DIR')
+$dizinOlusmadi = (-not (Test-Path $sahte))
+
+Kontrol 'cikis kodu sifir DEGIL (reddetti)' $cikisKoduReddetti "(kod=$($s.Kod))"
+Kontrol 'stderrde HYCLEUS_TEST_DATA_DIR mesaji var' $stderrMesajVar
+Kontrol 'hedef dizin OLUSTURULMADI' $dizinOlusmadi
+
+if (-not ($cikisKoduReddetti -and $stderrMesajVar -and $dizinOlusmadi)) {
     Write-Host '      -- stdout --'
     $s.Cikti -split "`n" | ForEach-Object { if ($_.Trim()) { Write-Host "      $($_.TrimEnd())" } }
     Write-Host '      -- stderr --'
     $s.Hata -split "`n" | ForEach-Object { if ($_.Trim()) { Write-Host "      $($_.TrimEnd())" } }
 }
-Kontrol 'hedef dizin OLUSTURULMADI' (-not (Test-Path $sahte))
 
 Write-Host ''
 Write-Host "gecti: $gecti  kaldi: $kaldi"

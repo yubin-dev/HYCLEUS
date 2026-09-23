@@ -12795,6 +12795,67 @@ EXE'ye karşı YENİDEN çalıştırıldı: `gecti: 15  kaldi: 0`, çıkış kod
 
 Commit: (bu BACKLOG kaydıyla aynı commit).
 
+**EK 2 — `[6]`'nın kendisi mutasyonla doğrulandı, yeniden derleme
+YAPILMADAN (2026-09-23).** Önceki EK, `[6]`'nın gerçek EXE'ye karşı
+YEŞİL çalıştığını kanıtladı. Bu EK farklı bir soruyu cevaplıyor:
+`[6]` gerçekten B-154'ü geri getiren bir regresyonu YAKALAR MI, yoksa
+şans eseri mi geçiyor? Sonuç: yakalıyor — hem Windows hem Linux'ta,
+üç ayrı denetimin üçü de kırmızıya dönerek.
+
+*Windows.* `_smoke_test_mutant_stub.bat` eklendi — gerçek bir EXE
+DEĞİL, B-154 düzeltmesi hiç yapılmamış olsaydı paketlenmiş bir yapının
+nasıl davranacağını taklit eden bir toplu iş dosyası: `--selftest`
+çağrıldığında `HYCLEUS_TEST_DATA_DIR` tanımlıysa dizini SESSİZCE
+oluşturur, "SELFTEST OK" yazar, çıkış kodu 0 döner, stderr'e hiçbir şey
+yazmaz. Aynı zamanda `[6]`'nın denetimi üçe bölündü (önceden "reddedildi"
+tek bir denetimde çıkış kodu ile stderr mesajını birleştiriyordu):
+artık çıkış kodu, stderr mesajı ve hedef dizinin oluşmaması AYRI AYRI
+ve HEPSİ ZORUNLU raporlanıyor (tek başına mesaj kontrolüne dayanma
+riskine karşı — bir mutant zararsız bir metin yazıp çıkış kodu 0 ile
+devam edip dizini yine de oluşturabilirdi).
+
+Gerçek `dist\HYCLEUS.exe`'ye (aynı derleme, önceki EK'ten) karşı taban
+çizgisi: `gecti: 16  kaldi: 0`, `[6]`'nın üç denetimi de `[+]`. Aynı
+`smoke-test.ps1` stub'a karşı çalıştırıldığında (yeni eklenen
+`packaging/windows/smoke-test-mutasyon-kaniti.ps1` ile, tekrarlanabilir
+bir kanıt aracı olarak): `gecti: 6  kaldi: 7`, `[6]`'nın üç denetimi de
+`[-]` — "cikis kodu sifir DEGIL", "stderrde ... mesaji var", "hedef
+dizin OLUSTURULMADI" üçü birden düştü (kod=0, mesaj yok, dizin
+gerçekten oluştu). Beklenmedik biçimde `[1]`/`[4]`/`[5]` de kırmızı
+çıktı (stub trivial bir dosya olduğu için PE başlığı/boyut/wmi
+listesi/data dizini eşleşmiyor) — bu ilgisiz gürültü, kanıtın odağı
+yalnızca `[6]`.
+
+*Linux.* Gerçek bir AppImage bu ortamda (Windows geliştirme makinesi)
+inşa edilemiyor — `appimagetool`/`squashfs-tools` yok. Bu yüzden
+`smoke-test.sh`'nin `[6]` kod bloğu (satır 112-139) HARFİYEN kopyalanıp
+`packaging/linux/smoke-test-mutasyon-kaniti.sh`'ye taşındı; bu betik
+`"${KOK}/AppRun"`'ı Windows'takiyle aynı mantıktaki bir bash stub'a
+(`_smoke_test_mutant_stub.sh`) işaret ediyor. `smoke-test.sh`'nin `[6]`
+adımı da aynı şekilde üçe bölündü. Sonuç: `geçti: 0  kaldı: 3` — üç
+denetim de düştü. Bir pozitif kontrol de koşuldu (doğru davranan bir
+stub — reddet, stderr'e yaz, çıkış≠0, dizin oluşturma): `gecti: 3
+kaldi: 0`, yani kontrol mantığının kendisi taraflı/her zaman kırmızı
+değil, gerçekten davranışa göre ayırt ediyor.
+
+**Neden bu iki kanıt farklı ağırlıkta.** Windows kanıtı GERÇEK bir
+smoke-test.ps1 çalıştırması, gerçek bir Start-Process çağrısıyla — tam
+kapsamlı. Linux kanıtı yalnızca `[6]`'nın MANTIĞINI doğruluyor
+(kod bloğu harfiyen aynı) — AppImage'a özgü adımlar (`--appimage-extract`,
+squashfs yapısı, ELF başlığı) bu kanıtın kapsamı DIŞINDA, çünkü CI'nin
+kendi `appimage` işi zaten gerçek bir AppImage üretip `smoke-test.sh`'yi
+TAMAMINI çalıştırıyor (bkz. yukarıdaki orijinal madde, 2. paragraf) —
+bu iş bir sonraki push'ta gerçek bir binary'ye karşı otomatik olarak
+tekrar kanıtlanacak.
+
+Değişen dosyalar: `packaging/windows/smoke-test.ps1` (`[6]` üçe
+bölündü), `packaging/linux/smoke-test.sh` (aynı), + 4 yeni yardımcı
+dosya (`_smoke_test_mutant_stub.bat`, `smoke-test-mutasyon-kaniti.ps1`,
+`_smoke_test_mutant_stub.sh`, `smoke-test-mutasyon-kaniti.sh`) — hepsi
+gerçek üretim kodunun DIŞINDA, yalnızca test/kanıt amaçlı.
+
+Commit: (bu EK'le aynı commit).
+
 ---
 
 ## B-155 — Paketlenmiş ürün duman testi: `--selftest`/CI/smoke-test zaten VARDI; mutasyon kanıtlandı, soğuk kurtarma provası açıldı
