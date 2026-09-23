@@ -645,6 +645,27 @@ def test_anchor_path_honours_the_env_override(isolate_audit_anchor: Path):
     assert anchor_path() == isolate_audit_anchor
 
 
+def test_anchor_path_override_REDDEDILIYOR_paketlenmis_yapida(
+    isolate_audit_anchor: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """
+    B-154: `HYCLEUS_AUDIT_ANCHOR` (`isolate_audit_anchor` fixture'ı bunu
+    zaten ayarlıyor — autouse) paketlenmiş bir yapıda (`sys.frozen`)
+    sessizce kabul edilmemeli. Sessizce kabul edilseydi, tamper-evidence
+    karşılaştırmasının yerel yarısı saldırganın seçtiği bir dosyaya
+    yönlendirilebilirdi.
+    """
+    import sys
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        anchor_path()
+
+    assert exc_info.value.code == 2
+    assert "HYCLEUS_AUDIT_ANCHOR" in capsys.readouterr().err
+
+
 def test_anchor_records_the_current_chain_head(db, tmp_path: Path):
     capa = tmp_path / "anchor.log"
     _log_many(db, 5)

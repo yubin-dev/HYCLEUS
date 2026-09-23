@@ -12,7 +12,7 @@ import sys
 # _USB_IDS_FILE, UI/login_dialog.py::_PIN_FILE, ...) -- karar burada, en
 # tepede, aşağıdaki CORE/DB/UI import'larından ÖNCE verilmezse sonradan
 # düzeltme şansı yok (bkz. CORE/paths.py'nin kendi docstring'i).
-from CORE.paths import TEST_DATA_DIR_ENV
+from CORE.paths import TEST_DATA_DIR_ENV, reddet_paketlenmis_override
 from CORE.paths import data_dir as _gercek_veri_dizini
 
 
@@ -44,6 +44,11 @@ def _test_data_dir_bayragini_coz(argv: list[str]) -> None:
           önler. Bu karşılaştırma env değişkeni HENÜZ ayarlanMAdanKEN
           yapılıyor, yani `_gercek_veri_dizini()` burada GERÇEKTEN normal
           (üretim) yolu döndürür.
+      (d) Paketlenmiş (`sys.frozen`) bir yapıda TAMAMEN reddedilir (B-154)
+          -- `data_dir()` bunu zaten kendi başına yapıyor (bkz.
+          `reddet_paketlenmis_override()`), ama burada da EN BAŞTA
+          çağrılıyor ki hedef dizin oluşturulmadan (aşağıdaki `mkdir`)
+          önce, hiçbir yan etki bırakmadan reddedilsin.
     """
     if "--test-data-dir" in argv:
         idx = argv.index("--test-data-dir")
@@ -55,6 +60,8 @@ def _test_data_dir_bayragini_coz(argv: list[str]) -> None:
         aday = os.environ.get(TEST_DATA_DIR_ENV, "")
         if not aday:
             return
+
+    reddet_paketlenmis_override(TEST_DATA_DIR_ENV)
 
     from pathlib import Path
 

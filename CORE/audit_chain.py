@@ -114,7 +114,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from CORE.paths import data_dir
+from CORE.paths import data_dir, reddet_paketlenmis_override
 
 _log = logging.getLogger("hycleus.audit_chain")
 
@@ -751,9 +751,16 @@ def anchor_path() -> Path:
     `data/audit_anchor.log`. Bu yol her hâlükârda AYNI diskte durur —
     izolasyonu sağlayan bu DEĞİL, `usb_anchor_path()`'in döndürdüğü ikinci,
     fiziksel olarak ayrı kopyadır.
+
+    HYCLEUS_AUDIT_ANCHOR paketlenmiş (`sys.frozen`) bir yapıda ayarlıysa
+    reddedilir (B-154) — sessizce kabul edilseydi, tamper-evidence
+    karşılaştırmasının YEREL yarısı saldırganın seçtiği bir dosyaya
+    (önceden hazırlanmış, "uyuşuyor" görünen bir anchor'a) yönlendirilip
+    gerçek denetim kaydındaki kurcalama sessizce gizlenebilirdi.
     """
     override = os.getenv(ANCHOR_ENV_VAR)
     if override:
+        reddet_paketlenmis_override(ANCHOR_ENV_VAR)
         return Path(override)
     return data_dir() / ANCHOR_FILENAME
 

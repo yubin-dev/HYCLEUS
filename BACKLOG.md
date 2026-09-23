@@ -12640,10 +12640,10 @@ kaydı ve SECURITY.md güncellemesiyle aynı commit).
 
 ## B-154 — `--test-data-dir`/`HYCLEUS_TEST_DATA_DIR`, DEV_MODE'un aksine, PAKETLENMİŞ EXE'de de etkin
 
-**Durum:** AÇIK — bulundu, DÜZELTİLMEDİ (kasıtlı: "paketlenmiş ürün duman
-testi" görevinin 0. adımı, bulunursa "dur ve raporla, bu adımı
-düzeltmeden devam etme" diyordu — bu yüzden 1-4. adımlar bu turda
-BAŞLATILMADI, yalnızca bu madde kaydedildi).
+**Durum:** KAPANDI (2026-09-23, sonraki turda). İlk turda kasıtlı olarak
+AÇIK bırakılmıştı ("dur ve raporla, düzeltmeden devam etme" talimatı
+gereği); kullanıcı düzeltmeyi onayladı, aşağıdaki "Düzeltme" bölümü
+sonraki turda yapıldı.
 **Öncelik:** Orta-Yüksek (M3 saldırgan modeli — yerel çalıştırma
 denetimi olan biri — için gerçek bir kapsam boşluğu; ama HWID sahteciliği
 DEĞİL, veri-dizini yönlendirmesi, ve zaten M3'te bu belgedeki birçok
@@ -12701,15 +12701,187 @@ hazırladığı bir dizine yönlendirilmiş bu bayrakla çalıştırmaya ikna et
 sanırken aslında saldırganın kontrolündeki boş bir kasaya kayıt
 oluyor/veri koyuyor olabilir.
 
-**Neden bu turda düzeltilmedi.** Görev talimatı açıkça "Açılabiliyorsa
-dur ve raporla, bu adımı düzeltmeden devam etme" diyordu — yani hem
-düzeltmeyi hem de asıl duman-testi işini (1-4. adımlar: `--self-check`
-bayrağı, yeni CI işi, mutasyon kanıtı, kapsam dürüstlüğü notu) bu
-madde çözülmeden başlatmamak kasıtlı bir karar. Olası düzeltme
-`DEV_MODE`'un zaten kullandığı desenin AYNISI olurdu — `data_dir()`'a
-`hasattr(sys, "frozen")` kontrolü eklemek — ama bunun İSTENEN bir
-düzenleme/QA akışını (ör. gerçek bir dağıtılmış EXE'yi izole verilerle
-elle test etmek) kırıp kırmadığına kullanıcı karar vermeli; bu yüzden
-kod DEĞİŞTİRİLMEDİ, yalnızca bulgu burada kayıt altına alındı.
+**Düzeltme.** `CORE/paths.py`'ye tek, paylaşılan bir kapı eklendi —
+`reddet_paketlenmis_override(env_var)`: `sys.frozen` varsa (PyInstaller
+bootloader'ının kendisinin koyduğu, taklit edilemeyen bayrak) `stderr`'e
+açık bir mesaj yazıp `sys.exit(2)` ile reddediyor, yoksa (geliştirme
+ortamı) hiçbir şey yapmıyor. `data_dir()` bunu çağırıyor; ayrıca
+`main.py::_test_data_dir_bayragini_coz()` EN BAŞTA (hedef dizin
+`mkdir` edilmeden önce, yan etkisiz reddetsin diye) doğrudan çağırıyor.
 
-Commit: (bu BACKLOG kaydıyla aynı commit; kod değişikliği YOK).
+**Repo-geneli tarama (istenen "b" maddesi) — İKİ EK bulgu.**
+`os.environ.get/getenv` ve argparse/`sys.argv` kullanan HER satır
+`CORE`, `DB`, `UI`, `main.py` içinde tek tek listelendi:
+
+| Değişken | Dosya | Karar |
+|---|---|---|
+| `HYCLEUS_TEST_DATA_DIR` | `CORE/paths.py::data_dir()` | **DÜZELTİLDİ** — asıl bulgu |
+| `HYCLEUS_AUDIT_ANCHOR` | `CORE/audit_chain.py::anchor_path()` | **DÜZELTİLDİ (yeni bulgu)** — aynı desen: paketlenmiş EXE'de sessizce kabul ediliyordu; yerel denetim çıpasını saldırganın seçtiği (önceden hazırlanmış, "uyuşuyor" görünen) bir dosyaya yönlendirip tamper-evidence'ı atlatabilirdi |
+| `HYCLEUS_SAFEZONE` | `CORE/safezone.py::safezone_dir()` | **DÜZELTİLDİ (yeni bulgu)** — DAHA CİDDİ: SafeZone ÇÖZÜLMÜŞ (plaintext) dosyaların durduğu yer (§4.10); sessizce kabul edilseydi bir release EXE, açılmış dosyaların düz metnini saldırganın seçtiği bir dizine (ör. bulut-eşlenen klasör) yazabilirdi — bir gizlilik sınırı ihlali |
+| `DEV_MODE` (iki okuma: `usb_manager.py`, `main.py`) | — | GEÇTİ, zaten `sys.frozen` korumalı (kullanım noktasında) |
+| `DEV_MODE` (üçüncü okuma) | `UI/login_dialog.py:605` | GEÇTİ, kendi başına `not hasattr(sys, "frozen")` taşıyor (ayrıca `main.py`'den gelen `use_vault`'a yedek/fallback) |
+| `XDG_DATA_HOME`, `APPIMAGE` | `CORE/paths.py` | GEÇTİ — OS/runtime konvansiyonu, bir dev/test kaçış kapısı değil |
+| `SystemRoot` | `CORE/usb_manager.py:71` | GEÇTİ — Windows sistem değişkeni (`wmic` yolu için), bypass değil |
+| `--version`, `--selftest` | `main.py` | GEÇTİ — salt okunur teşhis, kasaya/veriye hiç dokunmuyor |
+| Diğer CLI script'leri (`backup_cli.py`, `setup_usb.py`, `recover_vault.py`, ...) | `CORE/*.py` | GEÇTİ (kapsam dışı) — `HYCLEUS.spec`/`HYCLEUS-linux.spec` yalnızca `main.py`'yi TEK bir EXE olarak derliyor (doğrulandı: `grep "EXE(" *.spec` → ikisinde de tek eşleşme); bu script'ler asla paketlenmiyor, yalnızca `python CORE/x.py` ile dev/admin bağlamında çalışıyor |
+
+**Mutasyon kanıtı (üç ayrı mutasyon, her biri tek başına, sırayla geri
+alındı — tur sonunda `git diff` boş):**
+
+1. `CORE/paths.py::data_dir()`'daki `if hasattr(sys, "frozen"):` bloğu
+   `if False:` yapıldı → `tests/test_paths.py::test_donmus_yapida_
+   HYCLEUS_TEST_DATA_DIR_REDDEDILIYOR` KIRMIZI oldu.
+2. `reddet_paketlenmis_override()`'ın KENDİSİNDEKİ `if not hasattr(sys,
+   "frozen"): return` `if True: return` yapıldı → ÜÇ testin (data_dir,
+   anchor_path, safezone_dir) HEPSİ AYNI ANDA KIRMIZI oldu — paylaşılan
+   yardımcının gerçekten üç çağıranı da bağladığını kanıtlıyor.
+3. `main.py`'deki EN BAŞTAKİ doğrudan çağrı kaldırıldı → genel ret hâlâ
+   çalışıyordu (data_dir() üzerinden, aşağı akışta) ama YAN ETKİSİZ
+   olma özelliği kayboldu: `tests/test_first_run_isolation.py::
+   test_b154_test_data_dir_paketlenmis_yapida_REDDEDILIYOR`'daki "hedef
+   dizin OLUŞTURULMAMIŞ" doğrulaması KIRMIZI oldu (reddedilen dizin
+   yine de `mkdir` edilmiş bulundu).
+
+**Uçtan uca kanıt (gerçek alt-süreç, PyInstaller bootloader taklidi).**
+`tests/test_first_run_isolation.py`'ye `_PROBE_FROZEN` eklendi —
+mevcut `_PROBE`'un birebir aynısı, tek fark `runpy.run_path("main.py",
+...)` çalışmadan HEMEN ÖNCE `sys.frozen = True` ayarlanması (env
+değişkeniyle taklit edilemeyen bir bayrak, bu yüzden ayrı bir probe
+gerekti). İki yeni test: bayrakla (`--test-data-dir`) VE doğrudan ortam
+değişkeniyle (`HYCLEUS_TEST_DATA_DIR`) etkinleştirmenin İKİSİ DE
+reddediliyor, ikisi de aynı paylaşılan koddan geçiyor.
+
+**Smoke-test script'leri güncellendi (istenen "c" maddesinin ikinci
+yarısı).** `packaging/linux/smoke-test.sh`'a `[6]` ve
+`packaging/windows/smoke-test.ps1`'e `[6]` adımı eklendi: derlenmiş
+gerçek binary `HYCLEUS_TEST_DATA_DIR` ayarlıyken çalıştırılıyor,
+reddettiği VE hedef dizini oluşturmadığı doğrulanıyor. (Mevcut izole
+veri-dizini testleri zaten `--test-data-dir` KULLANMIYORDU — Linux
+ayağı `XDG_DATA_HOME`'u, Windows ayağı EXE'nin kendi varsayılan
+konumunu sınıyor; istenen "izole dizini OS'un kendi mekanizmasıyla
+kur" şartı zaten karşılanıyordu, değiştirilecek bir şey yoktu.) İki
+script de sözdizimi doğrulandı (`bash -n`, PowerShell tokenizer);
+GERÇEK bir PyInstaller derlemesiyle uçtan uca ÇALIŞTIRILMADI (bu ortamda
+tam bir Windows EXE/Linux AppImage derlemesi kapsam dışı bırakıldı) —
+CI'daki `appimage`/`exe` işleri bir sonraki push'ta bunu gerçek
+binary'yle sınayacak.
+
+Testler: `test_paths.py` (19), `test_audit_chain.py` (+1),
+`test_safezone.py` (+1), `test_first_run_isolation.py` (10),
+`test_packaging.py` (45) — hepsi yeşil. Tam suite ayrıca koşuldu, 0 yeni
+başarısızlık (ayrıntı: bu maddenin commit'i).
+
+Commit: (bu BACKLOG kaydıyla aynı commit).
+
+---
+
+## B-155 — Paketlenmiş ürün duman testi: `--selftest`/CI/smoke-test zaten VARDI; mutasyon kanıtlandı, soğuk kurtarma provası açıldı
+
+**Durum:** KAPANDI (2026-09-23).
+**Öncelik:** Bilgi/QA süreci (bulunan tek gerçek kod boşluğu B-154'e
+taşındı; bu madde büyük ölçüde bir ENVANTER ve bir mutasyon kanıtı).
+**İstendi:** "Paketlenmiş ürün duman testi — CI'da derlenen EXE/AppImage'ı
+çalıştır", B-112/B-114/B-147 sınıfını (kaynakta çalışan, paketlenmişte
+çalışmayan kod) CI'da yakalamak amacıyla; 0. adımı B-154'ü doğurdu
+(bkz. yukarısı), 1-4. adımlar bu maddede ele alınıyor.
+
+**BULGU — istenenin BÜYÜK KISMI zaten vardı.** Görev, `--self-check`
+bayrağının ve CI'a yeni bir duman-testi işinin SIFIRDAN kurulmasını
+varsayıyordu. Kod tabanı okunduğunda:
+
+1. **`--self-check` zaten var — adı `--selftest`** (`main.py::_selftest()`,
+   satır ~193). Paketli yapının bütünlüğünü GUI açmadan raporluyor:
+   `_SELFTEST_MODULLERI` (tüm CORE/DB modülleri), `_SELFTEST_UCUNCU_TARAF`
+   (fonksiyon-içi import edilen 3. parti paketler — reportlab, qrcode,
+   keyring, psutil, apscheduler, argon2, asn1crypto, cryptography) ve
+   `_SELFTEST_PLATFORM` (Windows'a özgü wmi/pywin32 grubu) listelerindeki
+   HER modülü gerçekten `importlib.import_module()` ile deniyor, biri
+   patlarsa "YÜKLENEMEYEN MODÜLLER" yazıp çıkış kodu 1 dönüyor. Kasaya/
+   USB'ye/ağa dokunmuyor (istenen tam olarak buydu). `_erken_komut()`
+   bunu `QApplication`'dan ÖNCE çalıştırıyor — başsız bir koşucuda modal
+   bir USB-bulunamadı kutusunda asılı kalma riski yok.
+2. **CI'da iki ayak zaten var ve zaten `--selftest`'i çalıştırıyor**
+   (`.github/workflows/ci.yml::appimage` ve `::exe` işleri) — PyInstaller
+   ile derliyor, sonra `packaging/linux/smoke-test.sh` /
+   `packaging/windows/smoke-test.ps1`'i çalıştırıyor. İkisi de Qt'yi
+   başsız başlatıyor (`QT_QPA_PLATFORM=offscreen`/env), `--version` VE
+   `--selftest`'i çalıştırıp çıkış kodunu VE "SELFTEST OK" metnini
+   doğruluyor, zaman aşımı taşıyor (iş düzeyinde `timeout-minutes`, ayrıca
+   Windows scripti `Start-Process -Wait` KULLANIYOR — `&` kullansaydı
+   `console=False` EXE'nin GUI alt sistemine derlenmesi yüzünden kabuk
+   süreci beklemeden dönerdi, script'in kendi yorumu bunu açıkça
+   belgeliyor, B-098'in dersiyle aynı).
+3. **İzole veri-dizini testi de zaten OS'un kendi mekanizmasını
+   kullanıyor** — `--test-data-dir` DEĞİL. Linux script'i `XDG_DATA_HOME`'u
+   geçici bir dizine ayarlayıp AppImage'ın veri dizininin bağlama
+   noktasının DIŞINA çıktığını doğruluyor (`[5]` adımı); Windows script'i
+   EXE'nin kendi varsayılan (EXE'nin yanı) konumunu sınıyor. Yani "c"
+   maddesinin "izole dizini --test-data-dir ile DEĞİL OS mekanizmasıyla
+   kur" şartı zaten karşılanıyordu — değiştirilecek bir şey yoktu.
+
+**Bu envanter neden önemli.** Bu, mevcut olanı fark etmeden yeniden
+yazmanın (ya da daha kötüsü, ÇAKIŞAN ikinci bir mekanizma eklemenin)
+önüne geçti. Yapılan iş buna göre şekillendi: sıfırdan inşa yerine,
+(a) B-154'ün ortaya çıkardığı gerçek boşluğu iki smoke-test script'ine
+YENİ bir adım (`[6]`) olarak eklemek (bkz. B-154, "Smoke-test script'leri
+güncellendi"), (b) orijinal görevin 3. adımını (mutasyon kanıtı) mevcut
+iki katmanlı savunmaya karşı çalıştırmak, (c) 4. adımı (kapsam
+dürüstlüğü) yazmak.
+
+**Mutasyon kanıtı — 3. adım, pyudev DEĞİL wmi ile (gerekçeli).**
+Görev "spec dosyasından pyudev'i... çıkar" diyordu, ama BACKLOG B-147'nin
+kendi kayıtları (`git log`, KAPANDI 2026-09-11) `pyudev`'in HİÇBİR YERDE
+bundle edilmediğini zaten doğruluyor — `requirements.txt`'te,
+`requirements-build.txt`'te, `HYCLEUS-linux.spec`'in
+`hiddenimports`'unda YOK; B-147'nin gerçek kök nedeni pyudev'in eksikliği
+DEĞİL, sysfs yedek yolundaki sabit-derinlik varsayımıydı (düzeltildi,
+sentetik testlerle kanıtlandı, B-147). Yani "pyudev'i spec'ten çıkar"
+mutasyonu UYGULANAMAZ — çıkaracak bir şey yok. Görevin kendisi de
+alternatif tanıyordu ("veya Windows ayağında eşdeğer bir gizli import'u")
+— o yüzden GERÇEK bir hidden-import'a, Windows spec'inin `wmi` grubuna
+geçildi:
+
+`HYCLEUS.spec`'teki `hiddenimports=(['wmi', 'pythoncom', 'win32api',
+'win32con'] + wmi_hiddenimports + ...)` satırındaki açık liste VE
+`wmi_hiddenimports` (bkz. `_uygulama_modulleri()`'nin üstü) geçici olarak
+`[]`'ye indirgendi → `tests/test_packaging.py::
+test_windows_spec_tek_dosya_ve_wmi_toplamaya_devam_ediyor` KIRMIZI oldu
+("wmi hiddenimports'tan düşmüş"). Geri alındıktan sonra `git diff` boştu,
+`test_packaging.py`'nin TAMAMI (45 test) yeşile döndü.
+
+**Bu, GERÇEK bir PyInstaller derlemesi DEĞİL — bilinçli bir kapsam
+kararı.** `test_windows_spec_tek_dosya_ve_wmi_toplamaya_devam_ediyor`
+STATİK bir katman: spec dosyasının METNİNİ/AST'ini okuyor, gerçekten bir
+EXE derlemiyor. Kod tabanının kendi yorumları bu ikili katmanı zaten
+belgeliyor (`main.py`'deki `_SELFTEST_PLATFORM` yorumu: "Statik bir
+denetim... spec'in metnine bakıyor; buradaki denetim PAKETİN KENDİSİNE
+bakıyor. İkisi farklı soruları cevaplıyor"). STATİK katman ucuz ve
+saniyeler içinde (bu turda gerçekten çalıştırıldı, mutasyonla
+doğrulandı); ÇALIŞMA-ZAMANI katmanı (gerçek derleme + gerçek `--selftest`
+çalıştırma) zaten CI'nin `appimage`/`exe` işlerinde YAŞIYOR ve bir sonraki
+push'ta GERÇEK bir binary'ye karşı çalışacak — bu oturumda tam bir
+Windows EXE/Linux AppImage derlemesi (dakikalar sürer, ek araç zinciri
+gerektirir) kapsam dışı bırakıldı.
+
+**4. adım — kapsam dürüstlüğü.** SECURITY.md (EN+TR) §4.30 eklendi:
+`--selftest`/CI duman testinin NEYİ kanıtladığını (paketlenmiş ürün
+kaynağın import ettiği her şeyi GERÇEKTEN taşıyor) ve NEYİ KANITLAMADIĞINI
+(gerçek USB donanım okuması, gerçek TPM mühürleme turu, uçtan uca Shamir
+kurtarma akışı) açıkça ayırıyor — üçü de bu testin kapatması hiç
+amaçlanmamış, fiziksel donanık gerektiren boşluklar.
+
+**Soğuk kurtarma provası — YENİ, kalıcı/periyodik madde (bu turda
+YAPILMADI, yalnızca AÇILDI).** Her sürümden önce (ya da düzenli bir
+aralıkla) bir kişi GERÇEK donanımla şunu elle yürütmeli: (1) gerçek bir
+USB token'la kayıt/İlk Kurulum, (2) o cihazı "kaybetmiş" gibi davranıp
+kurtarma parçasıyla `recover_master_key()` akışını gerçek bir ikinci
+USB'ye karşı çalıştırmak, (3) TPM'li bir Windows makinesinde gerçek bir
+mühürleme/açma turu (§4.13'ün "ölçüldü" dediği sayıların kendisinin
+üretildiği tür bir tur). Bu maddenin ÇIKTISI bir prosedür/checklist
+DEĞİL — yalnızca bunun GEREKTİĞİNİN ve OTOMATİK duman testinin bunu
+KAPATMADIĞININ kaydı. Prosedürün kendisi (adım adım checklist, sıklık,
+sorumlu kişi) ayrı bir kararla yazılmalı.
+
+Testler: `test_packaging.py` (45, mutasyonla doğrulandı). Commit: (bu
+BACKLOG kaydıyla aynı commit; `HYCLEUS.spec`'te kalıcı bir değişiklik
+YOK — yalnızca `packaging/*/smoke-test.*` ve dokümantasyon değişti).

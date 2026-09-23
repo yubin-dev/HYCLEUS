@@ -107,6 +107,35 @@ def _probe_calistir(tmp_path: Path, *argv: str) -> subprocess.CompletedProcess:
         pytest.skip(f"alt-süreç başlatılamadı ({exc})")
 
 
+#: B-154: `_PROBE`'un AYNISI, tek fark `runpy.run_path("main.py", ...)`
+#: ÇALIŞMADAN ÖNCE `sys.frozen = True` ayarlanıyor -- gerçek bir PyInstaller
+#: bootloader'ının taze bir SÜREÇTE yapacağının taklidi (`sys.frozen`, env
+#: değişkeniyle ayarlanamaz; bu yüzden ayrı bir probe betiği gerekiyor).
+_PROBE_FROZEN = _PROBE.replace(
+    'g = runpy.run_path("main.py", run_name="hycleus_main_probe")',
+    'sys.frozen = True  # B-154: paketlenmiş yapı taklidi\n'
+    'g = runpy.run_path("main.py", run_name="hycleus_main_probe")',
+)
+
+
+def _probe_frozen_calistir(tmp_path: Path, *argv: str) -> subprocess.CompletedProcess:
+    probe = tmp_path / "_hycleus_probe_frozen.py"
+    probe.write_text(_PROBE_FROZEN, encoding="utf-8")
+
+    env = dict(os.environ)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env.pop("HYCLEUS_TEST_DATA_DIR", None)
+
+    try:
+        return subprocess.run(
+            [sys.executable, str(probe), *argv],
+            cwd=KOK, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=60, env=env,
+        )
+    except FileNotFoundError as exc:  # pragma: no cover — ortama bağlı
+        pytest.skip(f"alt-süreç başlatılamadı ({exc})")
+
+
 def _son_json_satiri(cikti: str) -> dict:
     satirlar = [s for s in cikti.strip().splitlines() if s.strip()]
     assert satirlar, f"probe hiçbir çıktı üretmedi:\n{cikti}"
@@ -248,6 +277,64 @@ def test_b067_uretim_dizinini_hedef_gostermek_reddediliyor(tmp_path: Path) -> No
 def test_b067_test_data_dir_argumani_eksikse_hata_veriyor(tmp_path: Path) -> None:
     sonuc = _probe_calistir(tmp_path, "--test-data-dir")
     assert sonuc.returncode != 0
+
+
+def test_b154_test_data_dir_paketlenmis_yapida_REDDEDILIYOR(tmp_path: Path) -> None:
+    """
+    ASIL DÜZELTME (B-154): `DEV_MODE` (`CORE/usb_manager.py`) paketlenmiş
+    yapıda `sys.frozen` ile kapatılıyordu, ama `--test-data-dir`/
+    `HYCLEUS_TEST_DATA_DIR` ÖYLE DEĞİLDİ — release bir EXE/AppImage'ı da
+    dev ortamındaki gibi keyfi bir veri dizinine yönlendirebiliyordu.
+
+    Gerçek bir PyInstaller bootloader'ının taze bir süreçte yapacağının
+    taklidi (`_PROBE_FROZEN`): `sys.frozen = True`, main.py'nin üst
+    seviye kodu (bayrak çözümü + CORE import'ları) çalışmadan HEMEN
+    ÖNCE ayarlanıyor. Bu test düzeltmeden önce başarısız olurdu --
+    `--test-data-dir` sessizce kabul edilir, çıkış kodu 0 olurdu.
+    """
+    sonuc = _probe_frozen_calistir(tmp_path, "--test-data-dir", str(tmp_path / "izole"))
+    assert sonuc.returncode != 0, (
+        "paketlenmiş yapı taklidinde --test-data-dir REDDEDİLMEDİ -- "
+        f"stdout={sonuc.stdout!r} stderr={sonuc.stderr!r}"
+    )
+    # ASCII-güvenli alt dizeler: alt-süreç konsol kod sayfası Türkçe
+    # aksanlı karakterleri (ör. "paketlenmiş"teki ş) UTF-8 dışı bir
+    # kod sayfasıyla yazabiliyor -- `_probe_calistir`'in kendisi de
+    # (bkz. `test_b067_uretim_dizinini_hedef_gostermek_reddediliyor`)
+    # bu yüzden yalnızca ASCII alt dizeler doğruluyor.
+    assert "HYCLEUS_TEST_DATA_DIR" in sonuc.stderr
+    assert "desteklenmiyor" in sonuc.stderr
+    # Yan etki YOK: hedef dizin mkdir'DEN ÖNCE reddedilmeli (main.py'nin
+    # `_test_data_dir_bayragini_coz()`'daki EN BAŞTAKİ doğrudan çağrı).
+    assert not (tmp_path / "izole").exists(), (
+        "reddedilen hedef dizin yine de OLUŞTURULMUŞ -- erken reddin "
+        "mkdir'den ÖNCE gelmesi gerekiyordu"
+    )
+
+
+def test_b154_HYCLEUS_TEST_DATA_DIR_ortam_degiskeniyle_de_REDDEDILIYOR(
+    tmp_path: Path,
+) -> None:
+    """
+    B-154'ün ikinci aktivasyon yolu: `--test-data-dir` bayrağı OLMADAN,
+    doğrudan `HYCLEUS_TEST_DATA_DIR` ortam değişkeni ayarlanırsa da
+    paketlenmiş yapıda reddedilmeli -- iki aktivasyon yolu da AYNI
+    paylaşılan koddan (`_test_data_dir_bayragini_coz`) geçiyor.
+    """
+    probe = tmp_path / "_hycleus_probe_frozen_env.py"
+    probe.write_text(_PROBE_FROZEN, encoding="utf-8")
+
+    env = dict(os.environ)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["HYCLEUS_TEST_DATA_DIR"] = str(tmp_path / "izole-env")
+
+    sonuc = subprocess.run(
+        [sys.executable, str(probe)],
+        cwd=KOK, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=60, env=env,
+    )
+    assert sonuc.returncode != 0
+    assert "HYCLEUS_TEST_DATA_DIR" in sonuc.stderr
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -88,6 +88,27 @@ def test_env_override_is_honoured(isolate_safezone: Path):
     assert safezone_dir(create=False) == isolate_safezone
 
 
+def test_env_override_REDDEDILIYOR_paketlenmis_yapida(
+    isolate_safezone: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """
+    B-154: `HYCLEUS_SAFEZONE` (`isolate_safezone` fixture'ı bunu zaten
+    ayarlıyor — autouse) paketlenmiş bir yapıda (`sys.frozen`) sessizce
+    kabul edilmemeli. SafeZone ÇÖZÜLMÜŞ (plaintext) dosyaların durduğu
+    yer — sessizce kabul edilseydi bir release EXE, açılmış dosyaların
+    düz metnini saldırganın seçtiği bir dizine yazardı.
+    """
+    import sys
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        safezone_dir(create=False)
+
+    assert exc_info.value.code == 2
+    assert "HYCLEUS_SAFEZONE" in capsys.readouterr().err
+
+
 def test_directory_is_created_on_demand(isolate_safezone: Path):
     assert not isolate_safezone.exists()
     safezone_dir()

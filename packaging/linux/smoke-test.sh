@@ -99,6 +99,29 @@ else
   kaldi=$((kaldi + 1))
 fi
 
+# ── 6) HYCLEUS_TEST_DATA_DIR paketlenmiş yapıda REDDEDİLİYOR (B-154) ──────────
+#
+# DEV_MODE (CORE/usb_manager.py) sys.frozen ile kapatılıyordu, ama bu
+# değişken öyle DEĞİLDİ — gerçek paketlenmiş bir AppImage'ı, üretim
+# denetim kaydına hiç yazılmadan, dev ortamındaki gibi keyfi bir veri
+# dizinine (DB/vault/TOTP/denetim çıpası/SafeZone) yönlendirebiliyordu.
+# Bu adım kaynakta değil GERÇEK, derlenmiş üründe kanıtlıyor — bir birim
+# testinin sys.frozen monkeypatch'i CORE/paths.py::data_dir()'ın kendisini
+# doğruluyor, ama bu paketleme adımlarının (excludes, hiddenimports) o
+# düzeltmeyi son ürüne GERÇEKTEN taşıdığını kanıtlamıyor.
+echo "[6] HYCLEUS_TEST_DATA_DIR paketlenmiş yapıda reddediliyor"
+sahte="${CALISMA}/sahte-izole"
+hata="$(HYCLEUS_TEST_DATA_DIR="${sahte}" "${KOK}/AppRun" --selftest 2>&1)" && durum=0 || durum=$?
+if [ "${durum}" -ne 0 ] && echo "${hata}" | grep -q "HYCLEUS_TEST_DATA_DIR"; then
+  echo "  ✓ reddedildi (çıkış=${durum})"
+  gecti=$((gecti + 1))
+else
+  echo "  ✗ reddedilmedi (çıkış=${durum}) — ÜRETİM VERİSİ RİSK ALTINDA:"
+  echo "${hata}" | sed 's/^/      /'
+  kaldi=$((kaldi + 1))
+fi
+kontrol sh -c "[ ! -e '${sahte}' ]"
+
 echo
 echo "geçti: ${gecti}  kaldı: ${kaldi}"
 [ "${kaldi}" -eq 0 ]

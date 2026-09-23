@@ -60,7 +60,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from CORE.paths import data_dir
+from CORE.paths import data_dir, reddet_paketlenmis_override
 from CORE.secure_erase import shred_file
 
 _log = logging.getLogger("hycleus.safezone")
@@ -115,8 +115,18 @@ def safezone_dir(*, create: bool = True) -> Path:
     ve dizin üst dizinin ACL'ini devralır; yani orada SafeZone'u koruyan
     şey `data/` dizininin izinleridir, bu kod değil — SECURITY.md §1'deki
     "oturum açmış OS kullanıcısı güvenilir" varsayımıyla tutarlı.
+
+    HYCLEUS_SAFEZONE paketlenmiş (`sys.frozen`) bir yapıda ayarlıysa
+    reddedilir (B-154) — SafeZone ÇÖZÜLMÜŞ (plaintext) dosyaların
+    geçici olarak durduğu yer (SECURITY.md §4.10); sessizce kabul
+    edilseydi, gerçek bir release EXE'nin AÇILMIŞ dosyaların düz metnini
+    saldırganın seçtiği bir dizine (ör. bulut-eşlenen bir klasör)
+    yazmasına yol açardı — bu bir izin meselesi değil, bir gizlilik
+    sınırı ihlalidir.
     """
     override = os.getenv(SAFEZONE_ENV_VAR)
+    if override:
+        reddet_paketlenmis_override(SAFEZONE_ENV_VAR)
     target = Path(override) if override else data_dir() / SAFEZONE_DIRNAME
     if create:
         target.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)

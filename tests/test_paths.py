@@ -20,7 +20,14 @@ from pathlib import Path
 import pytest
 
 from CORE import paths
-from CORE.paths import APP_DIRNAME, APPIMAGE_ENV, XDG_DATA_HOME, data_dir, running_in_appimage
+from CORE.paths import (
+    APP_DIRNAME,
+    APPIMAGE_ENV,
+    TEST_DATA_DIR_ENV,
+    XDG_DATA_HOME,
+    data_dir,
+    running_in_appimage,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -148,3 +155,53 @@ def test_sonuc_her_zaman_mutlak(monkeypatch, tmp_path, appimage):
         monkeypatch.setenv(APPIMAGE_ENV, "/opt/HYCLEUS.AppImage")
         monkeypatch.setenv(XDG_DATA_HOME, str(tmp_path / "xdg"))
     assert data_dir().is_absolute()
+
+
+# ── B-154: HYCLEUS_TEST_DATA_DIR paketlenmiş yapıda REDDEDİLMELİ ──────────────
+#
+# DEV_MODE (CORE/usb_manager.py) `sys.frozen`'la kapatılıyordu, bu bayrak
+# ise açık bir paketlenmiş EXE/AppImage'ı da dev ortamındaki gibi keyfi bir
+# veri dizinine yönlendirebiliyordu — sessizce, üretim denetim kaydına hiç
+# yazılmadan. Aşağıdaki testler mutasyonla doğrulandı: `if hasattr(sys,
+# "frozen"):` bloğu geçici olarak kaldırılıp `test_donmus_yapida_
+# HYCLEUS_TEST_DATA_DIR_REDDEDILIYOR`'ın KIRMIZI olduğu (override'ın sessizce
+# kabul edildiği) doğrulandı, sonra geri konuldu.
+
+
+def test_donmus_yapida_HYCLEUS_TEST_DATA_DIR_REDDEDILIYOR(monkeypatch, tmp_path, capsys):
+    """
+    ASIL DÜZELTME: `sys.frozen` (PyInstaller'ın kendi koyduğu bayrak) VE
+    `HYCLEUS_TEST_DATA_DIR` birlikteyse `data_dir()` `SystemExit` ile
+    reddetmeli — override'ı sessizce kabul edip paketlenmiş yapıyı
+    dev ortamındaki gibi davranmaya ZORLAMAMALI.
+    """
+    _dondur(monkeypatch, tmp_path / "HYCLEUS.exe")
+    monkeypatch.setenv(TEST_DATA_DIR_ENV, str(tmp_path / "izole"))
+
+    with pytest.raises(SystemExit) as exc_info:
+        data_dir()
+
+    assert exc_info.value.code == 2
+    hata = capsys.readouterr().err
+    assert TEST_DATA_DIR_ENV in hata
+    assert "paketlenmiş" in hata
+
+
+def test_donmus_ama_override_YOKSA_normal_calisiyor(monkeypatch, tmp_path):
+    """Sağlık kontrolü: reddetme YALNIZCA override AYARLIYSA devreye girmeli."""
+    _dondur(monkeypatch, tmp_path / "HYCLEUS.exe")
+    monkeypatch.delenv(TEST_DATA_DIR_ENV, raising=False)
+    assert data_dir() == tmp_path / "data"
+
+
+def test_gelistirmede_HYCLEUS_TEST_DATA_DIR_hala_calisiyor(monkeypatch, tmp_path):
+    """
+    B-067 REGRESYONU OLMASIN: bu bayrağın asıl amacı — geliştirme
+    ortamında izole test — B-154'ün paketlenmiş-yapı reddiyle
+    BOZULMAMALI. `sys.frozen` YOKSA override eskisi gibi doğrudan
+    kullanılmalı.
+    """
+    monkeypatch_yok = not hasattr(sys, "frozen")
+    assert monkeypatch_yok, "test ortamı donmuş görünüyor"
+    monkeypatch.setenv(TEST_DATA_DIR_ENV, str(tmp_path / "izole"))
+    assert data_dir() == tmp_path / "izole"

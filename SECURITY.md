@@ -3842,6 +3842,58 @@ accepted cost (BACKLOG B-134) rather than solved, since the automatic
 sweep already runs off the UI thread's critical path and was already
 expected to take a variable amount of time per tick.
 
+### 4.30 The packaged-build smoke test proves the artifact imports its dependencies — nothing about real hardware, TPM, or recovery
+
+> **Attacker models:** none — this section is a testing-scope disclosure,
+> not a vulnerability.
+
+`main.py --selftest` and the CI jobs that run it against a real,
+compiled `HYCLEUS.exe` / AppImage (`.github/workflows/ci.yml`'s
+`exe`/`appimage` jobs, via `packaging/windows/smoke-test.ps1` and
+`packaging/linux/smoke-test.sh`) answer exactly one question: **did
+every module this codebase needs actually get bundled into this
+artifact, on this platform, by this PyInstaller spec.** This is the
+class of bug B-112/B-114/B-147 kept recurring as ("code that works from
+source, not from the packaged build") — a hidden import silently missing
+from `hiddenimports` is invisible until a user hits the exact code path
+that needs it, at the worst possible time. `--selftest` closes that gap
+by headlessly importing every module in `_SELFTEST_MODULLERI` /
+`_SELFTEST_UCUNCU_TARAF` / `_SELFTEST_PLATFORM` and failing loudly (exit
+1, "YÜKLENEMEYEN MODÜLLER") the moment one doesn't load — mutation-proven
+(2026-09-23, BACKLOG B-155): removing the explicit `['wmi', 'pythoncom',
+'win32api', 'win32con']` list and the `collect_all('wmi')` result from
+`HYCLEUS.spec`'s `hiddenimports` turns
+`tests/test_packaging.py::test_windows_spec_tek_dosya_ve_wmi_toplamaya_
+devam_ediyor` red — the exact static layer that would have caught B-147's
+root shape before a build ever ran.
+
+**What this deliberately does not verify — three separate things:**
+
+1. **Real USB hardware.** `--selftest` never plugs in or reads a device;
+   `get_usb_hwid()` is exercised for its *import*, not its *hardware I/O*.
+   A regression in the WMI/`pyudev`/sysfs read path itself (exactly
+   B-147's actual bug — a fixed-depth sysfs assumption that only broke
+   against real, differently-shaped hardware) would pass `--selftest`
+   cleanly and only surface against a real drive.
+2. **TPM sealing.** `--selftest` prints `durum().ozet()` — whether a TPM
+   *object is importable and reachable* — not whether a real seal/unseal
+   round-trip against physical TPM 2.0 hardware succeeds (§4.13's own
+   scope note makes the same distinction for its own numbers).
+3. **The Shamir recovery flow end-to-end.** No automated job in this
+   repository reconstructs a master key from a recovery share against a
+   real, second physical USB and a real vault the way an actual recovery
+   would.
+
+None of these three are gaps this smoke test was ever meant to close —
+closing them requires physical hardware a CI runner doesn't have. They
+are the responsibility of a **human-performed cold recovery drill**
+(BACKLOG B-155 opens this as a standing, periodic manual QA item: before
+each release, a person with real USB tokens, a real TPM-equipped
+machine, and a real recovery share walks through registration, a
+device-loss simulation, and recovery, by hand). Treat a green
+`--selftest`/CI run as "the artifact contains what the source does," not
+as "the artifact works" — the second claim needs the drill.
+
 ---
 
 ## 5. Cryptographic details
@@ -8064,6 +8116,61 @@ ilerleme göstergesi ya da arka plana alma EKLENMEDİ — çözülmüş değil,
 bilinen ve kabul edilmiş bir bedel olarak kaydedildi (BACKLOG B-134),
 çünkü otomatik süpürme zaten UI iş parçacığının kritik yolunun dışında
 çalışıyor ve zaten tik başına değişken bir süre alması bekleniyordu.
+
+### 4.30 Paketlenmiş yapı duman testi, ürünün bağımlılıklarını içe aktardığını kanıtlar — gerçek donanım, TPM ya da kurtarma hakkında hiçbir şey kanıtlamaz
+
+> **Saldırgan modelleri:** yok — bu bölüm bir güvenlik açığı değil, bir
+> test-kapsamı dürüstlük beyanı.
+
+`main.py --selftest` ve bunu gerçek, derlenmiş bir `HYCLEUS.exe` /
+AppImage'a karşı çalıştıran CI işleri (`.github/workflows/ci.yml`'nin
+`exe`/`appimage` işleri, `packaging/windows/smoke-test.ps1` ve
+`packaging/linux/smoke-test.sh` üzerinden) TEK bir soruyu cevaplıyor:
+**bu kod tabanının ihtiyaç duyduğu HER modül, bu platformda, bu
+PyInstaller spec'i tarafından ürüne GERÇEKTEN paketlendi mi.** Bu,
+B-112/B-114/B-147'nin tekrar tekrar ürettiği hata sınıfı ("kaynakta
+çalışan, paketlenmiş yapıda çalışmayan kod") — `hiddenimports`'tan
+sessizce eksik kalan bir gizli import, kullanıcı tam o koda ihtiyaç
+duyana kadar (muhtemelen en kötü anda) görünmez kalır. `--selftest`
+`_SELFTEST_MODULLERI` / `_SELFTEST_UCUNCU_TARAF` / `_SELFTEST_PLATFORM`
+listesindeki HER modülü başsız içe aktarıp biri yüklenemediği anda
+yüksek sesle (çıkış 1, "YÜKLENEMEYEN MODÜLLER") başarısız olarak bu
+boşluğu kapatıyor — mutasyonla kanıtlandı (2026-09-23, BACKLOG B-155):
+`HYCLEUS.spec`'in `hiddenimports`'undan açık `['wmi', 'pythoncom',
+'win32api', 'win32con']` listesini ve `collect_all('wmi')` sonucunu
+kaldırmak `tests/test_packaging.py::test_windows_spec_tek_dosya_ve_
+wmi_toplamaya_devam_ediyor`'u kırmızı yapıyor — B-147'nin kök şeklini bir
+derleme hiç çalışmadan yakalayacak tam olarak o statik katman.
+
+**Bunun KASITLI olarak doğrulamadığı — üç ayrı şey:**
+
+1. **Gerçek USB donanımı.** `--selftest` hiçbir cihaz takmıyor/okumuyor;
+   `get_usb_hwid()` yalnızca *içe aktarımı* için çalıştırılıyor, *donanım
+   G/Ç'si* için değil. WMI/`pyudev`/sysfs okuma yolunun kendisindeki bir
+   regresyon (TAM OLARAK B-147'nin gerçek hatası — yalnızca gerçek,
+   farklı şekilli donanıma karşı kırılan sabit-derinlik bir sysfs
+   varsayımı) `--selftest`'i tertemiz geçer, yalnızca gerçek bir sürücüye
+   karşı ortaya çıkar.
+2. **TPM mühürleme.** `--selftest` `durum().ozet()` yazdırıyor — bir TPM
+   *nesnesinin içe aktarılabilir ve erişilebilir olup olmadığını*, fiziksel
+   TPM 2.0 donanımına karşı gerçek bir mühürleme/açma turunun başarılı
+   olup olmadığını DEĞİL (§4.13'ün kendi kapsam notu, kendi sayıları için
+   AYNI ayrımı yapıyor).
+3. **Uçtan uca Shamir kurtarma akışı.** Bu depoda hiçbir otomatik iş, bir
+   kurtarma parçasından master_key'i GERÇEK, ikinci bir fiziksel USB'ye ve
+   gerçek bir kurtarmanın yapacağı gibi gerçek bir vault'a karşı yeniden
+   üretmiyor.
+
+Bu üçü de bu duman testinin kapatması hiç amaçlanmamış boşluklar —
+kapatmak, bir CI koşucusunun sahip olmadığı fiziksel donanım gerektiriyor.
+Bunlar **insan eliyle yapılan bir soğuk kurtarma provasının**
+sorumluluğunda (BACKLOG B-155 bunu, her sürümden önce gerçek USB
+token'ları, gerçek TPM'li bir makine ve gerçek bir kurtarma parçasıyla
+bir kişinin kaydı, cihaz-kaybı simülasyonunu ve kurtarmayı elle adım adım
+yürüttüğü, kalıcı/periyodik bir elle-QA maddesi olarak açıyor). Yeşil bir
+`--selftest`/CI koşusunu "ürün, kaynağın taşıdığı her şeyi içeriyor"
+olarak okuyun, "ürün çalışıyor" olarak DEĞİL — ikinci iddia provayı
+gerektiriyor.
 
 ---
 

@@ -163,6 +163,27 @@ if ($veriSatiri.Success) {
     Kontrol 'data dizini satiri okunabildi' $false
 }
 
+# ── 6) HYCLEUS_TEST_DATA_DIR paketlenmis yapida REDDEDILIYOR (B-154) ─────────
+#
+# DEV_MODE (CORE/usb_manager.py) sys.frozen ile kapatiliyordu, ama bu
+# degisken oyle DEGILDI -- gercek paketlenmis bir EXE'yi, uretim denetim
+# kaydina hic yazilmadan, dev ortamindaki gibi keyfi bir veri dizinine
+# (DB/vault/TOTP/denetim cipasi/SafeZone) yonlendirebiliyordu. Bu adim
+# kaynakta degil GERCEK, derlenmis EXE'de kanitliyor -- bir birim testinin
+# sys.frozen monkeypatch'i CORE/paths.py::data_dir()'in kendisini
+# dogruluyor, ama bu paketleme adiminin o duzeltmeyi son urune GERCEKTEN
+# tasidigini kanitlamiyor.
+Write-Host '[6] HYCLEUS_TEST_DATA_DIR paketlenmis yapida reddediliyor'
+$sahte = Join-Path ([System.IO.Path]::GetTempPath()) "hycleus-sahte-izole-$PID"
+if (Test-Path $sahte) { Remove-Item $sahte -Recurse -Force }
+$s = Calistir $ExePath @('--selftest') @{ HYCLEUS_TEST_DATA_DIR = $sahte }
+$reddedildi = ($s.Kod -ne 0) -and ($s.Cikti -match 'HYCLEUS_TEST_DATA_DIR')
+Kontrol 'reddedildi' $reddedildi "(kod=$($s.Kod))"
+if (-not $reddedildi) {
+    $s.Cikti -split "`n" | ForEach-Object { if ($_.Trim()) { Write-Host "      $($_.TrimEnd())" } }
+}
+Kontrol 'hedef dizin OLUSTURULMADI' (-not (Test-Path $sahte))
+
 Write-Host ''
 Write-Host "gecti: $gecti  kaldi: $kaldi"
 if ($kaldi -gt 0) { exit 1 }

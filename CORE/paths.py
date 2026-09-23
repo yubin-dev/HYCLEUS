@@ -73,16 +73,71 @@ def running_in_appimage() -> bool:
     return bool(os.environ.get(APPIMAGE_ENV))
 
 
+#: Bilinen dev/test override ortam değişkenleri ve karşılıklarının bir
+#: cümlelik açıklaması — yalnızca `reddet_paketlenmis_override()`'ın hata
+#: mesajında kullanılıyor. Yeni bir override eklerken buraya da eklenmeli
+#: (bkz. `tests/test_paths.py::test_bilinen_override_listesi_...`).
+BILINEN_OVERRIDE_ACIKLAMALARI: dict[str, str] = {
+    TEST_DATA_DIR_ENV: "veri dizini (DB, vault, TOTP, denetim çıpası, SafeZone)",
+    "HYCLEUS_AUDIT_ANCHOR": "yerel denetim çıpası dosyası (CORE/audit_chain.py)",
+    "HYCLEUS_SAFEZONE": "SafeZone dizini — geçici, ÇÖZÜLMÜŞ dosya alanı (CORE/safezone.py)",
+}
+
+
+def reddet_paketlenmis_override(env_var: str) -> None:
+    """
+    Bir geliştirme/test amaçlı override ortam değişkeni PAKETLENMİŞ bir
+    yapıda (`sys.frozen`) ayarlanmışsa `SystemExit(2)` ile reddeder,
+    ayarlanmamışsa ya da geliştirme ortamındaysa hiçbir şey yapmaz (B-154).
+
+    `DEV_MODE`'un `CORE/usb_manager.py`'de zaten güvendiği AYNI sinyale
+    dayanıyor: `sys.frozen`, PyInstaller'ın bootloader'ının KENDİSİNİN
+    koyduğu bir bayrak — bir ortam değişkeni onu taklit edemez.
+
+    `data_dir()` (`HYCLEUS_TEST_DATA_DIR`), `CORE/audit_chain.py::
+    anchor_path()` (`HYCLEUS_AUDIT_ANCHOR`) ve `CORE/safezone.py::
+    safezone_dir()` (`HYCLEUS_SAFEZONE`) — üçü de aynı desen: sessizce
+    kabul edilirse paketlenmiş bir EXE/AppImage'ı dev ortamındaki gibi
+    keyfi bir yola yönlendirebiliyorlardı (B-154, veri dizini için
+    bulundu; aynı denetim SafeZone/denetim çıpası override'larına da
+    genişletildi — ikisi de tek başına HİÇBİR yerde sınanmıyordu). Tek bir
+    karar noktası, tek bir mesaj biçimi.
+
+    Raises:
+        SystemExit(2) — `env_var` paketlenmiş bir yapıda ayarlanmışsa.
+    """
+    if not hasattr(sys, "frozen"):
+        return
+    aciklama = BILINEN_OVERRIDE_ACIKLAMALARI.get(env_var, "bir dev/test yolu")
+    print(
+        f"{env_var} paketlenmiş bir HYCLEUS yapısında (EXE/AppImage) "
+        f"desteklenmiyor -- reddedildi ({aciklama}). Bu değişken yalnızca "
+        "geliştirme ortamı içindir; paketlenmiş bir yapıyı izole veriyle "
+        "sınamak için işletim sisteminin kendi mekanizmasını kullanın "
+        "(Windows: EXE'yi ayrı bir klasöre kopyalayıp data/ klasörünün "
+        "yanında oluşmasına izin verin; Linux/AppImage: XDG_DATA_HOME'u "
+        "geçici bir dizine ayarlayın). Bkz. SECURITY.md, BACKLOG B-154.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def data_dir() -> Path:
     """data/ klasörünün mutlak yolunu döndürür.
 
-    - Test izolasyonu: `HYCLEUS_TEST_DATA_DIR` ayarlıysa DOĞRUDAN o (B-067)
+    - Test izolasyonu: `HYCLEUS_TEST_DATA_DIR` ayarlıysa DOĞRUDAN o (B-067) —
+      AMA yalnızca geliştirme ortamında; paketlenmiş yapıda REDDEDİLİR
+      (B-154, `reddet_paketlenmis_override()`).
     - AppImage:         $XDG_DATA_HOME/HYCLEUS  (varsayılan ~/.local/share/HYCLEUS)
     - EXE (sys.frozen): EXE'nin yanındaki data/ klasörü
     - Geliştirme:       proje kökündeki data/ klasörü
+
+    Raises:
+        SystemExit — bkz. `reddet_paketlenmis_override()`.
     """
     override = os.environ.get(TEST_DATA_DIR_ENV, "")
     if override:
+        reddet_paketlenmis_override(TEST_DATA_DIR_ENV)
         return Path(override)
     if hasattr(sys, "frozen"):
         if running_in_appimage():
