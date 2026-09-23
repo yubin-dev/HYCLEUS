@@ -1116,3 +1116,39 @@ def test_b065_reauth_sonrasi_kullanici_adi_ve_avatar_guncelleniyor(
                 t.stop()
         QApplication.instance().removeEventFilter(window)
         window.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Değişmez 7 — kara listedeki hwid için register_new_user() vault YAZMIYOR (B-153)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_kara_listedeki_hwid_ile_register_new_user_REDDEDIYOR(db, kasa_dizini) -> None:
+    """
+    B-153: tests/test_blacklist.py'nin CORE/ genelini tarayan AST guard'ı,
+    register_new_user()'ın create_vault()'a DEVRETMESİNİ tek başına yeterli
+    SAYMIYOR (guard bir dosyanın başka bir dosyadaki guard'lı fonksiyona
+    devrettiğini doğrulayamıyor — bkz. SECURITY.md §4.1). Bu yüzden
+    register_new_user() artık kendi başında DOĞRUDAN da
+    _reject_if_blacklisted() çağırıyor; bu test o doğrudan çağrının
+    gerçekten çalıştığını uçtan uca kanıtlıyor.
+
+    HWID önce TEMİZ bir kayıtla `usb_tokens`'a giriyor (create_vault
+    içindeki INSERT ile), sonra kara listeye alınıyor, sonra AYNI HWID'e
+    (farklı kullanıcı adıyla) ikinci bir register_new_user() deneniyor —
+    reddedilmeli ve `users`'a İKİNCİ bir satır YAZILMAMALI.
+    """
+    hwid = "USB-INV-007-BLACKLIST"
+    register_new_user(db, hwid=hwid, username="once-temiz", pin=_PIN, role="Standart")
+    db.execute("UPDATE usb_tokens SET blacklisted = 1 WHERE hwid = ?", (hwid,))
+
+    with pytest.raises(vault_manager.USBAuthError, match="kara listede"):
+        register_new_user(
+            db, hwid=hwid, username="ikinci-deneme", pin="baska-pin-789",
+            role="Standart",
+        )
+
+    satirlar = db.fetchall("SELECT username FROM users WHERE hwid = ?", (hwid,))
+    assert [s["username"] for s in satirlar] == ["once-temiz"], (
+        "kara listedeki hwid ile ikinci bir users satırı yazılmış olmamalı"
+    )

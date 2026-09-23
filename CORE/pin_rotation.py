@@ -118,6 +118,23 @@ def rotate_pin(
             yanlışsa ya da kasa yazılamıyorsa. Mesaj kullanıcıya
             gösterilebilir.
     """
+    from CORE.vault_manager import USBAuthError, _reject_if_blacklisted, change_vault_pin
+
+    # Kara liste EN BAŞTA — PIN politikası hesaplanmadan önce bile.
+    # change_vault_pin() aşağıda zaten aynı kontrolü yapıyor (kara
+    # listedeki bir HWID buradan asla change_vault_pin()'e ulaşamaz), ama
+    # bu doğrudan çağrı tek başına da yeterli olsun diye tekrarlanıyor —
+    # tests/test_blacklist.py::test_hwid_ve_pin_alan_her_fonksiyon_kara_
+    # liste_kontrolune_ulasiyor artık CORE/ genelini tarıyor ve delege
+    # etmeyi kendi başına yeterli SAYMIYOR (bkz. SECURITY.md §4.1, B-153).
+    # Maliyeti bir DB okuması; PinRotationError'a sarılıyor ki
+    # UI/PinRotationDialog.py'nin yalnızca PinRotationError yakalayan
+    # sözleşmesi bozulmasın.
+    try:
+        _reject_if_blacklisted(hwid)
+    except USBAuthError as exc:
+        raise PinRotationError(str(exc)) from exc
+
     hata = validate_new_pin(new_pin)
     if hata:
         raise PinRotationError(hata)
@@ -128,8 +145,6 @@ def rotate_pin(
         # yeniden şifrelenir, hiçbir şey değişmez ve denetim kaydı
         # yanıltıcı olur.
         raise PinRotationError("Yeni PIN eskisiyle aynı olamaz.")
-
-    from CORE.vault_manager import change_vault_pin
 
     try:
         change_vault_pin(hwid, old_pin, new_pin)

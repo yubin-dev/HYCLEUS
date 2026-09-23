@@ -461,49 +461,71 @@ under a blacklisted HWID (which *is* gated) is a separate decision. Adding
 a function to that signature shape without also reaching the shared guard
 now fails CI by name, not by silence.
 
-**What this guard does not catch.** The AST check parses only
-`CORE/vault_manager.py`; a function with the same `hwid`-plus-PIN-shaped
-signature written in *another* module (`CORE/pin_rotation.py`,
-`CORE/registration.py`, or any module opened later) is invisible to it.
-Today two such functions already exist — `CORE/pin_rotation.py::rotate_pin()`
-and `CORE/registration.py::register_new_user()` — and both happen to
-satisfy the guard's intent by delegating to `change_vault_pin()` /
-`create_vault()` before doing anything else, but that delegation is not
-itself verified by any test; it is true by inspection, not by
-construction. Confirmed by mutation (2026-09-23): adding a function with
-an identical `(hwid, pin)` signature to `CORE/vault_manager.py` turns the
-guard red, as expected — but adding the *exact same function body* to
-`CORE/pin_rotation.py` instead leaves the guard green, because
-`_vault_manager_call_graph()` never reads that file. The guard also
-cannot see indirect calls — a call reached through a variable holding the
-function, `getattr`, a dict dispatch table, or any call node whose `func`
-is not a bare `ast.Name` — because `_vault_manager_call_graph()` only
-collects `ast.Call` nodes matching `isinstance(n.func, ast.Name)`. And it
-is a parameter-*name* heuristic, not a semantic one: renaming `hwid` to
-something else, or a PIN parameter to something that doesn't end in
-`pin`, silently drops that function from the set the guard checks — the
-`>= 8` health-check assertion catches a large drop in the count, not one
-function quietly falling out of it.
+**Scope widened to all of CORE/ (B-153, 2026-09-23).** The guard
+originally parsed only `CORE/vault_manager.py`. Mutation testing that day
+proved the gap live: `CORE/pin_rotation.py::rotate_pin()` and
+`CORE/registration.py::register_new_user()` already had the same
+`hwid`-plus-PIN-shaped signature and lived *outside* that one file, so
+they were invisible to it — both happened to be safe only because they
+*delegated* to `change_vault_pin()` / `create_vault()` before doing
+anything else, a fact no test verified. Adding an identical, uncalled
+`(hwid, pin)` function to `CORE/vault_manager.py` turned the guard red, as
+expected; adding the exact same function to `CORE/pin_rotation.py`
+instead left it green, because the guard's call-graph builder never read
+that file. The guard now parses every file under `CORE/*.py` (60 files
+today) and applies the same heuristic to each; re-running that same
+mutation against `CORE/pin_rotation.py` now turns it red too. Closing the
+gap also meant a design decision, not just wider file coverage: the guard
+builds one call graph **per file** and does not resolve `from CORE.X
+import Y`-style cross-file imports, so a function that *delegates* to a
+guarded function in a different file — exactly what `rotate_pin()` and
+`register_new_user()` were already doing — still does not, by itself,
+satisfy it. Both functions now call `_reject_if_blacklisted()` directly
+(a second, cheap check — one DB read — ahead of the delegation, which is
+left in place unchanged), and each has its own end-to-end regression test
+proving a blacklisted HWID is rejected
+(`tests/test_pin_rotation.py::test_kara_listedeki_hwid_DOGRU_eski_PINLE_bile_YENILEYEMIYOR`,
+`tests/test_authz_invariants.py::test_kara_listedeki_hwid_ile_register_new_user_REDDEDIYOR`).
+Any future `hwid`+PIN function anywhere in `CORE/` now has the same two
+choices: a direct call, or an explicit, individually-tested exemption in
+`_MUAF` — "it delegates to a guarded function" is not, on its own,
+something the guard can check, so it is not accepted as satisfying it.
+
+**What this guard still does not catch.** It remains a parameter-*name*
+heuristic, not a semantic one: renaming `hwid` to something else, or a PIN
+parameter to something that doesn't end in `pin`, silently drops a
+function from the set the guard checks — the health-check assertions
+(`>= 30` files, `>= 10` functions) catch a large drop in either count, not
+one function quietly falling out. It cannot see indirect calls — a call
+reached through a variable holding the function, `getattr`, a dict
+dispatch table, or any call node whose `func` is not a bare `ast.Name` —
+because the call-graph builder only collects `ast.Call` nodes matching
+`isinstance(n.func, ast.Name)`. And, as the paragraph above spells out, it
+deliberately does not treat delegation to another file's guarded function
+as sufficient on its own, which means the burden is now on every
+`hwid`+PIN function, everywhere in `CORE/`, to carry its own direct call
+or its own tested exemption — there is no single choke point.
 
 **Why this doesn't make the VaultSession refactor (Divan Proposal 1)
 unnecessary.** The guard is a regression *detector*, not a structural
 fix: it runs in CI after the code is written, and only recognizes the one
-mistake shape it was built for, in the one file it reads. It adds a test
-failure for a specific kind of omission; it does not remove the
-omission's precondition — that every vault-mutating function
-individually re-implements "check the blacklist first" in its own body.
-A session object that authenticates once and then hands out a capability
-for mutation, so a new operation is written *against* an
-already-blacklist-checked handle instead of re-deriving that check for
-itself, removes the precondition rather than testing for its absence
-after the fact. The guard and the refactor are complementary, not
-substitutes: the refactor would shrink the guard's job down to "does
-`VaultSession`'s own constructor call `_reject_if_blacklisted()`" — one
-call site, not an open-ended, cross-module set that has to be re-scanned
-by hand every time a new file grows an `hwid`+PIN function — whereas the
-guard as it stands today has exactly the blind spot demonstrated above
-for as long as vault-mutating functions can be written outside
-`CORE/vault_manager.py` without going through a shared gate.
+mistake shape it was built for. Widening it to all of `CORE/` makes that
+more visible, not less: the guard's job list is now an open-ended,
+per-function accounting exercise — every one of the 12 (and counting)
+`hwid`+PIN functions across the codebase individually re-implements
+"check the blacklist first" in its own body, and the guard's only role is
+to notice when one of them forgets. A session object that authenticates
+once and then hands out a capability for mutation, so a new operation is
+written *against* an already-blacklist-checked handle instead of
+re-deriving that check for itself, removes the precondition rather than
+auditing for its absence after the fact. The guard and the refactor are
+complementary, not substitutes: the refactor would shrink the guard's job
+down to "does `VaultSession`'s own constructor call
+`_reject_if_blacklisted()`" — one call site, not a count that grows every
+time a new file grows an `hwid`+PIN function — whereas the guard as it
+stands today has to keep tracking that growing count by hand, file by
+file, for as long as vault-mutating functions can be written anywhere in
+`CORE/` without going through a shared gate.
 
 ### 4.2 The vault HMAC key is derived from share_2, not the HWID
 
@@ -4587,49 +4609,76 @@ AYNI gerekçeyle — kara listedeki bir HWID'e YENİ bir vault YAZMAK (ki bu
 KAPILI) ayrı bir karar. Bu imza şeklinde bir fonksiyon ekleyip paylaşılan
 kapıya ulaşmamak artık CI'ı sessizce değil, isim vererek kırıyor.
 
-**Bu muhafızın yakalamadığı.** AST kontrolü yalnızca
-`CORE/vault_manager.py`'yi ayrıştırıyor; aynı `hwid`+PIN-şekilli imzaya
-sahip bir fonksiyon BAŞKA bir modülde (`CORE/pin_rotation.py`,
-`CORE/registration.py`, ileride açılacak herhangi bir modül) yazılırsa
-muhafız için görünmez. Bugün bu şekle uyan iki fonksiyon zaten var —
+**Kapsam CORE/'un tamamına genişletildi (B-153, 2026-09-23).** Muhafız
+başlangıçta yalnızca `CORE/vault_manager.py`'yi ayrıştırıyordu.
+O gün yapılan mutasyon testi boşluğu CANLI kanıtladı:
 `CORE/pin_rotation.py::rotate_pin()` ve
-`CORE/registration.py::register_new_user()` — ve ikisi de başka hiçbir
-şey yapmadan önce `change_vault_pin()` / `create_vault()`'a devrederek
-muhafızın amacını FİİLEN karşılıyor, ama bu devir hiçbir test tarafından
-doğrulanmıyor; incelemeyle doğru, inşa yoluyla değil. Mutasyonla
-doğrulandı (2026-09-23): `CORE/vault_manager.py`'ye aynı `(hwid, pin)`
-imzasına sahip bir fonksiyon eklemek muhafızı beklendiği gibi KIRMIZI
-yapıyor — ama AYNI fonksiyon gövdesini `CORE/pin_rotation.py`'ye eklemek
-muhafızı YEŞİL bırakıyor, çünkü `_vault_manager_call_graph()` o dosyayı
-hiç okumuyor. Muhafız dolaylı çağrıları da göremiyor — bir fonksiyonu
-değişkende tutup çağırmak, `getattr`, bir dict dispatch tablosu, ya da
-`func`'ı çıplak bir `ast.Name` OLMAYAN herhangi bir çağrı düğümü —
-çünkü `_vault_manager_call_graph()` yalnızca `isinstance(n.func,
-ast.Name)` eşleşen `ast.Call` düğümlerini topluyor. Ve bu bir parametre-
-*adı* sezgiseli, anlamsal değil: `hwid`'i başka bir ada ya da PIN
-parametresini `pin` ile bitmeyen bir ada yeniden adlandırmak, o
-fonksiyonu muhafızın kontrol ettiği kümeden sessizce düşürür — `>= 8`
-sağlık-kontrolü büyük bir düşüşü yakalar, tek bir fonksiyonun sessizce
-kümeden çıkmasını yakalamaz.
+`CORE/registration.py::register_new_user()` zaten aynı `hwid`+PIN-şekilli
+imzayı taşıyordu ve o TEK dosyanın DIŞINDA yaşıyordu, yani muhafız için
+görünmezlerdi — ikisi de yalnızca `change_vault_pin()` / `create_vault()`'a
+başka hiçbir şey yapmadan önce DEVREDEREK güvenliydi, bunu hiçbir test
+doğrulamıyordu. `CORE/vault_manager.py`'ye aynı `(hwid, pin)` imzasına
+sahip, çağrısız bir fonksiyon eklemek muhafızı beklendiği gibi KIRMIZI
+yapıyordu; AYNI fonksiyonu `CORE/pin_rotation.py`'ye eklemek ise YEŞİL
+bırakıyordu, çünkü muhafızın çağrı-grafiği kurucusu o dosyayı hiç
+okumuyordu. Muhafız artık `CORE/*.py` altındaki HER dosyayı (bugün 60
+dosya) tek tek ayrıştırıyor ve aynı sezgiseli her birine uyguluyor; aynı
+mutasyonu `CORE/pin_rotation.py`'ye karşı yeniden çalıştırmak artık onu
+da KIRMIZI yapıyor. Boşluğu kapatmak yalnızca dosya kapsamını genişletmek
+değil, bir TASARIM KARARI da gerektirdi: muhafız çağrı grafiğini DOSYA
+BAŞINA kuruyor ve `from CORE.X import Y` biçimindeki dosyalar-arası içe
+aktarımları ÇÖZMÜYOR — yani başka bir dosyadaki guard'lı bir fonksiyona
+DEVREDEN bir fonksiyon (tam olarak `rotate_pin()` ve
+`register_new_user()`'ın zaten yaptığı şey) bunu TEK BAŞINA hâlâ
+karşılamıyor. İki fonksiyon da artık `_reject_if_blacklisted()`'i
+DOĞRUDAN çağırıyor (ikinci, ucuz bir kontrol — bir DB okuması — devrin
+ÖNÜNDE; devrin kendisi değişmeden yerinde kaldı) ve her birinin, kara
+listedeki bir HWID'in gerçekten reddedildiğini kanıtlayan kendi uçtan uca
+regresyon testi var
+(`tests/test_pin_rotation.py::test_kara_listedeki_hwid_DOGRU_eski_PINLE_bile_YENILEYEMIYOR`,
+`tests/test_authz_invariants.py::test_kara_listedeki_hwid_ile_register_new_user_REDDEDIYOR`).
+Bundan sonra `CORE/` içinde herhangi bir yerde açılacak hwid+PIN
+fonksiyonunun aynı iki seçeneği var: doğrudan bir çağrı, ya da `_MUAF`'ta
+açık ve AYRI test edilmiş bir muafiyet — "guard'lı bir fonksiyona
+devrediyor" gerekçesi TEK BAŞINA kabul edilmiyor, çünkü muhafız bunu
+doğrulayamıyor.
+
+**Bu muhafızın HÂLÂ yakalamadığı.** Hâlâ bir parametre-*adı* sezgiseli,
+anlamsal değil: `hwid`'i başka bir ada ya da PIN parametresini `pin` ile
+bitmeyen bir ada yeniden adlandırmak, o fonksiyonu muhafızın kontrol
+ettiği kümeden sessizce düşürür — sağlık-kontrolleri (`>= 30` dosya,
+`>= 10` fonksiyon) her iki sayıdaki büyük bir düşüşü yakalar, tek bir
+fonksiyonun sessizce kümeden çıkmasını yakalamaz. Dolaylı çağrıları
+göremiyor — bir fonksiyonu değişkende tutup çağırmak, `getattr`, bir dict
+dispatch tablosu, ya da `func`'ı çıplak bir `ast.Name` OLMAYAN herhangi
+bir çağrı düğümü — çünkü çağrı-grafiği kurucusu yalnızca
+`isinstance(n.func, ast.Name)` eşleşen `ast.Call` düğümlerini topluyor.
+Ve yukarıdaki paragrafın söylediği gibi, başka bir dosyadaki guard'lı bir
+fonksiyona devretmeyi KASITLI olarak tek başına yeterli SAYMIYOR — yani
+yük artık `CORE/` içindeki HER hwid+PIN fonksiyonunun üzerinde: her biri
+kendi doğrudan çağrısını ya da kendi test edilmiş muafiyetini taşımak
+zorunda, tek bir dar boğaz yok.
 
 **Bunun VaultSession refactor'ünü (Divan Öneri 1) neden gereksiz
 kılmadığı.** Muhafız bir regresyon *dedektörüdür*, yapısal bir düzeltme
 değil: CI'da, kod yazıldıktan SONRA çalışır, ve yalnızca tanımak üzere
-kurulduğu tek hata şeklini, okuduğu tek dosyada tanır. Belirli bir ihmal
-türüne bir test başarısızlığı EKLER; ihmalin ön koşulunu KALDIRMAZ — o
-ön koşul, her vault-değiştiren fonksiyonun "önce kara listeyi kontrol
-et"i kendi gövdesinde TEK TEK yeniden uygulamasıdır. Bir kez kimlik
-doğrulayıp mutasyon için bir yetenek (capability) veren bir oturum
-nesnesi — yani yeni bir işlemin kendi kontrolünü yeniden türetmek yerine
-ZATEN kara-liste-kontrollü bir tutamaç ÜZERİNE yazılması — ön koşulu,
-yokluğunu sonradan test etmek yerine KALDIRIR. Muhafız ile refactor
-birbirinin yerine geçmez, tamamlayıcıdır: refactor, muhafızın işini
-"`VaultSession`'ın kendi constructor'ı `_reject_if_blacklisted()`'i
-çağırıyor mu" sorusuna küçültür — kaç dosyaya yayıldığı belirsiz, açık
-uçlu bir kümeyi elle taramak yerine TEK bir çağrı yeri — oysa muhafız
-bugünkü haliyle, vault-değiştiren fonksiyonlar paylaşılan bir kapıdan
-geçmeden `CORE/vault_manager.py` dışında yazılabildiği sürece yukarıda
-gösterilen kör noktayı aynen taşımaya devam ediyor.
+kurulduğu tek hata şeklini tanır. Kapsamını CORE/'un tamamına genişletmek
+bunu AZALTMIYOR, daha da görünür kılıyor: muhafızın işi artık açık uçlu,
+fonksiyon-başına bir muhasebe egzersizi — kod tabanındaki 12 (ve artan)
+hwid+PIN fonksiyonunun HER BİRİ "önce kara listeyi kontrol et"i kendi
+gövdesinde TEK TEK yeniden uyguluyor, muhafızın tek işi bunlardan biri
+unuttuğunda fark etmek. Bir kez kimlik doğrulayıp mutasyon için bir
+yetenek (capability) veren bir oturum nesnesi — yani yeni bir işlemin
+kendi kontrolünü yeniden türetmek yerine ZATEN kara-liste-kontrollü bir
+tutamaç ÜZERİNE yazılması — ön koşulu, yokluğunu sonradan denetlemek
+yerine KALDIRIR. Muhafız ile refactor birbirinin yerine geçmez,
+tamamlayıcıdır: refactor, muhafızın işini "`VaultSession`'ın kendi
+constructor'ı `_reject_if_blacklisted()`'i çağırıyor mu" sorusuna
+küçültür — yeni bir dosya hwid+PIN fonksiyonu her büyüdüğünde artan bir
+sayı değil, TEK bir çağrı yeri — oysa muhafız bugünkü haliyle,
+vault-değiştiren fonksiyonlar paylaşılan bir kapıdan geçmeden `CORE/`
+içinde herhangi bir yerde yazılabildiği sürece o artan sayıyı dosya dosya
+elle takip etmeye devam etmek zorunda.
 
 ### 4.2 Vault HMAC anahtarı share_2'den türetiliyor, HWID'den değil
 

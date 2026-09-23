@@ -55,7 +55,7 @@ from argon2 import PasswordHasher
 
 from CORE import secret_store
 from CORE.roles import db_role, is_admin_role
-from CORE.vault_manager import create_vault, discard_vault
+from CORE.vault_manager import _reject_if_blacklisted, create_vault, discard_vault
 
 _PH = PasswordHasher()
 
@@ -142,6 +142,17 @@ def register_new_user(
             (vault, `users` satırı, TOTP sırrı) `discard_vault()` ile
             geri alınır.
     """
+    # Kara liste EN BAŞTA — create_vault() aşağıda zaten aynı kontrolü
+    # yapıyor (kara listedeki bir hwid buradan create_vault()'a asla
+    # ulaşamaz), ama tests/test_blacklist.py::test_hwid_ve_pin_alan_her_
+    # fonksiyon_kara_liste_kontrolune_ulasiyor artık CORE/ genelini
+    # tarıyor ve delege etmeyi kendi başına yeterli SAYMIYOR (bkz.
+    # SECURITY.md §4.1, B-153). Maliyeti bir DB okuması; bu fonksiyonun
+    # kendi sözleşmesi zaten create_vault()'un fırlattığı her şeyin
+    # olduğu gibi yukarı taşındığını söylüyor, o yüzden burada sarmalama
+    # yok.
+    _reject_if_blacklisted(hwid)
+
     if is_admin_role(role):
         raise RuntimeError(
             "register_new_user() 'Yönetici' rolüyle çağrıldı — kayıt "

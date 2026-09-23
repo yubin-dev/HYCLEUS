@@ -252,23 +252,44 @@ def test_blacklist_rejection_is_audited(vault, db) -> None:
 # ── Statik muhafız: bu hata sınıfı BİR DAHA SESSİZCE geri gelmesin ─────────────
 #
 # Bu proje AYNI hatayı (kara liste kontrolü tek bir giriş yolunda düzeltilip
-# kardeş fonksiyonlara YAYILMIYOR) bu hafta üçüncü kez yazdı: önce login akışı
+# kardeş fonksiyonlara YAYILMIYOR) art arda birkaç kez yazdı: önce login akışı
 # (open_vault vs authenticate_usb, SECURITY.md §4.1), sonra MC-M147 (USB
-# yeniden takma reauth'u farklı bir varsayımla çalışıyordu), şimdi de burada
-# (read_vault_role/change_vault_role/change_vault_pin/create_vault). Elle
-# hatırlamaya güvenmek yerine: `hwid` VE bir `pin` parametresi (ör. `pin`,
-# `old_pin`, `new_pin`) birlikte alan HER `CORE/vault_manager.py` fonksiyonu,
-# doğrudan ya da (create_vault/_decrypt_vault/_read_share_1 üzerinden)
-# dolaylı olarak `_reject_if_blacklisted()`e ULAŞMALI — bu test modülü
-# YENİDEN OKUYUP çağrı grafiğini kendisi kuruyor, yani yeni bir fonksiyon
-# eklendiğinde elle güncellenmesi gereken tek şey (varsa) aşağıdaki `_MUAF`
-# sözlüğüdür.
+# yeniden takma reauth'u farklı bir varsayımla çalışıyordu), sonra
+# read_vault_role/change_vault_role/change_vault_pin/create_vault (B-149).
+# Elle hatırlamaya güvenmek yerine: `hwid` VE bir `pin` parametresi (ör.
+# `pin`, `old_pin`, `new_pin`) birlikte alan HER `CORE/*.py` fonksiyonu,
+# doğrudan ya da AYNI DOSYADAKİ bir yardımcı üzerinden
+# `_reject_if_blacklisted()`e ULAŞMALI.
+#
+# KAPSAM (B-153, 2026-09-23'te genişletildi): B-149'un guard'ı yalnızca
+# CORE/vault_manager.py'yi tarıyordu — CORE/pin_rotation.py::rotate_pin() ve
+# CORE/registration.py::register_new_user() de aynı `hwid`+PIN şeklini
+# taşıyor ama guard onları hiç GÖRMÜYORDU (mutasyonla kanıtlandı: aynı
+# çağrısız fonksiyonu vault_manager.py'ye eklemek guard'ı kırmızı yapıyordu,
+# pin_rotation.py'ye eklemek YEŞİL bırakıyordu). Guard artık CORE/ altındaki
+# TÜM .py dosyalarını tek tek tarıyor — ama çağrı grafiği DOSYA BAŞINA
+# kuruluyor, dosyalar arası İÇE AKTARIM ÇÖZÜMLEMESİ yapmıyor: bir fonksiyonun
+# başka bir dosyadaki guard'lı bir fonksiyona DEVRETMESİ (delege etmesi) tek
+# başına yeterli SAYILMIYOR. Bunun yerine `rotate_pin()` ve
+# `register_new_user()`'a artık _reject_if_blacklisted() DOĞRUDAN (ve ayrıca,
+# değişmeden, guard'lı change_vault_pin()/create_vault()'a devrederek de)
+# çağrılıyor — çift kontrol, maliyeti bir DB okuması. Yeni bir dosyada
+# hwid+pin alan bir fonksiyon açılırsa, guard onu bu dosyadaki kendi
+# çağrı grafiğinde görür; DOĞRUDAN bir _reject_if_blacklisted() çağrısı
+# (ya da aynı dosyada bir yardımcı üzerinden ona ulaşan bir zincir)
+# yoksa KIRMIZI olur — "guard'lı bir fonksiyona devrediyorum" gerekçesi
+# TEK BAŞINA guard'ı geçirmez, çünkü guard bunu doğrulayamaz (bkz.
+# SECURITY.md §4.1, "Bu muhafızın yakalamadığı").
 
-#: hwid+pin alıp KASITLI olarak _reject_if_blacklisted'a ulaşmayan
-#: fonksiyonlar — her girişin gerekçesi olmalı. Yeni bir muafiyet eklemek
-#: güvenlik incelemesi gerektirir, sessizce büyütülmemeli.
-_MUAF = {
-    "recover_master_key": (
+#: (dosya adı, fonksiyon adı) -> hwid+pin alıp KASITLI olarak
+#: _reject_if_blacklisted'a (doğrudan ya da aynı dosyada bir yardımcı
+#: üzerinden) ulaşmayan fonksiyonlar. Her girişin GEREKÇESİ ve o
+#: gerekçeyi CANLI doğrulayan AYRI bir test olmalı — yalnızca "guard'lı
+#: bir fonksiyona devrediyor" yetmez, devrin kendisi test edilmeli. Yeni
+#: bir muafiyet eklemek güvenlik incelemesi gerektirir, sessizce
+#: büyütülmemeli.
+_MUAF: dict[tuple[str, str], str] = {
+    ("vault_manager.py", "recover_master_key"): (
         "Kurtarma parçası + kalan payla master_key'i YALNIZCA OKUYOR, "
         "vault'a hiçbir şey YAZMIYOR — _reject_if_weak_binding'in "
         "recover_master_key'i muaf tuttuğu AYNI gerekçe (vault_manager.py'de "
@@ -280,8 +301,11 @@ _MUAF = {
 }
 
 
-def _vault_manager_call_graph() -> dict[str, set[str]]:
-    kaynak = Path(vault_manager.__file__).read_text(encoding="utf-8")
+def _call_graph(kaynak: str) -> dict[str, set[str]]:
+    """Tek bir dosyanın kaynağından fonksiyon adı -> çağırdığı çıplak
+    (bare) isimler haritası. Dosyalar arası çözümleme YAPMAZ — bir
+    fonksiyonun başka bir dosyadan içe aktardığı bir adı çağırması bu
+    grafikte hedefe hiç bağlanmaz (bkz. bu dosyanın üstündeki KAPSAM notu)."""
     agac = ast.parse(kaynak)
     graf: dict[str, set[str]] = {}
     for node in ast.walk(agac):
@@ -308,45 +332,61 @@ def _reaches(graf: dict[str, set[str]], baslangic: str, hedef: str,
 
 
 def test_hwid_ve_pin_alan_her_fonksiyon_kara_liste_kontrolune_ulasiyor() -> None:
-    kaynak = Path(vault_manager.__file__).read_text(encoding="utf-8")
-    agac = ast.parse(kaynak)
-    graf = _vault_manager_call_graph()
+    core_dir = Path(vault_manager.__file__).parent
+    dosyalar = sorted(core_dir.glob("*.py"))
 
-    assert "_reject_if_blacklisted" in graf, (
+    # Sağlık kontrolü: glob'un CORE/'u gerçekten taradığını doğrula.
+    assert len(dosyalar) >= 30, (
+        f"CORE/*.py altında beklenenden az dosya bulundu ({len(dosyalar)}) — "
+        "dizin mi taşındı? Bu test kapsamın CORE/'un tamamı olduğunu varsayıyor."
+    )
+
+    vm_graf = _call_graph(Path(vault_manager.__file__).read_text(encoding="utf-8"))
+    assert "_reject_if_blacklisted" in vm_graf, (
         "_reject_if_blacklisted() CORE/vault_manager.py'de bulunamadı — "
         "modül yeniden mi yapılandırıldı? Bu test onun varlığını varsayıyor."
     )
 
-    hedef_fonksiyonlar = []
-    for node in ast.walk(agac):
-        if not isinstance(node, ast.FunctionDef):
-            continue
-        argnames = {a.arg for a in node.args.args} | {a.arg for a in node.args.kwonlyargs}
-        hwid_var_mi = "hwid" in argnames
-        pin_var_mi = any(a == "pin" or a.endswith("_pin") for a in argnames)
-        if hwid_var_mi and pin_var_mi:
-            hedef_fonksiyonlar.append(node.name)
+    hedef_fonksiyonlar: list[tuple[str, str]] = []
+    basarisiz: list[tuple[str, str]] = []
+
+    for dosya in dosyalar:
+        kaynak = dosya.read_text(encoding="utf-8")
+        agac = ast.parse(kaynak)
+        graf = _call_graph(kaynak)
+
+        for node in ast.walk(agac):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            argnames = {a.arg for a in node.args.args} | {a.arg for a in node.args.kwonlyargs}
+            hwid_var_mi = "hwid" in argnames
+            pin_var_mi = any(a == "pin" or a.endswith("_pin") for a in argnames)
+            if not (hwid_var_mi and pin_var_mi):
+                continue
+
+            anahtar = (dosya.name, node.name)
+            hedef_fonksiyonlar.append(anahtar)
+            if anahtar in _MUAF:
+                continue
+            if not _reaches(graf, node.name, "_reject_if_blacklisted"):
+                basarisiz.append(anahtar)
 
     # Sağlık kontrolü: bu heuristiğin gerçekten bir şey bulduğunu doğrula —
     # aksi hâlde test sessizce hiçbir şeyi kontrol etmeden yeşil kalırdı.
-    assert len(hedef_fonksiyonlar) >= 8, (
+    assert len(hedef_fonksiyonlar) >= 10, (
         f"Beklenenden az fonksiyon bulundu ({hedef_fonksiyonlar}) — "
-        "heuristik (hwid + *pin parametresi) modülün gerçek şekliyle "
+        "heuristik (hwid + *pin parametresi) CORE/'un gerçek şekliyle "
         "uyuşmuyor olabilir, test gözden geçirilmeli."
     )
 
-    basarisiz = []
-    for ad in hedef_fonksiyonlar:
-        if ad in _MUAF:
-            continue
-        if not _reaches(graf, ad, "_reject_if_blacklisted"):
-            basarisiz.append(ad)
-
     assert not basarisiz, (
-        f"{basarisiz} — hwid+PIN alan bu fonksiyon(lar) _reject_if_blacklisted() "
-        "kontrolüne (doğrudan ya da başka bir yardımcı üzerinden) hiç "
-        "ULAŞMIYOR. Kara listedeki bir cihaz, doğru PIN'le bu fonksiyonu "
-        "çağırıp işlemi tamamlayabilir demektir — bkz. bu dosyanın üstündeki "
-        "'Pentest turu (2026-09-12)' bulguları. Gerçekten kasıtlıysa "
-        "_MUAF sözlüğüne gerekçesiyle eklenmeli."
+        f"{basarisiz} — hwid+PIN alan bu fonksiyon(lar), TANIMLANDIĞI "
+        "DOSYADA, doğrudan ya da aynı dosyadaki bir yardımcı üzerinden "
+        "_reject_if_blacklisted()'e hiç ULAŞMIYOR. Kara listedeki bir cihaz, "
+        "doğru PIN'le bu fonksiyonu çağırıp işlemi tamamlayabilir demektir — "
+        "bkz. bu dosyanın üstündeki KAPSAM notu ve SECURITY.md §4.1. Başka "
+        "bir dosyadaki guard'lı bir fonksiyona DEVRETMEK bu testi TEK BAŞINA "
+        "geçirmez (guard bunu doğrulayamıyor) — ya doğrudan bir "
+        "_reject_if_blacklisted() çağrısı ekleyin, ya da gerekçeli ve AYRI "
+        "bir testle doğrulanmış olarak _MUAF sözlüğüne ekleyin."
     )

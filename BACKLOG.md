@@ -12558,12 +12558,13 @@ passed, 15 skipped, 0 yeni başarısızlık (3 mevcut B-148 hatası ilgisiz).
 
 ---
 
-## B-153 — B-149'un AST muhafızı doğrulandı: kapsamı yalnızca `vault_manager.py`, başka modüldeki aynı-imzalı fonksiyon görünmez
+## B-153 — B-149'un AST muhafızı doğrulandı VE kapsamı `CORE/*.py`'nin tamamına genişletildi
 
-**Durum:** AÇIK.
-**Öncelik:** Orta (bugün hiçbir canlı çağıran bu boşluktan geçmiyor —
-her ikisi de guard'ın koruduğu fonksiyona devrediyor — ama bu hiçbir test
-tarafından garanti edilmiyor, ileriye dönük bir mayın).
+**Durum:** KAPANDI (2026-09-23, aynı turda).
+**Öncelik:** Orta (bulunduğunda hiçbir canlı çağıran bu boşluktan
+geçmiyordu — her ikisi de guard'ın koruduğu fonksiyona devrediyordu —
+ama bu hiçbir test tarafından garanti edilmiyordu, ileriye dönük bir
+mayındı).
 **Bulundu:** 2026-09-23, B-149'un AST muhafızının (`tests/test_blacklist.py::
 test_hwid_ve_pin_alan_her_fonksiyon_kara_liste_kontrolune_ulasiyor`)
 üç ayrı mutasyonla doğrulanması sırasında.
@@ -12592,25 +12593,45 @@ maddesi hatalı.
 
 Turdan sonra `git diff` boştu (üç mutasyon da tek tek geri alındı).
 
-**Bilinen kapsam boşluğu, bugün canlı ama garantisiz.**
+**Bulunduğunda kapsam boşluğu, canlı ama garantisiz.**
 `CORE/pin_rotation.py::rotate_pin()` ve
 `CORE/registration.py::register_new_user()` ikisi de `hwid`+PIN-şekilli
-parametre alıyor ve guard'ın taradığı dosyanın DIŞINDA yaşıyor; guard
-onları hiç göremiyor. Bugün ikisi de ilk iş olarak guard'ın koruduğu bir
-`vault_manager` fonksiyonuna (`change_vault_pin()` / `create_vault()`)
-devrediyor, yani FİİLEN korunuyorlar — ama bu devir hiçbir testle
-garanti edilmiyor: biri o çağrıyı satır içine açıp guard'ı atlayarak
-yeniden yazsa, hiçbir CI adımı bunu yakalamaz. Guard ayrıca dolaylı
-çağrıları (değişkende tutulan fonksiyon, `getattr`, dispatch tablosu) ve
-parametre adı `hwid`/`*pin` kalıbından sapan fonksiyonları da göremiyor —
-bunlar SECURITY.md §4.1'e (EN+TR) "Bu muhafızın yakalamadığı" başlığıyla
-eklendi, VaultSession refactor'ünün (Divan Öneri 1) neden hâlâ gerekli
-olduğunun gerekçesiyle birlikte.
+parametre alıyordu ve guard'ın taradığı tek dosyanın DIŞINDA yaşıyordu;
+guard onları hiç göremiyordu. İkisi de ilk iş olarak guard'ın koruduğu
+bir `vault_manager` fonksiyonuna (`change_vault_pin()` / `create_vault()`)
+devrediyordu, yani FİİLEN korunuyorlardı — ama bu devir hiçbir testle
+garanti edilmiyordu.
 
-**Önerilen düzeltme (bu turda YAPILMADI — kapsam dışı, yalnızca kayıt
-altına alınıyor):** ya guard'ın taradığı dosya kümesini `CORE/*.py`
-geneline (ya da en azından `pin_rotation.py`+`registration.py`'ye)
-genişletmek, ya da VaultSession refactor'ünü hayata geçirip guard'ın işini
-tek bir constructor çağrısına indirmek.
+**Düzeltme — kapsam genişletildi, delege etmek TEK BAŞINA yeterli
+SAYILMADI.**
+`tests/test_blacklist.py::test_hwid_ve_pin_alan_her_fonksiyon_kara_liste_
+kontrolune_ulasiyor` artık `CORE/vault_manager.py` yerine `CORE/*.py`
+altındaki TÜM dosyaları (bugün 60) tek tek ayrıştırıyor; çağrı grafiği
+DOSYA BAŞINA kuruluyor (dosyalar-arası `from CORE.X import Y` çözümlemesi
+YOK), yani bir fonksiyonun başka bir dosyadaki guard'lı bir fonksiyona
+devretmesi bu testi TEK BAŞINA geçirmiyor — bu kasıtlı bir tasarım kararı,
+guard'ın devri doğrulayamamasının doğal sonucu. `rotate_pin()` ve
+`register_new_user()`'a bu yüzden `_reject_if_blacklisted()`'e DOĞRUDAN
+bir çağrı eklendi (ikinci, ucuz kontrol — bir DB okuması — mevcut devrin
+ÖNÜNDE; devir değişmeden kaldı) ve her birine kara listedeki bir HWID'in
+gerçekten reddedildiğini uçtan uca kanıtlayan AYRI birer regresyon testi
+yazıldı:
+`tests/test_pin_rotation.py::test_kara_listedeki_hwid_DOGRU_eski_PINLE_bile_YENILEYEMIYOR`,
+`tests/test_authz_invariants.py::test_kara_listedeki_hwid_ile_register_new_user_REDDEDIYOR`.
 
-Commit: (bu BACKLOG kaydı ve SECURITY.md güncellemesiyle aynı commit).
+**Mutasyon 4 tekrarlandı.** Aynı çağrısız fonksiyon (`_mutasyon_4c_
+cagrisiz_fonksiyon`) tekrar `CORE/pin_rotation.py`'ye eklendi — guard
+artık (genişletilmiş kapsamla) KIRMIZI oluyor, önceki turda YEŞİL
+kaldığı hâlin tam tersi. Geri alındıktan sonra `git diff` boştu.
+
+Guard hâlâ dolaylı çağrıları (değişkende tutulan fonksiyon, `getattr`,
+dispatch tablosu) ve parametre adı `hwid`/`*pin` kalıbından sapan
+fonksiyonları göremiyor — bunlar SECURITY.md §4.1'e (EN+TR) "Bu muhafızın
+HÂLÂ yakalamadığı" başlığıyla eklendi, VaultSession refactor'ünün (Divan
+Öneri 1) neden hâlâ gerekli olduğunun gerekçesiyle birlikte (guard artık
+CORE/ genelinde 12 fonksiyonu TEK TEK takip ediyor; refactor bunu TEK bir
+constructor çağrısına indirir).
+
+Testler: `test_blacklist.py` (15), `test_pin_rotation.py` (33),
+`test_authz_invariants.py` (24) — hepsi yeşil. Commit: (bu BACKLOG
+kaydı ve SECURITY.md güncellemesiyle aynı commit).

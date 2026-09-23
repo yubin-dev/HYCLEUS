@@ -140,6 +140,33 @@ def test_hala_kisa_bir_PIN_reddediliyor(kasa, db, yeni: str) -> None:
     assert open_vault(kasa, _ESKI_PIN)[0] == _ROLE
 
 
+def test_kara_listedeki_hwid_DOGRU_eski_PINLE_bile_YENILEYEMIYOR(kasa, db) -> None:
+    """
+    B-153: rotate_pin() artık change_vault_pin()'e devretmeden ÖNCE
+    _reject_if_blacklisted()'i DOĞRUDAN çağırıyor — tests/test_blacklist.py'nin
+    CORE/ genelini tarayan AST guard'ı, bir dosyanın başka bir dosyadaki
+    guard'lı fonksiyona devretmesini TEK BAŞINA yeterli SAYMIYOR (guard bunu
+    doğrulayamıyor), o yüzden bu uçtan uca test guard'ın kabul ettiği ikinci
+    yol (_MUAF + ayrı test) yerine BİRİNCİ yolun (doğrudan çağrı) gerçekten
+    çalıştığını kanıtlıyor.
+
+    Doğru eski PIN'le bile — reddedilmeli, PinRotationError'a sarılmış
+    olarak (UI/PinRotationDialog.py yalnızca PinRotationError yakalıyor,
+    ham USBAuthError'ı DEĞİL).
+    """
+    db.execute("UPDATE usb_tokens SET blacklisted = 1 WHERE hwid = ?", (kasa,))
+
+    with pytest.raises(PinRotationError, match="kara listede"):
+        rotate_pin(db, kasa, _ESKI_PIN, _YENI_PIN, user_id=7, zorunlu=True)
+
+    # PIN GERÇEKTEN değişmemiş olmalı — eski PIN hâlâ açıyor. Doğrulamak
+    # için önce kara listeden çıkarılıyor (yoksa open_vault de aynı
+    # kontrolden reddedilir, bu doğrulamayı anlamsız kılar — bkz.
+    # tests/test_blacklist.py::_unblacklist'in aynı deseni).
+    db.execute("UPDATE usb_tokens SET blacklisted = 0 WHERE hwid = ?", (kasa,))
+    assert open_vault(kasa, _ESKI_PIN)[0] == _ROLE
+
+
 def test_yanlis_eski_PIN_reddediliyor(kasa, db) -> None:
     with pytest.raises(PinRotationError):
         rotate_pin(db, kasa, "9999", _YENI_PIN, user_id=7, zorunlu=True)
