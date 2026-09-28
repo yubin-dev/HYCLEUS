@@ -13487,3 +13487,119 @@ kullanıldı, kalıcı bir kod değişikliği DOĞURMADI.
 Commit: (bu BACKLOG kaydıyla aynı commit).
 
 ---
+
+## B-157 — `v2.3.0` etiketi GitHub'da yok; B-116'nın sürüm sürüklenmesi testleri CI'da hiç koşmuyor (sığ klon + etiketsiz uzak)
+
+**Durum:** AÇIK.
+**Bulundu:** 2026-09-29 (plan dışı keşif turu; kod, CI ve etiketlere
+dokunulmadı).
+**Karar:** şimdi, çünkü SECURITY.md'nin "yalnızca en son sürüm düzeltme
+alır" kuralı GitHub'da olmayan bir sürüme (v2.3.0) atıf yapıyor ve
+B-116'nın sürüklenme koruması CI'da kör.
+
+### Bulgu
+
+**1. `v2.3.0` yalnızca yerelde var.** `git tag -l "v*"` ile
+`git ls-remote --tags origin` yan yana:
+
+| Etiket | Yerel | origin |
+|---|---|---|
+| v2.0 | 845d7cd | 845d7cd |
+| v2.1.0 | 6ca3116 | 6ca3116 |
+| v2.1.1 | a61479b | a61479b |
+| v2.1.2 | 2b70590 | 2b70590 |
+| **v2.3.0** | **var** | **YOK** |
+
+Diğer dört etiketin hash'leri iki tarafta birebir aynı; tek fark
+`v2.3.0`. Bu etiket annotated ve `git rev-parse "v2.3.0^{commit}"` →
+**`cc637e3`** (2026-08-22, "HYCLEUS - v2.3.0: surum dosyalari
+esitlendi, CHANGELOG.md eklendi"). `SECURITY.md:3995` ("only the latest
+release (currently **v2.3.0**)") ve `SECURITY.md:8347` ("yalnızca en son
+sürüm (şu an **v2.3.0**)") GitHub'dan bakan birinin göremediği bir
+sürümü "desteklenen tek sürüm" ilan ediyor; uzaktaki en yeni etiket
+`v2.1.2`.
+
+**2. CI'da hiçbir checkout geçmiş ya da etiket çekmiyor.**
+`.github/workflows/ci.yml`'deki dört `actions/checkout@v4` adımının
+(satır 42, 209, 370, 502) hiçbirinde `with:` bloğu yok. Yani
+varsayılanlar geçerli: `fetch-depth: 1`, `fetch-tags: false`. Test işi
+tek commit'lik, etiketsiz bir ağaçta koşuyor.
+
+**3. İki etiket testi bu ağaçta SKIPPED çıkıyor.** CI'ın checkout'u
+yerelde taklit edildi (`git clone --depth 1 --no-tags`, commit
+`d0984f6`, son CI koşusu 35930781150 ile aynı commit):
+
+    tests\test_version.py .ss
+    SKIPPED [1] tests\test_version.py:189: depoda etiket yok (sığ klon olabilir)
+    SKIPPED [1] tests\test_version.py:246: v2.3.0 etiketi bulunamadı (sığ klon olabilir)
+
+- `test_son_yayin_git_etiketiyle_uyusuyor` → satır 189'da skip.
+- `test_uzun_suredir_etiketlenmemis_agac_versiyonu_yukseltilmis_olmali`
+  → satır 246'da skip.
+
+Aynı iki test tam depoda (etiketler varken) **passed**. CI koşusunun
+kendi junit XML'i (`test-results-*` artifact'i) okunamadı:
+artifact indirmek yetkisiz istekte 401 veriyor, `gh` kurulu değil,
+check-run annotation'larında yalnızca Node 20 uyarıları var. Yani
+sonuç CI raporundan değil, aynı checkout'un taklidinden geliyor.
+
+**4. Etiket push'u CI'ı tetiklemiyor.** `ci.yml:3-7`:
+`on: push: branches: [main, master]` ve `pull_request` aynı dallar.
+`tags:` filtresi yok. `git push origin v2.3.0` tek başına hiçbir koşu
+başlatmaz; düzeltmenin etkisi ancak main'e bir sonraki push'ta
+görünür.
+
+**Sonuç:** B-116'nın sürüklenme koruması yalnızca geliştiricinin
+makinesinde çalışıyor. `v2.3.0..HEAD` bugün **197 commit**, eşik 20. CI
+bu durumu hiç ölçmedi, çünkü iki test de her koşuda sessizce skip
+oluyor.
+
+### Çözüm sırası (UYGULANMADI)
+
+**a. Kullanıcı: etiketi yayınla.**
+
+    git push origin v2.3.0
+    git ls-remote --tags origin | grep v2.3.0
+
+Doğrulama: `refs/tags/v2.3.0` ve `refs/tags/v2.3.0^{}` satırları
+görünmeli, `^{}` satırı `cc637e3...` ile başlamalı. Önce (a) gelmeli:
+(b) tek başına uygulanırsa CI uzaktaki en yeni etiketi `v2.1.2` görür,
+`SON_YAYIN = "2.3.0"` ile eşleşmez ve
+`test_son_yayin_git_etiketiyle_uyusuyor` kırmızı olur.
+
+**b. Claude Code: test işinin checkout adımına `fetch-depth: 0`.**
+Yalnızca `ci.yml:42` (matris `test` işi). Diğer üç checkout bu
+testleri koşturmuyor.
+
+`fetch-tags: true` tek başına YETMEZ. Etiketler gelir ama geçmiş yine
+tek commit'tir, ve `git rev-list v2.3.0..HEAD --count` HEAD'den
+`v2.3.0`'a kadar yürüyecek geçmişe ihtiyaç duyar. Taklitte ölçüldü
+(`--depth 1` klona `git fetch --depth=1 origin
+"+refs/tags/*:refs/tags/*"`):
+
+    tags: v2.0,v2.1.0,v2.1.1,v2.1.2,v2.3.0
+    shallow rev-list v2.3.0..HEAD = 1
+    SKIPPED [1] tests\test_version.py:254: v2.3.0'den bu yana yalnızca 1 commit (eşik 20)
+
+Birinci test geçiyor ama ikinci test bu kez YANLIŞ bir sayıyla skip
+oluyor: gerçekte 197 commit var, sığ geçmişte 1 görünüyor. Bu, bugünkü
+durumdan da kötü: skip nedeni "etiket yok" değil "sürüklenme yok"
+diyor.
+
+**c. Kanıt.**
+- Main'e (b) ile push edilen koşunun "Test özeti"nde (ya da
+  `test-results-*` artifact'inde) iki test **passed** görünmeli,
+  skipped değil. Kontrol iki matris ayağında da (ubuntu + windows)
+  yapılmalı.
+- Mutasyon: `CORE/version.py`'de `SON_YAYIN` geçici olarak yanlış bir
+  değere çekilir (ör. `"2.1.2"`) → CI kırmızı olmalı. **Dikkat:**
+  `test_security_md_desteklenen_surumu_dogru_yaziyor` (satır 140) da
+  `SON_YAYIN`'a bağlı ve aynı mutasyonla kırılır. Kırmızının tek
+  kaynağı o test olursa kanıt geçersiz sayılır. "Başarısız testleri
+  işaretle" annotation'larında
+  `test_son_yayin_git_etiketiyle_uyusuyor` adı ayrıca görünmeli.
+  Mutasyon geri alınır ve geri alındıktan sonraki koşu yeşil olur.
+
+**d. Kapanış ölçütü:** a, b ve c'nin üçü de tamam.
+
+---
