@@ -13591,16 +13591,48 @@ diyor.
   `test-results-*` artifact'inde) iki test **passed** görünmeli,
   skipped değil. Kontrol iki matris ayağında da (ubuntu + windows)
   yapılmalı.
-- Mutasyon: `CORE/version.py`'de `SON_YAYIN` geçici olarak yanlış bir
-  değere çekilir (ör. `"2.1.2"`) → CI kırmızı olmalı. **Dikkat:**
+- **Mutasyon 1 — `test_son_yayin_git_etiketiyle_uyusuyor`:**
+  `CORE/version.py`'de `SON_YAYIN` yanlış bir değere çekilir (ör.
+  `"2.1.2"`) → CI kırmızı olmalı. "Başarısız testleri işaretle"
+  annotation'larında `test_son_yayin_git_etiketiyle_uyusuyor` adı
+  görünmeli. Yan kırmızı:
   `test_security_md_desteklenen_surumu_dogru_yaziyor` (satır 140) da
-  `SON_YAYIN`'a bağlı ve aynı mutasyonla kırılır. Kırmızının tek
-  kaynağı o test olursa kanıt geçersiz sayılır. "Başarısız testleri
-  işaretle" annotation'larında
-  `test_son_yayin_git_etiketiyle_uyusuyor` adı ayrıca görünmeli.
-  Mutasyon geri alınır ve geri alındıktan sonraki koşu yeşil olur.
+  `SON_YAYIN`'a bağlı ve aynı mutasyonla kırılır. Kırmızının tek kaynağı o test olursa kanıt geçersiz sayılır.
+- **Mutasyon 2 —
+  `test_uzun_suredir_etiketlenmemis_agac_versiyonu_yukseltilmis_olmali`:**
+  `CORE/version.py`'de `__version__ = "2.3.0"` yapılır → CI kırmızı
+  olmalı. Annotation'larda
+  `test_uzun_suredir_etiketlenmemis_agac_versiyonu_yukseltilmis_olmali`
+  adı görünmeli. Yan kırmızılar:
+  `test_security_md_calisan_surumu_dogru_yaziyor` (satır 129) ve
+  `test_readme_rozeti_guncel` (satır 149) da `__version__`'a bağlı ve
+  kırılır. Kırmızının tek kaynağı onlar
+  olursa kanıt geçersiz sayılır.
+- **Mutasyonlar main'e GİTMEZ.** Her biri için:
+  1. (b) main'deyken main'den geçici bir dal açılır (ör.
+     `mutasyon/b157-son-yayin`, `mutasyon/b157-surum`). Dal (b)'den
+     önce açılırsa PR koşusu hâlâ sığ klonla çalışır ve test yine skip
+     olur.
+  2. Mutasyon o dala commit'lenir, main'e **taslak (draft) PR** açılır.
+     `ci.yml`'nin `pull_request` tetikleyicisi koşuyu başlatır; dal
+     push'u tek başına başlatmaz (`on: push` yalnızca main/master).
+  3. Kırmızı ve beklenen annotation görülünce koşu kimliği kaydedilir,
+     PR merge edilmeden **kapatılır** ve dal (uzak + yerel) **silinir**.
+  Mutasyonlar iki ayrı PR'da yapılır ki her kırmızı tek bir nedene
+  bağlansın.
 
-**d. Kapanış ölçütü:** a, b ve c'nin üçü de tamam.
+**d. Kapanış ölçütü:** Aşağıdakilerin hepsi tamam:
+- **a:** `v2.3.0` origin'de ve `^{}` satırı `cc637e3`'ü gösteriyor.
+- **b:** test işinin checkout adımında `fetch-depth: 0` var, main'de.
+- **c-geçti:** (b) sonrası main koşusunda iki test de iki matris
+  ayağında **passed**.
+- **c-mutasyon 1:** `SON_YAYIN` mutasyonlu taslak PR kırmızı,
+  annotation'da `test_son_yayin_git_etiketiyle_uyusuyor` var. PR
+  kapatıldı, dal silindi.
+- **c-mutasyon 2:** `__version__ = "2.3.0"` mutasyonlu taslak PR
+  kırmızı, annotation'da
+  `test_uzun_suredir_etiketlenmemis_agac_versiyonu_yukseltilmis_olmali`
+  var. PR kapatıldı, dal silindi.
 
 ---
 
