@@ -13603,3 +13603,43 @@ diyor.
 **d. Kapanış ölçütü:** a, b ve c'nin üçü de tamam.
 
 ---
+
+## B-158 — `tasarımlarımız/` yerel tasarım klasörü: depoya girmiyor, iş bitince silinecek
+
+**Durum:** AÇIK.
+**Bulundu:** 2026-09-29.
+**Karar:** sonra, çünkü kullanıcıya verilen bir sözü bozmuyor; yerel
+çalışma klasörü.
+**Hedef:** Hafta 9 kapanışı (b73).
+
+**Ne:** Depo kökündeki `tasarımlarımız/` klasörü Claude Design ile
+yaptırılan tasarım çalışmalarını ve örnek şemaları tutuyor (kullanıcı
+kararı). Geliştirme sürerken yerelde kalacak, hiçbir zaman push
+edilmeyecek, iş bitince silinecek. Klasörün içeriği bu maddede
+okunmadı ve taşınmadı.
+
+**Nasıl dışarıda tutuluyor:** `.gitignore`'a DEĞİL,
+`.git/info/exclude`'a eklendi:
+
+    # Yerel tasarım çalışmaları — asla push edilmez, iş bitince silinir (B-158)
+    /tasarımlarımız/
+
+`.gitignore` depoya girip herkese dağılırdı. `.git/info/exclude` ise
+yalnızca bu klonda geçerli, yani klasörün varlığı depoya hiç
+yansımıyor. Doğrulama:
+
+    $ git status --short          # önce
+    ?? "tasar\304\261mlar\304\261m\304\261z/"
+    $ git status --short          # sonra
+    (boş)
+    $ git check-ignore -v "tasarımlarımız/"
+    .git/info/exclude:9:/tasarımlarımız/	"tasar\304\261mlar\304\261m\304\261z/"
+
+**Uyarı:** exclude kuralı yalnızca izlenmeyen dosyalar için geçerli.
+Klasörden bir dosya bir gün `git add -f` ile eklenirse kural onu
+korumaz.
+
+**Kapanış ölçütü:** klasör silindi VE `.git/info/exclude`'daki iki
+satır (yorum + `/tasarımlarımız/`) kaldırıldı.
+
+---
