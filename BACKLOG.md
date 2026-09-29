@@ -8253,6 +8253,147 @@ yapıp (ya da `GH_TOKEN` ortam değişkeniyle) bir sonraki yavaş
 indirirse, bu oturumun ulaşabildiği teşhis tavanının ÖTESİNE geçilebilir
 — o günlük olmadan bu sınırın ötesine geçilemiyor.
 
+### 2026-09-29 gözlem — koşu `36495870682` (`88e5f9f`): 30 dk takılma DEĞİL, testin KENDİ 3 sn sınırı
+
+**Erişim değişti.** Depo sahibi `gh auth login` yaptı (`yubin-dev`,
+`repo` kapsamı). Ham iş günlükleri İLK KEZ okunabildi
+(`gh run view <id> --job <id> --log`). Kod değiştirilmedi.
+
+**Koşu.** `36495870682`, commit `88e5f9f` (2026-09-28 23:02 UTC). Bu
+push yalnızca `BACKLOG.md`'yi değiştirdi (`git diff --stat d0984f6
+88e5f9f` → yalnızca `BACKLOG.md`). Aynı kod `d0984f6`'da (koşu
+`35930781150`) yeşildi. Yalnızca `windows-latest · Python 3.11` →
+"Test (pytest)" adımı kırmızı (23:03:57 → 23:08:56). `test-results.xml`
+yazılmadı: `thread` yöntemi zaman aşımında süreci `os._exit` ile
+sonlandırıyor, junit raporu hiç flush edilmiyor.
+
+**Takılan test:**
+`tests/test_folders.py::test_is_descendant_elle_bozulmus_dongude_sonsuz_donguye_girmiyor`.
+Bu test `@pytest.mark.timeout(3)` taşıyor (`tests/test_folders.py:537`,
+`27a6d64` ile 2026-09-10'da eklendi). Paketin geri kalanı 120 sn
+sınırında. `pytest.ini`'de `func_only: False` olduğu için bu 3 sn'ye
+fixture KURULUMU da dahil.
+
+**Yığın (tek thread).** Dökümde yalnızca `Stack of MainThread (3200)`
+var. pytest-timeout'un `thread` yöntemi zamanlayıcının kendisi hariç
+tüm Python thread'lerini basar. Yani o anda Python kodu çalıştıran
+başka bir thread (sızmış worker, APScheduler, QThreadPool işi) YOKTU.
+Özet:
+
+    runner.py:132 runtestprotocol → call_and_report(item, "setup")
+    fixtures.py … pytest_fixture_setup
+    tests/conftest.py:232  db → manager.connect(hwid="TEST-HWID-DB")
+    DB/db_manager.py:287   connect → self._apply_schema()
+    DB/db_manager.py:384   _apply_schema → self._conn.execute(
+                           "CREATE INDEX IF NOT EXISTS idx_folders_parent …")
+
+Zaman aşımı test gövdesinde değil, `setup` aşamasında düştü. `db`
+fixture'ı her test için `tmp_path` altında YENİ bir dosya açıyor
+(`conftest.py:221-237`); aynı dosyaya başka bağlantı açan bir şey yok.
+Yığın bir kilit beklemesini KANITLAMIYOR: yalnızca 3 sn dolduğunda ana
+thread'in hangi satırda olduğunu gösteriyor.
+
+**Asılma yok, yavaşlık var.** Günlük zaman damgalarına göre bir önceki
+test 23:08:53.495'te PASSED, zaman aşımı bandı 23:08:56.498'de: 3,00 sn.
+Tüm pytest çıktısında (1026 test satırı) iki satır arası en büyük boşluk
+6,9 sn; 120 sn'lik bir sessizlik HİÇ yok. Yavaşlama koşunun başından
+değil, ~23:07'den (`test_duplicate_prompt.py`) itibaren başlıyor. Yeşil
+`d0984f6` koşusuyla dosya bazında ortalama test süresi:
+
+| Dosya | Kırmızı | Yeşil (`d0984f6`) | Kat |
+|---|---|---|---|
+| ilk 27 dosya (`test_admin_pages…` → `test_disposal.py`) | — | — | 0,8–1,2× |
+| `test_duplicate_prompt.py` | 1,05 sn | 0,27 sn | 3,9× |
+| `test_duplicates.py` | 0,77 sn | 0,21 sn | 3,6× |
+| `test_file_queries.py` | 0,48 sn | 0,27 sn | 1,8× |
+| `test_folders.py` | 0,96 sn (en çok 6,92) | 0,28 sn (en çok 0,33) | 3,5× |
+
+Aynı pencerede bazı testler yeşil hızda kalıyor (ör. `test_export.py`
+~1,0×). Yani yavaşlama düzensiz sıçramalar hâlinde (3–7 sn), düzgün ve
+birikerek artan bir eğri değil. Yavaşlamanın NEDENİ (disk, Defender,
+komşu yük) bu günlükten belirlenemiyor.
+
+**Geçmiş karşılaştırma — aynı test, 13 Windows günlüğü.**
+`test_is_descendant_elle_bozulmus…`'un süresi:
+
+| Koşu | Commit | Tarih | Windows pytest | Bu testin süresi |
+|---|---|---|---|---|
+| 36495870682 | 88e5f9f | 09-28 | **TIMEOUT** | **3,00 sn** (sınır) |
+| 35930781150 | d0984f6 | 09-23 | success | 0,32 sn |
+| 35907757679 | 0fafeae | 09-23 | success | 0,34 sn |
+| 35902307812 | 5f1b997 | 09-23 | failure (B-156) | 0,53 sn |
+| 35898080361 | 712d734 | 09-23 | success | 0,33 sn |
+| 35895896456 | 7c1e7b8 | 09-23 | success | 0,24 sn |
+| 34587629233 | da18340 | 09-11 | failure (B-156) | 0,39 sn |
+| 34530899819 | 6d79c73 | 09-10 | failure (B-156) | 0,60 sn |
+| 34509770210 | be4f800 | 09-10 | success | 0,48 sn |
+| 34492528582 | f02ce45 | 09-10 | success | 0,35 sn |
+| 34358252221, 34342271050, 34209290866 | 644e5f2, 01c4f01, 19d68fa | 09-08/09 | failure (B-117) | — (test henüz yoktu) |
+
+Bu zaman aşımı İLK KEZ görülüyor. Test 9 koşunun hepsinde 0,24–0,60
+sn'de geçmiş, yani 3 sn'lik payın 5–12'de biri kadar. Yeni bir
+regresyon değil; ortam yavaşladığında dar sınırın patlaması.
+
+**`7c1e7b8` (koşu `35895896456`) ayrı bir sorun.** O koşuda Windows
+test işi YEŞİL. Kırmızı olan "EXE yapısı (Windows)" → "Duman testi"
+adımı. Kök nedeni bu dosyada zaten kayıtlı (B-154, "EK — CI GERÇEKTEN
+bir hata yakaladı": `smoke-test.ps1` STDERR'i yakalamıyordu). Bu gözlemle ilgisi yok.
+
+**B-098'in ASIL 30 dk takılmaları — ilk kez okundu.** Maddenin başında
+anılan iki `cancelled` koşunun ham günlükleri indirildi. İKİSİ DE aynı
+testte durmuş, bugünkü testte değil:
+
+| Koşu | Commit | Son PASSED | Takılan test (başlayıp bitmeyen) | İptal |
+|---|---|---|---|---|
+| 33334735668 | 19732b8 | 20:56:10 `test_slide_over.py::test_baska_tus_panel_acikken_KAPATMIYOR` | `tests/test_static_analysis.py::test_bandit_yapilandirmasi_kanaryayi_yakaliyor` | 21:20:21 |
+| 33332020540 | d878561 | 19:57:41 aynı | aynı | 20:21:44 |
+
+O tarihte pytest-timeout yoktu, yani yığın izi YOK. Bu test sonraki
+bütün Windows koşularında ~0,27 sn'de PASSED
+(`34209290866`, `34587629233`, `35902307812`, `35930781150`), ve
+`tests/test_static_analysis.py` 2026-08-30'dan beri değişmemiş. Neden
+takılmayı bıraktığı bilinmiyor; bu gözlemde araştırılmadı. B-098'in
+açık sorusu ("hangi testte takılıyor") için ilk somut veri bu.
+
+**Kök neden (bu koşu için):** ortam kararsızlığı. Windows koşucusu
+koşunun ortasında düzensiz yavaşladı ve `db` fixture kurulumunu
+kapsayan 3 sn'lik test-özel sınır aşıldı. Kod regresyonu değil (aynı
+kod yeşil, test 9 koşuda 0,24–0,60 sn). Workflow/altyapı arızası da
+değil. Yavaşlamanın kendi nedeni belirlenemedi. B-156 ile aynı sınıf:
+yavaş Windows koşucusunda dar bir zamanlama payına dayanan test.
+
+**Yan etki — tek bir zaman aşımı tüm Windows sonucunu siliyor.**
+`thread` yöntemi süreci sonlandırdığı için 1026 geçmiş testin sonucu da
+kayboldu (XML yok, özet tablosu yok, annotation'da yalnızca "Test
+raporu yok"). Bu davranış B-098'in ilk turunda bilerek kabul edilmişti;
+burada bir kez daha görüldü.
+
+**Düzeltme önerisi — UYGULANMADI, onay bekliyor.**
+`tests/test_folders.py:537`:
+
+    @pytest.mark.timeout(3)
+    →
+    @pytest.mark.timeout(30, func_only=True)
+
+- `func_only=True`: sınır yalnızca test gövdesini (döngü koruması
+  denetlenen `is_descendant` çağrısı) kapsar, ortama bağlı `db` fixture
+  kurulumunu kapsamaz.
+- 3 → 30: gövde de DB yazıyor (3 × `create_folder` + `UPDATE`). Bu
+  koşuda tek bir test 6,92 sn sürdü; 3 sn gövde için de dar. Sonsuz
+  döngü hiç bitmediği için sınırın büyüklüğü yakalama gücünü
+  değiştirmiyor, yalnızca yanlış alarm payını büyütüyor. 30 sn hâlâ
+  paketin 120 sn'lik genel sınırının altında.
+- Kanıt planı: (1) yerelde test yeşil; (2) mutasyon: `is_descendant`'taki
+  `gorulen` koruması geçici olarak kaldırılınca test 30 sn'de Timeout
+  ile KIRMIZI (sonsuz döngü hâlâ yakalanıyor); geri alınınca `git diff`
+  boş; (3) sonraki Windows CI koşusunda test PASSED.
+- Paket genelinde başka `@pytest.mark.timeout` YOK (`grep`); aynı
+  düzeltme başka bir yere gerekmiyor.
+
+**B-098 durumu değişmedi: Açık.** Bu koşu B-098'in 30 dk takılmasının
+tekrarı değil. Asıl takılmanın yeri (bandit kanarya testi) artık biliniyor
+ama nedeni bilinmiyor.
+
 ---
 
 ## B-099 — B-092'nin kararı UYGULANDI: `original_sha256` AAD'den kaldırıldı, anahtarsız RFC 3161 doğrulaması KALICI olarak feda edildi
