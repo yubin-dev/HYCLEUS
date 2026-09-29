@@ -3992,7 +3992,7 @@ the audit log, so both `--recover` and `--takeover` are covered:
 | Order | Evidence | Result |
 |---|---|---|
 | 1 | Key check value `usb_tokens.kcv`: HKDF-SHA256 of the master key with its own label (`b"hycleus-kcv-v1"`), compared in constant time | match: accepted; mismatch: rejected |
-| 2 | No KCV: the GCM tag of up to three `.hcl` files encrypted under the same hwid, newest first, through `crypto.verify_file()` (no plaintext kept) | any one verifies: accepted; all fail on the tag: rejected |
+| 2 | No KCV: the GCM tag of up to three `.hcl` files of the same account (`user_id` in the file's AAD; the hwid only when the vault has no `users` row yet), newest first, through `crypto.verify_file()` with the tag alone (no plaintext kept) | any one verifies: accepted; all fail on the tag: rejected |
 | 3 | Neither exists | accepted, audit row says `dogrulama=yapilamadi`, and the new share is shown and cannot be skipped |
 
 A rejection carries one fixed message that contains no part of the share,
@@ -4015,7 +4015,13 @@ vault was created with. **What it does not:**
   new share is shown.
 - Vaults created before migration 29 get their KCV on the first successful
   `open_vault()`. A vault never opened since relies on step 2.
-- A `.hcl` file encrypted under an *older* key of the same hwid (the USB
+- Candidates are chosen by account, not by hwid: a takeover keeps the key
+  but does not re-encrypt files, so after A→B every file still carries A
+  in its AAD. Filtering on B found none and fell through to "could not
+  verify" — accepting a mistyped share; checking the hwid inside
+  `verify_file()` would have rejected the right one. Both were proven by
+  test before the fix (`tests/test_usb_takeover.py`).
+- A `.hcl` file encrypted under an *older* key of the same account (the USB
   was re-registered, or `--reset` was used) does not verify. "Any one of
   three" keeps that from rejecting a correct share, unless all three
   candidates are old-key files.
@@ -8414,7 +8420,7 @@ de ölçüldü, çıkarım değil.
 | Sıra | Kanıt | Sonuç |
 |---|---|---|
 | 1 | Anahtar doğrulama değeri `usb_tokens.kcv`: master key'in kendi etiketiyle (`b"hycleus-kcv-v1"`) HKDF-SHA256'sı, sabit sürede karşılaştırılıyor | eşleşme: kabul; uyuşmazlık: ret |
-| 2 | KCV yok: aynı hwid ile şifrelenmiş en fazla üç `.hcl` dosyasının GCM etiketi, en yenisi önce, `crypto.verify_file()` ile (düz metin tutulmuyor) | biri doğrularsa: kabul; hepsi etiketten düşerse: ret |
+| 2 | KCV yok: aynı hesabın (dosyanın AAD'sindeki `user_id`; kasanın henüz `users` satırı yoksa hwid) en fazla üç `.hcl` dosyasının GCM etiketi, en yenisi önce, `crypto.verify_file()` ile yalnızca etiket (düz metin tutulmuyor) | biri doğrularsa: kabul; hepsi etiketten düşerse: ret |
 | 3 | İkisi de yok | kabul, denetim satırı `dogrulama=yapilamadi` diyor, ve yeni parça atlanamaz biçimde gösteriliyor |
 
 Ret, parçanın hiçbir kısmını içermeyen tek bir sabit mesaj taşıyor ve o
@@ -8438,7 +8444,13 @@ anahtardır. **Garanti etmedikleri:**
   bu.
 - Göç 29'dan önce kurulmuş kasalar KCV'lerini ilk başarılı `open_vault()`'ta
   alıyor. O günden beri hiç açılmamış bir kasa 2. adıma dayanıyor.
-- Aynı hwid'in *eski* bir anahtarıyla şifrelenmiş bir `.hcl` dosyası (USB
+- Adaylar hwid'e göre değil hesaba göre seçiliyor: devralma anahtarı
+  koruyor ama dosyaları yeniden şifrelemiyor, yani A→B'den sonra her dosya
+  AAD'sinde hâlâ A'yı taşıyor. B'ye göre süzmek hiç aday bulmuyor ve
+  "doğrulanamadı"ya düşüyordu — yanlış yazılmış parçayı kabul ederek;
+  `verify_file()` içinde hwid'i sınamak ise doğrusunu reddederdi. İkisi de
+  düzeltmeden önce testle kanıtlandı (`tests/test_usb_takeover.py`).
+- Aynı hesabın *eski* bir anahtarıyla şifrelenmiş bir `.hcl` dosyası (USB
   yeniden kaydedilmiş ya da `--reset` kullanılmış) doğrulamaz. "Üçünden biri
   yeter" kuralı bunun doğru bir parçayı reddettirmesini engelliyor — üç
   adayın üçü de eski anahtarlı değilse.

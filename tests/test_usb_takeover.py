@@ -447,7 +447,6 @@ def _devralinmis_kcvsiz_kasa(db, kasa_dizini, tmp_path: Path) -> str:
     return share_3
 
 
-@pytest.mark.xfail(strict=True, reason="B-160 yeniden açılış: .hcl adayları hwid ile süzülüyor")
 @pytest.mark.parametrize("pin_yolu", [True, False], ids=["share_1+share_3", "share_2+share_3"])
 def test_devralinmis_KCVsiz_kasada_TEK_HARFI_yanlis_parca_REDDEDILIR(
     db, kasa_dizini, tmp_path, tek_harf_boz, pin_yolu
@@ -461,7 +460,6 @@ def test_devralinmis_KCVsiz_kasada_TEK_HARFI_yanlis_parca_REDDEDILIR(
         )
 
 
-@pytest.mark.xfail(strict=True, reason="B-160 yeniden açılış: .hcl adayları hwid ile süzülüyor")
 @pytest.mark.parametrize("pin_yolu", [True, False], ids=["share_1+share_3", "share_2+share_3"])
 def test_devralinmis_KCVsiz_kasada_dogru_parca_HCL_ile_dogrulanir(
     db, kasa_dizini, tmp_path, pin_yolu

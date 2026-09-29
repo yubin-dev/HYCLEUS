@@ -160,7 +160,7 @@ def takeover_usb(
     # zaman BİR anahtar veriyor ve tek harfi yanlış bir parça yanlış bir
     # anahtar döndürüyordu; aşağıdaki discard_vault() eski kasayı onunla
     # siliyordu. Artık recover_master_key() anahtarı KCV (yoksa aynı
-    # hwid'in bir .hcl dosyası) ile doğruluyor ve yanlış parçada ValueError
+    # hesabın bir .hcl dosyası) ile doğruluyor ve yanlış parçada ValueError
     # fırlatıyor — henüz hiçbir kasa, pay ya da DB satırı değişmemişken.
     # Ne KCV ne dosya varsa doğrulanamaz; o zaman `dogrulama` bunu söyler.
     #

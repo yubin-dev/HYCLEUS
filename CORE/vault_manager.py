@@ -1607,15 +1607,22 @@ class KurtarilanAnahtar(bytes):
 def _hcl_ile_dogrula(hwid: str, master_key: bytes) -> bool | None:
     """
     KCV'si olmayan (göçten önce kurulmuş, o günden beri açılmamış) bir
-    kasanın anahtarını, aynı hwid'le şifrelenmiş bir `.hcl` dosyasının GCM
+    kasanın anahtarını, aynı hesabın şifrelediği bir `.hcl` dosyasının GCM
     etiketiyle doğrular (B-160). Yeni kripto yok: `crypto.verify_file()`
     düz metni biriktirmiyor ve diske yazmıyor.
 
-    Adaylar: `files.aad_metadata`'sındaki `hwid` bu hwid olan, `users`
-    satırı varsa `user_id`'si de ona eşit olan, diskte duran dosyalar,
-    en YENİSİ önce. Anahtar her kayıtta rastgele üretiliyor; aynı hwid
-    silinip yeniden kaydedilmiş ya da `setup_usb --reset` görmüşse ESKİ
-    anahtarla şifrelenmiş dosyalar da kalabilir. Bu yüzden kural "biri
+    Adaylar: `files.aad_metadata`'sındaki `user_id`'si bu hwid'in `users`
+    satırının `id`'sine eşit olan, diskte duran dosyalar, en YENİSİ önce.
+    hwid'e BAKILMAZ: devralma dosyaları yeniden şifrelemiyor (AAD'de eski
+    hwid kalıyor) ama master_key'i koruyor; A→B devralınmış bir kasanın
+    dosyaları hâlâ A'yı taşır. Aynı nedenle `verify_file()` `hwid=None`
+    ile çağrılır — yalnızca GCM etiketi sınanır; hwid kontrolü aynı
+    `AuthenticationError`'ı fırlatıp DOĞRU anahtarı "yanlış" saydırırdı.
+    `users` satırı yoksa (hesabı henüz oluşmamış kasa) süzgeç hwid'dir.
+
+    Anahtar her kayıtta rastgele üretiliyor; aynı hwid silinip yeniden
+    kaydedilmiş ya da `setup_usb --reset` görmüşse ESKİ anahtarla
+    şifrelenmiş dosyalar da kalabilir. Bu yüzden kural "biri
     yeter": en fazla `_HCL_ADAY_SAYISI` adaydan biri doğrularsa kabul,
     sınananların HEPSİ GCM etiketinden düşerse ret. Okunamayan ya da başlığı
     bozuk dosya sayılmaz (yanlış anahtarın kanıtı değil).
@@ -1637,15 +1644,18 @@ def _hcl_ile_dogrula(hwid: str, master_key: bytes) -> bool | None:
             meta = json.loads(satir["aad_metadata"])
         except (TypeError, ValueError):
             continue
-        if not isinstance(meta, dict) or meta.get("hwid") != hwid:
+        if not isinstance(meta, dict):
             continue
-        if kullanici is not None and meta.get("user_id") != kullanici["id"]:
+        if kullanici is not None:
+            if meta.get("user_id") != kullanici["id"]:
+                continue
+        elif meta.get("hwid") != hwid:
             continue
         yol = Path(satir["filepath"])
         if not yol.is_file():
             continue
         try:
-            verify_file(yol, master_key, hwid=hwid)
+            verify_file(yol, master_key, hwid=None)
         except AuthenticationError:
             sinanan += 1
             if sinanan >= _HCL_ADAY_SAYISI:
