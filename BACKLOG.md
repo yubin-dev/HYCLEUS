@@ -8394,6 +8394,16 @@ burada bir kez daha görüldü.
 tekrarı değil. Asıl takılmanın yeri (bandit kanarya testi) artık biliniyor
 ama nedeni bilinmiyor.
 
+**Çapraz atıf:** bu gözlemdeki düzeltme önerisi onaylandı ve ayrı madde
+olarak uygulandı: **B-159**.
+
+**Not — bandit kanarya bulgusu: araştırılmadı, v2.6.** B-098'in iki
+eski 30 dk koşusu (`33334735668`/`19732b8`, `33332020540`/`d878561`)
+`tests/test_static_analysis.py::test_bandit_yapilandirmasi_kanaryayi_yakaliyor`
+testinde başlayıp bitmemiş (ayrıntı yukarıdaki tabloda). Neden takıldığı
+ve neden takılmayı bıraktığı bu turda kasıtlı olarak ARAŞTIRILMADI;
+v2.6'ya bırakıldı.
+
 ---
 
 ## B-099 — B-092'nin kararı UYGULANDI: `original_sha256` AAD'den kaldırıldı, anahtarsız RFC 3161 doğrulaması KALICI olarak feda edildi
@@ -13814,5 +13824,89 @@ korumaz.
 
 **Kapanış ölçütü:** klasör silindi VE `.git/info/exclude`'daki iki
 satır (yorum + `/tasarımlarımız/`) kaldırıldı.
+
+---
+
+## B-159 — `test_is_descendant_elle_bozulmus…`'un 3 sn sınırı fixture kurulumunu da kapsıyordu: yavaş Windows koşucusunda tüm test sonucunu siliyordu
+
+**Durum:** AÇIK — değişiklik uygulandı ve yerelde kanıtlandı;
+kapanış ölçütü aşağıda.
+**Karar:** şimdi, çünkü kullanıcı sözü bozmuyor ama tek satırlık bir
+değişiklik ve düzeltilmezse her Windows koşucusu yavaşlamasında 1026
+testin sonucu silinip teşhis tekrarlanıyor.
+**Kaynak:** B-098, "2026-09-29 gözlem — koşu `36495870682`" (teşhis ve
+kanıt orada).
+
+**Sorun.** `tests/test_folders.py::test_is_descendant_elle_bozulmus_dongude_sonsuz_donguye_girmiyor`
+`@pytest.mark.timeout(3)` taşıyordu. `pytest.ini`'de `func_only: False`
+olduğu için bu 3 sn `db` fixture KURULUMUNU da kapsıyordu. Koşu
+`36495870682`'de Windows koşucusu yavaşladı ve zaman aşımı `setup`
+aşamasında düştü (`conftest.py:232` → `db_manager.py:287` →
+`:384`). `thread` yöntemi süreci sonlandırdığı için 1026 geçmiş testin
+sonucu da kayboldu.
+
+**Değişiklik** (`tests/test_folders.py:537`, tek satır):
+
+    @pytest.mark.timeout(3)
+    →
+    @pytest.mark.timeout(30, func_only=True)
+
+**Neden `func_only=True`.** Testin korumak istediği şey
+`is_descendant()`'ın bozuk bir `parent_id` döngüsünde sonsuz döngüye
+girmemesi, yani TEST GÖVDESİ. `db` fixture'ı her test için yeni bir
+SQLite dosyası açıp şemayı kuruyor; süresi koşucunun disk/yük durumuna
+bağlı ve testin sorusuyla ilgisiz. `func_only=True` sınırı yalnızca
+gövdeye uyguluyor. Fixture kurulumu paketin genel 120 sn sınırında
+kalıyor.
+
+**Neden 30.** Gövde de DB'ye yazıyor (bir kullanıcı, 3 ×
+`create_folder`, bir `UPDATE`), yani o da koşucu yavaşlığına açık. Koşu
+`36495870682`'de tek bir `test_folders.py` testi 6,92 sn sürdü; 3 sn
+gövde için de dar. Sonsuz döngü hiç bitmediği için sınırın büyüklüğü
+YAKALAMA gücünü değiştirmiyor, yalnızca yanlış alarm payını büyütüyor.
+30 sn, gözlenen en kötü süreye (6,92 sn) ~4× pay bırakıyor ve paketin
+120 sn'lik genel sınırının hâlâ altında. Yani döngü koruması bozulursa
+genel sınırdan 4 kat erken kırmızı oluyor.
+
+**Kanıt — yerelde, yalnızca bu tek testle**
+(`python -m pytest "tests/test_folders.py::test_is_descendant_elle_bozulmus_dongude_sonsuz_donguye_girmiyor" -p no:cacheprovider -q`):
+
+1. Düzeltmeden sonra, taban:
+
+       1 passed in 0.35s
+
+2. Mutasyon: `CORE/folders.py::is_descendant()`'taki koruma geçici
+   olarak kaldırıldı (`git diff --stat` → `CORE/folders.py | 2 --`):
+
+       if simdi in gorulen:
+           return False
+
+   Sonuç: çıkış kodu 1, süre **30,7 sn**:
+
+       tests\test_folders.py +++++++++++++ Timeout +++++++++++++
+       ~~~~~~~~~ Stack of MainThread (6416) ~~~~~~~~~
+         File "…\tests\test_folders.py", line 558, in test_is_descendant_elle_bozulmus_dongude_sonsuz_donguye_girmiyor
+         File "…\CORE\folders.py", line 152, in is_descendant
+       +++++++++++++ Timeout +++++++++++++
+
+   Zaman aşımı artık GÖVDEDE düşüyor (`test_folders.py:558` →
+   `is_descendant` döngüsü), fixture'da değil. Test sonsuz döngüyü hâlâ
+   yakalıyor.
+3. Geri alındı:
+
+       git diff -- CORE/folders.py   → (boş)
+       1 passed in 0.31s
+       tests/test_folders.py: 49 passed in 9.89s
+
+Değişen dosya: yalnızca `tests/test_folders.py` (1 satır).
+`CORE/folders.py`'de NET DEĞİŞİKLİK YOK.
+
+Paket genelinde başka `@pytest.mark.timeout` yok; aynı düzeltme başka
+bir yere gerekmiyor.
+
+**Kapanış ölçütü:** bu değişikliği içeren ilk push'un `windows-latest ·
+Python 3.11` koşusunda test PASSED görünüyor (test özeti ya da
+`test-results-windows-latest-py3.11` artifact'i), koşu kimliği bu
+maddeye yazıldı.
 
 ---

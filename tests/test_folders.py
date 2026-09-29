@@ -534,7 +534,7 @@ def test_is_descendant_ebeveyn_kendi_cocugunun_alt_agacinda_degil(db):
     assert is_descendant(db, ust, alt) is False
 
 
-@pytest.mark.timeout(3)
+@pytest.mark.timeout(30, func_only=True)
 def test_is_descendant_elle_bozulmus_dongude_sonsuz_donguye_girmiyor(db):
     """
     `move_folder()`'ın kendi döngü koruması sağlamken `parent_id` zinciri
