@@ -107,10 +107,18 @@ _HKDF_LABEL = b"hycleus-vault-sign-v1"
 
 # HMAC imza anahtarının HKDF info parametresi — versiyonlu ve hwid'e özgü.
 # Bu değer anahtar MATERYALİ değil, yalnızca bağlam (domain separation +
-# cihaz bağlama); tek başına anahtar üretmeye yetmez. Kodda HKDF çağıran
-# TEK yer burası — ileride share_2'yi başka bir amaçla HKDF'e sokan bir çağrı
-# eklenirse ayrı, çakışmayan bir info etiketi kullanmalı.
+# cihaz bağlama); tek başına anahtar üretmeye yetmez. share_2'yi HKDF'e
+# sokan TEK yer _derive_signing_key() — ileride share_2'yi başka bir amaçla
+# HKDF'e sokan bir çağrı eklenirse ayrı, çakışmayan bir info etiketi
+# kullanmalı.
 _HMAC_INFO_PREFIX = b"vault-hmac-v1:"
+
+# B-160: master_key'in anahtar doğrulama değeri (KCV) için HKDF info
+# etiketi. Girdi master_key; CORE/crypto.py dosya alt-anahtarlarını da
+# master_key'den HKDF ile türetiyor (_FILE_SUBKEY_INFO) — etiketler
+# farklı olduğu için KCV hiçbir dosya anahtarıyla çakışmaz. Alan ayrımı
+# tests/test_vault_hmac_share2.py'de sınanıyor.
+_KCV_INFO = b"hycleus-kcv-v1"
 
 # Shamir alanı: 257-bit asal, 32-byte (256-bit) sırları barındırır
 # GF(p) içinde derece-1 polinom: f(x) = s + a1*x mod p
@@ -237,6 +245,49 @@ def _derive_signing_key_legacy_hwid(hwid: str) -> bytes:
         salt=_HKDF_LABEL,
         info=b"signing",
     ).derive(hwid.encode())
+
+
+def _kcv_hesapla(master_key: bytes) -> bytes:
+    """
+    master_key'in anahtar doğrulama değeri (KCV, B-160).
+
+    HKDF-SHA256, `_derive_signing_key()` ile aynı salt, ayrı info etiketi
+    (`_KCV_INFO`). Tek yönlü: KCV'den master_key geri hesaplanamaz, ve
+    master_key 256 bit rastgele olduğu için KCV'ye karşı tahmin denemesi
+    anlamsız. Bir `.hcl` dosyasının GCM etiketi zaten aynı "bu anahtar mı?"
+    sorusunu yanıtlıyor; KCV yeni bir oracle açmıyor, yalnızca dosyası
+    olmayan bir kasa için de yanıtı mümkün kılıyor.
+    """
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=_KEY_SIZE,
+        salt=_HKDF_LABEL,
+        info=_KCV_INFO,
+    ).derive(master_key)
+
+
+def _kcv_oku(hwid: str) -> bytes | None:
+    """`usb_tokens.kcv` — satır yoksa ya da göçten önce kurulmuşsa `None`."""
+    row = DBManager().fetchone("SELECT kcv FROM usb_tokens WHERE hwid = ?", (hwid,))
+    if row is None or not row["kcv"]:
+        return None
+    return bytes.fromhex(row["kcv"])
+
+
+def _kcv_eksikse_yaz(hwid: str, master_key: bytes) -> None:
+    """
+    Göçten önce kurulmuş bir kasanın KCV'sini geriye dönük doldurur (B-160).
+
+    YALNIZCA iki sistem payından (share_1 + share_2) kurulan, dolayısıyla
+    doğruluğundan emin olunan bir anahtarla çağrılmalı — `open_vault()`.
+    Kurtarma parçasından gelen bir anahtarla ÇAĞRILMAMALI: doğrulanamamış
+    bir anahtarın KCV'si yazılırsa, yarıda bırakılan bir kurtarmadan sonra
+    DOĞRU parça reddedilirdi. Var olan bir KCV'nin üzerine yazmaz.
+    """
+    DBManager().execute(
+        "UPDATE usb_tokens SET kcv = ? WHERE hwid = ? AND (kcv IS NULL OR kcv = '')",
+        (_kcv_hesapla(master_key).hex(), hwid),
+    )
 
 
 def _derive_kek(pin: str, salt: bytes) -> bytes:
@@ -467,9 +518,11 @@ def _sss_derive_share(share_a: str, share_b: str, index: int) -> str:
     return _fmt_share(index, _lagrange_at([(idx_a, y_a), (idx_b, y_b)], index))
 
 
-def _save_usb_token(hwid: str, share_2: str, token_id_hex: str) -> None:
+def _save_usb_token(
+    hwid: str, share_2: str, token_id_hex: str, *, kcv_hex: str | None = None
+) -> None:
     """
-    USB token kaydını yazar: share_2 anahtar kasasına, token_id DB'ye.
+    USB token kaydını yazar: share_2 anahtar kasasına, token_id + KCV DB'ye.
 
     share_2 artık DB'de TUTULMAZ. usb_tokens.share_2 sütunu şema uyumluluğu
     için duruyor ama boş string yazılır — HWID satırının kendisi kimlik
@@ -477,11 +530,16 @@ def _save_usb_token(hwid: str, share_2: str, token_id_hex: str) -> None:
 
     Kasaya yazma önce yapılır ve store() geri okuyup doğrular; kasa
     yazamazsa KeyringUnavailableError fırlar ve DB'ye hiç dokunulmaz.
+
+    `kcv_hex` (B-160) AYNI `INSERT OR REPLACE` içinde yazılıyor:
+    `INSERT OR REPLACE` satırı silip yeniden eklediği için ayrı bir
+    `UPDATE` sonradan eklenseydi arada KCV'siz bir satır kalabilirdi.
     """
     secret_store.store(secret_store.share_2_username(hwid), share_2)
     DBManager().execute(
-        "INSERT OR REPLACE INTO usb_tokens (hwid, share_2, token_id) VALUES (?, '', ?)",
-        (hwid, token_id_hex),
+        "INSERT OR REPLACE INTO usb_tokens (hwid, share_2, token_id, kcv) "
+        "VALUES (?, '', ?, ?)",
+        (hwid, token_id_hex, kcv_hex),
     )
 
 
@@ -752,6 +810,8 @@ def create_vault(
         share_1, share_2, _share_3_derivable = _sss_split(
             bytes(master_key_ba), anchor=anchor_share
         )
+        # B-160: kurtarmada anahtarın doğrulanacağı değer.
+        kcv_hex = _kcv_hesapla(bytes(master_key_ba)).hex()
 
         # ── AES-256-GCM şifreleme ────────────────────────────────────────
         salt = os.urandom(_SALT_SIZE)
@@ -779,8 +839,8 @@ def create_vault(
     vault_file = _new_vault_path(hwid)
     _rewrite_vault(hwid, protected, share_2, target=vault_file)
 
-    # ── share_2 + token_id → DB ───────────────────────────────────────────────
-    _save_usb_token(hwid, share_2, token_id_hex)
+    # ── share_2 + token_id + KCV → kasa/DB ──────────────────────────────────
+    _save_usb_token(hwid, share_2, token_id_hex, kcv_hex=kcv_hex)
 
     return vault_file
 
@@ -1308,6 +1368,15 @@ def open_vault(hwid: str, pin: str) -> tuple[str, bytes]:
         raise ValueError("USB token DB'de bulunamadı — master_key kurtarılamaz.")
 
     master_key = _sss_recover(share_1, _load_share_2(hwid))
+
+    # B-160: göçten önce kurulmuş kasaların KCV'si ilk başarılı açılışta
+    # doldurulur. Anahtar burada iki SİSTEM payından geliyor, yani doğru.
+    # Best-effort: bir DB hatası girişi engellememeli; KCV yoksa kurtarma
+    # yine .hcl dosyasıyla doğrulamaya düşer.
+    try:
+        _kcv_eksikse_yaz(hwid, master_key)
+    except Exception as exc:
+        _log.warning("kcv_geriye_donuk_yazilamadi  hwid=%s hata=%s", hwid, type(exc).__name__)
     return role, master_key
 
 

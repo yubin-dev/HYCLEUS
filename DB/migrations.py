@@ -682,6 +682,23 @@ def _m28_totp_replay_guard(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _m29_usb_tokens_kcv(conn: sqlite3.Connection) -> None:
+    """
+    `usb_tokens.kcv` — master_key'in anahtar doğrulama değeri (B-160).
+
+    `CORE/vault_manager.py::_kcv_hesapla()`: HKDF-SHA256(master_key,
+    info=b"hycleus-kcv-v1"), hex. `recover_master_key()` kurtarılan
+    anahtarı bununla karşılaştırıyor; tek harfi yanlış bir kurtarma
+    parçası artık yanlış bir anahtar DÖNDÜRMÜYOR, reddediliyor.
+
+    NULL = bu kasa göçten önce kuruldu ve o günden beri açılmadı;
+    `open_vault()` ilk başarılı açılışta dolduruyor. Anahtarın kendisi
+    değil, ondan tek yönlü türetilmiş bir değer: KCV'den anahtar geri
+    hesaplanamaz.
+    """
+    sutun_ekle(conn, "usb_tokens", "kcv TEXT")
+
+
 #: Numaralı, SIRALI, değişmez göç listesi. Sıra anlamlıdır: 11 numara
 #: `folders` tablosuna referans veriyor, yani 10'dan sonra gelmek ZORUNDA.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -789,6 +806,11 @@ MIGRATIONS: tuple[Migration, ...] = (
               "edilen 30 saniyelik adımı tutar, aynı/daha eski bir adıma "
               "denk gelen bir kod ikinci kez kabul edilmez.",
               _m28_totp_replay_guard),
+    Migration(29, "usb-tokens-kcv",
+              "master_key'in anahtar doğrulama değeri (B-160) — kurtarma "
+              "parçasıyla elde edilen anahtar bununla karşılaştırılır; "
+              "tek harfi yanlış bir parça yanlış anahtar yerine hata verir.",
+              _m29_usb_tokens_kcv),
 )
 
 

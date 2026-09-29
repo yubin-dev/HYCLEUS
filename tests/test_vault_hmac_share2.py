@@ -155,6 +155,56 @@ def test_derive_signing_key_matches_documented_hkdf_parameters() -> None:
     assert vault_manager._derive_signing_key(_HWID, share_2) == beklenen
 
 
+def test_kcv_info_etiketi_diger_hkdf_etiketlerinden_AYRI() -> None:
+    """
+    B-160: KCV, master_key'den HKDF ile türetiliyor. Dosya alt-anahtarları
+    da (CORE/crypto.py::_derive_file_key) master_key'den HKDF ile
+    türetiliyor. Etiketler çakışsaydı KCV bir dosya anahtarı ya da imza
+    anahtarıyla aynı değeri taşıyabilirdi.
+    """
+    from CORE import crypto
+
+    etiketler = [
+        vault_manager._KCV_INFO,
+        vault_manager._HMAC_INFO_PREFIX,
+        b"signing",  # _derive_signing_key_legacy_hwid
+        crypto._FILE_SUBKEY_INFO,
+    ]
+    assert len(set(etiketler)) == len(etiketler)
+    assert not vault_manager._KCV_INFO.startswith(vault_manager._HMAC_INFO_PREFIX)
+
+
+def test_kcv_ayni_girdiyle_imza_ve_dosya_anahtarindan_FARKLI() -> None:
+    """Aynı 32 bayt girdi: KCV, imza anahtarı türetmesi ve v3 dosya alt-anahtarı üçü farklı."""
+    from CORE import crypto
+
+    anahtar = bytes(range(32))
+    kcv = vault_manager._kcv_hesapla(anahtar)
+    imza_turevi = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=vault_manager._HKDF_LABEL,
+        info=vault_manager._HMAC_INFO_PREFIX + _HWID.encode(),
+    ).derive(anahtar)
+    dosya_turevi = crypto._derive_file_key(anahtar, b"\x00" * 12, crypto.VERSION_PERFILE_SUBKEY)
+
+    assert kcv != imza_turevi
+    assert kcv != dosya_turevi
+    assert kcv != anahtar
+
+
+def test_kcv_belgelenen_hkdf_parametrelerini_kullaniyor() -> None:
+    anahtar = b"\x42" * 32
+    beklenen = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=vault_manager._HKDF_LABEL,
+        info=b"hycleus-kcv-v1",
+    ).derive(anahtar)
+
+    assert vault_manager._kcv_hesapla(anahtar) == beklenen
+
+
 def test_signing_key_depends_on_share_2_not_just_hwid() -> None:
     """Aynı HWID, farklı share_2 → farklı imza anahtarı üretmeli."""
     k1 = vault_manager._derive_signing_key(_HWID, "2:" + "11" * 33)
