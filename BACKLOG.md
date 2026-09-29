@@ -13910,3 +13910,88 @@ Python 3.11` koşusunda test PASSED görünüyor (test özeti ya da
 maddeye yazıldı.
 
 ---
+
+## B-160 — Tek harfi yanlış bir kurtarma parçası hata değil YANLIŞ anahtar veriyor; devralma/yeniden kurulum kasayı kalıcı olarak kaybettiriyor
+
+**Durum:** AÇIK.
+**Önem:** KRİTİK — veri kaybı.
+**Bulundu:** 2026-09-29.
+**Karar:** şimdi, çünkü "kaybolursa kurtarılır" sözünü bozuyor; tek
+harflik bir yazım hatası kasayı kalıcı olarak açılamaz hâle getiriyor.
+Hafta 8 Gün 2 provası bu madde kapanmadan başlamaz.
+
+**Bulgu.** Kurtarma parçasında base32 alfabesinde geçerli tek bir
+karakter değişirse `decode_share()` yine geçerli bir `3:<66 hex>` payı
+üretiyor. `_sss_recover()` iki paydan Lagrange ile HER ZAMAN bir değer
+çıkarıyor: 2-of-3'te yalnızca iki pay kullanıldığı için tutarlılık
+denetlenemiyor, parçada da sağlama toplamı yok. Sonuç hata değil,
+YANLIŞ bir `master_key`.
+
+- `takeover_usb()` bu anahtarla yeni hwid'e kasa kuruyor
+  (`reprovision_vault`), sonra `discard_vault(old_hwid)` eski vault
+  dosyasını ve eski `share_2`'yi siliyor. Denetime `vault_recovered`,
+  `vault_reprovisioned … master_key=korundu` ve `usb_devralindi` düşüyor.
+  Üçü de yanlış.
+- `CORE/usb_takeover.py:147-151`'deki "yanlış kurtarma parçası/PIN →
+  Exception, henüz hiçbir DB satırı değişmedi" varsayımı PIN için doğru,
+  parça için YANLIŞ.
+- `--recover` yolu (aynı hwid, `recover_master_key` + `reprovision_vault`):
+  gözlem ADIM 1'de, aşağıya yazılacak.
+
+**Plan (kullanıcı onaylı, her adım ayrı commit):**
+- ADIM 1 — kanıt testleri, `xfail(strict=True)`: devralma, `--recover`,
+  `test_recovery_rejects_wrong_share`'in sıkılaştırılması.
+- ADIM 2 — düzeltme `recover_master_key()` İÇİNDE: KCV =
+  HMAC-SHA256(master_key, b"HYCLEUS-KCV-v1"), hwid başına, numaralı göçle;
+  eski kasalar için `open_vault` geriye dönük doldurma; KCV yoksa aynı
+  hwid'in bir `.hcl` dosyasının GCM etiketiyle doğrulama; ikisi de yoksa
+  "doğrulanamadı" denetim kaydı; başarısızlıkta sabit mesajlı `ValueError`.
+- ADIM 3 — `xfail`'ler kaldırılır ve yeşil olur; iki mutasyon; tam suite.
+- ADIM 4 — SECURITY.md (EN+TR), kullanıcı rehberi, UI/CLI metinleri.
+
+**Kapanış ölçütü:** ADIM 1–4'ün dördü de tamam; ADIM 3'ün iki mutasyonu
+kırmızı görüldü ve geri alındıktan sonra `git diff` boş.
+
+**İlgili:** B-161 (`_parse_share` mesajında pay parçası), B-162 (kurtarma
+parçasına sağlama toplamı).
+
+---
+
+## B-161 — `_parse_share()` hata mesajı payın ilk 16 karakterini içeriyor
+
+**Durum:** AÇIK. **Hedef:** v2.6.
+**Bulundu:** 2026-09-29 (kurtarma turu güvenlik denetimi, bulgu B1).
+
+`CORE/vault_manager.py:326` `share[:16]!r`, `:331` `idx_raw!r` değerini
+`ValueError` mesajına koyuyor. Kullanıcının girdiği kurtarma parçası bu
+satırlara ULAŞAMIYOR (`decode_share` her zaman `3:<66 hex>` üretiyor).
+Ama kasadan ya da vault'tan okunan pay bozuksa mesaj konsola
+(`recover_vault.py:127/157/299`) ve UI iletişim kutusuna
+(`UI/security_actions.py:157`) basılıyor. Denetim kaydına girmiyor
+(`3fbae50` yalnızca istisna türünü yazıyor). Bugünkü gizlilik etkisi
+pratikte yok; risk yapısal.
+
+**Kapanış ölçütü:** iki mesaj girdiyi içermiyor; bir test bozuk bir payla
+`str(exc)`'in girdinin hiçbir parçasını taşımadığını denetliyor.
+
+---
+
+## B-162 — Kurtarma parçasında sağlama toplamı yok
+
+**Durum:** AÇIK. **Hedef:** v2.6.
+**Bulundu:** 2026-09-29 (B-160'ın kök nedenlerinden biri).
+
+`HYCLEUS-R3-…` metni yalnızca payın base32 kodlaması. Elle yazımda tek
+karakterlik bir hata geçerli ama yanlış bir paya dönüşüyor ve ancak
+anahtar düzeyinde (B-160'ın KCV'si) yakalanabiliyor. Bir sağlama toplamı
+yazım hatasını anahtar hesaplanmadan, kullanıcıya "şu grupta hata var"
+diyebilecek biçimde yakalardı.
+
+Geriye dönük uyumluluk şartı: kullanıcıların elinde basılı duran
+toplamsız parçalar geçerli kalmalı (yeni önek ya da sürüm alanı).
+
+**Kapanış ölçütü:** yeni parçalar toplam taşıyor; tek karakterlik her
+hatayı `decode_share` yakalıyor (test); eski biçimdeki basılı parçalar hâlâ
+çözülüyor (test).
+
+---
