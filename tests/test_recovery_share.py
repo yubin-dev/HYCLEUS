@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from CORE import recovery_share, vault_manager
+from CORE import recovery_share, secret_store, vault_manager
 from CORE.recovery_share import (
     RecoveryShareError,
     build_export,
@@ -24,6 +24,7 @@ from CORE.vault_manager import (
     has_recovery_share,
     open_vault,
     recover_master_key,
+    reprovision_vault,
 )
 
 _HWID = "USB-REC-TEST"
@@ -291,16 +292,68 @@ def test_recovery_still_works_after_vault_file_is_deleted(vault, db, tmp_path) -
     assert recover_master_key(vault, recovery_share=share_3, pin=None) == beklenen
 
 
+_B160 = (
+    "B-160: yanlış kurtarma parçası bugün hata değil YANLIŞ bir master_key "
+    "veriyor (iki payla tutarlılık denetlenemiyor, parçada sağlama toplamı "
+    "yok). Düzeltme (recover_master_key içinde KCV doğrulaması) bu xfail'i "
+    "kaldıran commit."
+)
+
+
+@pytest.mark.xfail(strict=True, reason=_B160)
 def test_recovery_rejects_wrong_share(vault, db) -> None:
-    """Başka bir vault'un kurtarma parçası doğru anahtarı vermemeli."""
-    _role, beklenen = open_vault(vault, _PIN)
+    """
+    Başka bir vault'un kurtarma parçası İSTİSNA vermeli.
+
+    Eski hâli "hata da kabul edilebilir, yanlış anahtar da" diyordu. Yanlış
+    anahtarı kabul etmek B-160'ın tam kendisi: çağıran (reprovision_vault,
+    takeover_usb) onu doğru sanıp kasayı onunla yeniden kuruyor.
+    """
     _b1, _b2, baska_share_3 = vault_manager._sss_split(b"\xee" * 32)
 
-    try:
-        kurtarilan = recover_master_key(vault, recovery_share=baska_share_3, pin=_PIN)
-    except (ValueError, OverflowError):
-        return  # hata da kabul edilebilir sonuç
-    assert kurtarilan != beklenen, "yanlış parça doğru anahtarı verdi"
+    with pytest.raises(ValueError):
+        recover_master_key(vault, recovery_share=baska_share_3, pin=_PIN)
+
+
+@pytest.mark.xfail(strict=True, reason=_B160)
+@pytest.mark.parametrize("pin_yolu", [True, False], ids=["share_1+share_3", "share_2+share_3"])
+def test_TEK_HARFI_yanlis_parca_recover_yolunda_reddedilir_kasa_DOKUNULMAZ(
+    vault, db, tek_harf_boz, pin_yolu
+) -> None:
+    """
+    B-160, `recover_vault.py --recover` yolu: aynı hwid,
+    `recover_master_key()` ardından `reprovision_vault()`.
+
+    Bugünkü davranış (2026-09-29'da ölçüldü, BACKLOG B-160 "ADIM 1
+    gözlemi"): yanlış parça hata vermiyor, vault dosyası yanlış anahtarla
+    yeniden yazılıyor; PIN yolunda kasadaki share_2 de değişiyor. Ayakta
+    kalan payın DEĞERİ korunuyor, ama denetim "kurtarıldı" diyor ve kasa
+    yanlış anahtarla açılıyor.
+    """
+    _role, beklenen = open_vault(vault, _PIN)
+    share_3 = export_recovery_share(vault, _PIN)
+    bozuk = tek_harf_boz(share_3)
+    vault_yolu = vault_manager._read_vault_path(vault)
+    vault_once = vault_yolu.read_bytes()
+    share_2_once = secret_store.load(secret_store.share_2_username(vault))
+
+    with pytest.raises(ValueError):
+        anahtar = recover_master_key(
+            vault, recovery_share=bozuk, pin=_PIN if pin_yolu else None
+        )
+        # recover_vault.py --recover'ın bir sonraki adımı.
+        reprovision_vault(
+            vault, "yeniPIN-987654", _ROLE, master_key=anahtar, recovery_share=bozuk
+        )
+
+    assert vault_yolu.read_bytes() == vault_once, "vault dosyası yeniden yazıldı"
+    assert secret_store.load(secret_store.share_2_username(vault)) == share_2_once
+    _role, anahtar_sonra = open_vault(vault, _PIN)
+    assert anahtar_sonra == beklenen
+    eylemler = {r["action"] for r in db.fetchall("SELECT action FROM audit_log")}
+    assert "vault_recovery_rejected" in eylemler
+    assert "vault_recovered" not in eylemler
+    assert "vault_reprovisioned" not in eylemler
 
 
 def test_recovery_rejects_malformed_share(vault, db) -> None:

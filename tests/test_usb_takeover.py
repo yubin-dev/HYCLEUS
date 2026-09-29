@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from CORE import vault_manager
+from CORE import secret_store, vault_manager
 from CORE.secret_store import load_totp_secret_for_hwid, store_totp_secret_for_hwid
 from CORE.usb_takeover import TakeoverError, TakeoverResult, takeover_usb
 from CORE.vault_manager import (
@@ -306,6 +306,53 @@ def test_yanlis_kurtarma_parcasi_reddedilir_DB_DEGISMEZ(db, kasa_dizini):
     satirlar = db.fetchall("SELECT username, hwid FROM users")
     assert len(satirlar) == 1
     assert satirlar[0]["hwid"] == _HWID_ESKI, "yanlış parçayla bile hwid DEĞİŞMEMELİ"
+
+
+_B160 = (
+    "B-160: tek harfi yanlış bir kurtarma parçası bugün hata değil YANLIŞ "
+    "bir master_key veriyor; takeover_usb yeni kasayı onunla kuruyor, sonra "
+    "discard_vault(old_hwid) eski vault'u ve share_2'yi siliyor. Düzeltme "
+    "(recover_master_key içinde KCV doğrulaması) bu xfail'i kaldıran commit."
+)
+
+
+@pytest.mark.xfail(strict=True, reason=_B160)
+@pytest.mark.parametrize("pin_yolu", [True, False], ids=["share_1+share_3", "share_2+share_3"])
+def test_TEK_HARFI_yanlis_parca_reddedilir_eski_kasa_ve_hesap_DURUR(
+    db, kasa_dizini, tek_harf_boz, pin_yolu
+):
+    """
+    B-160. `test_yanlis_kurtarma_parcasi_reddedilir_DB_DEGISMEZ` biçimi
+    bozuk bir payla (64 hex) çalışıyor; o `_parse_share`'in uzunluk
+    kontrolüne takılıyor ve asıl riski hiç sınamıyor. Gerçek kullanıcı
+    hatası biçim olarak KUSURSUZ bir pay üretir: kâğıttan tek harf yanlış
+    okunmuş parça.
+    """
+    share_3 = _admin_kur_ve_kurtarma_parcasi_al(db, kasa_dizini)
+    _rol, beklenen = open_vault(_HWID_ESKI, _PIN_ESKI)
+
+    with pytest.raises(ValueError):
+        takeover_usb(
+            db, old_hwid=_HWID_ESKI, new_hwid=_HWID_YENI,
+            recovery_share=tek_harf_boz(share_3), new_pin=_PIN_YENI,
+            old_pin=_PIN_ESKI if pin_yolu else None,
+        )
+
+    # Eski kasa yerinde ve AYNI anahtarı veriyor; share_2 kasada duruyor.
+    _rol, anahtar = open_vault(_HWID_ESKI, _PIN_ESKI)
+    assert anahtar == beklenen
+    assert secret_store.load(secret_store.share_2_username(_HWID_ESKI)) is not None
+    # Yeni hwid'e hiçbir şey yazılmadı.
+    assert not (kasa_dizini / "vaults" / f"{_HWID_YENI}.hclv").exists()
+    # users değişmedi.
+    satirlar = db.fetchall("SELECT username, hwid FROM users")
+    assert [dict(r) for r in satirlar] == [{"username": "admin1", "hwid": _HWID_ESKI}]
+    # Denetim ret satırını taşıyor, başarı satırlarını taşımıyor.
+    eylemler = {r["action"] for r in db.fetchall("SELECT action FROM audit_log")}
+    assert "vault_recovery_rejected" in eylemler
+    assert "vault_recovered" not in eylemler
+    assert "vault_reprovisioned" not in eylemler
+    assert "usb_devralindi" not in eylemler
 
 
 def test_yanlis_eski_pin_reddedilir(db, kasa_dizini):

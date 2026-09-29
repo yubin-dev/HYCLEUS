@@ -13936,7 +13936,63 @@ YANLIŞ bir `master_key`.
   Exception, henüz hiçbir DB satırı değişmedi" varsayımı PIN için doğru,
   parça için YANLIŞ.
 - `--recover` yolu (aynı hwid, `recover_master_key` + `reprovision_vault`):
-  gözlem ADIM 1'de, aşağıya yazılacak.
+  gözlem ADIM 1'de, aşağıda.
+
+**ADIM 1 gözlemi — bugünkü davranış, ölçüldü (2026-09-29).** Geçici bir
+test dosyasıyla gerçek vault, gerçek Argon2id/GCM ve sahte keyring
+üzerinde ölçüldü; dosya commit edilmedi. Parça, base32 gövdesinin 20.
+karakteri alfabedeki bir sonraki harfle değiştirilerek bozuldu
+(`tests/conftest.py::tek_harf_boz`).
+
+| Ölçüm | PIN yolu (share_1+share_3) | PIN'siz yol (share_2+share_3) |
+|---|---|---|
+| Bozuk parça `decode_share` + `_parse_share`'den geçti | evet | evet |
+| `recover_master_key` hata verdi | **hayır**, `K2 != K` | **hayır**, `K2 != K` |
+| `reprovision_vault` sonrası vault dosyası yeniden yazıldı | evet | evet |
+| Kasadaki share_2 değişti | **evet** | hayır |
+| Yeni PIN ile `open_vault` hangi anahtarı veriyor | `K2` (yanlış) | `K2` (yanlış) |
+| Sonra DOĞRU parça + aynı yoldaki pay → `K` | **evet** | **evet** |
+| Denetim | `vault_recovered`, `vault_reprovisioned` | aynı |
+
+Devralma (`takeover_usb`) için aynı ölçüm: iki yolda da eski vault
+SİLİNDİ, yeni hwid `K2` ile açılıyor. Ama sonra doğru parça + yeni
+hwid'in aynı yoldaki payı yine `K` veriyor.
+
+**İnce ayrım — ayakta kalan payın DEĞERİ korunuyor.** Yanlış anahtar
+`(1, s1)` ve `(3, s3')` noktalarından geçen doğrudan çıkıyor;
+`reprovision_vault` polinomu `s3'`'e çapalayıp `K2`'den geçirdiği için
+yeni polinom AYNI doğru oluyor. Yani yeni vault'taki share_1 değeri eski
+share_1'e eşit (doğrudan karşılaştırıldı: `True`); PIN'siz yolda share_2
+hiç değişmiyor. Tek bir yanlış denemeden sonra, operatör AYNI yolu
+DOĞRU parçayla yeniden çalıştırırsa anahtar geri geliyor.
+
+**Kalıcı kayıp nerede başlıyor (ölçüldü):**
+1. **Yollar karışırsa.** PIN yolu yanlış parçayla, ardından PIN'siz yol
+   DOĞRU parçayla çalıştırıldığında ikinci adım da yanlış anahtar veriyor
+   (`K3 != K`). Yeniden kurulumdan sonra doğru parça iki paydan hiçbiriyle
+   `K`'yi geri getirmiyor (`[False, False]`). Orijinal polinomun tek
+   noktası kalıyor: kullanıcının elindeki parça. Bu KALICI.
+2. **Arada yeni dosya eklenirse.** Yanlış kurulumdan sonra normal giriş
+   `K2` veriyor; o oturumda eklenen dosyalar `K2` ile şifreleniyor. Doğru
+   parçayla düzeltme `K`'yi geri getirir, ama `K2` dosyaları kaybolur.
+3. **Operatör bilmiyor.** Denetim "kurtarıldı, master_key=korundu"
+   diyor; eski dosyalar açılmıyor ama hiçbir şey nedenini söylemiyor.
+
+Yani "tek harf → kalıcı kayıp" tek adımda matematiksel olarak değil;
+yanlış bir ikinci adımla ya da yeni verinin karışmasıyla oluyor. Madde
+yine KRİTİK: ürün yanlış anahtarı doğru diye kabul ediyor, denetimi
+yanıltıyor ve kalıcı kayba giden yolları açık bırakıyor.
+
+**ADIM 1 testleri — `xfail(strict=True)`** (`--runxfail` ile beşinin de
+`DID NOT RAISE ValueError` ile düştüğü doğrulandı; yani doğru nedenle
+kırmızı):
+- `tests/test_usb_takeover.py::test_TEK_HARFI_yanlis_parca_reddedilir_eski_kasa_ve_hesap_DURUR`
+  (iki yol)
+- `tests/test_recovery_share.py::test_TEK_HARFI_yanlis_parca_recover_yolunda_reddedilir_kasa_DOKUNULMAZ`
+  (iki yol)
+- `tests/test_recovery_share.py::test_recovery_rejects_wrong_share`
+  (sıkılaştırıldı: "hata ya da yanlış anahtar" yerine artık yalnızca
+  `ValueError`)
 
 **Plan (kullanıcı onaylı, her adım ayrı commit):**
 - ADIM 1 — kanıt testleri, `xfail(strict=True)`: devralma, `--recover`,

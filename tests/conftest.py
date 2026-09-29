@@ -218,6 +218,34 @@ def use_keyring_backend():
 
 
 @pytest.fixture
+def tek_harf_boz():
+    """
+    B-160: kurtarma parçasında kâğıttan elle yazarken yapılan TEK harflik
+    hatayı taklit eder.
+
+    `build_export()`'un base32 metninde tek bir karakteri alfabedeki bir
+    sonraki GEÇERLİ harfle değiştirip `decode_share()`'den geçirir. Sonuç
+    biçim olarak kusursuz bir `3:<66 hex>` payı: `decode_share` ve
+    `_parse_share` onu kabul ediyor, yani hata ancak anahtar düzeyinde
+    yakalanabilir. Konum gövdenin ortası: ilk karakterler payın en üst
+    bitlerini taşıyor ve `y < asal` aralık kontrolüne takılabilirdi.
+    """
+    from CORE.recovery_share import build_export, decode_share
+
+    alfabe = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+    onek = "HYCLEUS-R3-"
+
+    def _boz(share_3: str, konum: int = 20) -> str:
+        govde = build_export(share_3).base32_text[len(onek):].replace("-", "")
+        yeni = alfabe[(alfabe.index(govde[konum]) + 1) % len(alfabe)]
+        bozuk = decode_share(onek + govde[:konum] + yeni + govde[konum + 1:])
+        assert bozuk != share_3
+        return bozuk
+
+    return _boz
+
+
+@pytest.fixture
 def db(tmp_path: Path) -> Iterator["object"]:
     """
     Geçici dosya üzerinde izole DBManager örneği.
