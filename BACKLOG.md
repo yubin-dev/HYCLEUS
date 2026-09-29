@@ -13913,10 +13913,10 @@ maddeye yazıldı.
 
 ## B-160 — Tek harfi yanlış bir kurtarma parçası hata değil YANLIŞ anahtar veriyor; devralma/yeniden kurulum kasayı kalıcı olarak kaybettiriyor
 
-**Durum:** AÇIK — 2026-09-29'da KAPANDI yazılmıştı, aynı gün geri açıldı:
-kapanış ölçütüne CI şartı eklendi (bkz. "Kapanış ölçütü") ve `.hcl` yedek
-doğrulamasında devralınmış kasalar için bir boşluk bulundu (bkz. "Yeniden
-açılış").
+**Durum:** KAPANDI (2026-09-29) — CI koşusu 36562799419 (`b6e85f7`), bkz.
+"Kapanış (CI)". Aynı gün bir kez KAPANDI yazılıp geri açılmıştı: ölçüte CI
+şartı eklendi ve `.hcl` yedek doğrulamasındaki devralma boşluğu kapatıldı
+(bkz. "Yeniden açılış").
 **Önem:** KRİTİK — veri kaybı.
 **Bulundu:** 2026-09-29.
 **Karar:** şimdi, çünkü "kaybolursa kurtarılır" sözünü bozuyor; tek
@@ -14076,9 +14076,9 @@ yalnızca ADIM 3'ün testleri ve mutasyonlarından sonra yazıldı.
   yanlış anahtar" → yalnızca ret, kasa baytları değişmedi).
 - UI'da kurtarma parçası hakkında bu davranışa dair bir metin yok (tarandı).
 
-**Kapanış (geri alındı):** ölçütün yerel kısmı — dört adım ve mutasyonlar —
-tamamdı; CI kısmı ölçüte sonradan eklendi ve henüz karşılanmadı. Hafta 8
-Gün 2 provası bu madde kapanana kadar yine bekler.
+**Kapanış (ilk, geri alındı):** ölçütün yerel kısmı — dört adım ve
+mutasyonlar — tamamdı; CI kısmı ölçüte sonradan eklendi. Karşılanması
+aşağıda, "Kapanış (CI)".
 
 **Plan (kullanıcı onaylı, her adım ayrı commit):**
 - ADIM 1 — kanıt testleri, `xfail(strict=True)`: devralma, `--recover`,
@@ -14129,6 +14129,18 @@ Windows ayağının test raporunda `passed` (skip değil).
   kırmızı; geri alındı, `git diff` boş.
 - Tam suite (`50aa401`): 3616 passed, 15 skipped, 3 failed — üçü B-148
   (`test_hwid_probe`, Windows'ta sembolik bağ ayrıcalığı), bu işle ilgisiz.
+
+**Kapanış (CI, 2026-09-29):** koşu **36562799419**, `push`, head `b6e85f7`
+(B-160'ın son commit'i; `origin/main` ile aynı). `gh run view` ile:
+- beş iş `success`: `ubuntu-latest · Python 3.11`, `windows-latest · Python
+  3.11`, `Statik güvenlik analizi (semgrep + pip-audit)`, `AppImage yapısı
+  (Linux)`, `EXE yapısı (Windows)`.
+- Windows ayağının `test-results-windows-latest-py3.11` yapıtı
+  (`test-results.xml`, 3634 test, 0 failure, 0 error, 42 skipped): B-160
+  commit'lerinde eklenen ya da değiştirilen 52 test adının 52'si raporda,
+  parametreleriyle 66 testcase'in 66'sı `passed`, hiçbiri skip değil —
+  devralma boşluğunun dört testi dahil.
+Hafta 8 Gün 2 provası artık bu madde tarafından engellenmiyor.
 
 **İlgili:** B-161 (`_parse_share` mesajında pay parçası), B-162 (kurtarma
 parçasına sağlama toplamı).
