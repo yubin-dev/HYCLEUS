@@ -230,28 +230,31 @@ def test_recover_aborts_on_malformed_share(vault, db, monkeypatch) -> None:
 
 
 def test_recover_aborts_on_foreign_share(vault, db, capsys, monkeypatch) -> None:
-    """Başka bir vault'un parçası ya reddedilmeli ya da doğru anahtarı vermemeli."""
-    import hashlib
+    """
+    Başka bir vault'un parçası REDDEDİLMELİ ve hiçbir şey değişmemeli.
 
+    Eski hâli "ya reddedilmeli ya da doğru anahtarı vermemeli" diyordu;
+    ikinci seçenek B-160'ın kendisiydi (yanlış anahtar kabul edilip kasa
+    onunla yeniden kuruluyordu).
+    """
     from CORE.recovery_share import encode_share
 
     _role, beklenen = open_vault(vault, _PIN)
+    vault_once = vault_manager._read_vault_path(vault).read_bytes()
     _b1, _b2, yabanci = vault_manager._sss_split(b"\x3c" * 32)
 
     yanitlar = iter([encode_share(yabanci), _PIN])
     monkeypatch.setattr(recover_vault, "_prompt_pin", lambda *_a, **_k: next(yanitlar))
     monkeypatch.setattr("builtins.input", lambda *_a: "1")
 
-    try:
+    with pytest.raises(SystemExit):
         recover_vault._cmd_recover(_args())
-    except SystemExit:
-        return  # net hata — kabul edilebilir sonuç
 
-    # Hata vermediyse en azından DOĞRU anahtarı üretmemiş olmalı
-    cikti = capsys.readouterr().out
-    assert hashlib.sha256(beklenen).hexdigest() not in cikti, (
-        "yabancı kurtarma parçası doğru master_key'i üretti"
-    )
+    hata = capsys.readouterr().err
+    assert vault_manager.YANLIS_PARCA_MESAJI in hata
+    assert "Hicbir sey degismedi" in hata
+    assert vault_manager._read_vault_path(vault).read_bytes() == vault_once
+    assert open_vault(vault, _PIN)[1] == beklenen
 
 
 # ── B-037: başarısız kurtarma denemeleri denetim kaydına "reddedildi"
@@ -388,6 +391,10 @@ def test_recover_DOGRULANAMAYAN_kurtarmada_yeni_parca_zorunlu_ve_GECERLI(
     cikti = capsys.readouterr().out
     assert "DOGRULANAMADI" in cikti
     assert "Eski kagidiniz artik GECERSIZ" in cikti
+    # Çelişkili vaatler yok: "polinom korunur / kâğıt geçerli" söylenmiyor.
+    assert "polinom GIRDIGINIZ parcaya gore kurulur" in cikti
+    assert "HALA GECERLI" not in cikti
+    assert "BASILI KURTARMA PARCASI gecerli kalir" not in cikti
     yeni = _gosterilen_yeni_parca(cikti)
     assert yeni != share_3, "kâğıttaki parça geçerli kalmış gibi gösterildi"
     _rol, anahtar = open_vault(vault, "yeni-pin-98765")
@@ -411,6 +418,8 @@ def test_recover_DOGRULANAN_kurtarmada_yeni_parca_GOSTERILMEZ(
     assert "VAULT YENIDEN KURULDU" in cikti
     assert "DOGRULANAMADI" not in cikti
     assert "YENI PARCANIZ" not in cikti
+    assert "BASILI KURTARMA PARCASI gecerli kalir" in cikti
+    assert "HALA GECERLI" in cikti
 
 
 def test_recover_yeniden_kurulum_REDDEDILIRSE_yeni_parca_gosterilmez(
@@ -508,6 +517,7 @@ def test_takeover_DOGRULANAMAYAN_devralmada_yeni_parca_zorunlu_gosteriliyor(
     cikti = capsys.readouterr().out
     assert "USB DEVRALINDI" in cikti
     assert "Eski kagidiniz artik GECERSIZ" in cikti
+    assert "HALA GECERLI" not in cikti
     yeni = _gosterilen_yeni_parca(cikti)
     _rol, anahtar = open_vault(_HWID_YENI, _YENI_PIN)
     assert vault_manager.recover_master_key(_HWID_YENI, recovery_share=yeni, pin=None) == anahtar

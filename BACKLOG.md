@@ -13913,7 +13913,7 @@ maddeye yazıldı.
 
 ## B-160 — Tek harfi yanlış bir kurtarma parçası hata değil YANLIŞ anahtar veriyor; devralma/yeniden kurulum kasayı kalıcı olarak kaybettiriyor
 
-**Durum:** AÇIK.
+**Durum:** KAPANDI (2026-09-29) — ADIM 1–4 tamam, bkz. en alttaki kayıt.
 **Önem:** KRİTİK — veri kaybı.
 **Bulundu:** 2026-09-29.
 **Karar:** şimdi, çünkü "kaybolursa kurtarılır" sözünü bozuyor; tek
@@ -14052,8 +14052,29 @@ Tam suite: **3612 passed, 15 skipped, 3 failed**. Üç hata B-148'in
 bilinen yerel sorunu (`tests/test_hwid_probe.py`, sembolik bağ ayrıcalığı
 olmayan Windows); bu değişiklikle ilgisiz.
 
-**Açık kalan:** ADIM 4 (belgeler). Madde onunla kapanır; Hafta 8 Gün 2
-provası o zamana kadar başlamaz.
+**ADIM 4 — belgeler (2026-09-29).** "Yanlış parça → hata" iddiası
+yalnızca ADIM 3'ün testleri ve mutasyonlarından sonra yazıldı.
+- **SECURITY.md (EN+TR):** yeni §4.31 — ne yanlıştı (ölçülen ince ayrım
+  dahil), doğrulama sırası tablosu, KCV'nin garanti ettiği ve ETMEDİKLERİ
+  (hatanın yerini söylemiyor → B-162; yerel DB'de yaşıyor; göç 29 öncesi
+  kasalar; eski anahtarlı `.hcl` adayları; gizlilik kontrolü değil, yeni
+  oracle açmıyor), `reconstruct_key()`'in kaldırılışı. §4.12'deki "%95,3
+  hiçbir kontrolle yakalanamaz" satırı ve `reconstruct_key()` paragrafı,
+  §4.2'deki devralma adımı ve satır atfı (`usb_takeover.py:172`)
+  güncellendi. `tests/test_belge_dil_paritesi.py` yeşil.
+- **`docs/kullanici-rehberi.md` + PDF (yeniden üretildi):** yanlış yazılan
+  parçanın reddedildiği ve hiçbir şeyin değişmediği; "DOGRULANAMADI"
+  durumunda yeni parçanın gösterileceği ve eski kâğıdın geçersiz olduğu;
+  devralmada eski kaydın ancak yeni USB doğrulandıktan sonra silindiği.
+- **CLI:** "polinom KORUNUR → basılı parça geçerli kalır" ve "HALA
+  GECERLI" satırları yalnızca parça doğrulandıysa basılıyor (doğrulanamadıysa
+  çelişirdi); ret mesajına "Hicbir sey degismedi" eklendi.
+  `test_recover_aborts_on_foreign_share` sıkılaştırıldı ("ya ret ya
+  yanlış anahtar" → yalnızca ret, kasa baytları değişmedi).
+- UI'da kurtarma parçası hakkında bu davranışa dair bir metin yok (tarandı).
+
+**Kapanış:** ölçütün dört adımı tamam. CI koşusu push'tan sonra; Hafta 8
+Gün 2 provası artık bu madde tarafından engellenmiyor.
 
 **Plan (kullanıcı onaylı, her adım ayrı commit):**
 - ADIM 1 — kanıt testleri, `xfail(strict=True)`: devralma, `--recover`,

@@ -120,6 +120,12 @@ Kullanıcı adınızı, kurtarma kâğıdınızı ve yeni bir PIN isteyecek.
 **Bu işlem GERİ ALINAMAZ:** eski USB (bulunsa/onarılsa bile) işlemden
 sonra bir daha açılamaz — araç son bir onayla bunu size hatırlatıyor.
 
+Kâğıttaki yazıyı **yanlış girerseniz** işlem reddedilir ve **hiçbir şey
+değişmez** — eski USB'nizin kaydı silinmez, tekrar deneyebilirsiniz. Eski
+kayıt ancak yeni USB gerçekten doğru anahtarla açıldıktan SONRA silinir.
+İşlem sonunda *"Eski kagidiniz artik GECERSIZ"* yazarsa size gösterilen
+YENİ parçayı saklayın (bkz. "2. PIN'imi unuttum", nadir durum).
+
 **Kurtarma kâğıdınız da yoksa** — yalnızca bu durumda gerçekten
 çaresizsiniz:
 
@@ -172,6 +178,10 @@ Bosluk / satir sonu / kucuk harf farketmez.
   Kurtarma parcasi: _
 ```
 
+> **Bir harfi yanlış yazarsanız** program *"Kurtarma parçası bu kasaya ait
+> değil ya da yanlış yazılmış"* der ve durur. **Hiçbir şey değişmez** —
+> kâğıda bakıp harf harf yeniden deneyin, istediğiniz kadar.
+
 **Adım 4.** Şu soru gelecek. **`2` yazın:**
 
 ```
@@ -207,6 +217,13 @@ SIMDI VAULT'U YENIDEN KURABILIRIZ.
 
 **Bitti.** Eski dosyalarınızın hepsi açılır. Basılı kâğıdınız hâlâ
 geçerlidir — **atmayın.**
+
+> **Nadir durum — "DOGRULANAMADI" uyarısı.** Bu bilgisayarda parçayı
+> karşılaştıracak bir kayıt yoksa (örneğin USB kaydı silinmişse) program
+> 5. adımda *"Bu kurtarma parcasi DOGRULANAMADI"* der. Devam ederseniz
+> işlemin sonunda size **YENİ bir kurtarma parçası gösterilir** ve
+> *"Eski kagidiniz artik GECERSIZ"* yazar. Onu yazdırın ya da elle yazın,
+> **eski kâğıdı imha edin** — o durumda geçerli olan artık yenisidir.
 
 ### Kurtarma kâğıdınız da yoksa
 

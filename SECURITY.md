@@ -649,7 +649,7 @@ No GUI flow, no API, no other script called it; `UI/AdminPanel.py` and
 `UI/main_window_open.py` only pointed the user at the CLI in prose — that
 much is still true today.
 
-**A second call site was added 2026-09-09**: `CORE/usb_takeover.py:151`,
+**A second call site was added 2026-09-09**: `CORE/usb_takeover.py:172`,
 inside `takeover_usb()`. It answers a different question than
 `_cmd_recover()` does. `_cmd_recover()` restores the *same* HWID's vault
 after the local machine's state (vault file or credential-store entry)
@@ -668,7 +668,10 @@ admin locked out has no session to invoke `UsbTokensView`'s "Sil" or
    (the GCM/PIN binding, the unauthenticated-but-unread `token_id` in the
    `share_2`-less branch) applies **unchanged** to this second caller.
 2. Calls `reprovision_vault()` on the *new* HWID — same as `_cmd_recover()`,
-   master key and polynomial preserved, a fresh `token_id` written.
+   master key and polynomial preserved, a fresh `token_id` written. Since
+   B-160 (§4.31) the recovered key is verified first, and the old vault is
+   deleted only after the new one has been opened and matched against its
+   KCV.
 3. Additionally updates `users.hwid` for the row that matched `old_hwid`
    (no new row — one admin in, one admin out) and calls `discard_vault()`
    on `old_hwid`, which deletes that HWID's vault file, keyring `share_2`,
@@ -1516,7 +1519,7 @@ What it did cost was **error reporting**, and we measured how much:
 | Canonical shares as a fraction of the 33-byte payload space | **1 in 255** (0.39%) |
 | First byte of a canonical share | always `0x00` |
 | Single-character typos that land on `y >= p` | **4.6%** — silently accepted before |
-| Single-character typos that stay in range | 95.3% — indistinguishable from a legitimate different share, uncatchable by any check |
+| Single-character typos that stay in range | 95.3% — indistinguishable from a legitimate different share at the parser; since B-160 caught at the key level (§4.31) |
 
 So the range check converts 4.6% of typos from "wrong key, failure later,
 unclear message" into "your recovery share has a typo". That is the whole
@@ -1524,9 +1527,9 @@ benefit. It is worth having; it is not a security fix.
 
 **The check lives in `_parse_share()`, not in the decoder.** The decoder is
 one of three entrances — the other two are the vault file and the OS
-keyring — and `reconstruct_key()` is a public, documented API that a future
-CLI or third-party integration could call directly, bypassing the decoder
-entirely. Putting the validation at the chokepoint closes that gap.
+keyring — and a future CLI or third-party integration could call the share
+parser directly, bypassing the decoder entirely (the public
+`reconstruct_key()` that did exactly that was removed in B-160, §4.31). Putting the validation at the chokepoint closes that gap.
 `recover_master_key()` additionally now requires index 3; passing share 1 or
 2 was never a bypass (both are valid shares held by whoever passes them) but
 it worked silently and logged the wrong event.
@@ -3963,6 +3966,73 @@ device-loss simulation, and recovery, by hand). Treat a green
 `--selftest`/CI run as "the artifact contains what the source does," not
 as "the artifact works" — the second claim needs the drill.
 
+### 4.31 A mistyped recovery share is rejected, not turned into a wrong key
+
+> **Attacker models:** none — this protects the owner's own recovery from
+> the owner's own typing. It is an integrity and availability control, not a
+> secrecy one.
+
+**What was wrong (found 2026-09-29, B-160).** Two shares always
+reconstruct *some* key. With 2-of-3 and exactly two shares there is nothing
+to cross-check, and the printed share carries no checksum. §4.12 measured
+that 95.3% of single-character typos stay in range; such a typo decoded to
+a well-formed share and `recover_master_key()` returned a **wrong** key
+instead of an error. `--recover` then rebuilt the vault with it, and
+`--takeover` additionally deleted the old vault and its `share_2`. The audit
+log said the key was recovered and preserved. The surviving share's value
+happened to survive (the rebuilt polynomial passes through it), so one
+correct re-run on the same path could still get the key back — but
+switching paths after a typo, or adding files under the wrong key, lost
+data for good. Both were measured, not inferred.
+
+**What happens now.** `recover_master_key()` verifies the key it rebuilds
+before returning it, inside the same block that writes the rejection to
+the audit log, so both `--recover` and `--takeover` are covered:
+
+| Order | Evidence | Result |
+|---|---|---|
+| 1 | Key check value `usb_tokens.kcv`: HKDF-SHA256 of the master key with its own label (`b"hycleus-kcv-v1"`), compared in constant time | match: accepted; mismatch: rejected |
+| 2 | No KCV: the GCM tag of up to three `.hcl` files encrypted under the same hwid, newest first, through `crypto.verify_file()` (no plaintext kept) | any one verifies: accepted; all fail on the tag: rejected |
+| 3 | Neither exists | accepted, audit row says `dogrulama=yapilamadi`, and the new share is shown and cannot be skipped |
+
+A rejection carries one fixed message that contains no part of the share,
+and at that point nothing — vault file, `share_2`, `users` row — has
+changed. `reprovision_vault()` now writes the new vault beside the old one,
+opens it (HMAC, GCM, both shares, key and KCV) and only then swaps it in
+atomically; a failure after the swap restores the old vault and `share_2`.
+`takeover_usb()` deletes the old vault only after the new one has been
+opened and matched against its KCV.
+
+**What the KCV guarantees:** the key rebuilt from the share is the key the
+vault was created with. **What it does not:**
+
+- It does not say *where* the typo is — only "wrong or mistyped". A
+  checksum inside the share would; that is B-162, planned for v2.6.
+- It lives in the local database. If the `usb_tokens` row is gone (the USB
+  registration was deleted), the check falls back to `.hcl` files, and
+  without them to "could not verify". Then the vault is rebuilt on the share
+  **as typed** and the old paper may no longer be valid — which is why the
+  new share is shown.
+- Vaults created before migration 29 get their KCV on the first successful
+  `open_vault()`. A vault never opened since relies on step 2.
+- A `.hcl` file encrypted under an *older* key of the same hwid (the USB
+  was re-registered, or `--reset` was used) does not verify. "Any one of
+  three" keeps that from rejecting a correct share, unless all three
+  candidates are old-key files.
+- It is not a secrecy control and opens no new oracle: the KCV is one-way,
+  a `.hcl` GCM tag already answers "is this the key?" for anyone holding the
+  file, and a 256-bit random key offers nothing to guess.
+
+`reconstruct_key()` was removed. It rebuilt a key from two shares without
+knowing the hwid, so it could not verify anything, and §4.12 had named it
+as a public API a future tool might call. `tests/test_recovery_call_graph.py`
+now pins which functions may call `_sss_recover()`.
+
+**Proof:** `tests/test_recovery_share.py`, `tests/test_usb_takeover.py`,
+`tests/test_recover_cli.py`. Removing the KCV comparison, removing the
+`.hcl` fallback, or moving the takeover's deletion before verification each
+turns them red (B-160).
+
 ---
 
 ## 5. Cryptographic details
@@ -4922,7 +4992,7 @@ ve kırıldı). Hiçbir GUI akışı, hiçbir API, başka hiçbir betik onu
 çağırmıyordu; `UI/AdminPanel.py` ve `UI/main_window_open.py` kullanıcıyı
 yalnızca METİNLE CLI'ye yönlendiriyordu — bu hâlâ doğru.
 
-**2026-09-09'da İKİNCİ bir çağrı yeri eklendi**: `CORE/usb_takeover.py:151`,
+**2026-09-09'da İKİNCİ bir çağrı yeri eklendi**: `CORE/usb_takeover.py:172`,
 `takeover_usb()` içinde. Bu, `_cmd_recover()`'dan FARKLI bir soruya cevap
 veriyor. `_cmd_recover()` AYNI HWID'in vault'unu, fiziksel USB hâlâ elde
 dururken, yerel makinenin durumu (vault dosyası ya da anahtar kasası
@@ -4943,6 +5013,8 @@ taşımak. Bu fonksiyon:
    `token_id`) bu ikinci çağıran için de DEĞİŞMEDEN geçerli.
 2. `reprovision_vault()`'u YENİ HWID üzerinde çağırıyor — `_cmd_recover()`
    ile AYNI, master key ve polinom korunuyor, taze bir `token_id` yazılıyor.
+   B-160'tan beri (§4.31) kurtarılan anahtar önce doğrulanıyor ve eski kasa
+   ancak yenisi açılıp KCV'siyle eşleştikten sonra siliniyor.
 3. Ayrıca `old_hwid`'e eşleşen satırın `users.hwid`'ini güncelliyor (yeni
    bir satır YOK — bir admin girer, bir admin çıkar) ve `old_hwid` üzerinde
    `discard_vault()` çağırıyor — bu, o HWID'in vault dosyasını, kasadaki
@@ -5804,7 +5876,7 @@ Maliyeti **hata bildirimindeydi** ve ne kadar olduğunu ölçtük:
 | Kanonik payların 33 baytlık uzaydaki payı | **1/255** (%0,39) |
 | Kanonik bir payın ilk baytı | daima `0x00` |
 | `y >= p` üreten tek karakterlik yazım hataları | **%4,6** — önceden sessizce kabul |
-| Aralıkta kalan tek karakterlik hatalar | %95,3 — meşru bir başka paydan ayırt edilemez, hiçbir kontrol yakalayamaz |
+| Aralıkta kalan tek karakterlik hatalar | %95,3 — ayrıştırıcıda meşru bir başka paydan ayırt edilemez; B-160'tan beri anahtar düzeyinde yakalanıyor (§4.31) |
 
 Yani aralık kontrolü yazım hatalarının %4,6'sını "yanlış anahtar, sonradan
 gelen belirsiz hata"dan "kurtarma parçanızda yazım hatası var"a çeviriyor.
@@ -5812,9 +5884,9 @@ Kazanç bundan ibaret. Değerli, ama güvenlik düzeltmesi değil.
 
 **Kontrol çözücüde değil, `_parse_share()` içinde.** Çözücü üç girişten
 yalnızca biri — diğer ikisi vault dosyası ve işletim sistemi anahtar kasası
-— ve `reconstruct_key()` genel, belgeli bir API: gelecekteki bir CLI ya da
-üçüncü taraf bir entegrasyon onu doğrudan çağırıp çözücüyü tamamen
-atlayabilirdi. Doğrulamayı darboğaza koymak o boşluğu kapatıyor. Ayrıca
+— ve gelecekteki bir CLI ya da üçüncü taraf bir entegrasyon pay
+ayrıştırıcısını doğrudan çağırıp çözücüyü tamamen atlayabilirdi (tam bunu
+yapan genel `reconstruct_key()` B-160'ta kaldırıldı, §4.31). Doğrulamayı darboğaza koymak o boşluğu kapatıyor. Ayrıca
 `recover_master_key()` artık indisin 3 olmasını şart koşuyor; pay 1 veya 2
 vermek hiçbir zaman bypass değildi (ikisi de geçerli pay ve veren kişi
 onlara sahip demektir) ama sessizce çalışıp denetim kaydına yanlış olay
@@ -8314,6 +8386,77 @@ yürüttüğü, kalıcı/periyodik bir elle-QA maddesi olarak açıyor). Yeşil 
 `--selftest`/CI koşusunu "ürün, kaynağın taşıdığı her şeyi içeriyor"
 olarak okuyun, "ürün çalışıyor" olarak DEĞİL — ikinci iddia provayı
 gerektiriyor.
+
+### 4.31 Yanlış yazılmış bir kurtarma parçası reddediliyor, yanlış bir anahtara dönüşmüyor
+
+> **Saldırgan modelleri:** yok — bu, sahibin kendi kurtarmasını sahibin
+> kendi yazım hatasından korur. Bir bütünlük ve erişilebilirlik kontrolü,
+> gizlilik kontrolü değil.
+
+**Ne yanlıştı (2026-09-29'da bulundu, B-160).** İki pay HER ZAMAN *bir*
+anahtar kurar. 2-of-3'te tam iki payla karşılaştırılacak bir şey yok, basılı
+parçada da sağlama toplamı yok. §4.12, tek karakterlik yazım hatalarının
+%95,3'ünün aralıkta kaldığını ölçmüştü; böyle bir hata biçim olarak
+kusursuz bir paya çözülüyor ve `recover_master_key()` hata yerine **yanlış**
+bir anahtar döndürüyordu. `--recover` kasayı onunla yeniden kuruyor,
+`--takeover` ayrıca eski kasayı ve `share_2`'sini siliyordu. Denetim kaydı
+anahtarın kurtarıldığını ve korunduğunu söylüyordu. Ayakta kalan payın
+değeri tesadüfen korunuyordu (yeniden kurulan polinom ondan geçiyor), yani
+aynı yolda doğru parçayla bir kez daha çalıştırmak anahtarı hâlâ geri
+getirebiliyordu — ama bir yazım hatasından sonra yol değiştirmek ya da
+yanlış anahtarla dosya eklemek veriyi kalıcı olarak kaybettiriyordu. İkisi
+de ölçüldü, çıkarım değil.
+
+**Şimdi ne oluyor.** `recover_master_key()` kurduğu anahtarı döndürmeden
+önce, reddi denetim kaydına yazan AYNI blok içinde doğruluyor; böylece hem
+`--recover` hem `--takeover` kapsanıyor:
+
+| Sıra | Kanıt | Sonuç |
+|---|---|---|
+| 1 | Anahtar doğrulama değeri `usb_tokens.kcv`: master key'in kendi etiketiyle (`b"hycleus-kcv-v1"`) HKDF-SHA256'sı, sabit sürede karşılaştırılıyor | eşleşme: kabul; uyuşmazlık: ret |
+| 2 | KCV yok: aynı hwid ile şifrelenmiş en fazla üç `.hcl` dosyasının GCM etiketi, en yenisi önce, `crypto.verify_file()` ile (düz metin tutulmuyor) | biri doğrularsa: kabul; hepsi etiketten düşerse: ret |
+| 3 | İkisi de yok | kabul, denetim satırı `dogrulama=yapilamadi` diyor, ve yeni parça atlanamaz biçimde gösteriliyor |
+
+Ret, parçanın hiçbir kısmını içermeyen tek bir sabit mesaj taşıyor ve o
+noktada hiçbir şey — vault dosyası, `share_2`, `users` satırı — değişmemiş
+oluyor. `reprovision_vault()` artık yeni kasayı eskisinin yanına yazıyor,
+açıyor (HMAC, GCM, iki pay, anahtar ve KCV) ve ancak ondan sonra atomik
+olarak yerine koyuyor; yer değiştirmeden sonraki bir hata eski kasayı ve
+`share_2`'yi geri yüklüyor. `takeover_usb()` eski kasayı ancak yenisi
+açılıp KCV'siyle eşleştikten sonra siliyor.
+
+**KCV'nin garanti ettiği:** parçadan kurulan anahtar, kasanın kurulduğu
+anahtardır. **Garanti etmedikleri:**
+
+- Hatanın *nerede* olduğunu söylemiyor — yalnızca "yanlış ya da yanlış
+  yazılmış". Parçanın içinde bir sağlama toplamı söylerdi; o B-162, v2.6
+  için planlı.
+- Yerel veritabanında duruyor. `usb_tokens` satırı yoksa (USB kaydı
+  silinmişse) kontrol `.hcl` dosyalarına, onlar da yoksa "doğrulanamadı"ya
+  düşüyor. O zaman kasa parçanın **yazıldığı hâliyle** yeniden kuruluyor ve
+  eski kâğıt artık geçersiz olabilir — yeni parçanın gösterilmesinin nedeni
+  bu.
+- Göç 29'dan önce kurulmuş kasalar KCV'lerini ilk başarılı `open_vault()`'ta
+  alıyor. O günden beri hiç açılmamış bir kasa 2. adıma dayanıyor.
+- Aynı hwid'in *eski* bir anahtarıyla şifrelenmiş bir `.hcl` dosyası (USB
+  yeniden kaydedilmiş ya da `--reset` kullanılmış) doğrulamaz. "Üçünden biri
+  yeter" kuralı bunun doğru bir parçayı reddettirmesini engelliyor — üç
+  adayın üçü de eski anahtarlı değilse.
+- Bir gizlilik kontrolü değil ve yeni bir oracle açmıyor: KCV tek yönlü,
+  bir `.hcl` GCM etiketi dosyayı elinde tutan herkese zaten "anahtar bu
+  mu?" sorusunu yanıtlıyor, ve 256 bitlik rastgele bir anahtarda tahmin
+  edilecek bir şey yok.
+
+`reconstruct_key()` kaldırıldı. İki paydan hwid'i bilmeden anahtar
+kuruyordu, yani hiçbir şeyi doğrulayamıyordu, ve §4.12 onu gelecekteki bir
+aracın çağırabileceği genel bir API olarak anmıştı.
+`tests/test_recovery_call_graph.py` artık `_sss_recover()`'ı hangi
+fonksiyonların çağırabileceğini sabitliyor.
+
+**Kanıt:** `tests/test_recovery_share.py`, `tests/test_usb_takeover.py`,
+`tests/test_recover_cli.py`. KCV karşılaştırmasını kaldırmak, `.hcl`
+yedeğini kaldırmak ya da devralmadaki silmeyi doğrulamanın önüne taşımak
+her biri onları kırmızıya çeviriyor (B-160).
 
 ---
 

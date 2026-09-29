@@ -182,8 +182,10 @@ def _cmd_recover(args: argparse.Namespace) -> None:
     except Exception as exc:
         _abort(
             f"Kurtarma basarisiz: {exc}\n"
-            "  Kurtarma parcasi bu cihaza ait olmayabilir ya da kalan pay okunamiyor."
+            "  Kurtarma parcasi bu cihaza ait olmayabilir ya da kalan pay okunamiyor.\n"
+            "  Hicbir sey degismedi; kagida bakip tekrar deneyebilirsiniz."
         )
+    dogrulandi = master_key.dogrulama != DOGRULAMA_YAPILAMADI
 
     try:
         import hashlib
@@ -193,14 +195,21 @@ def _cmd_recover(args: argparse.Namespace) -> None:
         print(f"  uzunluk      : {len(master_key)} byte")
         print(f"  SHA-256 ozeti: {hashlib.sha256(master_key).hexdigest()}")
         print(_SEP)
-        if master_key.dogrulama == DOGRULAMA_YAPILAMADI:
+        if not dogrulandi:
             _dogrulanamadi_uyarisi()
 
+        # B-160: "basili parca gecerli kalir" yalnizca parca DOGRULANDIYSA
+        # dogru; dogrulanamadiysa polinom GIRILEN parcaya capalanir.
+        parca_satiri = (
+            "  · polinom KORUNUR      -> elinizdeki BASILI KURTARMA PARCASI gecerli kalir\n"
+            if dogrulandi else
+            "  · polinom GIRDIGINIZ parcaya gore kurulur -> sonunda YENI parca gosterilir\n"
+        )
         print(
             "\nSIMDI VAULT'U YENIDEN KURABILIRIZ.\n"
             "\n  · master_key KORUNUR   -> mevcut .hcl dosyalariniz acilmaya devam eder\n"
-            "  · polinom KORUNUR      -> elinizdeki BASILI KURTARMA PARCASI gecerli kalir\n"
-            "  · yeni PIN belirlenir ve share_2 bu cihazin kasasina yazilir\n"
+            + parca_satiri
+            + "  · yeni PIN belirlenir ve share_2 bu cihazin kasasina yazilir\n"
         )
         if input("  Vault yeniden kurulsun mu? [e/H] ").strip().lower() not in ("e", "evet"):
             print(
@@ -241,10 +250,13 @@ def _cmd_recover(args: argparse.Namespace) -> None:
         print(_SEP)
         print(
             "\n  · Mevcut .hcl dosyalariniz ayni anahtarla acilir.\n"
-            "  · Elinizdeki basili kurtarma parcasi HALA GECERLI - saklamaya devam edin.\n"
-            "  · Yeni PIN'inizle normal sekilde giris yapabilirsiniz."
+            + (
+                "  · Elinizdeki basili kurtarma parcasi HALA GECERLI - saklamaya devam edin.\n"
+                if dogrulandi else ""
+            )
+            + "  · Yeni PIN'inizle normal sekilde giris yapabilirsiniz."
         )
-        if master_key.dogrulama == DOGRULAMA_YAPILAMADI:
+        if not dogrulandi:
             yeni_parca = export_recovery_share(hwid, yeni_pin)
             try:
                 _yeni_parcayi_zorunlu_goster(yeni_parca)
@@ -346,8 +358,11 @@ def _cmd_takeover(_args: argparse.Namespace) -> None:
         "\n  · Artik normal sekilde bu USB + yeni PIN + mevcut authenticator\n"
         "    uygulamanizla (TOTP sirri TASINDI, yeniden kurulum GEREKMEZ)\n"
         "    giris yapabilirsiniz.\n"
-        "  · Elinizdeki basili kurtarma parcasi HALA GECERLI — saklamaya devam edin.\n"
-        "  · Eski USB artik hicbir sekilde acilamaz."
+        + (
+            "  · Elinizdeki basili kurtarma parcasi HALA GECERLI — saklamaya devam edin.\n"
+            if sonuc.dogrulama != DOGRULAMA_YAPILAMADI else ""
+        )
+        + "  · Eski USB artik hicbir sekilde acilamaz."
     )
     if sonuc.dogrulama == DOGRULAMA_YAPILAMADI:
         yeni_parca = export_recovery_share(yeni_hwid, yeni_pin)
