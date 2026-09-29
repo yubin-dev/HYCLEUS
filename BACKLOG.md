@@ -13994,6 +13994,67 @@ kırmızı):
   (sıkılaştırıldı: "hata ya da yanlış anahtar" yerine artık yalnızca
   `ValueError`)
 
+**ADIM 2 — düzeltme (2026-09-29).** Kullanıcıyla netleşen iki karar:
+(d) KCV'yi yalnızca kasayı gerçekten yazan `create_vault` /
+`reprovision_vault` yazar; `recover_master_key` doğrulayamadığında KCV
+YAZMAZ. Yazsaydı, yarıda bırakılan tek harfi yanlış bir kurtarma
+yanlış anahtarın KCV'sini bırakır ve doğru parça sonra reddedilirdi. (c)
+`.hcl` yedeğinde "ilk 3 aday, biri yeter". Ek maddeler (g)–(k) de
+kullanıcıdan; `reconstruct_key` için karar: kaldır.
+
+| Commit | Adım | Ne |
+|---|---|---|
+| `65315de` | 2a | KCV = HKDF-SHA256(master_key, salt=`_HKDF_LABEL`, info=`b"hycleus-kcv-v1"`); `usb_tokens.kcv`, göç 29; `create_vault` aynı `INSERT OR REPLACE` içinde yazar; `open_vault` eski kasalarda geriye dönük doldurur (üzerine yazmaz); alan ayrımı testleri |
+| `00ca966` | 2b | **Kritik.** `recover_master_key` içinde doğrulama: KCV → `.hcl` GCM etiketi (`crypto.verify_file`, en yeni 3 aday, biri yeter, hepsi etiketten düşerse ret) → doğrulanamadı (`dogrulama=yapilamadi`). Ret sabit mesajla (`YANLIS_PARCA_MESAJI`) ve mevcut `vault_recovery_rejected` satırına. `usb_takeover.py:147` yorumu düzeltildi |
+| `c82fc7b` | 2c | Sıra: `reprovision_vault` yan dosyaya yazar, açar, doğrular, atomik yer değiştirir, hata olursa eskiyi geri yükler; `takeover_usb`: doğrula → yaz → yeni kasayı aç + KCV → ancak sonra eskiyi sil |
+| `fa9cf93` | 2d | `reconstruct_key` kaldırıldı; `_sss_recover` izinli çağıran AST testi (`open_vault`, `recover_master_key`, `_hazirlanan_kasayi_dogrula`) |
+| `fe87074` | 2e | Doğrulanamayan kurtarmada kasa yeniden yazıldıysa yeni parça ZORUNLU gösterilir, "Eski kâğıdınız artık geçersiz" |
+| `86eceb4` | 2f | ADIM 3'ün tam suite'i buldu: yeni hwid+PIN yardımcıları kara listeyi kendileri denetliyor (`tests/test_blacklist.py`); `_MUAF` büyütülmedi |
+
+2b–2f commit'lerinde ADIM 1'in beş katı `xfail`'i XPASS(strict) olarak
+kırmızı görünüyor (hata düzeldiği için); ADIM 3 işaretleri kaldırıyor.
+
+**Bilinen sınır — KCV yerel DB'de.** `usb_tokens` satırı silinmişse
+(`delete_usb_token`, USB kaydının kaldırılması) KCV de gider; doğrulama
+`.hcl` yedeğine, o da yoksa "doğrulanamadı" yoluna düşer ve kullanıcıya
+yeni parça zorunlu gösterilir. `tests/test_recovery_call_graph.py::
+test_vault_recovered_denetim_kaydi_token_id_icermez` tam bu durumda
+(`dogrulama=yapilamadi`).
+
+**ADIM 3 — kanıt (2026-09-29).** Beş `xfail` işareti kaldırıldı, beşi
+de yeşil. Mutasyonlar son kod üzerinde (`86eceb4`), her biri sonrasında
+`git checkout` ile geri alındı ve `git diff` BOŞ:
+
+1. **KCV karşılaştırması kaldırıldı** (`_kurtarilan_anahtari_dogrula`,
+   `CORE/vault_manager.py | 2 --`) → 6 kırmızı:
+   `test_recovery_rejects_wrong_share`,
+   `test_TEK_HARFI_yanlis_parca_recover_yolunda_reddedilir_kasa_DOKUNULMAZ` ×2,
+   `test_yanlis_parca_SABIT_mesaj_parcanin_hicbir_kismini_icermiyor`,
+   `test_TEK_HARFI_yanlis_parca_reddedilir_eski_kasa_ve_hesap_DURUR` ×2.
+2. **`.hcl` yedek doğrulaması kaldırıldı** (`sonuc = None`) → 3 kırmızı,
+   eski kasa testi dahil:
+   `test_KCVsiz_eski_kasa_YANLIS_parcayi_hcl_ile_REDDEDIYOR`,
+   `test_KCVsiz_eski_kasa_DOGRU_parcayi_hcl_ile_dogruluyor`,
+   `test_hcl_adaylarindan_BIRI_yeter_eski_anahtarli_dosya_reddettirmiyor`.
+3. **`takeover_usb`'de silme doğrulamanın önüne** (`discard_vault(old_hwid)`
+   `recover_master_key`'den önceye) → 13 kırmızı; "eski kasa durur"
+   testleri (`..._eski_kasa_ve_hesap_DURUR` ×2,
+   `..._KCV_tutmazsa_eski_kasa_SILINMEZ...`,
+   `..._YAN_dosya_dogrulamasi_duserse_eski_kasa_SILINMEZ`) dahil. Bu
+   mutasyon mutlu yolu da kırdığı için ayırt edici değil; ek olarak
+   **3b**: silme, yeni kasanın açılıp KCV ile karşılaştırılmasının hemen
+   önüne → 2 kırmızı:
+   `test_yeni_kasa_acilip_KCV_tutmazsa_eski_kasa_SILINMEZ_yeni_geri_alinir`
+   ve (silme TOTP taşınmadan önce çalıştığı için)
+   `test_totp_sirri_yeni_hwide_TASINMIS`.
+
+Tam suite: **3612 passed, 15 skipped, 3 failed**. Üç hata B-148'in
+bilinen yerel sorunu (`tests/test_hwid_probe.py`, sembolik bağ ayrıcalığı
+olmayan Windows); bu değişiklikle ilgisiz.
+
+**Açık kalan:** ADIM 4 (belgeler). Madde onunla kapanır; Hafta 8 Gün 2
+provası o zamana kadar başlamaz.
+
 **Plan (kullanıcı onaylı, her adım ayrı commit):**
 - ADIM 1 — kanıt testleri, `xfail(strict=True)`: devralma, `--recover`,
   `test_recovery_rejects_wrong_share`'in sıkılaştırılması.

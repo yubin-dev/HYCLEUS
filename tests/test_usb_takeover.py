@@ -308,15 +308,6 @@ def test_yanlis_kurtarma_parcasi_reddedilir_DB_DEGISMEZ(db, kasa_dizini):
     assert satirlar[0]["hwid"] == _HWID_ESKI, "yanlış parçayla bile hwid DEĞİŞMEMELİ"
 
 
-_B160 = (
-    "B-160: tek harfi yanlış bir kurtarma parçası bugün hata değil YANLIŞ "
-    "bir master_key veriyor; takeover_usb yeni kasayı onunla kuruyor, sonra "
-    "discard_vault(old_hwid) eski vault'u ve share_2'yi siliyor. Düzeltme "
-    "(recover_master_key içinde KCV doğrulaması) bu xfail'i kaldıran commit."
-)
-
-
-@pytest.mark.xfail(strict=True, reason=_B160)
 @pytest.mark.parametrize("pin_yolu", [True, False], ids=["share_1+share_3", "share_2+share_3"])
 def test_TEK_HARFI_yanlis_parca_reddedilir_eski_kasa_ve_hesap_DURUR(
     db, kasa_dizini, tek_harf_boz, pin_yolu

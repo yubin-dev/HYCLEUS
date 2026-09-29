@@ -292,15 +292,6 @@ def test_recovery_still_works_after_vault_file_is_deleted(vault, db, tmp_path) -
     assert recover_master_key(vault, recovery_share=share_3, pin=None) == beklenen
 
 
-_B160 = (
-    "B-160: yanlış kurtarma parçası bugün hata değil YANLIŞ bir master_key "
-    "veriyor (iki payla tutarlılık denetlenemiyor, parçada sağlama toplamı "
-    "yok). Düzeltme (recover_master_key içinde KCV doğrulaması) bu xfail'i "
-    "kaldıran commit."
-)
-
-
-@pytest.mark.xfail(strict=True, reason=_B160)
 def test_recovery_rejects_wrong_share(vault, db) -> None:
     """
     Başka bir vault'un kurtarma parçası İSTİSNA vermeli.
@@ -315,7 +306,6 @@ def test_recovery_rejects_wrong_share(vault, db) -> None:
         recover_master_key(vault, recovery_share=baska_share_3, pin=_PIN)
 
 
-@pytest.mark.xfail(strict=True, reason=_B160)
 @pytest.mark.parametrize("pin_yolu", [True, False], ids=["share_1+share_3", "share_2+share_3"])
 def test_TEK_HARFI_yanlis_parca_recover_yolunda_reddedilir_kasa_DOKUNULMAZ(
     vault, db, tek_harf_boz, pin_yolu
