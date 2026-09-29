@@ -6,7 +6,9 @@ Mevcut şema 2-of-2'dir: master_key iki paya bölünür
   · share_2 → DB usb_tokens tablosunda
 Eşik = 2 olduğundan "eşikten az pay" = tek pay.
 
-Testler gerçek _sss_split / _sss_recover / reconstruct_key çağırır; mock yoktur.
+Testler gerçek _sss_split / _sss_recover çağırır; mock yoktur. (Genel
+`reconstruct_key()` B-160'ta kaldırıldı — doğrulamasız bir yeniden kurma
+API'siydi; matematiği bu dosya `_sss_recover` üzerinden sınamaya devam ediyor.)
 DB veya dosya sistemi kullanılmaz — saf kripto katmanı sınanır.
 """
 from __future__ import annotations
@@ -25,7 +27,6 @@ from CORE.vault_manager import (
     _SSS_SHARE_HEX_LEN,
     _sss_recover,
     _sss_split,
-    reconstruct_key,
 )
 
 _KEY_SIZE = 32
@@ -35,7 +36,7 @@ _INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
 def _recover_or_none(share_1: str, share_2: str) -> bytes | None:
     """Kurtarmayı dener; hata fırlarsa None döner (ikisi de kabul edilebilir sonuç)."""
     try:
-        return reconstruct_key(share_1, share_2)
+        return _sss_recover(share_1, share_2)
     except (ValueError, OverflowError):
         return None
 
@@ -59,7 +60,7 @@ def test_shamir_split_and_recover_round_trip() -> None:
         secret = secrets.token_bytes(_KEY_SIZE)
         share_1, share_2, _share_3 = _sss_split(secret)
 
-        assert reconstruct_key(share_1, share_2) == secret
+        assert _sss_recover(share_1, share_2) == secret
         assert _sss_recover(share_1, share_2) == secret
 
 
@@ -75,9 +76,9 @@ def test_any_two_of_three_shares_recover_the_key(combo: tuple[int, int]) -> None
         secret = secrets.token_bytes(_KEY_SIZE)
         shares = _sss_split(secret)
 
-        assert reconstruct_key(shares[a], shares[b]) == secret
+        assert _sss_recover(shares[a], shares[b]) == secret
         # Sıra önemsiz olmalı
-        assert reconstruct_key(shares[b], shares[a]) == secret
+        assert _sss_recover(shares[b], shares[a]) == secret
 
 
 def test_shamir_shares_do_not_leak_the_secret() -> None:
@@ -104,8 +105,8 @@ def test_derived_third_share_matches_split_output() -> None:
 
         assert vault_manager._sss_derive_share(share_1, share_2, 3) == share_3
         # Türetilmiş pay gerçekten kurtarabilmeli
-        assert reconstruct_key(share_1, share_3) == secret
-        assert reconstruct_key(share_2, share_3) == secret
+        assert _sss_recover(share_1, share_3) == secret
+        assert _sss_recover(share_2, share_3) == secret
 
 
 def test_any_share_can_be_derived_from_the_other_two() -> None:
@@ -147,7 +148,7 @@ def test_shamir_single_share_cannot_recover_secret() -> None:
     # (b) Aynı pay iki kez — indis doğrulaması reddetmeli (üçü için de)
     for share in (share_1, share_2, share_3):
         with pytest.raises(ValueError, match="indisli"):
-            reconstruct_key(share, share)
+            _sss_recover(share, share)
 
     # (c) share_1'i "2:" olarak etiketleyip ikinci pay gibi kullanmak
     forged = _recover_or_none(share_1, f"2:{y1_hex}")
@@ -289,7 +290,7 @@ def test_tasan_paylar_valueerror_veriyor(kaydirma: int) -> None:
     GERÇEK BİR HATANIN TESTİ (B-021, fuzzing ile bulundu).
 
     Lagrange sonucu 32 bayta sığmadığında `to_bytes()` `OverflowError`
-    fırlatıyordu. `reconstruct_key()` yalnızca `ValueError` vaat ediyor ve
+    fırlatıyordu. `_sss_recover()` yalnızca `ValueError` vaat ediyor ve
     kurtarma akışı (`CORE/recover_vault.py`) ile arayüz onu yakalıyor —
     `OverflowError` o ağdan kaçıp çıplak bir yığın izi olarak yansıyordu.
 
@@ -299,7 +300,7 @@ def test_tasan_paylar_valueerror_veriyor(kaydirma: int) -> None:
     a, b = _tasiran_paylar(kaydirma)
 
     with pytest.raises(ValueError) as bilgi:
-        vault_manager.reconstruct_key(a, b)
+        vault_manager._sss_recover(a, b)
 
     assert not isinstance(bilgi.value, OverflowError), "hâlâ OverflowError"
     assert isinstance(bilgi.value.__cause__, OverflowError), (
@@ -317,7 +318,7 @@ def test_tasan_pay_mesaji_kullaniciya_yol_gosteriyor() -> None:
     """
     a, b = _tasiran_paylar()
     with pytest.raises(ValueError) as bilgi:
-        vault_manager.reconstruct_key(a, b)
+        vault_manager._sss_recover(a, b)
 
     mesaj = str(bilgi.value)
     assert "kurtarma parçası" in mesaj.lower(), mesaj
@@ -335,7 +336,7 @@ def test_gecerli_paylar_etkilenmedi() -> None:
     sir = bytes(range(32))
     p1, p2, p3 = vault_manager._sss_split(sir)
     for x, y in ((p1, p2), (p1, p3), (p2, p3), (p3, p1)):
-        assert vault_manager.reconstruct_key(x, y) == sir
+        assert vault_manager._sss_recover(x, y) == sir
 
 
 def test_sinirin_hemen_altindaki_sir_calisiyor() -> None:
@@ -348,7 +349,7 @@ def test_sinirin_hemen_altindaki_sir_calisiyor() -> None:
     s = 2**256 - 1
     a = vault_manager._fmt_share(1, (s + 1) % vault_manager._SSS_PRIME)
     b = vault_manager._fmt_share(2, (s + 2) % vault_manager._SSS_PRIME)
-    assert vault_manager.reconstruct_key(a, b) == s.to_bytes(32, "big")
+    assert vault_manager._sss_recover(a, b) == s.to_bytes(32, "big")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -431,9 +432,9 @@ def test_kanonik_olmayan_uzunluk_reddediliyor(ad: str, hex_govde: str) -> None:
     """
     `decode_share` uzunluğu zaten denetliyordu; `_parse_share` denetlemiyordu.
 
-    Fark önemli çünkü `reconstruct_key()` alt çizgisiz, belgeli bir GENEL
-    API: `decode_share`'i atlayan bir çağıran (gelecekteki bir CLI, üçüncü
-    bir entegrasyon) tek korumayı da atlıyordu.
+    Fark önemli çünkü `decode_share`'i atlayan bir çağıran (gelecekteki
+    bir CLI, üçüncü bir entegrasyon) tek korumayı da atlıyordu. (O
+    zamanki genel API `reconstruct_key()` B-160'ta kaldırıldı.)
     """
     with pytest.raises(ValueError, match="onaltılık karakter olmalı"):
         vault_manager._parse_share(f"3:{hex_govde}")
@@ -441,16 +442,17 @@ def test_kanonik_olmayan_uzunluk_reddediliyor(ad: str, hex_govde: str) -> None:
 
 def test_genel_api_uzerinden_de_reddediliyor() -> None:
     """
-    Kapı gerçekten darboğazda mı? `reconstruct_key` üzerinden sına.
+    Kapı gerçekten darboğazda mı? Ayrıştırıcıyı değil, onu çağıran
+    `_sss_recover`'ı sına.
 
     Bu, düzeltmenin ASIL GEREKÇESİ: koruma `decode_share`'de olsaydı bu
     çağrı yine geçerdi.
     """
     with pytest.raises(ValueError, match="onaltılık karakter olmalı"):
-        vault_manager.reconstruct_key("3:ff", "1:aa")
+        vault_manager._sss_recover("3:ff", "1:aa")
 
     with pytest.raises(ValueError, match="geçerli aralıkta değil"):
-        vault_manager.reconstruct_key(_pay(3, _P), _pay(1, 5))
+        vault_manager._sss_recover(_pay(3, _P), _pay(1, 5))
 
 
 # ── Kurtarma indisi ───────────────────────────────────────────────────────────

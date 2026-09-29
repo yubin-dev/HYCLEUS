@@ -89,6 +89,84 @@ def _cagirir_mi(dugum: ast.AST, ad: str) -> bool:
     )
 
 
+#: B-160: `_sss_recover()` iki paydan HER ZAMAN bir anahtar döndürür; yanlış
+#: bir pay hata değil YANLIŞ anahtar verir. Üretimde yalnızca sonucunu
+#: doğrulayan (ya da iki SİSTEM payından çalışan) fonksiyonlar çağırabilir.
+_SSS_RECOVER_IZINLI: dict[str, str] = {
+    "open_vault": "iki SİSTEM payı (share_1 + share_2); kurtarma parçası "
+                  "girmiyor, anahtar doğru — KCV'yi geriye dönük dolduran yer",
+    "recover_master_key": "kurtarma parçası; sonuç aynı gövdede "
+                          "_kurtarilan_anahtari_dogrula() ile doğrulanıyor",
+    "_hazirlanan_kasayi_dogrula": "yan dosyadaki YENİ kasayı açıp beklenen "
+                                  "anahtar + KCV ile karşılaştırıyor",
+}
+
+
+def _sss_recover_cagiranlari() -> list[tuple[str, str]]:
+    """Üretimde `_sss_recover(...)` çağrısını içeren en içteki fonksiyonlar."""
+    bulunan: list[tuple[str, str]] = []
+    for dosya in _uretim_dosyalari():
+        bagil = dosya.relative_to(KOK).as_posix()
+
+        class _Ziyaretci(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.yigin: list[str] = []
+
+            def visit_FunctionDef(self, dugum: ast.FunctionDef) -> None:
+                self.yigin.append(dugum.name)
+                self.generic_visit(dugum)
+                self.yigin.pop()
+
+            visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+            def visit_Call(self, dugum: ast.Call) -> None:
+                if _cagri_adi(dugum) == "_sss_recover":
+                    bulunan.append((bagil, self.yigin[-1] if self.yigin else "<modül>"))
+                self.generic_visit(dugum)
+
+        _Ziyaretci().visit(ast.parse(dosya.read_text(encoding="utf-8")))
+    return bulunan
+
+
+def test_sss_recover_YALNIZCA_izinli_fonksiyonlardan_cagriliyor() -> None:
+    """
+    B-160 (g). Yeni bir çağıran — bir GUI kurtarma akışı, bir CLI, bir
+    içe aktarma aracı — kurtarma parçasından anahtar kurup doğrulamadan
+    kullanırsa tek harflik yazım hatası yine sessizce yanlış anahtar olur.
+    Böyle bir yer eklenince bu test kırılır; izin listesine eklemek, neden
+    güvenli olduğunu yanına yazmayı gerektirir.
+    """
+    cagiranlar = _sss_recover_cagiranlari()
+    assert cagiranlar, "_sss_recover üretimde hiç çağrılmıyor — denetim boş kümeye bakıyor"
+
+    izinsiz = [
+        f"{dosya}::{fn}" for dosya, fn in cagiranlar
+        if dosya != "CORE/vault_manager.py" or fn not in _SSS_RECOVER_IZINLI
+    ]
+    assert not izinsiz, (
+        f"_sss_recover() izinsiz yerlerden çağrılıyor: {izinsiz}. Kurtarılan "
+        "anahtar doğrulanmadan kullanılırsa B-160 geri gelir; "
+        "recover_master_key()'i kullanın."
+    )
+    # Liste güncel kalsın: izinli ama artık çağırmayan bir ad kalmamalı.
+    assert {fn for _d, fn in cagiranlar} == set(_SSS_RECOVER_IZINLI)
+
+
+def test_recover_master_key_kurdugu_anahtari_AYNI_govdede_dogruluyor() -> None:
+    agac = ast.parse((KOK / "CORE" / "vault_manager.py").read_text(encoding="utf-8"))
+    fn = next(
+        d for d in ast.walk(agac)
+        if isinstance(d, ast.FunctionDef) and d.name == "recover_master_key"
+    )
+    assert _cagirir_mi(fn, "_sss_recover")
+    assert _cagirir_mi(fn, "_kurtarilan_anahtari_dogrula")
+
+
+def test_dogrulamasiz_genel_yeniden_kurma_APIsi_YOK() -> None:
+    """B-160 (g): `reconstruct_key()` kaldırıldı — hwid bilmediği için doğrulayamıyordu."""
+    assert not hasattr(vault_manager, "reconstruct_key")
+
+
 def test_recover_master_key_her_cagri_yerinde_reprovision_erisilebilir() -> None:
     """
     ASIL YAPISAL DENETİM: `recover_master_key()`'i çağıran her fonksiyon,

@@ -10,7 +10,7 @@ girdisi: kâğıda basılıyor, sonra tekrar klavyeden giriliyor
 harf ve eksik/fazla tire tolere edilir" diyor). Yani ayrıştırıcı bilerek
 hoşgörülü ve hoşgörülü ayrıştırıcılar sürprizlerin yaşadığı yerdir.
 
-İkinci sebep: `reconstruct_key()` bu payları alıp doğrudan bir master key
+İkinci sebep: `_sss_recover()` bu payları alıp doğrudan bir master key
 üretiyor. Kurtarma akışı (`CORE/recover_vault.py`) o anahtarla kasayı
 açmaya çalışıyor. Ayrıştırma katmanından geçen her şey kriptonun kalbine
 giriyor.
@@ -19,7 +19,7 @@ Aranan sözleşmeler
 ------------------
     decode_share()      → RecoveryShareError (ValueError alt sınıfı)
     _parse_share()      → ValueError
-    reconstruct_key()   → ValueError ("paylar geçersiz formattaysa veya
+    _sss_recover()   → ValueError ("paylar geçersiz formattaysa veya
                           aynı indisliyse")
 
 Ayrıca DEĞİŞMEZLER sınanıyor:
@@ -46,16 +46,16 @@ with enstrumante():  # noqa: E402
     )
     from CORE.vault_manager import (
         _parse_share,
+        _sss_recover,
         _sss_split,
-        reconstruct_key,
-    )
+        )
 
 IZINLI_PAY: tuple[type[BaseException], ...] = (ValueError,)
 IZINLI_KODLAMA: tuple[type[BaseException], ...] = (RecoveryShareError, ValueError)
 
 #: Bilinen ve düzeltilmemiş ihlal YOK.
 #:
-#: Bir zamanlar B-021 vardı: `reconstruct_key()` Lagrange sonucu
+#: Bir zamanlar B-021 vardı: `_sss_recover()` Lagrange sonucu
 #: [2**256, asal) aralığına düştüğünde `to_bytes(32)` ile `OverflowError`
 #: fırlatıyordu. Bu harness'ın tohum korpusu bulmuştu (rastgele
 #: bulunamazdı — aralık asalın 297/2**256'sı kadar).
@@ -125,7 +125,7 @@ def one_input(data: bytes) -> None:
     # ── 1. Pay ayrıştırıcısı ─────────────────────────────────────────────────
     a, b = _pay_metni(t), _pay_metni(t)
     cagir("_parse_share", IZINLI_PAY, data, lambda: _parse_share(a))
-    cagir("reconstruct_key", IZINLI_PAY, data, lambda: reconstruct_key(a, b))
+    cagir("_sss_recover", IZINLI_PAY, data, lambda: _sss_recover(a, b))
 
     # ── 2. Kurtarma parçası kodlaması ────────────────────────────────────────
     metin = t.bayt(72).decode("latin-1")
@@ -148,8 +148,8 @@ def one_input(data: bytes) -> None:
 
     for x, y in ((p1, p2), (p1, p3), (p2, p3), (p2, p1), (p3, p1), (p3, p2)):
         geri = cagir(
-            "reconstruct_key(gecerli)", IZINLI_PAY, data,
-            lambda x=x, y=y: reconstruct_key(x, y),  # type: ignore[misc]
+            "_sss_recover(gecerli)", IZINLI_PAY, data,
+            lambda x=x, y=y: _sss_recover(x, y),  # type: ignore[misc]
         )
         assert geri == sir, (
             f"2-of-3 kurtarma başarısız: {x[:6]}… + {y[:6]}… -> "
@@ -159,7 +159,7 @@ def one_input(data: bytes) -> None:
     # Aynı indisli iki pay REDDEDİLMELİ — eşik gerçekten 2 mi?
     for tek in (p1, p2, p3):
         try:
-            reconstruct_key(tek, tek)
+            _sss_recover(tek, tek)
         except ValueError:
             pass
         else:

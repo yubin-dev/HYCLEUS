@@ -22,7 +22,9 @@ Shamir Secret Sharing (2-of-3):
               gösterilip kullanıcı tarafından fiziksel olarak saklanır.
               Aynı polinomdan geldiği için share_1 + share_2'den her an
               yeniden türetilebilir (export_recovery_share).
-  · Üç paydan HERHANGİ İKİSİ master_key'i kurtarır (reconstruct_key)
+  · Üç paydan HERHANGİ İKİSİ master_key'i kurtarır (_sss_recover — yalnızca
+    doğrulayan çağıranlardan: open_vault, recover_master_key, yeni kasanın
+    yan dosya doğrulaması; B-160, tests/test_recovery_call_graph.py)
 
 Geriye dönük uyumluluk:
   2-of-2 döneminde oluşturulmuş vault'larda share_1 ve share_2 zaten f(1) ve
@@ -345,9 +347,11 @@ def _parse_share(share: str) -> tuple[int, int]:
         vault dosyası ─┼─→ _parse_share ─→ _sss_recover / _sss_split
         anahtar kasası ┘
 
-    `reconstruct_key()` alt çizgisiz, belgeli bir genel API; `decode_share`'i
-    atlayan bir çağıran (gelecekteki bir CLI, üçüncü bir entegrasyon) tek
-    korumayı da atlamış olurdu. Darboğaza koymak o boşluğu kapatıyor.
+    `decode_share`'i atlayan bir çağıran (gelecekteki bir CLI, üçüncü bir
+    entegrasyon) tek korumayı da atlamış olurdu. Darboğaza koymak o
+    boşluğu kapatıyor. (Bunun için yazıldığı genel API `reconstruct_key()`
+    B-160'ta kaldırıldı: hwid bilmediği için kurtardığı anahtarı
+    doğrulayamıyordu.)
 
     BU BİR GÜVENLİK AÇIĞI DÜZELTMESİ DEĞİLDİR
     -----------------------------------------
@@ -1967,28 +1971,3 @@ def reprovision_vault(
         detail=f"hwid={hwid} master_key=korundu polinom=korundu",
     )
     return path
-
-
-def reconstruct_key(share_a: str, share_b: str) -> bytes:
-    """
-    Herhangi iki Shamir payını birleştirerek orijinal master_key'i kurtarır.
-
-    2-of-3 şema: (1,2) (1,3) (2,3) kombinasyonlarının üçü de çalışır.
-    Tek pay yeterli değildir; aynı indisli iki pay reddedilir.
-
-    Args:
-        share_a — Herhangi bir pay ("1:<hex>", "2:<hex>" veya "3:<hex>")
-        share_b — Farklı indisli ikinci pay
-
-    Pay konumları:
-        1 — vault dosyası içinde (Argon2id/PIN ile şifreli)
-        2 — işletim sistemi anahtar kasası ("share_2:<hwid>")
-        3 — kurtarma parçası; sistemde saklanmaz, kullanıcıda fiziksel olarak
-
-    Returns:
-        32 byte master_key
-
-    Raises:
-        ValueError — paylar geçersiz formattaysa veya aynı indisliyse
-    """
-    return _sss_recover(share_a, share_b)
