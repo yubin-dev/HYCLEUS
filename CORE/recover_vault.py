@@ -50,6 +50,7 @@ from CORE.roles import display_role  # noqa: E402
 from CORE.usb_manager import get_usb_hwid  # noqa: E402
 from CORE.usb_takeover import TakeoverError, takeover_usb  # noqa: E402
 from CORE.vault_manager import (  # noqa: E402
+    DOGRULAMA_YAPILAMADI,
     export_recovery_share,
     has_recovery_share,
     recover_master_key,
@@ -110,6 +111,35 @@ def _show_export(share_3: str, qr_path: Path | None) -> None:
         del export  # bellekten birak
 
 
+def _dogrulanamadi_uyarisi() -> None:
+    """B-160: kurtarma parçası doğrulanamadı — yeniden kurulumdan ÖNCE söylenir."""
+    print(
+        "\n  ! UYARI: Bu kurtarma parcasi DOGRULANAMADI. Bu kasa icin kayitli\n"
+        "    bir dogrulama degeri ve sifreli dosya yok; parca yanlis yazilmissa\n"
+        "    bunu fark etmenin yolu yok. Devam ederseniz kasa, GIRDIGINIZ parcaya\n"
+        "    gore yeniden kurulur ve sonunda size YENI parca gosterilir."
+    )
+
+
+def _yeni_parcayi_zorunlu_goster(hwid: str, pin: str) -> None:
+    """
+    B-160: doğrulanamayan bir kurtarmayla kasa yeniden yazıldıysa yeni
+    kurtarma parçası ATLANAMAZ biçimde gösterilir. Yeni polinom GİRİLEN
+    parçaya çapalandı; girilen parça kâğıttakinden farklıysa (yazım hatası)
+    kâğıt artık geçersizdir ve bundan sonra geçerli olan tek parça budur.
+    """
+    print(f"\n{_SEP}")
+    print("KURTARMA PARCASI DOGRULANAMADI - YENI PARCANIZ ASAGIDA")
+    print("  Eski kagidiniz artik GECERSIZ. Asagidaki parcayi yazdirin ya da")
+    print("  elle yazin, eski kagidi imha edin.")
+    print(_SEP)
+    share_3 = export_recovery_share(hwid, pin)
+    try:
+        _show_export(share_3, None)
+    finally:
+        del share_3
+
+
 def _cmd_export(args: argparse.Namespace) -> None:
     hwid = _require_hwid()
     print(f"\nHWID: {hwid}")
@@ -167,6 +197,8 @@ def _cmd_recover(args: argparse.Namespace) -> None:
         print(f"  uzunluk      : {len(master_key)} byte")
         print(f"  SHA-256 ozeti: {hashlib.sha256(master_key).hexdigest()}")
         print(_SEP)
+        if master_key.dogrulama == DOGRULAMA_YAPILAMADI:
+            _dogrulanamadi_uyarisi()
 
         print(
             "\nSIMDI VAULT'U YENIDEN KURABILIRIZ.\n"
@@ -216,6 +248,8 @@ def _cmd_recover(args: argparse.Namespace) -> None:
             "  · Elinizdeki basili kurtarma parcasi HALA GECERLI - saklamaya devam edin.\n"
             "  · Yeni PIN'inizle normal sekilde giris yapabilirsiniz."
         )
+        if master_key.dogrulama == DOGRULAMA_YAPILAMADI:
+            _yeni_parcayi_zorunlu_goster(hwid, yeni_pin)
     finally:
         del master_key
 
@@ -315,6 +349,8 @@ def _cmd_takeover(_args: argparse.Namespace) -> None:
         "  · Elinizdeki basili kurtarma parcasi HALA GECERLI — saklamaya devam edin.\n"
         "  · Eski USB artik hicbir sekilde acilamaz."
     )
+    if sonuc.dogrulama == DOGRULAMA_YAPILAMADI:
+        _yeni_parcayi_zorunlu_goster(yeni_hwid, yeni_pin)
 
 
 def _cmd_status(_args: argparse.Namespace) -> None:

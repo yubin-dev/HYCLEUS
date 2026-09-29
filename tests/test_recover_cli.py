@@ -353,6 +353,86 @@ def test_recover_basarili_denemede_reddedildi_YAZILMIYOR(vault, db) -> None:
     ) is not None
 
 
+# ── B-160 (i) — doğrulanamayan kurtarmada yeni parça ZORUNLU gösterilir ──────
+
+
+def _gosterilen_yeni_parca(cikti: str) -> str:
+    """Zorunlu gösterim bloğundan sonraki HYCLEUS-R3 satırını çözer."""
+    blok = cikti.split("YENI PARCANIZ ASAGIDA", 1)[1]
+    satir = next(s for s in blok.splitlines() if "HYCLEUS-R3-" in s and ":" not in s)
+    return decode_share(satir.strip())
+
+
+def test_recover_DOGRULANAMAYAN_kurtarmada_yeni_parca_zorunlu_ve_GECERLI(
+    vault, db, capsys, monkeypatch, tek_harf_boz
+) -> None:
+    """
+    KCV yok, dosya yok: tek harfi yanlış parça doğrulanamaz ve kabul edilir.
+    Kasa GİRİLEN parçaya göre yeniden kurulduğu için kâğıttaki parça artık
+    geçersiz — kullanıcı yeni parçayı görmeden çıkamamalı, ve gösterilen
+    parça yeni kasayı gerçekten açabilmeli.
+    """
+    from CORE.recovery_share import encode_share
+
+    share_3 = export_recovery_share(vault, _PIN)
+    db.execute("UPDATE usb_tokens SET kcv = NULL WHERE hwid = ?", (vault,))
+    bozuk = tek_harf_boz(share_3)
+
+    girdiler = iter([encode_share(bozuk), _PIN, "yeni-pin-98765", "yeni-pin-98765"])
+    monkeypatch.setattr(recover_vault, "_prompt_pin", lambda *_a, **_k: next(girdiler))
+    cevaplar = iter(["1", "e", "Yönetici"])
+    monkeypatch.setattr("builtins.input", lambda *_a: next(cevaplar))
+
+    recover_vault._cmd_recover(_args())
+
+    cikti = capsys.readouterr().out
+    assert "DOGRULANAMADI" in cikti
+    assert "Eski kagidiniz artik GECERSIZ" in cikti
+    yeni = _gosterilen_yeni_parca(cikti)
+    assert yeni != share_3, "kâğıttaki parça geçerli kalmış gibi gösterildi"
+    _rol, anahtar = open_vault(vault, "yeni-pin-98765")
+    assert vault_manager.recover_master_key(vault, recovery_share=yeni, pin=None) == anahtar
+
+
+def test_recover_DOGRULANAN_kurtarmada_yeni_parca_GOSTERILMEZ(
+    vault, db, capsys, monkeypatch
+) -> None:
+    from CORE.recovery_share import encode_share
+
+    share_3 = export_recovery_share(vault, _PIN)
+    girdiler = iter([encode_share(share_3), _PIN, "yeni-pin-98765", "yeni-pin-98765"])
+    monkeypatch.setattr(recover_vault, "_prompt_pin", lambda *_a, **_k: next(girdiler))
+    cevaplar = iter(["1", "e", "Yönetici"])
+    monkeypatch.setattr("builtins.input", lambda *_a: next(cevaplar))
+
+    recover_vault._cmd_recover(_args())
+
+    cikti = capsys.readouterr().out
+    assert "VAULT YENIDEN KURULDU" in cikti
+    assert "DOGRULANAMADI" not in cikti
+    assert "YENI PARCANIZ" not in cikti
+
+
+def test_recover_yeniden_kurulum_REDDEDILIRSE_yeni_parca_gosterilmez(
+    vault, db, capsys, monkeypatch
+) -> None:
+    """Kasa yeniden YAZILMADIYSA kâğıt geçersizleşmedi; zorunlu gösterim yok."""
+    from CORE.recovery_share import encode_share
+
+    share_3 = export_recovery_share(vault, _PIN)
+    db.execute("UPDATE usb_tokens SET kcv = NULL WHERE hwid = ?", (vault,))
+    girdiler = iter([encode_share(share_3), _PIN])
+    monkeypatch.setattr(recover_vault, "_prompt_pin", lambda *_a, **_k: next(girdiler))
+    cevaplar = iter(["1", "H"])
+    monkeypatch.setattr("builtins.input", lambda *_a: next(cevaplar))
+
+    recover_vault._cmd_recover(_args())
+
+    cikti = capsys.readouterr().out
+    assert "DOGRULANAMADI" in cikti  # uyarı yeniden kurulumdan ÖNCE verilir
+    assert "YENI PARCANIZ" not in cikti
+
+
 # ── --takeover (B-11X, Madde 2) ─────────────────────────────────────────────
 #
 # `--recover`'dan FARKLI senaryo: `vault` fixture'ının HWID'i (_HWID) burada
@@ -407,6 +487,30 @@ def test_takeover_happy_path_users_tablosu_guncelleniyor(
 
     with pytest.raises(FileNotFoundError):
         open_vault(vault, _PIN)
+
+
+def test_takeover_DOGRULANAMAYAN_devralmada_yeni_parca_zorunlu_gosteriliyor(
+    admin_kaydi, vault, db, capsys, monkeypatch,
+) -> None:
+    from CORE.recovery_share import encode_share
+
+    share_3 = export_recovery_share(vault, _PIN)
+    db.execute("UPDATE usb_tokens SET kcv = NULL WHERE hwid = ?", (vault,))
+
+    monkeypatch.setattr(recover_vault, "get_usb_hwid", lambda: _HWID_YENI)
+    girdiler = iter(["admin_cli", "1", "e"])
+    monkeypatch.setattr("builtins.input", lambda *_a: next(girdiler))
+    pinler = iter([encode_share(share_3), _PIN, _YENI_PIN, _YENI_PIN])
+    monkeypatch.setattr(recover_vault, "_prompt_pin", lambda *_a, **_k: next(pinler))
+
+    recover_vault._cmd_takeover(_args())
+
+    cikti = capsys.readouterr().out
+    assert "USB DEVRALINDI" in cikti
+    assert "Eski kagidiniz artik GECERSIZ" in cikti
+    yeni = _gosterilen_yeni_parca(cikti)
+    _rol, anahtar = open_vault(_HWID_YENI, _YENI_PIN)
+    assert vault_manager.recover_master_key(_HWID_YENI, recovery_share=yeni, pin=None) == anahtar
 
 
 def test_takeover_iptal_edilirse_HICBIR_SEY_degismez(
