@@ -414,6 +414,66 @@ def test_devralma_sonucu_dogrulama_yolunu_tasiyor(db, kasa_dizini):
     assert sonuc.dogrulama == vault_manager.DOGRULAMA_KCV
 
 
+# ── B-160 yeniden açılış — devralınmış kasada .hcl yedek doğrulaması ──────
+
+
+def _devralinmis_kcvsiz_kasa(db, kasa_dizini, tmp_path: Path) -> str:
+    """
+    A'da kurulmuş, bir .hcl dosyası eklenmiş, A→B devralınmış, KCV'si
+    silinmiş (göç 29'dan önce kurulmuş, o günden beri açılmamış kasayı
+    taklit eder) bir hesap. Devralmadan SONRA dosya eklenmiyor: B'nin tek
+    doğrulama kaynağı, AAD'sinde hâlâ ESKİ hwid'i taşıyan dosya.
+    """
+    from CORE.crypto import encrypt_file
+
+    share_3 = _admin_kur_ve_kurtarma_parcasi_al(db, kasa_dizini)
+    _rol, anahtar = open_vault(_HWID_ESKI, _PIN_ESKI)
+    kullanici_id = db.fetchone("SELECT id FROM users")["id"]
+    kaynak = tmp_path / "belge.txt"
+    kaynak.write_bytes(b"gizli icerik")
+    yol, _sha, aad = encrypt_file(
+        kaynak, anahtar, kullanici_id, hwid=_HWID_ESKI, dst=tmp_path / "belge.hcl"
+    )
+    db.execute(
+        "INSERT INTO files (filename, filepath, aad_metadata, added_at) VALUES (?, ?, ?, ?)",
+        ("belge.txt", str(yol), aad, "2026-09-01T10:00:00Z"),
+    )
+
+    takeover_usb(
+        db, old_hwid=_HWID_ESKI, new_hwid=_HWID_YENI,
+        recovery_share=share_3, new_pin=_PIN_YENI, old_pin=_PIN_ESKI,
+    )
+    db.execute("UPDATE usb_tokens SET kcv = NULL WHERE hwid = ?", (_HWID_YENI,))
+    return share_3
+
+
+@pytest.mark.xfail(strict=True, reason="B-160 yeniden açılış: .hcl adayları hwid ile süzülüyor")
+@pytest.mark.parametrize("pin_yolu", [True, False], ids=["share_1+share_3", "share_2+share_3"])
+def test_devralinmis_KCVsiz_kasada_TEK_HARFI_yanlis_parca_REDDEDILIR(
+    db, kasa_dizini, tmp_path, tek_harf_boz, pin_yolu
+):
+    share_3 = _devralinmis_kcvsiz_kasa(db, kasa_dizini, tmp_path)
+
+    with pytest.raises(ValueError, match="bu kasaya ait değil"):
+        vault_manager.recover_master_key(
+            _HWID_YENI, recovery_share=tek_harf_boz(share_3),
+            pin=_PIN_YENI if pin_yolu else None,
+        )
+
+
+@pytest.mark.xfail(strict=True, reason="B-160 yeniden açılış: .hcl adayları hwid ile süzülüyor")
+@pytest.mark.parametrize("pin_yolu", [True, False], ids=["share_1+share_3", "share_2+share_3"])
+def test_devralinmis_KCVsiz_kasada_dogru_parca_HCL_ile_dogrulanir(
+    db, kasa_dizini, tmp_path, pin_yolu
+):
+    share_3 = _devralinmis_kcvsiz_kasa(db, kasa_dizini, tmp_path)
+
+    anahtar = vault_manager.recover_master_key(
+        _HWID_YENI, recovery_share=share_3, pin=_PIN_YENI if pin_yolu else None,
+    )
+    assert anahtar.dogrulama == vault_manager.DOGRULAMA_HCL
+
+
 def test_yanlis_eski_pin_reddedilir(db, kasa_dizini):
     share_3 = _admin_kur_ve_kurtarma_parcasi_al(db, kasa_dizini)
 
