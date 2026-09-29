@@ -13913,7 +13913,10 @@ maddeye yazıldı.
 
 ## B-160 — Tek harfi yanlış bir kurtarma parçası hata değil YANLIŞ anahtar veriyor; devralma/yeniden kurulum kasayı kalıcı olarak kaybettiriyor
 
-**Durum:** KAPANDI (2026-09-29) — ADIM 1–4 tamam, bkz. en alttaki kayıt.
+**Durum:** AÇIK — 2026-09-29'da KAPANDI yazılmıştı, aynı gün geri açıldı:
+kapanış ölçütüne CI şartı eklendi (bkz. "Kapanış ölçütü") ve `.hcl` yedek
+doğrulamasında devralınmış kasalar için bir boşluk bulundu (bkz. "Yeniden
+açılış").
 **Önem:** KRİTİK — veri kaybı.
 **Bulundu:** 2026-09-29.
 **Karar:** şimdi, çünkü "kaybolursa kurtarılır" sözünü bozuyor; tek
@@ -14073,8 +14076,9 @@ yalnızca ADIM 3'ün testleri ve mutasyonlarından sonra yazıldı.
   yanlış anahtar" → yalnızca ret, kasa baytları değişmedi).
 - UI'da kurtarma parçası hakkında bu davranışa dair bir metin yok (tarandı).
 
-**Kapanış:** ölçütün dört adımı tamam. CI koşusu push'tan sonra; Hafta 8
-Gün 2 provası artık bu madde tarafından engellenmiyor.
+**Kapanış (geri alındı):** ölçütün yerel kısmı — dört adım ve mutasyonlar —
+tamamdı; CI kısmı ölçüte sonradan eklendi ve henüz karşılanmadı. Hafta 8
+Gün 2 provası bu madde kapanana kadar yine bekler.
 
 **Plan (kullanıcı onaylı, her adım ayrı commit):**
 - ADIM 1 — kanıt testleri, `xfail(strict=True)`: devralma, `--recover`,
@@ -14088,7 +14092,25 @@ Gün 2 provası artık bu madde tarafından engellenmiyor.
 - ADIM 4 — SECURITY.md (EN+TR), kullanıcı rehberi, UI/CLI metinleri.
 
 **Kapanış ölçütü:** ADIM 1–4'ün dördü de tamam; ADIM 3'ün iki mutasyonu
-kırmızı görüldü ve geri alındıktan sonra `git diff` boş.
+kırmızı görüldü ve geri alındıktan sonra `git diff` boş; **ve** B-160'ın
+son commit'i push edildikten sonra CI'da beş işin beşi de yeşil (`test`
+ubuntu + windows, `security`, `appimage`, `exe`) ve B-160 testleri
+Windows ayağının test raporunda `passed` (skip değil).
+
+**Yeniden açılış (2026-09-29, kullanıcı denetimi):**
+- `_hcl_ile_dogrula` adayları `meta.hwid == hwid` ile süzüyor. Devralma
+  dosyaları yeniden şifrelemiyor (AAD'de eski hwid kalıyor) ama master_key
+  korunuyor. A→B devralınmış, KCV'si henüz yazılmamış bir kasada B için
+  kurtarma eski dosyaları görmüyor, `None` dönüp "doğrulanamadı"ya düşüyor
+  ve yanlış parçayı KABUL ediyor.
+- `verify_file(hwid=hwid)` etiket doğrulandıktan sonraki hwid kontrolünde
+  (`CORE/crypto.py` `verify_file`) de `AuthenticationError` fırlatıyor; DB
+  sütunu ile dosya başlığı uyuşmazsa DOĞRU anahtar "yanlış" sayılabilir.
+- Düzeltme planı: adaylar `users.id`'ye eşit `meta.user_id` ile süzülür
+  (hwid'e bakılmaz); `verify_file` `hwid=None` ile çağrılır (yalnızca GCM
+  etiketi); `users` satırı yoksa bugünkü hwid süzgecine geri düşülür. Önce
+  `xfail(strict)` kanıt testi, sonra düzeltme; mutasyon: süzgeci hwid'e
+  geri çevir → test kırmızı.
 
 **İlgili:** B-161 (`_parse_share` mesajında pay parçası), B-162 (kurtarma
 parçasına sağlama toplamı).
