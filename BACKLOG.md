@@ -14111,6 +14111,24 @@ Windows ayağının test raporunda `passed` (skip değil).
   etiketi); `users` satırı yoksa bugünkü hwid süzgecine geri düşülür. Önce
   `xfail(strict)` kanıt testi, sonra düzeltme; mutasyon: süzgeci hwid'e
   geri çevir → test kırmızı.
+- Kanıt: `10b3820` — `tests/test_usb_takeover.py`,
+  `test_devralinmis_KCVsiz_kasada_TEK_HARFI_yanlis_parca_REDDEDILIR` ve
+  `..._dogru_parca_HCL_ile_dogrulanir`, iki yol (share_1/share_2 + share_3)
+  = 4 test. A'da kurulum + bir `.hcl`, A→B devralma, B'nin KCV'si silindi,
+  devralmadan sonra dosya eklenmedi. `--runxfail`: yanlış parça "DID NOT
+  RAISE ValueError" (×2), doğru parça `'yapilamadi' == 'hcl'` (×2).
+- Düzeltme: `50aa401` — adaylar `meta.user_id == users.id` ile (hwid'e
+  bakılmadan), `users` satırı yoksa hwid ile; `verify_file(..., hwid=None)`.
+  xfail'ler kaldırıldı, dördü yeşil. SECURITY.md §4.31 (EN+TR) tablo
+  satırı ve sınırlar güncellendi.
+- Mutasyon 1 (kullanıcının istediği): süzgeç `meta.get("hwid") != hwid`'e
+  geri çevrildi → 4 test kırmızı (dördü de yukarıdakiler); geri alındı,
+  `git diff` boş.
+- Mutasyon 2 (ek): `verify_file(..., hwid=hwid)` geri getirildi → doğru
+  parça `YANLIS_PARCA_MESAJI` ile reddedildi, `..._HCL_ile_dogrulanir` ×2
+  kırmızı; geri alındı, `git diff` boş.
+- Tam suite (`50aa401`): 3616 passed, 15 skipped, 3 failed — üçü B-148
+  (`test_hwid_probe`, Windows'ta sembolik bağ ayrıcalığı), bu işle ilgisiz.
 
 **İlgili:** B-161 (`_parse_share` mesajında pay parçası), B-162 (kurtarma
 parçasına sağlama toplamı).
