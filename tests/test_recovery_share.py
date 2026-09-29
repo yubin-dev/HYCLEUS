@@ -356,6 +356,180 @@ def test_TEK_HARFI_yanlis_parca_recover_yolunda_reddedilir_kasa_DOKUNULMAZ(
     assert "vault_reprovisioned" not in eylemler
 
 
+# ── B-160 — kurtarılan anahtarın doğrulanması ────────────────────────────────
+
+
+def _kcv_sil(db, hwid: str) -> None:
+    """Göç 29'dan önce kurulmuş, o günden beri açılmamış kasayı taklit eder."""
+    db.execute("UPDATE usb_tokens SET kcv = NULL WHERE hwid = ?", (hwid,))
+
+
+def _hcl_ekle(
+    db, tmp_path: Path, anahtar: bytes, *, hwid: str = _HWID, ad: str = "belge",
+    added_at: str = "2026-09-01T10:00:00Z",
+) -> Path:
+    """`anahtar` ile şifrelenmiş gerçek bir .hcl yazar ve files'a kaydeder."""
+    from CORE.crypto import encrypt_file
+
+    kaynak = tmp_path / f"{ad}.txt"
+    kaynak.write_bytes(f"gizli icerik {ad}".encode())
+    (tmp_path / "hcl").mkdir(exist_ok=True)
+    yol, _sha, aad = encrypt_file(
+        kaynak, anahtar, 1, hwid=hwid, dst=tmp_path / "hcl" / f"{ad}.hcl"
+    )
+    db.execute(
+        "INSERT INTO files (filename, filepath, aad_metadata, added_at) VALUES (?, ?, ?, ?)",
+        (f"{ad}.txt", str(yol), aad, added_at),
+    )
+    return yol
+
+
+def _son_kurtarma_detayi(db) -> str:
+    return db.fetchone(
+        "SELECT detail FROM audit_log WHERE action = 'vault_recovered' ORDER BY id DESC LIMIT 1"
+    )["detail"]
+
+
+def test_dogru_parca_KCV_ile_dogrulaniyor(vault, db) -> None:
+    _role, beklenen = open_vault(vault, _PIN)
+    share_3 = export_recovery_share(vault, _PIN)
+
+    kurtarilan = recover_master_key(vault, recovery_share=share_3, pin=None)
+
+    assert kurtarilan == beklenen
+    assert kurtarilan.dogrulama == vault_manager.DOGRULAMA_KCV
+    assert _son_kurtarma_detayi(db).endswith("dogrulama=kcv")
+
+
+def test_yanlis_parca_SABIT_mesaj_parcanin_hicbir_kismini_icermiyor(
+    vault, db, tek_harf_boz
+) -> None:
+    share_3 = export_recovery_share(vault, _PIN)
+    bozuk = tek_harf_boz(share_3)
+
+    with pytest.raises(ValueError) as exc:
+        recover_master_key(vault, recovery_share=bozuk, pin=_PIN)
+
+    mesaj = str(exc.value)
+    assert mesaj == vault_manager.YANLIS_PARCA_MESAJI
+    govde = bozuk.split(":", 1)[1]
+    for i in range(0, len(govde) - 8, 4):
+        assert govde[i : i + 8] not in mesaj.lower()
+
+
+def test_KCVsiz_eski_kasa_DOGRU_parcayi_hcl_ile_dogruluyor(vault, db, tmp_path) -> None:
+    _role, beklenen = open_vault(vault, _PIN)
+    share_3 = export_recovery_share(vault, _PIN)
+    _kcv_sil(db, vault)
+    _hcl_ekle(db, tmp_path, beklenen)
+
+    kurtarilan = recover_master_key(vault, recovery_share=share_3, pin=None)
+
+    assert kurtarilan == beklenen
+    assert kurtarilan.dogrulama == vault_manager.DOGRULAMA_HCL
+
+
+def test_KCVsiz_eski_kasa_YANLIS_parcayi_hcl_ile_REDDEDIYOR(
+    vault, db, tmp_path, tek_harf_boz
+) -> None:
+    """ESKİ KASA TESTİ (B-160 ADIM 3, mutasyon 2): KCV yok, tek kanıt .hcl."""
+    _role, beklenen = open_vault(vault, _PIN)
+    share_3 = export_recovery_share(vault, _PIN)
+    _kcv_sil(db, vault)
+    _hcl_ekle(db, tmp_path, beklenen)
+
+    with pytest.raises(ValueError, match="bu kasaya ait değil"):
+        recover_master_key(vault, recovery_share=tek_harf_boz(share_3), pin=None)
+
+    eylemler = {r["action"] for r in db.fetchall("SELECT action FROM audit_log")}
+    assert "vault_recovery_rejected" in eylemler
+    assert "vault_recovered" not in eylemler
+
+
+def test_hcl_adaylarindan_BIRI_yeter_eski_anahtarli_dosya_reddettirmiyor(
+    vault, db, tmp_path
+) -> None:
+    """
+    Aynı hwid'in anahtarı bir kez değişmişse (yeniden kayıt, --reset)
+    ESKİ anahtarla şifrelenmiş dosyalar da aday olur. En yeni aday eski
+    anahtarlı olsa bile, daha eski ama DOĞRU anahtarlı bir aday yeter.
+    """
+    _role, beklenen = open_vault(vault, _PIN)
+    share_3 = export_recovery_share(vault, _PIN)
+    _kcv_sil(db, vault)
+    _hcl_ekle(db, tmp_path, beklenen, ad="dogru", added_at="2026-09-01T10:00:00Z")
+    _hcl_ekle(db, tmp_path, b"\x5a" * 16 + b"\xa5" * 16, ad="eski-anahtar",
+              added_at="2026-09-20T10:00:00Z")
+
+    kurtarilan = recover_master_key(vault, recovery_share=share_3, pin=None)
+
+    assert kurtarilan == beklenen
+    assert kurtarilan.dogrulama == vault_manager.DOGRULAMA_HCL
+
+
+def test_hcl_diskte_olmayan_ya_da_baska_hwidin_dosyasi_aday_sayilmaz(
+    vault, db, tmp_path
+) -> None:
+    _role, beklenen = open_vault(vault, _PIN)
+    share_3 = export_recovery_share(vault, _PIN)
+    _kcv_sil(db, vault)
+    silinecek = _hcl_ekle(db, tmp_path, beklenen, ad="silinmis")
+    silinecek.unlink()
+    _hcl_ekle(db, tmp_path, b"\x5a" * 16 + b"\xa5" * 16, hwid="BASKA-USB", ad="baska")
+
+    kurtarilan = recover_master_key(vault, recovery_share=share_3, pin=None)
+
+    assert kurtarilan.dogrulama == vault_manager.DOGRULAMA_YAPILAMADI
+
+
+def test_KCV_ve_dosya_yoksa_DOGRULANAMADI_denetime_yaziliyor_KCV_YAZILMIYOR(
+    vault, db
+) -> None:
+    _role, beklenen = open_vault(vault, _PIN)
+    share_3 = export_recovery_share(vault, _PIN)
+    _kcv_sil(db, vault)
+
+    kurtarilan = recover_master_key(vault, recovery_share=share_3, pin=None)
+
+    assert kurtarilan == beklenen
+    assert kurtarilan.dogrulama == vault_manager.DOGRULAMA_YAPILAMADI
+    assert _son_kurtarma_detayi(db).endswith("dogrulama=yapilamadi")
+    kcv = db.fetchone("SELECT kcv FROM usb_tokens WHERE hwid = ?", (vault,))["kcv"]
+    assert kcv is None, "doğrulanamamış bir anahtarın KCV'si yazılmamalı"
+
+
+def test_yarim_kalan_dogrulanamayan_kurtarma_DOGRU_parcayi_KILITLEMIYOR(
+    vault, db, tek_harf_boz
+) -> None:
+    """
+    Doğrulanamayan durumda recover_master_key KCV yazsaydı: tek harfi
+    yanlış parça kabul edilir, kullanıcı "yeniden kurulsun mu?" → Hayır
+    der, yanlış anahtarın KCV'si kalır ve DOĞRU parça reddedilirdi.
+    """
+    _role, beklenen = open_vault(vault, _PIN)
+    share_3 = export_recovery_share(vault, _PIN)
+    _kcv_sil(db, vault)
+
+    ilk = recover_master_key(vault, recovery_share=tek_harf_boz(share_3), pin=None)
+    assert ilk != beklenen  # doğrulanamadığı için yanlış anahtar kabul edildi
+    # ... kullanıcı yeniden kurmadan vazgeçti. Doğru parçayla tekrar:
+    ikinci = recover_master_key(vault, recovery_share=share_3, pin=None)
+
+    assert ikinci == beklenen
+
+
+def test_dogrulanamayan_kurtarmadan_sonra_yeniden_kurulum_KCV_yaziyor(vault, db) -> None:
+    _role, beklenen = open_vault(vault, _PIN)
+    share_3 = export_recovery_share(vault, _PIN)
+    _kcv_sil(db, vault)
+
+    anahtar = recover_master_key(vault, recovery_share=share_3, pin=None)
+    reprovision_vault(vault, "yeniPIN-24680", _ROLE, master_key=anahtar, recovery_share=share_3)
+
+    kcv = db.fetchone("SELECT kcv FROM usb_tokens WHERE hwid = ?", (vault,))["kcv"]
+    assert kcv == vault_manager._kcv_hesapla(beklenen).hex()
+
+
 def test_recovery_rejects_malformed_share(vault, db) -> None:
     with pytest.raises(ValueError):
         recover_master_key(vault, recovery_share="tamamen-bozuk", pin=_PIN)

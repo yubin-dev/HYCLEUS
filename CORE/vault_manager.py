@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import ctypes
 import hmac as _stdlib_hmac
+import json
 import logging
 import os
 import secrets
@@ -82,7 +83,7 @@ from cryptography.hazmat.primitives.hmac import HMAC
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from CORE import secret_store
-from CORE.crypto import zero_bytearray
+from CORE.crypto import AuthenticationError, verify_file, zero_bytearray
 from DB.db_manager import DBManager
 
 _log = logging.getLogger("hycleus.vault_manager")
@@ -1497,12 +1498,134 @@ def export_recovery_share(hwid: str, pin: str) -> str:
     return share_3
 
 
+#: B-160: kurtarılan anahtar bu kasaya ait değilse verilen TEK mesaj.
+#: Sabit: parçanın hiçbir kısmını içermez (karşılaştır: B-161,
+#: `_parse_share()`'in mesajı içeriyor).
+YANLIS_PARCA_MESAJI = (
+    "Kurtarma parçası bu kasaya ait değil ya da yanlış yazılmış. "
+    "Harf harf kontrol edip tekrar deneyin."
+)
+
+#: `KurtarilanAnahtar.dogrulama` değerleri — denetim satırına aynen yazılır.
+DOGRULAMA_KCV = "kcv"
+DOGRULAMA_HCL = "hcl"
+DOGRULAMA_YAPILAMADI = "yapilamadi"
+
+#: `.hcl` yedek doğrulamasında GCM etiketi sınanacak en fazla aday sayısı.
+_HCL_ADAY_SAYISI = 3
+
+
+class KurtarilanAnahtar(bytes):
+    """
+    `recover_master_key()`'in dönüş değeri: 32 baytlık master_key.
+
+    `bytes`'ın kendisi — karşılaştırma, `len()`, `create_vault(master_key=
+    ...)` değişmeden çalışır. Tek eki `dogrulama`: anahtarın NASIL
+    doğrulandığı (`DOGRULAMA_KCV`, `DOGRULAMA_HCL` ya da
+    `DOGRULAMA_YAPILAMADI`). Çağıran, doğrulanamamış bir kurtarmadan sonra
+    kullanıcıya yeni kurtarma parçasını ZORUNLU göstermeli (bkz.
+    `CORE/recover_vault.py`).
+    """
+
+    dogrulama: str
+
+    def __new__(cls, anahtar: bytes, dogrulama: str) -> KurtarilanAnahtar:
+        nesne = super().__new__(cls, anahtar)
+        nesne.dogrulama = dogrulama
+        return nesne
+
+
+def _hcl_ile_dogrula(hwid: str, master_key: bytes) -> bool | None:
+    """
+    KCV'si olmayan (göçten önce kurulmuş, o günden beri açılmamış) bir
+    kasanın anahtarını, aynı hwid'le şifrelenmiş bir `.hcl` dosyasının GCM
+    etiketiyle doğrular (B-160). Yeni kripto yok: `crypto.verify_file()`
+    düz metni biriktirmiyor ve diske yazmıyor.
+
+    Adaylar: `files.aad_metadata`'sındaki `hwid` bu hwid olan, `users`
+    satırı varsa `user_id`'si de ona eşit olan, diskte duran dosyalar,
+    en YENİSİ önce. Anahtar her kayıtta rastgele üretiliyor; aynı hwid
+    silinip yeniden kaydedilmiş ya da `setup_usb --reset` görmüşse ESKİ
+    anahtarla şifrelenmiş dosyalar da kalabilir. Bu yüzden kural "biri
+    yeter": en fazla `_HCL_ADAY_SAYISI` adaydan biri doğrularsa kabul,
+    sınananların HEPSİ GCM etiketinden düşerse ret. Okunamayan ya da başlığı
+    bozuk dosya sayılmaz (yanlış anahtarın kanıtı değil).
+
+    Returns:
+        True  — bir aday bu anahtarla doğrulandı.
+        False — en az bir aday sınandı ve hepsi GCM etiketinden düştü.
+        None  — sınanabilecek aday yok.
+    """
+    db = DBManager()
+    kullanici = db.fetchone("SELECT id FROM users WHERE hwid = ?", (hwid,))
+    satirlar = db.fetchall(
+        "SELECT filepath, aad_metadata FROM files WHERE aad_metadata IS NOT NULL "
+        "ORDER BY added_at DESC, id DESC"
+    )
+    sinanan = 0
+    for satir in satirlar:
+        try:
+            meta = json.loads(satir["aad_metadata"])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(meta, dict) or meta.get("hwid") != hwid:
+            continue
+        if kullanici is not None and meta.get("user_id") != kullanici["id"]:
+            continue
+        yol = Path(satir["filepath"])
+        if not yol.is_file():
+            continue
+        try:
+            verify_file(yol, master_key, hwid=hwid)
+        except AuthenticationError:
+            sinanan += 1
+            if sinanan >= _HCL_ADAY_SAYISI:
+                break
+            continue
+        except (OSError, ValueError):
+            continue
+        return True
+    return False if sinanan else None
+
+
+def _kurtarilan_anahtari_dogrula(hwid: str, master_key: bytes) -> str:
+    """
+    Kurtarma parçasından elde edilen anahtarın bu kasaya ait olduğunu
+    doğrular (B-160). Sıra: KCV → `.hcl` GCM etiketi → doğrulanamadı.
+
+    Doğrulanamayan durumda (KCV de aday dosya da yok) korunacak bir veri
+    yok; kurtarma devam eder ama bu burada KCV YAZMAZ: yarıda bırakılan
+    doğrulanamamış bir kurtarma (ör. tek harfi yanlış parça, "yeniden
+    kurulsun mu?" → Hayır) yanlış anahtarın KCV'sini bırakır ve DOĞRU
+    parçayla ikinci deneme reddedilirdi. KCV'yi yalnızca kasayı gerçekten
+    yazan `create_vault()`/`reprovision_vault()` yazar.
+
+    Returns:
+        `DOGRULAMA_KCV`, `DOGRULAMA_HCL` ya da `DOGRULAMA_YAPILAMADI`.
+
+    Raises:
+        ValueError(YANLIS_PARCA_MESAJI) — anahtar bu kasaya ait değil.
+    """
+    beklenen = _kcv_oku(hwid)
+    if beklenen is not None:
+        if not _stdlib_hmac.compare_digest(_kcv_hesapla(master_key), beklenen):
+            raise ValueError(YANLIS_PARCA_MESAJI)
+        return DOGRULAMA_KCV
+
+    sonuc = _hcl_ile_dogrula(hwid, master_key)
+    if sonuc is True:
+        return DOGRULAMA_HCL
+    if sonuc is False:
+        raise ValueError(YANLIS_PARCA_MESAJI)
+    return DOGRULAMA_YAPILAMADI
+
+
 def recover_master_key(
     hwid: str,
     *,
     recovery_share: str,
     pin: str | None = None,
-) -> bytes:
+) -> KurtarilanAnahtar:
     """
     Kurtarma parçası + kalan bir pay ile master_key'i yeniden oluşturur.
 
@@ -1518,10 +1641,22 @@ def recover_master_key(
         pin            — verilirse share_1 vault'tan okunur; yoksa share_2 kasadan
 
     Returns:
-        32 byte master_key
+        32 byte master_key (`KurtarilanAnahtar` — `bytes`; `.dogrulama`
+        anahtarın nasıl doğrulandığını söyler)
 
     Raises:
-        ValueError — kurtarma payı geçersizse veya kalan pay okunamıyorsa
+        ValueError — kurtarma payı geçersizse, kalan pay okunamıyorsa ya da
+                     kurtarılan anahtar bu kasaya ait değilse
+                     (`YANLIS_PARCA_MESAJI`)
+
+    B-160 — anahtar doğrulaması. 2-of-3'te iki pay HER ZAMAN bir değer
+    verir; tutarlılık iki payla denetlenemez ve kurtarma parçasında sağlama
+    toplamı yok (B-162). Yani tek harfi yanlış yazılmış ama biçim olarak
+    kusursuz bir parça, bu kontrol olmadan hata değil YANLIŞ bir anahtar
+    döndürüyordu; çağıranlar (`reprovision_vault`, `takeover_usb`) kasayı
+    onunla yeniden kuruyordu. Doğrulama BURADA, iki kurtarma yolunun ortak
+    noktasında: ret, aşağıdaki mevcut `vault_recovery_rejected` satırına
+    düşer. Sıra ve gerekçesi: `_kurtarilan_anahtari_dogrula()`.
 
     Başarısız her deneme (yanlış PIN, bozuk/geçersiz kurtarma payı, eşik
     altı/yanlış indisli bir pay, kasada olmayan share_2) denetim kaydına
@@ -1557,6 +1692,7 @@ def recover_master_key(
             kalan = _load_share_2(hwid)
 
         master_key = _sss_recover(kalan, recovery_share)
+        dogrulama = _kurtarilan_anahtari_dogrula(hwid, master_key)
     except Exception as exc:
         # Log çağrısının KENDİSİ ayrı bir try/except'te: bir DB hıçkırığı
         # asıl hatayı (ör. "PIN yanlış") bir DB bağlantı hatasıyla
@@ -1577,9 +1713,12 @@ def recover_master_key(
 
     DBManager().log(
         "vault_recovered",
-        detail=f"hwid={hwid} kaynak={'share_1+share_3' if pin else 'share_2+share_3'}",
+        detail=(
+            f"hwid={hwid} kaynak={'share_1+share_3' if pin else 'share_2+share_3'} "
+            f"dogrulama={dogrulama}"
+        ),
     )
-    return master_key
+    return KurtarilanAnahtar(master_key, dogrulama)
 
 
 def reprovision_vault(

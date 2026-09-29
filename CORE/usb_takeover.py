@@ -145,9 +145,17 @@ def takeover_usb(
 
     # ── Vault katmanı: master_key'i kurtar, YENİ hwid'e yeniden kur ────────
     # PIN/TOTP akışı ATLANMIYOR: bu, çağıranın ÖNCE recover_master_key()'in
-    # kendi doğrulamasından (yanlış kurtarma parçası/PIN → Exception, henüz
-    # hiçbir DB satırı değişmedi) geçmesi anlamına gelir; SONRA yeni USB
-    # için normal giriş akışı (PIN+TOTP) aynen işlemeye devam eder.
+    # kendi doğrulamasından geçmesi anlamına gelir; SONRA yeni USB için
+    # normal giriş akışı (PIN+TOTP) aynen işlemeye devam eder.
+    #
+    # B-160: bu yorum eskiden "yanlış kurtarma parçası → Exception"
+    # diyordu. PIN için doğruydu (GCM), parça için DEĞİLDİ: iki pay her
+    # zaman BİR anahtar veriyor ve tek harfi yanlış bir parça yanlış bir
+    # anahtar döndürüyordu; aşağıdaki discard_vault() eski kasayı onunla
+    # siliyordu. Artık recover_master_key() anahtarı KCV (yoksa aynı
+    # hwid'in bir .hcl dosyası) ile doğruluyor ve yanlış parçada ValueError
+    # fırlatıyor — henüz hiçbir kasa, pay ya da DB satırı değişmemişken.
+    # Ne KCV ne dosya varsa doğrulanamaz; o zaman `dogrulama` bunu söyler.
     master_key = recover_master_key(old_hwid, recovery_share=recovery_share, pin=old_pin)
     rol_arayuz = display_role(eski_satir["role"])
     reprovision_vault(

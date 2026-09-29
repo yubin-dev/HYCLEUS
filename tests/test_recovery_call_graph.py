@@ -148,7 +148,7 @@ def test_recover_master_key_TEK_uretim_cagri_yeri_var() -> None:
                 bulunanlar.append(f"{bagil}:{d.lineno}")
 
     assert bulunanlar == [
-        "CORE/recover_vault.py:155", "CORE/usb_takeover.py:151",
+        "CORE/recover_vault.py:155", "CORE/usb_takeover.py:159",
     ], (
         f"recover_master_key() çağrı yerleri değişti: {bulunanlar}. "
         "Yeni bir yer eklendiyse SECURITY.md §4.2'nin çağrı-grafiği "
@@ -236,4 +236,8 @@ def test_vault_recovered_denetim_kaydi_token_id_icermez(vault_dizini, db) -> Non
     assert tampered_token_id.hex() not in detail
     assert tampered_token_id not in detail.encode("utf-8", errors="ignore")
     assert "token_id" not in detail.lower()
-    assert detail == f"hwid={_HWID} kaynak=share_1+share_3"
+    # B-160: kayıt artık anahtarın nasıl doğrulandığını da taşıyor.
+    # `delete_usb_token()` share_2 kaybını taklit ederken usb_tokens
+    # satırını, dolayısıyla KCV'yi de siliyor; bu kasanın .hcl dosyası da
+    # yok — yani burada doğrulama yapılamıyor.
+    assert detail == f"hwid={_HWID} kaynak=share_1+share_3 dogrulama=yapilamadi"
