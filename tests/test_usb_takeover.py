@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from CORE import secret_store, vault_manager
+from CORE import secret_store, usb_takeover, vault_manager
 from CORE.secret_store import load_totp_secret_for_hwid, store_totp_secret_for_hwid
 from CORE.usb_takeover import TakeoverError, TakeoverResult, takeover_usb
 from CORE.vault_manager import (
@@ -353,6 +353,74 @@ def test_TEK_HARFI_yanlis_parca_reddedilir_eski_kasa_ve_hesap_DURUR(
     assert "vault_recovered" not in eylemler
     assert "vault_reprovisioned" not in eylemler
     assert "usb_devralindi" not in eylemler
+
+
+# ── B-160 (h) — sıra: eski kasa, yeni kasa doğrulanmadan silinmez ─────────
+
+
+def _eski_durum_TAMAMEN_yerinde(db, beklenen: bytes) -> None:
+    _rol, anahtar = open_vault(_HWID_ESKI, _PIN_ESKI)
+    assert anahtar == beklenen
+    assert secret_store.load(secret_store.share_2_username(_HWID_ESKI)) is not None
+    assert load_totp_secret_for_hwid(_HWID_ESKI) == _TOTP_SIR
+    satirlar = db.fetchall("SELECT username, hwid FROM users")
+    assert [dict(r) for r in satirlar] == [{"username": "admin1", "hwid": _HWID_ESKI}]
+    eylemler = {r["action"] for r in db.fetchall("SELECT action FROM audit_log")}
+    assert "usb_devralindi" not in eylemler
+
+
+def _yeni_hwidde_hicbir_sey_yok(kasa_dizini) -> None:
+    vaults = kasa_dizini / "vaults"
+    assert not (vaults / f"{_HWID_YENI}.hclv").exists()
+    assert list(vaults.glob("*.yeni")) == []
+    assert secret_store.load(secret_store.share_2_username(_HWID_YENI)) is None
+
+
+def test_yeni_kasa_acilip_KCV_tutmazsa_eski_kasa_SILINMEZ_yeni_geri_alinir(
+    db, kasa_dizini, monkeypatch
+):
+    share_3 = _admin_kur_ve_kurtarma_parcasi_al(db, kasa_dizini)
+    _rol, beklenen = open_vault(_HWID_ESKI, _PIN_ESKI)
+    monkeypatch.setattr(usb_takeover, "kcv_ile_dogrula", lambda _hwid, _anahtar: False)
+
+    with pytest.raises(TakeoverError, match="SİLİNMEDİ"):
+        takeover_usb(
+            db, old_hwid=_HWID_ESKI, new_hwid=_HWID_YENI,
+            recovery_share=share_3, new_pin=_PIN_YENI, old_pin=_PIN_ESKI,
+        )
+
+    _eski_durum_TAMAMEN_yerinde(db, beklenen)
+    _yeni_hwidde_hicbir_sey_yok(kasa_dizini)
+
+
+def test_yeni_kasanin_YAN_dosya_dogrulamasi_duserse_eski_kasa_SILINMEZ(
+    db, kasa_dizini, monkeypatch
+):
+    share_3 = _admin_kur_ve_kurtarma_parcasi_al(db, kasa_dizini)
+    _rol, beklenen = open_vault(_HWID_ESKI, _PIN_ESKI)
+
+    def _patla(*_a, **_k):
+        raise ValueError("yan dosya açılamadı (test)")
+
+    monkeypatch.setattr(vault_manager, "_hazirlanan_kasayi_dogrula", _patla)
+
+    with pytest.raises(ValueError, match="test"):
+        takeover_usb(
+            db, old_hwid=_HWID_ESKI, new_hwid=_HWID_YENI,
+            recovery_share=share_3, new_pin=_PIN_YENI, old_pin=_PIN_ESKI,
+        )
+
+    _eski_durum_TAMAMEN_yerinde(db, beklenen)
+    _yeni_hwidde_hicbir_sey_yok(kasa_dizini)
+
+
+def test_devralma_sonucu_dogrulama_yolunu_tasiyor(db, kasa_dizini):
+    share_3 = _admin_kur_ve_kurtarma_parcasi_al(db, kasa_dizini)
+    sonuc = takeover_usb(
+        db, old_hwid=_HWID_ESKI, new_hwid=_HWID_YENI,
+        recovery_share=share_3, new_pin=_PIN_YENI, old_pin=_PIN_ESKI,
+    )
+    assert sonuc.dogrulama == vault_manager.DOGRULAMA_KCV
 
 
 def test_yanlis_eski_pin_reddedilir(db, kasa_dizini):

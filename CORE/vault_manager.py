@@ -157,6 +157,11 @@ _VAULT_DIR         = _data_dir() / "vaults"
 # _TMP_SUFFIX deseniyle aynı isimlendirme.
 _VAULT_TMP_SUFFIX = ".hclv-rewrite-tmp"
 
+# B-160: reprovision_vault() yeni kasayı önce bu uzantıyla YAN dosyaya
+# yazar, açıp doğrular, sonra atomik olarak yerine koyar. "*.hclv" ile
+# eşleşmez; yarıda kalırsa bir kasa sanılmaz.
+_VAULT_STAGED_SUFFIX = ".yeni"
+
 
 def _read_vault_path(hwid: str) -> Path:
     """Per-HWID vault dosya yolunu döndürür; yoksa eski tek-dosya yoluna düşer."""
@@ -689,12 +694,24 @@ def _rewrite_vault(
     """
     path = target if target is not None else _read_vault_path(hwid)
     signature = _sign(_derive_signing_key(hwid, share_2), protected)
+    _atomik_yaz(path, protected + signature)
+
+
+def _atomik_yaz(path: Path, veri: bytes) -> None:
+    """
+    `veri`'yi AYNI dizindeki bir geçici dosyaya yazar, fsync eder ve
+    `os.replace()` ile atomik olarak `path`'in yerine koyar; readonly
+    bitini `_writable()` yönetir. Yarıda kesilirse `path`'e hiç
+    dokunulmamış olur. `_rewrite_vault()`'un gövdesiydi (B-142); B-160'ta
+    `reprovision_vault()`'un geri yükleme adımı da ham baytları aynı yolla
+    yazsın diye ayrıldı.
+    """
     tmp = path.with_suffix(path.suffix + _VAULT_TMP_SUFFIX)
     with _writable(path=path):
         try:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "wb") as fout:
-                fout.write(protected + signature)
+                fout.write(veri)
                 fout.flush()
                 os.fsync(fout.fileno())
             # Atomik: aynı dizin, dolayısıyla aynı dosya sistemi. Yarıda
@@ -714,6 +731,82 @@ def _read_vault_token_id(hwid: str) -> bytes:
 
 
 # ── Genel API ─────────────────────────────────────────────────────────────────
+
+def _kasa_hazirla(
+    hwid: str,
+    pin: str,
+    role: str,
+    *,
+    master_key: bytes | None,
+    anchor_share: str | None,
+) -> tuple[bytes, str, str, str]:
+    """
+    Vault dosyasının imzasız gövdesini ve kasaya/DB'ye yazılacakları BELLEKTE
+    hazırlar; hiçbir şey yazmaz. Kara liste ve zayıf bağlama kontrolleri
+    ÇAĞIRANIN işi (create_vault, reprovision_vault).
+
+    B-160: create_vault() doğrudan yerine yazıyor; reprovision_vault() ise
+    aynı gövdeyi önce YAN dosyaya yazıp açarak doğruluyor, sonra atomik
+    olarak yer değiştiriyor. İki yol aynı kodu kullansın diye ayrıldı.
+
+    Returns:
+        (protected, share_2, token_id_hex, kcv_hex) — `protected` HMAC'sız
+        dosya gövdesi; imzayı `_rewrite_vault()` ekler.
+    """
+    if master_key is None:
+        master_key = os.urandom(_KEY_SIZE)
+    elif len(master_key) != _KEY_SIZE:
+        raise ValueError(f"master_key {_KEY_SIZE} byte olmalı, {len(master_key)} verildi.")
+    token_id_bytes = uuid.uuid4().bytes   # 16 byte UUID
+    token_id_hex = token_id_bytes.hex()   # DB'de hex string olarak saklanır
+
+    # B-139: master_key/kek burada TAMAMEN yerel — fonksiyon ne birini ne
+    # diğerini döndürüyor (share_1/share_2'ye bölünüp/şifrelenip atılıyorlar).
+    # bytearray'e çevrilip iş bitince zero_bytearray() ile sıfırlanıyor
+    # (bkz. CORE/crypto.py::zero_bytearray, aynı desen decrypt_file
+    # zeroizable=True'da kullanılıyor). Orijinal `bytes` (parametre olarak
+    # verilmiş olabilir) sıfırlanamaz (Python'da değişmez) — bu, çağıranın
+    # sorumluluğunda kalan, kapsam dışı bir sınır.
+    master_key_ba = bytearray(master_key)
+    kek_ba: bytearray | None = None
+    try:
+        # ── Shamir 2-of-3 bölme ──────────────────────────────────────────
+        # share_3 (kurtarma parçası) BİLEREK saklanmaz ve döndürülmez: aynı
+        # polinomdan geldiği için share_1 + share_2'den her an yeniden
+        # türetilebilir (bkz. export_recovery_share). Böylece kurtarma
+        # parçası sistemde hiçbir yerde durmaz ve yeni/eski vault ayrımı
+        # olmadan tek koddan üretilir.
+        share_1, share_2, _share_3_derivable = _sss_split(
+            bytes(master_key_ba), anchor=anchor_share
+        )
+        # B-160: kurtarmada anahtarın doğrulanacağı değer.
+        kcv_hex = _kcv_hesapla(bytes(master_key_ba)).hex()
+
+        # ── AES-256-GCM şifreleme ────────────────────────────────────────
+        salt = os.urandom(_SALT_SIZE)
+        nonce = os.urandom(_NONCE_SIZE)
+        kek_ba = bytearray(_derive_kek(pin, salt))
+
+        share_1_bytes = share_1.encode()
+        plaintext = struct.pack(">H", len(share_1_bytes)) + share_1_bytes + role.encode()
+
+        encryptor = Cipher(algorithms.AES(bytes(kek_ba)), modes.GCM(nonce)).encryptor()
+        encryptor.authenticate_additional_data(hwid.encode())
+        ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+        tag = encryptor.tag  # 16 byte
+    finally:
+        zero_bytearray(master_key_ba)
+        if kek_ba is not None:
+            zero_bytearray(kek_ba)
+
+    # ── İmzalama + readonly korumalı yazma ──────────────────────────────────
+    # token_id şifrelenmemiş ama HMAC kapsamında — değiştirilirse imza bozulur
+    protected = (
+        _MAGIC + bytes([_VERSION]) + salt + nonce
+        + token_id_bytes + ciphertext + tag
+    )
+    return protected, share_2, token_id_hex, kcv_hex
+
 
 def create_vault(
     hwid: str,
@@ -785,57 +878,8 @@ def create_vault(
     _reject_if_weak_binding(
         hwid, "USB kaydı" if anchor_share is None else "USB kaydı (kurtarma sonrası yeniden kurulum)"
     )
-    if master_key is None:
-        master_key = os.urandom(_KEY_SIZE)
-    elif len(master_key) != _KEY_SIZE:
-        raise ValueError(f"master_key {_KEY_SIZE} byte olmalı, {len(master_key)} verildi.")
-    token_id_bytes = uuid.uuid4().bytes   # 16 byte UUID
-    token_id_hex = token_id_bytes.hex()   # DB'de hex string olarak saklanır
-
-    # B-139: master_key/kek burada TAMAMEN yerel — fonksiyon ne birini ne
-    # diğerini döndürüyor (share_1/share_2'ye bölünüp/şifrelenip atılıyorlar).
-    # bytearray'e çevrilip iş bitince zero_bytearray() ile sıfırlanıyor
-    # (bkz. CORE/crypto.py::zero_bytearray, aynı desen decrypt_file
-    # zeroizable=True'da kullanılıyor). Orijinal `bytes` (parametre olarak
-    # verilmiş olabilir) sıfırlanamaz (Python'da değişmez) — bu, çağıranın
-    # sorumluluğunda kalan, kapsam dışı bir sınır.
-    master_key_ba = bytearray(master_key)
-    kek_ba: bytearray | None = None
-    try:
-        # ── Shamir 2-of-3 bölme ──────────────────────────────────────────
-        # share_3 (kurtarma parçası) BİLEREK saklanmaz ve döndürülmez: aynı
-        # polinomdan geldiği için share_1 + share_2'den her an yeniden
-        # türetilebilir (bkz. export_recovery_share). Böylece kurtarma
-        # parçası sistemde hiçbir yerde durmaz ve yeni/eski vault ayrımı
-        # olmadan tek koddan üretilir.
-        share_1, share_2, _share_3_derivable = _sss_split(
-            bytes(master_key_ba), anchor=anchor_share
-        )
-        # B-160: kurtarmada anahtarın doğrulanacağı değer.
-        kcv_hex = _kcv_hesapla(bytes(master_key_ba)).hex()
-
-        # ── AES-256-GCM şifreleme ────────────────────────────────────────
-        salt = os.urandom(_SALT_SIZE)
-        nonce = os.urandom(_NONCE_SIZE)
-        kek_ba = bytearray(_derive_kek(pin, salt))
-
-        share_1_bytes = share_1.encode()
-        plaintext = struct.pack(">H", len(share_1_bytes)) + share_1_bytes + role.encode()
-
-        encryptor = Cipher(algorithms.AES(bytes(kek_ba)), modes.GCM(nonce)).encryptor()
-        encryptor.authenticate_additional_data(hwid.encode())
-        ciphertext = encryptor.update(plaintext) + encryptor.finalize()
-        tag = encryptor.tag  # 16 byte
-    finally:
-        zero_bytearray(master_key_ba)
-        if kek_ba is not None:
-            zero_bytearray(kek_ba)
-
-    # ── İmzalama + readonly korumalı yazma ──────────────────────────────────
-    # token_id şifrelenmemiş ama HMAC kapsamında — değiştirilirse imza bozulur
-    protected = (
-        _MAGIC + bytes([_VERSION]) + salt + nonce
-        + token_id_bytes + ciphertext + tag
+    protected, share_2, token_id_hex, kcv_hex = _kasa_hazirla(
+        hwid, pin, role, master_key=master_key, anchor_share=anchor_share
     )
     vault_file = _new_vault_path(hwid)
     _rewrite_vault(hwid, protected, share_2, target=vault_file)
@@ -1381,6 +1425,50 @@ def open_vault(hwid: str, pin: str) -> tuple[str, bytes]:
     return role, master_key
 
 
+def _vault_baytlarini_coz(raw: bytes, hwid: str, pin: str) -> tuple[str, str]:
+    """
+    Vault dosyası BAYTLARINI PIN ile çözer; (share_1, role) döndürür.
+
+    Kara liste ve HMAC kontrolü YAPMAZ — onlar `_decrypt_vault()`'ta.
+    B-160: `reprovision_vault()` yan dosyaya yazdığı yeni kasayı, yerine
+    koymadan ÖNCE bununla açıp doğruluyor; `_decrypt_vault()` ile aynı
+    kod yolu olsun diye ayrıldı.
+
+    Raises:
+        VaultTamperedError — magic byte'lar yanlışsa
+        ValueError         — PIN yanlış veya vault formatı geçersizse
+    """
+    if raw[:4] != _MAGIC:
+        raise VaultTamperedError("Geçersiz vault magic byte'ları.")
+    if raw[4] != _VERSION:
+        raise ValueError(f"Desteklenmeyen vault versiyonu: {raw[4]}")
+
+    salt       = raw[5 : 5 + _SALT_SIZE]
+    nonce      = raw[21 : 21 + _NONCE_SIZE]
+    protected  = raw[:-_HMAC_SIZE]
+    tag        = protected[-_TAG_SIZE:]
+    ciphertext = protected[_HEADER_SIZE:-_TAG_SIZE]
+
+    # B-139: kek yalnızca bu decryptor için var (share_1/role döndürülüyor,
+    # kek değil), bytearray'e çevrilip kullanım sonrası sıfırlanıyor.
+    kek_ba = bytearray(_derive_kek(pin, salt))
+    try:
+        decryptor = Cipher(algorithms.AES(bytes(kek_ba)), modes.GCM(nonce, tag)).decryptor()
+        decryptor.authenticate_additional_data(hwid.encode())
+        try:
+            plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+        except Exception as exc:
+            raise ValueError("PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız.") from exc
+    finally:
+        zero_bytearray(kek_ba)
+
+    if len(plaintext) < 3:
+        raise ValueError("Vault içeriği çok kısa; bozulmuş.")
+
+    s1_len  = struct.unpack(">H", plaintext[:2])[0]
+    return plaintext[2 : 2 + s1_len].decode(), plaintext[2 + s1_len :].decode()
+
+
 def _decrypt_vault(hwid: str, pin: str) -> tuple[str, str]:
     """
     Vault'u PIN ile çözer; (share_1, role) döndürür.
@@ -1413,36 +1501,7 @@ def _decrypt_vault(hwid: str, pin: str) -> tuple[str, str]:
         pass
 
     raw = _read_vault_path(hwid).read_bytes()
-
-    if raw[:4] != _MAGIC:
-        raise VaultTamperedError("Geçersiz vault magic byte'ları.")
-    if raw[4] != _VERSION:
-        raise ValueError(f"Desteklenmeyen vault versiyonu: {raw[4]}")
-
-    salt       = raw[5 : 5 + _SALT_SIZE]
-    nonce      = raw[21 : 21 + _NONCE_SIZE]
-    protected  = raw[:-_HMAC_SIZE]
-    tag        = protected[-_TAG_SIZE:]
-    ciphertext = protected[_HEADER_SIZE:-_TAG_SIZE]
-
-    # B-139: kek yalnızca bu decryptor için var (share_1/role döndürülüyor,
-    # kek değil), bytearray'e çevrilip kullanım sonrası sıfırlanıyor.
-    kek_ba = bytearray(_derive_kek(pin, salt))
-    try:
-        decryptor = Cipher(algorithms.AES(bytes(kek_ba)), modes.GCM(nonce, tag)).decryptor()
-        decryptor.authenticate_additional_data(hwid.encode())
-        try:
-            plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-        except Exception as exc:
-            raise ValueError("PIN yanlış veya vault bozulmuş — GCM kimlik doğrulama başarısız.") from exc
-    finally:
-        zero_bytearray(kek_ba)
-
-    if len(plaintext) < 3:
-        raise ValueError("Vault içeriği çok kısa; bozulmuş.")
-
-    s1_len  = struct.unpack(">H", plaintext[:2])[0]
-    return plaintext[2 : 2 + s1_len].decode(), plaintext[2 + s1_len :].decode()
+    return _vault_baytlarini_coz(raw, hwid, pin)
 
 
 def _read_share_1(hwid: str, pin: str) -> str:
@@ -1721,6 +1780,84 @@ def recover_master_key(
     return KurtarilanAnahtar(master_key, dogrulama)
 
 
+def kcv_ile_dogrula(hwid: str, anahtar: bytes) -> bool:
+    """
+    `anahtar`, `hwid`'in DB'deki KCV'siyle eşleşiyor mu (B-160)?
+
+    KCV yoksa `False` — "doğrulanamadı" burada "doğru" sayılmaz.
+    `takeover_usb()` eski kasayı silmeden önce yeni kasayı açıp bununla
+    denetliyor.
+    """
+    beklenen = _kcv_oku(hwid)
+    return beklenen is not None and _stdlib_hmac.compare_digest(
+        _kcv_hesapla(anahtar), beklenen
+    )
+
+
+def _hazirlanan_kasayi_dogrula(
+    yol: Path, hwid: str, pin: str, share_2: str, master_key: bytes, kcv_hex: str
+) -> None:
+    """
+    Yan dosyaya yazılan YENİ kasayı gerçekten açar (B-160): HMAC imzası
+    `share_2` ile, GCM `pin` ile doğrulanır, iki paydan anahtar kurulur ve
+    hem beklenen anahtarla hem KCV ile karşılaştırılır. Yazılan dosya bir
+    sonraki `open_vault()`'un göreceği dosyanın ta kendisi — yerine
+    konmadan önce.
+
+    Raises:
+        VaultTamperedError — imza tutmuyor
+        ValueError         — GCM ya da anahtar/KCV karşılaştırması tutmuyor
+    """
+    raw = yol.read_bytes()
+    beklenen_imza = _sign(_derive_signing_key(hwid, share_2), raw[:-_HMAC_SIZE])
+    if not _stdlib_hmac.compare_digest(beklenen_imza, raw[-_HMAC_SIZE:]):
+        raise VaultTamperedError(
+            "Yeni kasanın imzası doğrulanamadı; eski kasa yerinde bırakıldı."
+        )
+    share_1, _rol = _vault_baytlarini_coz(raw, hwid, pin)
+    acilan = _sss_recover(share_1, share_2)
+    if not (
+        _stdlib_hmac.compare_digest(acilan, master_key)
+        and _stdlib_hmac.compare_digest(_kcv_hesapla(acilan), bytes.fromhex(kcv_hex))
+    ):
+        raise ValueError(
+            "Yeni kasa açıldı ama anahtarı beklenenle uyuşmuyor; eski kasa "
+            "yerinde bırakıldı."
+        )
+
+
+def _yan_dosyayi_sil(yol: Path) -> None:
+    """Yarıda kalan yan dosyayı siler; yoksa sessiz geçer."""
+    if yol.exists():
+        _clear_readonly(yol)
+        yol.unlink()
+
+
+def _eski_kasayi_geri_yukle(
+    path: Path, eski_vault: bytes | None, kasa_adi: str, eski_share_2: str | None
+) -> None:
+    """
+    `reprovision_vault()` yer değiştirmeden SONRA düşerse eski vault
+    dosyasını ve eski share_2'yi geri koyar. İkisi ayrı denenir; biri
+    düşerse öteki yine denenir ve hata loglanır (asıl istisna çağıranda
+    yeniden fırlatılıyor, geri yükleme onu gölgelememeli).
+    """
+    try:
+        if eski_vault is None:
+            _yan_dosyayi_sil(path)
+        else:
+            _atomik_yaz(path, eski_vault)
+    except Exception as exc:
+        _log.error("reprovision_geri_yukleme_vault_basarisiz  hata=%s", type(exc).__name__)
+    try:
+        if eski_share_2 is None:
+            secret_store.erase(kasa_adi)
+        else:
+            secret_store.store(kasa_adi, eski_share_2)
+    except Exception as exc:
+        _log.error("reprovision_geri_yukleme_share2_basarisiz  hata=%s", type(exc).__name__)
+
+
 def reprovision_vault(
     hwid: str,
     pin: str,
@@ -1746,6 +1883,13 @@ def reprovision_vault(
       · Argon2id salt + GCM nonce (yeni PIN ile yeniden mühürlenir)
       · token_id (yeni UUID)
       · share_2'nin kasadaki adı ("share_2:<yeni hwid>")
+
+    B-160 — yan yazım: yeni kasa önce `<hwid>.hclv.yeni`'ye yazılır,
+    gerçekten açılır (`_hazirlanan_kasayi_dogrula`: imza, GCM, iki paydan
+    anahtar, KCV), sonra `os.replace()` ile atomik olarak yerine konur ve
+    share_2 + KCV kasaya/DB'ye yazılır. Doğrulama düşerse eski vault ve eski
+    share_2'ye HİÇ dokunulmamıştır; yer değiştirmeden sonra düşerse ikisi
+    de geri yüklenir (`_eski_kasayi_geri_yukle`).
 
     ⚠️ Güvenlik takası: pay DEĞERLERİ döndürülmediği için, eski kuruluma ait
     bir share_2 kopyası sızmışsa geçerli kalmaya devam eder. Payları
@@ -1774,9 +1918,44 @@ def reprovision_vault(
                        takılana kadar yeniden kurulum tamamlanamaz.
     """
     _parse_share(recovery_share)
-    path = create_vault(
+    # create_vault() ile aynı iki kontrol, aynı mesajla (bkz. orası).
+    _reject_if_blacklisted(hwid)
+    _reject_if_weak_binding(hwid, "USB kaydı (kurtarma sonrası yeniden kurulum)")
+
+    protected, share_2, token_id_hex, kcv_hex = _kasa_hazirla(
         hwid, pin, role, master_key=master_key, anchor_share=recovery_share
     )
+
+    # B-160 — yan yazım, açıp doğrulama, atomik yer değiştirme. Aynı
+    # hwid'e (recover_vault.py --recover) yeniden kurulumda eski vault ve
+    # eski share_2 ancak YENİ kasa gerçekten açılıp doğru anahtarı verdikten
+    # sonra değişir. Herhangi bir adım düşerse eski durum yerinde kalır.
+    path = _new_vault_path(hwid)
+    ara = path.with_name(path.name + _VAULT_STAGED_SUFFIX)
+    kasa_adi = secret_store.share_2_username(hwid)
+    try:
+        _rewrite_vault(hwid, protected, share_2, target=ara)
+        _hazirlanan_kasayi_dogrula(ara, hwid, pin, share_2, master_key, kcv_hex)
+        # Geri yükleme için eski durumun anlık görüntüsü. Okunamıyorsa
+        # (ör. anahtar kasası erişilemez) yer değiştirmeye hiç başlanmaz.
+        eski_vault = path.read_bytes() if path.exists() else None
+        eski_share_2 = secret_store.load(kasa_adi)
+    except Exception:
+        _yan_dosyayi_sil(ara)
+        raise
+
+    try:
+        with _writable(path):
+            os.replace(ara, path)
+        # Kasa önce, DB sonra (bkz. _save_usb_token). DB yazması tek bir
+        # INSERT OR REPLACE: düşerse satır değişmemiş olur, geri yüklemeye
+        # yalnızca vault dosyası ve share_2 kalır.
+        _save_usb_token(hwid, share_2, token_id_hex, kcv_hex=kcv_hex)
+    except Exception:
+        _eski_kasayi_geri_yukle(path, eski_vault, kasa_adi, eski_share_2)
+        _yan_dosyayi_sil(ara)
+        raise
+
     # Kurtarma parçası değişmedi — daha önce alınmış sayılır
     DBManager().execute(
         "UPDATE usb_tokens SET recovery_issued_at = "

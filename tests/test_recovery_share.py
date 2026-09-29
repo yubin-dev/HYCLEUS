@@ -530,6 +530,86 @@ def test_dogrulanamayan_kurtarmadan_sonra_yeniden_kurulum_KCV_yaziyor(vault, db)
     assert kcv == vault_manager._kcv_hesapla(beklenen).hex()
 
 
+# ── B-160 (h) — --recover yolu: yan yazım, doğrulama, atomik yer değiştirme ──
+
+
+def _anlik(vault: str) -> tuple[bytes, str | None]:
+    return (
+        vault_manager._read_vault_path(vault).read_bytes(),
+        secret_store.load(secret_store.share_2_username(vault)),
+    )
+
+
+def _yan_dosya_yok(vault: str) -> None:
+    assert list(vault_manager._read_vault_path(vault).parent.glob("*.yeni")) == []
+
+
+def test_yeniden_kurulum_YAN_dosya_dogrulamasi_duserse_eski_kasa_ve_share2_DOKUNULMAZ(
+    vault, db, monkeypatch
+) -> None:
+    _role, beklenen = open_vault(vault, _PIN)
+    share_3 = export_recovery_share(vault, _PIN)
+    once = _anlik(vault)
+    anahtar = recover_master_key(vault, recovery_share=share_3, pin=None)
+
+    def _patla(*_a, **_k):
+        raise ValueError("yan dosya açılamadı (test)")
+
+    monkeypatch.setattr(vault_manager, "_hazirlanan_kasayi_dogrula", _patla)
+    with pytest.raises(ValueError, match="test"):
+        reprovision_vault(vault, "yeniPIN-13579", _ROLE, master_key=anahtar, recovery_share=share_3)
+
+    assert _anlik(vault) == once
+    _yan_dosya_yok(vault)
+    assert open_vault(vault, _PIN)[1] == beklenen
+
+
+@pytest.mark.parametrize("share_2_kasada", [True, False], ids=["share_2-var", "share_2-kayip"])
+def test_yeniden_kurulum_yer_degistirmeden_SONRA_duserse_eski_durum_GERI_YUKLENIR(
+    vault, db, monkeypatch, share_2_kasada
+) -> None:
+    """
+    Yeni vault yerine kondu, share_2 kasaya yazıldı, SONRA DB yazması
+    düştü: vault dosyası ve share_2 eski hâline dönmeli. `share_2-kayip`:
+    PIN yolunun asıl senaryosu (kasada share_2 yok) — geri yükleme yeni
+    yazılanı SİLMELİ, eski bir değer uydurmamalı.
+    """
+    _role, beklenen = open_vault(vault, _PIN)
+    share_3 = export_recovery_share(vault, _PIN)
+    if not share_2_kasada:
+        secret_store.erase(secret_store.share_2_username(vault))
+    once = _anlik(vault)
+    anahtar = recover_master_key(
+        vault, recovery_share=share_3, pin=None if share_2_kasada else _PIN
+    )
+
+    def _yarim_yaz(hwid, share_2, _token_id_hex, *, kcv_hex=None):
+        secret_store.store(secret_store.share_2_username(hwid), share_2)
+        raise RuntimeError("DB yazılamadı (test)")
+
+    monkeypatch.setattr(vault_manager, "_save_usb_token", _yarim_yaz)
+    with pytest.raises(RuntimeError, match="test"):
+        reprovision_vault(vault, "yeniPIN-13579", _ROLE, master_key=anahtar, recovery_share=share_3)
+
+    assert _anlik(vault) == once
+    _yan_dosya_yok(vault)
+    if share_2_kasada:
+        assert open_vault(vault, _PIN)[1] == beklenen
+
+
+def test_yeniden_kurulum_basarili_yan_dosya_BIRAKMAZ_yeni_PIN_ayni_anahtari_verir(
+    vault, db
+) -> None:
+    _role, beklenen = open_vault(vault, _PIN)
+    share_3 = export_recovery_share(vault, _PIN)
+    anahtar = recover_master_key(vault, recovery_share=share_3, pin=None)
+
+    reprovision_vault(vault, "yeniPIN-13579", _ROLE, master_key=anahtar, recovery_share=share_3)
+
+    _yan_dosya_yok(vault)
+    assert open_vault(vault, "yeniPIN-13579")[1] == beklenen
+
+
 def test_recovery_rejects_malformed_share(vault, db) -> None:
     with pytest.raises(ValueError):
         recover_master_key(vault, recovery_share="tamamen-bozuk", pin=_PIN)

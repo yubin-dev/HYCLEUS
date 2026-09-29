@@ -148,7 +148,7 @@ def test_recover_master_key_TEK_uretim_cagri_yeri_var() -> None:
                 bulunanlar.append(f"{bagil}:{d.lineno}")
 
     assert bulunanlar == [
-        "CORE/recover_vault.py:155", "CORE/usb_takeover.py:159",
+        "CORE/recover_vault.py:155", "CORE/usb_takeover.py:172",
     ], (
         f"recover_master_key() çağrı yerleri değişti: {bulunanlar}. "
         "Yeni bir yer eklendiyse SECURITY.md §4.2'nin çağrı-grafiği "

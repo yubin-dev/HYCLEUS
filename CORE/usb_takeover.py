@@ -42,6 +42,7 @@ YENİ bir kullanıcı değil, VAR OLAN birinin kimliğini taşıyor.
 """
 from __future__ import annotations
 
+import hmac
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,6 +50,8 @@ from CORE.roles import display_role
 from CORE.secret_store import load_totp_secret_for_hwid, store_totp_secret_for_hwid
 from CORE.vault_manager import (
     discard_vault,
+    kcv_ile_dogrula,
+    open_vault,
     recover_master_key,
     reprovision_vault,
 )
@@ -65,6 +68,10 @@ class TakeoverResult:
     user_id: int
     username: str
     role: str
+    #: B-160: kurtarılan anahtarın nasıl doğrulandığı
+    #: (`vault_manager.DOGRULAMA_*`). "yapilamadi" ise çağıran yeni
+    #: kurtarma parçasını ZORUNLU göstermeli.
+    dogrulama: str
 
 
 def takeover_usb(
@@ -103,7 +110,7 @@ def takeover_usb(
                         ile AYNI iki senaryo, bkz. o fonksiyonun docstring'i.
 
     Returns:
-        `TakeoverResult(user_id, username, role)` — `role` arayüz
+        `TakeoverResult(user_id, username, role, dogrulama)` — `role` arayüz
         biçiminde (ör. "Yönetici"), `open_vault(new_hwid, new_pin)`'e
         doğrudan geçirilebilir bir sonraki normal giriş için DEĞİL —
         bu fonksiyon zaten vault'u yeni hwid'e açık bırakır, çağıran
@@ -156,12 +163,31 @@ def takeover_usb(
     # hwid'in bir .hcl dosyası) ile doğruluyor ve yanlış parçada ValueError
     # fırlatıyor — henüz hiçbir kasa, pay ya da DB satırı değişmemişken.
     # Ne KCV ne dosya varsa doğrulanamaz; o zaman `dogrulama` bunu söyler.
+    #
+    # B-160 — SIRA: doğrula → yeni kasayı yaz → yeni kasayı bir kez AÇ ve
+    # KCV'yi karşılaştır → ancak ondan sonra eskiyi sil. Eski kasa ve eski
+    # share_2, yeni USB'nin gerçekten doğru anahtarla açıldığı KANITLANMADAN
+    # silinmez; o noktaya kadar herhangi bir adım düşerse eski durum
+    # tamamen yerindedir ve yeni hwid'e yazılan geri alınır.
     master_key = recover_master_key(old_hwid, recovery_share=recovery_share, pin=old_pin)
     rol_arayuz = display_role(eski_satir["role"])
     reprovision_vault(
         new_hwid, new_pin, rol_arayuz,
         master_key=master_key, recovery_share=recovery_share,
     )
+    try:
+        _rol, acilan = open_vault(new_hwid, new_pin)
+        if not (
+            kcv_ile_dogrula(new_hwid, acilan)
+            and hmac.compare_digest(acilan, master_key)
+        ):
+            raise TakeoverError(
+                "Yeni USB'nin kasası açıldı ama anahtarı doğrulanamadı — "
+                "eski USB'nin kasası SİLİNMEDİ."
+            )
+    except Exception:
+        discard_vault(new_hwid)
+        raise
 
     # TOTP sırrı eski hwid'e bağlıydı — taşınmazsa yeni USB'yle giriş TOTP
     # adımında hiçbir zaman geçemez (self._secret None kalır, login_dialog.py
@@ -173,8 +199,8 @@ def takeover_usb(
     # ── Eski HWID'i TAMAMEN geçersiz kıl ────────────────────────────────
     # SIRALAMA ÖNEMLİ: discard_vault() eski vault dosyasını SİLER — bu
     # noktadan SONRA old_hwid ile hiçbir open_vault()/recover_master_key()
-    # çağrısı başarılı olamaz. master_key ve TOTP sırrı YUKARIDA zaten
-    # güvenle taşındığı için veri kaybı yok.
+    # çağrısı başarılı olamaz. master_key yukarıda doğrulandı, yeni kasa
+    # açılıp KCV'yle karşılaştırıldı ve TOTP sırrı taşındı; veri kaybı yok.
     discard_vault(old_hwid)
 
     # ── users satırını GÜNCELLE: yeni satır DEĞİL, VAR OLANI değiştir ──
@@ -186,4 +212,5 @@ def takeover_usb(
 
     return TakeoverResult(
         user_id=user_id, username=str(eski_satir["username"]), role=rol_arayuz,
+        dogrulama=master_key.dogrulama,
     )
