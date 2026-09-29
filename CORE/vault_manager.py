@@ -757,6 +757,9 @@ def _kasa_hazirla(
         (protected, share_2, token_id_hex, kcv_hex) — `protected` HMAC'sız
         dosya gövdesi; imzayı `_rewrite_vault()` ekler.
     """
+    # Çağıranlar zaten kontrol ediyor; burada da ediliyor ki hwid+PIN alan
+    # her fonksiyon KENDİ BAŞINA kara listeye takılsın (tests/test_blacklist.py).
+    _reject_if_blacklisted(hwid)
     if master_key is None:
         master_key = os.urandom(_KEY_SIZE)
     elif len(master_key) != _KEY_SIZE:
@@ -1442,6 +1445,9 @@ def _vault_baytlarini_coz(raw: bytes, hwid: str, pin: str) -> tuple[str, str]:
         VaultTamperedError — magic byte'lar yanlışsa
         ValueError         — PIN yanlış veya vault formatı geçersizse
     """
+    # _decrypt_vault() zaten kontrol ediyor; yan dosya doğrulaması da bu
+    # yoldan geçtiği için burada da (tests/test_blacklist.py).
+    _reject_if_blacklisted(hwid)
     if raw[:4] != _MAGIC:
         raise VaultTamperedError("Geçersiz vault magic byte'ları.")
     if raw[4] != _VERSION:
@@ -1812,6 +1818,7 @@ def _hazirlanan_kasayi_dogrula(
         VaultTamperedError — imza tutmuyor
         ValueError         — GCM ya da anahtar/KCV karşılaştırması tutmuyor
     """
+    _reject_if_blacklisted(hwid)
     raw = yol.read_bytes()
     beklenen_imza = _sign(_derive_signing_key(hwid, share_2), raw[:-_HMAC_SIZE])
     if not _stdlib_hmac.compare_digest(beklenen_imza, raw[-_HMAC_SIZE:]):

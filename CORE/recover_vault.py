@@ -121,7 +121,7 @@ def _dogrulanamadi_uyarisi() -> None:
     )
 
 
-def _yeni_parcayi_zorunlu_goster(hwid: str, pin: str) -> None:
+def _yeni_parcayi_zorunlu_goster(share_3: str) -> None:
     """
     B-160: doğrulanamayan bir kurtarmayla kasa yeniden yazıldıysa yeni
     kurtarma parçası ATLANAMAZ biçimde gösterilir. Yeni polinom GİRİLEN
@@ -133,11 +133,7 @@ def _yeni_parcayi_zorunlu_goster(hwid: str, pin: str) -> None:
     print("  Eski kagidiniz artik GECERSIZ. Asagidaki parcayi yazdirin ya da")
     print("  elle yazin, eski kagidi imha edin.")
     print(_SEP)
-    share_3 = export_recovery_share(hwid, pin)
-    try:
-        _show_export(share_3, None)
-    finally:
-        del share_3
+    _show_export(share_3, None)
 
 
 def _cmd_export(args: argparse.Namespace) -> None:
@@ -249,7 +245,11 @@ def _cmd_recover(args: argparse.Namespace) -> None:
             "  · Yeni PIN'inizle normal sekilde giris yapabilirsiniz."
         )
         if master_key.dogrulama == DOGRULAMA_YAPILAMADI:
-            _yeni_parcayi_zorunlu_goster(hwid, yeni_pin)
+            yeni_parca = export_recovery_share(hwid, yeni_pin)
+            try:
+                _yeni_parcayi_zorunlu_goster(yeni_parca)
+            finally:
+                del yeni_parca
     finally:
         del master_key
 
@@ -350,7 +350,11 @@ def _cmd_takeover(_args: argparse.Namespace) -> None:
         "  · Eski USB artik hicbir sekilde acilamaz."
     )
     if sonuc.dogrulama == DOGRULAMA_YAPILAMADI:
-        _yeni_parcayi_zorunlu_goster(yeni_hwid, yeni_pin)
+        yeni_parca = export_recovery_share(yeni_hwid, yeni_pin)
+        try:
+            _yeni_parcayi_zorunlu_goster(yeni_parca)
+        finally:
+            del yeni_parca
 
 
 def _cmd_status(_args: argparse.Namespace) -> None:
